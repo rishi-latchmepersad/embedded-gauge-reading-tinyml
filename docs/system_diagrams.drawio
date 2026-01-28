@@ -1,0 +1,194 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" version="28.1.2" pages="2">
+  <diagram name="Edge Camera Pod" id="eDqyFWhCivcmqFs6QsoU">
+    <mxGraphModel dx="1355" dy="889" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="800" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="t1" value="Industrial Edge Camera Pod for Gauge Reading" style="text;html=1;fontSize=32;fontStyle=1;" parent="1" vertex="1">
+          <mxGeometry x="40" y="20" width="800" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="pipe" value="Pipe / Handrail" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#a0522d;fontColor=#ffffff;strokeColor=#6D1F00;" parent="1" vertex="1">
+          <mxGeometry x="40" y="310" width="720" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="clamp" value="U-bolt Clamps" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" parent="1" vertex="1">
+          <mxGeometry x="470" y="310" width="65" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="camera" value="" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#647687;fontColor=#ffffff;strokeColor=#314354;" parent="1" vertex="1">
+          <mxGeometry x="630" y="260" width="240" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="shade" value="Sun Shade / Hood" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="788" y="240" width="120" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="lens" value="Camera" style="ellipse;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#f5f5f5;gradientColor=#b3b3b3;strokeColor=#666666;" parent="1" vertex="1">
+          <mxGeometry x="788" y="298" width="64" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="power" value="Power Box&#xa;(Battery + Charge Controller)" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#fad7ac;strokeColor=#b46504;" parent="1" vertex="1">
+          <mxGeometry x="175" y="380" width="280" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="tilt" value="Tilt Bracket" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#647687;fontColor=#ffffff;strokeColor=#314354;" parent="1" vertex="1">
+          <mxGeometry x="460" y="240" width="120" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="solar" value="&lt;font style=&quot;font-size: 14px; color: rgb(0, 0, 0);&quot;&gt;Adjustable Solar Panel&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" parent="1" vertex="1">
+          <mxGeometry x="360" y="100" width="240" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" style="endArrow=open;html=1;strokeWidth=3;dashed=1;dashPattern=8 8;endFill=0;" parent="1" source="lens" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="960" y="330" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e6" style="endArrow=none;html=1;strokeWidth=2;entryX=0.5;entryY=1;entryDx=0;entryDy=0;edgeStyle=orthogonalEdgeStyle;endFill=0;" parent="1" source="power" target="camera" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" style="endArrow=classic;html=1;strokeWidth=3;entryX=0.717;entryY=1.008;entryDx=0;entryDy=0;entryPerimeter=0;shape=link;" parent="1" source="tilt" target="solar" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="X8aUyGfJaH6FOO79OV4r-2" value="Gauge Being Measured" style="html=1;verticalLabelPosition=bottom;align=center;labelBackgroundColor=#ffffff;verticalAlign=top;strokeWidth=2;strokeColor=#0080F0;shadow=0;dashed=0;shape=mxgraph.ios7.icons.gauge;" vertex="1" parent="1">
+          <mxGeometry x="990" y="267" width="140" height="133" as="geometry" />
+        </mxCell>
+        <mxCell id="X8aUyGfJaH6FOO79OV4r-4" value="STM32 Board, MicroSD Card, Camera &amp;amp; LoRAWAN Box" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="670" y="295" width="100" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="X8aUyGfJaH6FOO79OV4r-5" value="" style="html=1;verticalLabelPosition=bottom;align=center;labelBackgroundColor=#ffffff;verticalAlign=top;strokeWidth=2;strokeColor=#d6b656;shadow=0;dashed=0;shape=mxgraph.ios7.icons.sun;pointerEvents=1;fillColor=#fff2cc;gradientColor=#ffd966;" vertex="1" parent="1">
+          <mxGeometry x="280" y="90" width="70" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="X8aUyGfJaH6FOO79OV4r-6" value="U-bolt Clamps" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" vertex="1" parent="1">
+          <mxGeometry x="565" y="310" width="65" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="X8aUyGfJaH6FOO79OV4r-7" value="U-bolt Clamps" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" vertex="1" parent="1">
+          <mxGeometry x="230" y="310" width="65" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="X8aUyGfJaH6FOO79OV4r-8" style="endArrow=none;html=1;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=0;exitDx=0;exitDy=0;endFill=0;" edge="1" parent="1" source="power">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="114.75" y="269.5" as="sourcePoint" />
+            <mxPoint x="420" y="220" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="iEwAvYdhQwxvyET7TsUA" name="End-to-End Technical System">
+    <mxGraphModel dx="1355" dy="889" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="Industrial Sights - End-to-End Technical Architecture" style="text;html=1;fontSize=30;fontStyle=1;" parent="1" vertex="1">
+          <mxGeometry x="40" y="20" width="900" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="site_container" value="" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;container=1;fillColor=#eeeeee;strokeColor=#36393d;" parent="1" vertex="1">
+          <mxGeometry x="40" y="80" width="560" height="760" as="geometry" />
+        </mxCell>
+        <mxCell id="pods_note" value="Each pod reads a single gauge&amp;nbsp;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;periodically, processes&amp;nbsp;&lt;/span&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;the image to&amp;nbsp;&lt;/span&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;get a value, then uploads it to the&amp;nbsp;&lt;/span&gt;&lt;div&gt;LoRaWAN gateway.&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;The reading is then forwarded over the Internet to the&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;backend server.&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;" style="text;html=1;fontSize=14;" parent="site_container" vertex="1">
+          <mxGeometry x="100" y="650" width="360" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="site_backhaul" value="Backhaul / Router&lt;br&gt;(LTE, Microwave, Satellite,Fiber uplink)" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#ffff88;strokeColor=#36393d;" parent="site_container" vertex="1">
+          <mxGeometry x="300" y="430" width="230" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="pod2" value="Camera Pod #2&#xa;- Camera + MCU&#xa;- Battery + Solar&#xa;- Local inference (optional)&#xa;- LoRaWAN radio" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#cce5ff;strokeColor=#36393d;" parent="site_container" vertex="1">
+          <mxGeometry x="20" y="250" width="220" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="pod1" value="Camera Pod #1&#xa;- Camera + MCU&#xa;- Battery + Solar&#xa;- Local inference (optional)&#xa;- LoRaWAN radio" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#cce5ff;strokeColor=#36393d;" parent="site_container" vertex="1">
+          <mxGeometry x="20" y="60" width="220" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="pod3" value="Camera Pod #3&#xa;- Camera + MCU&#xa;- Battery + Solar&#xa;- Local inference (optional)&#xa;- LoRaWAN radio" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#cce5ff;strokeColor=#36393d;" parent="site_container" vertex="1">
+          <mxGeometry x="20" y="440" width="220" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-1" value="One industrial customer site/plant" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1" vertex="1" parent="site_container">
+          <mxGeometry x="165" y="10" width="230" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="gateway" value="LoRaWAN Gateway&#xa;- Concentrator&#xa;- Packet forwarder&#xa;- Site power (mains/solar)&#xa;- Backhaul: Ethernet/LTE" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#ffff88;strokeColor=#36393d;" parent="1" vertex="1">
+          <mxGeometry x="340" y="280" width="230" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="internet" value="Internet" style="ellipse;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#60a917;strokeColor=#2D7600;fontColor=#ffffff;" parent="1" vertex="1">
+          <mxGeometry x="680" y="390" width="180" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="cloud_container" value="" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;container=1;fillColor=#f9f7ed;strokeColor=#36393d;" parent="1" vertex="1">
+          <mxGeometry x="950" y="90" width="980" height="760" as="geometry" />
+        </mxCell>
+        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-2" value="Cloud Architecture" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1" vertex="1" parent="cloud_container">
+          <mxGeometry x="355.6451612903226" y="10" width="268.7096774193549" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="lns" value="LoRaWAN Network Server (LNS)&#xa;(The Things Stack / ChirpStack / Managed LNS)&#xa;- Device registry&#xa;- Join/keys&#xa;- Uplink decode&#xa;- Downlink scheduling" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#b0e3e6;strokeColor=#0e8088;" parent="cloud_container" vertex="1">
+          <mxGeometry x="47.42" y="90" width="202.58" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="mqtt" value="Message Bus&#xa;(MQTT / Webhook / Queue)&#xa;- Uplink events&#xa;- Retry + buffering" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#b0e3e6;strokeColor=#0e8088;" parent="cloud_container" vertex="1">
+          <mxGeometry x="310" y="120" width="240" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="e_lns_mqtt" style="endArrow=classic;html=1;strokeWidth=3;" parent="cloud_container" source="lns" target="mqtt" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="drf" value="Django REST Framework API&#xa;- Readings endpoints&#xa;- Alerts endpoints&#xa;- Sites/gauges/devices&#xa;- Webhooks for integrations" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" parent="cloud_container" vertex="1">
+          <mxGeometry x="310" y="450" width="240" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="django" value="Django Backend&#xa;- Auth + tenants&#xa;- Device management&#xa;- Business logic&#xa;- Admin UI (optional)" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" parent="cloud_container" vertex="1">
+          <mxGeometry x="290" y="260" width="280" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="e_mqtt_django" style="endArrow=classic;html=1;strokeWidth=3;" parent="cloud_container" source="mqtt" target="django" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_django_drf" style="endArrow=open;html=1;strokeWidth=3;startArrow=open;startFill=0;endFill=0;" parent="cloud_container" source="django" target="drf" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="frontend" value="Frontend (Web App)&#xa;- Dashboards&#xa;- Trends&#xa;- Alerts&#xa;- Device health" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#b1ddf0;strokeColor=#10739e;" parent="cloud_container" vertex="1">
+          <mxGeometry x="619.9999999999999" y="475" width="280" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="e_frontend_drf" style="endArrow=open;html=1;strokeWidth=3;edgeStyle=orthogonalEdgeStyle;startArrow=open;startFill=0;endFill=0;" parent="cloud_container" source="frontend" target="drf" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="clients" value="Clients&#xa;- Browser&#xa;- Mobile app&#xa;- Integrations (SCADA / CMMS)" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#ffcc99;strokeColor=#36393d;" parent="cloud_container" vertex="1">
+          <mxGeometry x="310" y="640" width="240" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="e_clients_frontend" style="endArrow=open;html=1;strokeWidth=3;exitX=1;exitY=0.5;exitDx=0;exitDy=0;edgeStyle=orthogonalEdgeStyle;endFill=0;startArrow=open;startFill=0;" parent="cloud_container" source="clients" target="frontend" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_clients_drf" style="endArrow=open;html=1;strokeWidth=3;dashed=1;endFill=0;startArrow=open;startFill=0;" parent="cloud_container" source="clients" target="drf" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="db" value="Database&#xa;(PostgreSQL)&#xa;- Devices&#xa;- Readings&#xa;- Alerts&#xa;- Users/roles" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#bac8d3;strokeColor=#23445d;" parent="cloud_container" vertex="1">
+          <mxGeometry x="70" y="275" width="180" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="e_django_db" style="endArrow=open;html=1;strokeWidth=3;endFill=0;startArrow=open;startFill=0;" parent="cloud_container" source="django" target="db" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-3" value="" style="image;aspect=fixed;perimeter=ellipsePerimeter;html=1;align=center;shadow=0;dashed=0;spacingTop=3;image=img/lib/active_directory/database.svg;" vertex="1" parent="cloud_container">
+          <mxGeometry x="80" y="285" width="40.54" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-4" value="" style="outlineConnect=0;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;shape=mxgraph.aws3.queue;fillColor=#D9A741;gradientColor=none;" vertex="1" parent="cloud_container">
+          <mxGeometry x="340" y="130" width="40" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-5" value="" style="image;html=1;image=img/lib/clip_art/computers/Server_128x128.png" vertex="1" parent="cloud_container">
+          <mxGeometry x="305.65" y="270" width="50" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-6" value="" style="aspect=fixed;sketch=0;html=1;dashed=0;whitespace=wrap;verticalLabelPosition=bottom;verticalAlign=top;fillColor=#2875E2;strokeColor=#ffffff;points=[[0.005,0.63,0],[0.1,0.2,0],[0.9,0.2,0],[0.5,0,0],[0.995,0.63,0],[0.72,0.99,0],[0.5,1,0],[0.28,0.99,0]];shape=mxgraph.kubernetes.icon2;prIcon=api" vertex="1" parent="cloud_container">
+          <mxGeometry x="326.48" y="460" width="29.17" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-7" value="" style="image;aspect=fixed;perimeter=ellipsePerimeter;html=1;align=center;shadow=0;dashed=0;spacingTop=3;image=img/lib/active_directory/user_accounts.svg;" vertex="1" parent="cloud_container">
+          <mxGeometry x="324.72" y="660" width="30.93" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-8" value="" style="image;html=1;image=img/lib/clip_art/finance/Graph_128x128.png" vertex="1" parent="cloud_container">
+          <mxGeometry x="640" y="500" width="40" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="DadrbJDqd3xpfDusq-m6-1" value="" style="points=[];aspect=fixed;html=1;align=center;shadow=0;dashed=0;fillColor=#FF6A00;strokeColor=none;shape=mxgraph.alibaba_cloud.cen_cloud_enterprise_network;" vertex="1" parent="cloud_container">
+          <mxGeometry x="63.46" y="90" width="16.54" height="17" as="geometry" />
+        </mxCell>
+        <mxCell id="e_pod1_gw" style="endArrow=classic;html=1;strokeWidth=3;dashed=1;" parent="1" source="pod1" target="gateway" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_pod2_gw" style="endArrow=classic;html=1;strokeWidth=3;dashed=1;" parent="1" source="pod2" target="gateway" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_pod3_gw" style="endArrow=classic;html=1;strokeWidth=3;dashed=1;" parent="1" source="pod3" target="gateway" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_gw_backhaul" style="endArrow=classic;html=1;strokeWidth=3;" parent="1" source="gateway" target="site_backhaul" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_backhaul_net" style="endArrow=classic;html=1;strokeWidth=3;" parent="1" source="site_backhaul" target="internet" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_net_lns" style="endArrow=classic;html=1;strokeWidth=3;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="internet" target="lns" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
