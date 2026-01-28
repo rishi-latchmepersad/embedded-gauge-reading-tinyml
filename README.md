@@ -27,17 +27,6 @@ A deployable TinyML pipeline for gauge reading on microcontrollers:
 3. Deployment: int8 quantized inference on STM32 NPU hardware with measured latency, memory, power, and accuracy
 4. System: camera → on-device inference → confidence checks / no-read → local logging, optional wireless telemetry
 
-## Current status (end of January 2026)
-- Repo scaffolding and documentation structure in progress
-- Next objective: Dataset v0 and a measurable baseline model
-- Target hardware: STM32 N657X0 NPU board + B-CAM IMX camera module
-
-## Current results
-- Dataset: in progress
-- Baseline model: not trained yet
-- On-device inference: not started yet
-- Planned evaluation metrics: accuracy within tolerance, MAE, no-read rate, latency, memory, power
-
 ## Risks identified
 - Primary risk: domain shift and image quality variability (lighting changes, glare, reflections, oblique viewing angles, blur, dirt, distance), which can degrade model accuracy.
 - Mitigation plan: dataset design that captures realistic conditions, targeted data augmentation, and an explicit “no-read” policy (the model refuses to output a reading when confidence is low or the image is out-of-distribution).
@@ -49,8 +38,5 @@ I want to pursue a thesis in embedded computer vision and TinyML, building on th
 - Optimize and benchmark on-device performance (int8 quantization, pruning, NPU acceleration, memory scheduling)
 - Validate end-to-end behavior with reproducible protocols and field-like deployments
 
-## Links
-- Roadmap and milestones: docs/roadmap.md
-- Results log and benchmark table: docs/results.md
-- Demos: docs/demos.md
-- Dataset notes: docs/dataset.md
+## Status and Links
+For the latest updates, check the project timeline at: https://github.com/users/rishi-latchmepersad/projects/1
