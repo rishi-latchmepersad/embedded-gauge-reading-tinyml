@@ -53,3 +53,7 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# Ignore raw images (keep folder out of git, but allow the directory to exist)
+data/raw/*
+!data/raw/.gitkeep
