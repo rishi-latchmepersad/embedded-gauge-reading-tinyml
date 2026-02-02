@@ -55,5 +55,5 @@ dkms.conf
 *.dwo
 
 # Ignore raw images (keep folder out of git, but allow the directory to exist)
-data/raw/*
-!data/raw/.gitkeep
+ml/data/raw/*
+!ml/data/raw/.gitkeep

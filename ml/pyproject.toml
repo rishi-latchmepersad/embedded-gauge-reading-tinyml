@@ -1,0 +1,34 @@
+[project]
+name = "embedded-gauge-reading-tinyml"
+version = "0.1.0"
+description = "A ML project to train a CNN to read analog gauges accurately using a low powered embedded system."
+authors = [
+    {name = "Rishi Latchmepersad",email = "latchmepersad@gmail.com"}
+]
+license = {text = "Apache"}
+requires-python = ">=3.13"
+dependencies = [
+    "tensorflow (==2.20.0)",
+    "numpy (>=2.4.2,<3.0.0)",
+    "pandas (>=3.0.0,<4.0.0)",
+    "opencv-python (>=4.13.0.90,<5.0.0.0)",
+    "pillow (>=12.1.0,<13.0.0)",
+    "matplotlib (>=3.10.8,<4.0.0)",
+    "scikit-learn (>=1.8.0,<2.0.0)",
+    "tqdm (>=4.67.2,<5.0.0)",
+    "rich (>=14.3.2,<15.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+packages = [{ include = "embedded_gauge_reading_tinyml", from = "src" }]
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.0.2,<10.0.0)",
+    "ruff (>=0.14.14,<0.15.0)"
+]
