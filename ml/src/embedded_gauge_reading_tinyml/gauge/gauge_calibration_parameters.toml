@@ -1,0 +1,5 @@
+[littlegood_home_temp_gauge_c]
+zero_deg = 135.0  # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30
+min_value = -30.0 # actual min value in degC
+max_value = 50.0  # actual max value in degC
