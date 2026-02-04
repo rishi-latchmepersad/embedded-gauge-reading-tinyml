@@ -11,6 +11,7 @@ from pathlib import Path
 from zipfile import ZipFile
 import xml.etree.ElementTree as ET
 
+
 # Paths to datasets
 LABELLED_DIR: Path = Path("ml/data/labelled")
 RAW_DIR: Path = Path("ml/data/raw")
@@ -47,6 +48,7 @@ class Sample:
     dial: EllipseLabel
     center: PointLabel
     tip: PointLabel
+
 
 
 def list_labelled_zips(labelled_dir: Path = LABELLED_DIR) -> list[Path]:
