@@ -12,14 +12,14 @@ CALIBRATION_TOML_PATH: Path = (  # Default location for gauge calibration parame
 
 @dataclass(frozen=True)
 class GaugeSpec:
-    """Per-gauge calibration: zero angle, sweep, and value range for each
+    """Per-gauge calibration: min angle, sweep, and value range for each
     gauge that we want to measure."""
 
     gauge_id: str  # Identify which gauge this spec applies to.
-    zero_angle_rad: float  # Angle in radians where the gauge reads min_value.
+    min_angle_rad: float  # Angle in radians where the gauge reads min_value.
     sweep_rad: float  # Total clockwise sweep in radians.
-    min_value: float  # Gauge value at zero_angle_rad.
-    max_value: float  # Gauge value at zero_angle_rad + sweep_rad.
+    min_value: float  # Gauge value at min_angle_rad.
+    max_value: float  # Gauge value at min_angle_rad + sweep_rad.
 
 
 def needle_angle_clockwise_rad(sample: Sample) -> float:
@@ -33,9 +33,9 @@ def needle_angle_clockwise_rad(sample: Sample) -> float:
 def needle_fraction(sample: Sample, spec: GaugeSpec, *, strict: bool = True) -> float:
     """Return normalized [0, 1] needle position within the entire gauge sweep."""
     raw_angle: float = needle_angle_clockwise_rad(sample)  # Compute raw angle.
-    shifted: float = (raw_angle - spec.zero_angle_rad) % (
+    shifted: float = (raw_angle - spec.min_angle_rad) % (
         2.0 * math.pi
-    )  # Zero-align and wrap.
+    )  # Align the angle according to the min angle calibration, and take a mod with 2 pi to ensure it's positive
     if (
         strict and shifted > spec.sweep_rad
     ):  # Reject labels outside the sweep if strict.
@@ -66,15 +66,13 @@ def load_gauge_specs(path: Path = CALIBRATION_TOML_PATH) -> dict[str, GaugeSpec]
     )
     specs: dict[str, GaugeSpec] = {}  # Prepare the output mapping.
     for gauge_id, spec_dict in raw.items():  # Iterate over each gauge section.
-        zero_rad: float = math.radians(
-            spec_dict["zero_deg"]
-        )  # Convert zero to radians.
+        min_rad: float = math.radians(spec_dict["min_deg"])  # Convert min to radians.
         sweep_rad: float = math.radians(
             spec_dict["sweep_deg"]
         )  # Convert sweep to radians.
         specs[gauge_id] = GaugeSpec(  # Build a typed GaugeSpec.
             gauge_id=gauge_id,  # Preserve the gauge identifier.
-            zero_angle_rad=zero_rad,  # Store zero angle in radians.
+            min_angle_rad=min_rad,  # Store min angle in radians.
             sweep_rad=sweep_rad,  # Store sweep in radians.
             min_value=spec_dict["min_value"],  # Store min value.
             max_value=spec_dict["max_value"],  # Store max value.

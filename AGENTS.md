@@ -8,11 +8,11 @@
 - Data has been labelled in the COCO format, using CVAT, and is stored in the /ml/data/labelled directory.
 
 ## Expectations
-- Prefer small, testable changes.
+- Prefer small, testable changes. Don't change code that you don't need to.
 - We will use Pytest for Python code and Unity for C code. 
 - Explain your suggestions to me with code and I'll do the implementation. Teach me.
 - All of our code should be typed.
-- Each block of code should have a docstring or comment explaining what it does. Each line or few lines should have inline comments explaining why we're doing it.
+- Each block of code should have a docstring or comment explaining what it does. Every few lines should have inline comments explaining why we're doing the lines.
 - We will use keras and tensorflow for ML.
 - We will use TFLM for export, and STM32 Cube.AI for integration into the board.
 - We will use STM32 VSCode extension for development.
