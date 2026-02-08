@@ -1,0 +1,13 @@
+1) Open a powershell window and cd to FSBL folder path: 
+
+C:\Users\rishi_latchmepersad\STM32Cube\Repository\STM32Cube_FW_N6_V1.3.0\Projects\NUCLEO-N657X0-Q\Templates\Template_FSBL_LRUN\STM32CubeIDE\Boot\Debug
+
+Then run this command:
+
+STM32_SigningTool_CLI.exe -bin Template_LRUN_FSBL.bin -nk -of 0x80000000 -t fsbl -o FSBL-trusted.bin -hv 2.3 -dump FSBL-trusted.bin -align
+
+2) Open another powershell window and cd to the main project path: D:\Projects\embedded-gauge-reading-tinyml\firmware\stm32\N657X0_bringup
+
+Then run : STM32_SigningTool_CLI.exe -bin N657X0_bringup_Appli.bin -nk -of 0x80000000 -t fsbl -o Project-trusted.bin -hv 2.3 -dump Project-trusted.bin -align
+
+3) Then open the flash_to_fsbl.ps1 script in powershell ISE, and run it. Then unplug the board, and move the boot1 pin to the left. Move it back to the right to debug again. 

@@ -1,0 +1,31 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/firmware/stm32/N657X0_bringup/Appli/Inc",
+                "${workspaceFolder}/firmware/stm32/N657X0_bringup/Drivers/STM32N6xx_HAL_Driver/Inc",
+                "${workspaceFolder}/firmware/stm32/N657X0_bringup/Drivers/STM32N6xx_HAL_Driver/Inc/Legacy",
+                "${workspaceFolder}/firmware/stm32/N657X0_bringup/Drivers/CMSIS/Include",
+                "${workspaceFolder}/firmware/stm32/N657X0_bringup/Drivers/CMSIS/Device/ST/STM32N6xx/Include",
+                "${workspaceFolder}/firmware/stm32/N657X0_bringup/Drivers/BSP/STM32N6xx_Nucleo",
+                "${workspaceFolder}/firmware/stm32/N657X0_bringup/**"
+            ],
+            "defines": [
+                "STM32N657xx",
+                "USE_HAL_DRIVER",
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "compilerPath": "C:/ST/STM32CubeIDE_1.18.1/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.win32_1.0.0.202411081344/tools/bin/arm-none-eabi-gcc.exe",
+            "compilerArgs": [
+                "-mcpu=cortex-m55",
+                "-mthumb"
+            ],
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-arm"
+        }
+    ],
+    "version": 4
+}
