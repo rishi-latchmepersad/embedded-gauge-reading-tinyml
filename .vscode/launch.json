@@ -1,0 +1,30 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            // STM32Cube VSCode debug adapter (existing)
+            "type": "stlinkgdbtarget",
+            "request": "launch",
+            "gdb": "C:\\Users\\rishi_latchmepersad\\AppData\\Local\\stm32cube\\bundles\\gnu-tools-for-stm32\\14.3.1+st.2\\bin\\arm-none-eabi-gdb.exe",
+            "name": "STM32Cube: STM32 Launch ST-Link GDB Server",
+            "origin": "snippet",
+            // Run from the CubeIDE project folder so paths resolve predictably.
+            "cwd": "${workspaceFolder}/firmware/stm32/N657X0_bringup/Appli",
+            // Disable STM32Cube build for now so launch doesn’t fail.
+            // "preBuild": "${command:st-stm32-ide-debug-launch.build}",
+            "runEntry": "main",
+            "deviceName": "STM32N657X0",
+            "deviceCore": "Cortex-M55",
+            "deviceTrustzone": "Non-secure",
+            "imagesAndSymbols": [
+                {
+                    // Use the ELF that already exists from CubeIDE builds.
+                    "imageFileName": "${workspaceFolder}/firmware/stm32/N657X0_bringup/Appli/Debug/N657X0_bringup_Appli.elf"
+                }
+            ]
+        }
+    ]
+}

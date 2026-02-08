@@ -57,3 +57,10 @@ dkms.conf
 # Ignore raw images (keep folder out of git, but allow the directory to exist)
 ml/data/raw/*
 !ml/data/raw/.gitkeep
+
+#ignore build files
+/build/*
+firmware/stm32/N657X0_bringup/build/*
+firmware/stm32/N657X0_bringup/AppliSecure/build/*
+firmware/stm32/N657X0_bringup/FSBL/build/*
+firmware/stm32/N657X0_bringup/AppliNonSecure/build/*
