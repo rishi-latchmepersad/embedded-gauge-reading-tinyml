@@ -38,7 +38,6 @@ extern "C" {
 #include "stm32n6xx_hal.h"
 
 #include "stm32n6xx_nucleo.h"
-#include <stdio.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -100,6 +99,8 @@ void Error_Handler(void);
 #define UCPD1_ISENSE_GPIO_Port GPIOA
 #define UCPD_PWR_EN_Pin GPIO_PIN_7
 #define UCPD_PWR_EN_GPIO_Port GPIOA
+#define SPI5_CS_Pin GPIO_PIN_3
+#define SPI5_CS_GPIO_Port GPIOA
 #define SWCLK_Pin GPIO_PIN_14
 #define SWCLK_GPIO_Port GPIOA
 #define USB1_OCP_Pin GPIO_PIN_7
