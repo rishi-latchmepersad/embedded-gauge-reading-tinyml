@@ -29,6 +29,8 @@
 #include "debug_console.h"
 #include "debug_led.h"
 #include "threadx_utils.h"
+#include "sd_debug_log_service.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -61,6 +63,7 @@ static FX_MEDIA g_sd_fx_media; /* FileX media control block for the SD card. */
 static FX_FILE g_sd_fx_file; /* Simple test file object. */
 
 static Sd_FileX_DriverContext g_sd_filex_driver_context; /* Global driver context used by the media driver. */
+static TX_BYTE_POOL *g_filex_byte_pool_ptr = NULL; /* Byte pool used for queue + cache allocations. */
 
 /* USER CODE END PV */
 
@@ -81,6 +84,8 @@ void fx_app_thread_entry(ULONG thread_input);
 UINT MX_FileX_Init(VOID *memory_ptr) {
 	UINT ret = FX_SUCCESS;
 	TX_BYTE_POOL *byte_pool = (TX_BYTE_POOL*) memory_ptr;
+	g_filex_byte_pool_ptr = byte_pool; /* Save for FileX thread so it can init logging service. */
+
 	VOID *pointer;
 
 	/* USER CODE BEGIN MX_FileX_MEM_POOL */
@@ -214,6 +219,29 @@ void fx_app_thread_entry(ULONG thread_input) {
 		}
 	}
 
+	/* -------------------- Debug log service init (queue + core + FileX bindings) -------------------- */
+
+	if (g_filex_byte_pool_ptr == NULL) {
+		for (;;) {
+			tx_thread_sleep(50U);
+		}
+	}
+
+	/* Initialize the logging queue and core, and bind it to the mounted media. */
+	{
+		UINT log_init_status = SdDebugLogService_Initialize(
+				g_filex_byte_pool_ptr, &g_sd_fx_media);
+		if (log_init_status != TX_SUCCESS) {
+			for (;;) {
+				tx_thread_sleep(50U);
+			}
+		}
+	}
+
+	/* Optional: write a startup marker. */
+	(void) SdDebugLogService_EnqueueLine("debug log service initialized");
+	DebugConsole_Printf("Initialized debug log service in FileX thread.");
+
 	/* -------------------- Simple create + write test -------------------- */
 
 	(void) fx_file_delete(&g_sd_fx_media, "test.txt"); /* Delete if it exists, ignore status for convenience. */
@@ -227,7 +255,7 @@ void fx_app_thread_entry(ULONG thread_input) {
 	}
 
 	filex_status = fx_file_open(&g_sd_fx_media, &g_sd_fx_file, "test.txt",
-			FX_OPEN_FOR_WRITE); /* Open for writing. */
+	FX_OPEN_FOR_WRITE); /* Open for writing. */
 	if (filex_status != FX_SUCCESS) /* If open fails, stop. */
 	{
 		for (;;) {
@@ -236,7 +264,7 @@ void fx_app_thread_entry(ULONG thread_input) {
 	}
 
 	{
-		static const CHAR message[] = "hello from STM32N6 + ThreadX + FileX\r\n"; /* Static string avoids stack usage. */
+		static const CHAR message[] = "Hello from STM32N6 + ThreadX + FileX\r\n"; /* Static string avoids stack usage. */
 		ULONG bytes_written = 0U; /* FileX returns number of bytes written. */
 
 		filex_status = fx_file_write(&g_sd_fx_file, /* File handle. */
@@ -261,8 +289,12 @@ void fx_app_thread_entry(ULONG thread_input) {
 
 	/* USER CODE BEGIN fx_app_thread_entry 1*/
 	while (1) {
-		DebugLed_BlinkBlueBlocking(1000U, 0U, 1U);
-		DelayMilliseconds_ThreadX(1000);
+
+		/* Drain a bounded number of messages each cycle so we do not starve other work. */
+		SdDebugLogService_ServiceQueue(32U);
+
+		DebugLed_BlinkBlueBlocking(1000U, 1000U, 1U);
+
 	}
 	DebugConsole_Printf("FileX thread closing.\r\n");
 	/* USER CODE END fx_app_thread_entry 1*/

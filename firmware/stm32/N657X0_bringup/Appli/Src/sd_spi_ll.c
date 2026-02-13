@@ -16,6 +16,7 @@
 #include "tx_api.h"
 #include "threadx_utils.h"
 #include <stdint.h>
+#include "sd_spi_protocol.h"
 
 extern SPI_HandleTypeDef hspi5; // Use CubeMX-generated SPI handle, provided by STM32 HAL startup code.
 
@@ -141,6 +142,25 @@ static uint8_t SD_SPI_TransferByte(uint8_t transmit_byte) {
 }
 
 /*==============================================================================
+ * Function: SD_SPI_TransferByte_ProtocolAdapter
+ *
+ * Purpose:
+ *   Adapt the STM32 SPI byte transfer to the protocol function pointer signature.
+ *
+ * Parameters:
+ *   transfer_context - Unused for STM32 bring-up, kept for host unit testing.
+ *   transmit_byte    - Byte to clock out.
+ *
+ * Returns:
+ *   Byte received from MISO.
+ *==============================================================================*/
+static uint8_t SD_SPI_TransferByte_ProtocolAdapter(void *transfer_context,
+		uint8_t transmit_byte) {
+	(void) transfer_context;
+	return SD_SPI_TransferByte(transmit_byte);
+}
+
+/*==============================================================================
  * Function: SD_SendIdleClocks
  *
  * Purpose:
@@ -178,161 +198,44 @@ static void SD_SendIdleClocks(uint32_t byte_count) {
 }
 
 /*==============================================================================
- * Function: SD_ComputeCrc7_ForCommandPacket
- *
- * Purpose:
- *   Compute CRC7 for an SD command packet over the first 5 bytes (CMD + 4 arg bytes).
- *
- * Parameters:
- *   command_packet_five_bytes - Pointer to exactly 5 bytes: [0]=0x40|cmd, [1..4]=arg.
- *
- * Returns:
- *   CRC byte with end bit set, (crc7 << 1) | 1.
- *
- * Side Effects:
- *   None.
- *
- * Preconditions:
- *   - command_packet_five_bytes is not NULL and points to at least 5 bytes.
- *
- * Concurrency:
- *   Thread-safe.
- *
- * Timing:
- *   5 * 8 iterations, deterministic.
- *
- * Errors:
- *   None.
- *
- * Notes:
- *   CRC is required for CMD0 and CMD8 in SPI mode; after that it is typically ignored unless CRC is enabled.
- *==============================================================================*/
-static uint8_t SD_ComputeCrc7_ForCommandPacket(
-		const uint8_t command_packet_five_bytes[5]) {
-	uint8_t crc7 = 0U;                         // Start CRC accumulator at zero.
-
-	for (uint32_t byte_index = 0U; byte_index < 5U; byte_index++) // Process 5 bytes of the command packet.
-			{
-		uint8_t data = command_packet_five_bytes[byte_index]; // Copy current byte so we can shift it bit-by-bit.
-
-		for (uint32_t bit_index = 0U; bit_index < 8U; bit_index++) // Process each bit, MSB first.
-				{
-			crc7 <<= 1U;   // Shift CRC left to make room for the next bit step.
-
-			if (((data & 0x80U) ^ (crc7 & 0x80U)) != 0U) // If data MSB differs from CRC MSB, apply polynomial.
-					{
-				crc7 ^= 0x09U; // Apply CRC7 polynomial (x^7 + x^3 + 1), represented as 0x09.
-			}
-
-			data <<= 1U;      // Shift data to bring next bit into MSB position.
-		}
-	}
-
-	return (uint8_t) ((crc7 << 1U) | 0x01U); // Append end bit '1' as required by SD command format.
-}
-
-/*==============================================================================
  * Function: SD_SendCommand
  *
  * Purpose:
- *   Send a standard SD SPI command (6-byte frame) and return the R1 response byte.
- *
- * Parameters:
- *   command_index      - SD command number (0..63).
- *   argument           - 32-bit command argument.
- *   crc7_with_end_bit  - CRC byte to transmit; if 0, compute CRC7 automatically.
- *
- * Returns:
- *   R1 response byte, or 0xFF if no response observed within timeout.
- *
- * Side Effects:
- *   Clocks SPI bus, transmits command, reads from MISO.
- *
- * Preconditions:
- *   - CS must already be asserted (low) before calling this function.
- *   - SPI configured for Mode 0 for SD cards.
- *
- * Concurrency:
- *   Not thread-safe.
- *
- * Timing:
- *   Wait loop limited to 100 bytes for response.
- *
- * Errors:
- *   Returns 0xFF on timeout waiting for R1.
+ *   Send an SD SPI command frame and return the first non-0xFF R1 byte.
  *
  * Notes:
- *   In SPI mode, the card responds with R1 where MSB is 0 when valid. Many implementations treat 0xFF as "no response yet".
+ *   This is the STM32/HAL glue wrapper around the board-agnostic protocol helper.
  *==============================================================================*/
 static uint8_t SD_SendCommand(uint8_t command_index, uint32_t argument,
-		uint8_t crc7_with_end_bit) {
-	uint8_t command_packet[5]; // Build the 5-byte command body used for CRC and transmit.
-
-	command_packet[0] = (uint8_t) (0x40U | (command_index & 0x3FU)); // Compose command byte with start bits and command index.
-	command_packet[1] = (uint8_t) ((argument >> 24) & 0xFFU); // Argument byte 3, MSB first, per SD spec.
-	command_packet[2] = (uint8_t) ((argument >> 16) & 0xFFU); // Argument byte 2.
-	command_packet[3] = (uint8_t) ((argument >> 8) & 0xFFU); // Argument byte 1.
-	command_packet[4] = (uint8_t) (argument & 0xFFU);   // Argument byte 0, LSB.
-
-	if (crc7_with_end_bit == 0x00U) // If caller requested auto CRC, compute it.
-			{
-		crc7_with_end_bit = SD_ComputeCrc7_ForCommandPacket(command_packet); // Compute CRC7 and set end bit for the final CRC byte.
-	}
-
-	(void) SD_SPI_TransferByte(command_packet[0]); // Send command byte so the card knows which command this is.
-	(void) SD_SPI_TransferByte(command_packet[1]); // Send argument MSB so card interprets full 32-bit argument.
-	(void) SD_SPI_TransferByte(command_packet[2]);   // Send next argument byte.
-	(void) SD_SPI_TransferByte(command_packet[3]);   // Send next argument byte.
-	(void) SD_SPI_TransferByte(command_packet[4]); // Send argument LSB to complete the 32-bit argument.
-	(void) SD_SPI_TransferByte(crc7_with_end_bit); // Send CRC byte, required for CMD0/CMD8, ignored later normally.
-
-	for (uint32_t attempt = 0U; attempt < 100U; attempt++) // Poll for a response for a bounded number of bytes.
-			{
-		uint8_t r1 = SD_SPI_TransferByte(0xFFU); // Clock one byte while sampling response on MISO.
-		if (r1 != 0xFFU) // First non-0xFF indicates the card started responding.
-				{
-			return r1;             // Return the R1 response byte to the caller.
-		}
-	}
-
-	return 0xFFU;      // Return timeout marker if we never saw a response byte.
+		uint8_t crc7_with_end_bit_or_zero_auto) {
+	return SdSpiProtocol_SendCommandAndGetR1(
+			SD_SPI_TransferByte_ProtocolAdapter, NULL, command_index, argument,
+			crc7_with_end_bit_or_zero_auto, 100U);
 }
 
 /*==============================================================================
  * Function: SD_ReadResponseBytes
  *
  * Purpose:
- *   Read a fixed number of bytes from the card by clocking 0xFF.
+ *   Read a fixed-length SD response payload after an R1 response.
  *
- * Parameters:
- *   response_buffer - Destination buffer for received bytes.
- *   response_length - Number of bytes to read into the buffer.
- *
- * Returns:
- *   None.
- *
- * Side Effects:
- *   Clocks SPI bus and reads MISO.
- *
- * Preconditions:
- *   - CS should be asserted when reading response bytes that belong to a command.
- *   - response_buffer is not NULL and has at least response_length bytes.
- *
- * Concurrency:
- *   Not thread-safe.
- *
- * Timing:
- *   O(response_length).
- *
- * Errors:
- *   None.
+ * Notes:
+ *   This is the STM32/HAL glue wrapper around the board-agnostic protocol helper.
  *==============================================================================*/
 static void SD_ReadResponseBytes(uint8_t *response_buffer,
 		uint32_t response_length) {
-	for (uint32_t i = 0U; i < response_length; i++) // Read exactly the requested number of bytes.
-			{
-		response_buffer[i] = SD_SPI_TransferByte(0xFFU); // Send 0xFF to provide clocks and sample response byte.
-	}
+	SdSpiProtocol_ReadResponseBytes(SD_SPI_TransferByte_ProtocolAdapter, NULL,
+			response_buffer, response_length);
+}
+
+/*==============================================================================
+ * Function: SPI_UpdateCardAddressingModeFromOcr
+ *
+ * Purpose:
+ *   Parse OCR bytes and cache SDHC/SDSC addressing mode for CMD17/CMD24 argument generation.
+ *==============================================================================*/
+static void SPI_UpdateCardAddressingModeFromOcr(const uint8_t ocr_bytes[4]) {
+	g_sd_card_is_sdhc = SdSpiProtocol_ParseIsHighCapacityCardFromOcr(ocr_bytes);
 }
 
 /*==============================================================================
@@ -372,25 +275,6 @@ void SPI_Test_Run(void) {
 
 	SD_SendIdleClocks(10U); // Provide 80 clocks (10 bytes), the spec minimum is 74.
 	(void) SD_SPI_TransferByte(0xFFU); // Send one extra byte for additional margin during bring-up.
-}
-
-/*==============================================================================
- * Function: SPI_UpdateCardAddressingModeFromOcr
- *
- * Purpose:
- *   Parse OCR bytes from CMD58 and determine if the card uses block addressing.
- *
- * Parameters:
- *   ocr_bytes - 4 OCR bytes returned by CMD58.
- *
- * Returns:
- *   None.
- *
- * Notes:
- *   CCS is bit 30 of OCR. In the first OCR byte (bits 31:24), CCS is bit 6 (0x40).
- *==============================================================================*/
-static void SPI_UpdateCardAddressingModeFromOcr(const uint8_t ocr_bytes[4]) {
-	g_sd_card_is_sdhc = (uint8_t) ((ocr_bytes[0] & 0x40U) ? 1U : 0U); /* Set SDHC flag if CCS bit is set. */
 }
 
 /*==============================================================================
@@ -640,60 +524,6 @@ uint8_t SPI_SendCMD58_ReadOCR(uint8_t ocr_out[4]) {
 }
 
 /*==============================================================================
- * Function: SD_SendCommandRaw_AndGetR1
- *
- * Purpose:
- *   Low-level "raw packet" sender for experiments. Sends a 6-byte command frame and returns R1.
- *
- * Parameters:
- *   cmd_index - SD command number.
- *   argument  - 32-bit argument.
- *   crc       - CRC byte to transmit (must include end bit 1).
- *
- * Returns:
- *   R1 byte, or 0xFF on timeout.
- *
- * Side Effects:
- *   Transmits bytes on MOSI and reads MISO.
- *
- * Preconditions:
- *   - CS must already be low before calling.
- *
- * Concurrency:
- *   Not thread-safe.
- *
- * Timing:
- *   Bounded wait loop for response.
- *
- * Errors:
- *   Returns 0xFF on timeout.
- *
- * Notes:
- *   Prefer SD_SendCommand for normal use, this is mainly for learning and quick test variations.
- *==============================================================================*/
-static uint8_t SD_SendCommandRaw_AndGetR1(uint8_t cmd_index, uint32_t argument,
-		uint8_t crc) {
-	uint8_t r1 = 0xFFU;                        // Default to no-response marker.
-
-	(void) SD_SPI_TransferByte((uint8_t) (0x40U | (cmd_index & 0x3FU))); // Send command byte formatted for SPI mode.
-	(void) SD_SPI_TransferByte((uint8_t) ((argument >> 24) & 0xFFU)); // Send argument MSB.
-	(void) SD_SPI_TransferByte((uint8_t) ((argument >> 16) & 0xFFU)); // Send argument byte 2.
-	(void) SD_SPI_TransferByte((uint8_t) ((argument >> 8) & 0xFFU)); // Send argument byte 1.
-	(void) SD_SPI_TransferByte((uint8_t) (argument & 0xFFU)); // Send argument LSB.
-	(void) SD_SPI_TransferByte(crc);          // Send CRC byte with end bit set.
-
-	for (uint32_t i = 0U; i < 1000U; i++) // Poll for response, raw path uses a larger loop for bring-up.
-			{
-		r1 = SD_SPI_TransferByte(0xFFU); // Clock one byte while sampling for R1.
-		if (r1 != 0xFFU)                   // First non-0xFF is the R1 response.
-				{
-			break;                           // Exit loop once response appears.
-		}
-	}
-
-	return r1;                        // Return the R1 byte, or 0xFF if timeout.
-}
-/*==============================================================================
  * Function: SPI_ReadUInt32LittleEndian
  *
  * Purpose:
@@ -903,13 +733,16 @@ uint8_t SPI_ReadSingleBlock512(uint32_t block_lba,
 	uint32_t argument = 0U; /* CMD17 argument depends on SDHC vs SDSC. */
 	uint8_t r1 = 0xFFU; /* R1 response from command. */
 	uint8_t token = 0xFFU; /* Data token (0xFE indicates start of data). */
+	SdSpiProtocol_DataTokenWaitStatus token_wait_status =
+			SD_SPI_PROTOCOL_DATA_TOKEN_WAIT_STATUS_TIMEOUT;
 
 	if (data_out_512_bytes == NULL) /* Validate output buffer pointer. */
 	{
 		return 0xFFU; /* Return generic failure for invalid argument. */
 	}
 
-	argument = (g_sd_card_is_sdhc != 0U) ? block_lba : (block_lba * 512U); /* SDHC uses block units, SDSC uses byte units. */
+	argument = SdSpiProtocol_ComputeCmd17Cmd24ArgumentFromBlockLba(block_lba,
+			g_sd_card_is_sdhc); /* SDHC uses block units, SDSC uses byte units. */
 
 	SD_Select(); /* Assert CS low to start an SPI transaction. */
 	SD_SendIdleClocks(1U); /* Provide gap clocks so card can respond cleanly. */
@@ -922,16 +755,10 @@ uint8_t SPI_ReadSingleBlock512(uint32_t block_lba,
 		return r1; /* Return the R1 error code. */
 	}
 
-	for (uint32_t attempt = 0U; attempt < 100000U; attempt++) /* Wait for a data token with a generous timeout. */
-	{
-		token = SD_SPI_TransferByte(0xFFU); /* Clock a byte, card returns token when ready. */
-		if (token != 0xFFU) /* Any non-0xFF means something happened. */
-		{
-			break; /* Exit loop to interpret token. */
-		}
-	}
-
-	if (token != 0xFEU) /* For CMD17, token must be 0xFE. */
+	token_wait_status = SdSpiProtocol_WaitForDataToken(
+			SD_SPI_TransferByte_ProtocolAdapter, NULL,
+			SD_SPI_DATA_START_TOKEN_SINGLE_BLOCK_READ, 100000U, &token); /* Wait for CMD17 data token. */
+	if (token_wait_status != SD_SPI_PROTOCOL_DATA_TOKEN_WAIT_STATUS_OK) /* For CMD17, token must be 0xFE. */
 	{
 		SD_Deselect(); /* Release CS to end transaction. */
 		SD_SendIdleClocks(2U); /* Extra clocks help card return to idle state. */
@@ -976,7 +803,8 @@ uint8_t SPI_WriteSingleBlock512(uint32_t block_lba,
 		return 0xFFU; /* Return generic failure for invalid argument. */
 	}
 
-	argument = (g_sd_card_is_sdhc != 0U) ? block_lba : (block_lba * 512U); /* SDHC uses block units, SDSC uses byte units. */
+	argument = SdSpiProtocol_ComputeCmd17Cmd24ArgumentFromBlockLba(block_lba,
+			g_sd_card_is_sdhc); /* SDHC uses block units, SDSC uses byte units. */
 
 	SD_Select(); /* Assert CS low to start an SPI transaction. */
 	SD_SendIdleClocks(1U); /* Provide gap clocks before command. */
