@@ -1,0 +1,3 @@
+D:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/build/CMakeFiles/unit_tests.dir
+D:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/build/CMakeFiles/edit_cache.dir
+D:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/build/CMakeFiles/rebuild_cache.dir

@@ -12,9 +12,9 @@ extern "C" {
 #include "stm32n6xx_nucleo.h"
 
 typedef enum {
-	DEBUG_LED_COLOR_RED = 0,
-	DEBUG_LED_COLOR_GREEN,
-	DEBUG_LED_COLOR_BLUE,
+	DEBUG_LED_COLOR_RED = 1,
+	DEBUG_LED_COLOR_GREEN = 2,
+	DEBUG_LED_COLOR_BLUE = 0,
 	DEBUG_LED_COLOR_COUNT
 } DebugLed_Color_t;
 
