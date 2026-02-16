@@ -1,3 +1,8 @@
+"""
+Gauge processing and calibration utilities
+i.e. the math to convert CVAT labels into gauge values, and loading gauge specs.
+"""
+
 from dataclasses import dataclass
 import math  # used to compute needle angles
 from pathlib import Path  # used to search for files

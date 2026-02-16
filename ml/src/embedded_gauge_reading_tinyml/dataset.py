@@ -13,8 +13,10 @@ import xml.etree.ElementTree as ET
 
 
 # Paths to datasets
-LABELLED_DIR: Path = Path("ml/data/labelled")
-RAW_DIR: Path = Path("ml/data/raw")
+ML_ROOT: Path = Path(__file__).resolve().parents[2]
+DATA_DIR: Path = ML_ROOT / "data"
+LABELLED_DIR: Path = DATA_DIR / "labelled"
+RAW_DIR: Path = DATA_DIR / "raw"
 
 
 # Create a dataclass for each required label type.
@@ -48,7 +50,6 @@ class Sample:
     dial: EllipseLabel
     center: PointLabel
     tip: PointLabel
-
 
 
 def list_labelled_zips(labelled_dir: Path = LABELLED_DIR) -> list[Path]:

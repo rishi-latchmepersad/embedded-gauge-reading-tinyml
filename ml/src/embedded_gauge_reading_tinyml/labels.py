@@ -1,3 +1,7 @@
+"""
+Loads and validates labels/annotations for gauge reading samples.
+"""
+
 from dataclasses import dataclass
 from pathlib import Path
 
