@@ -59,14 +59,12 @@ UART_HandleTypeDef huart1;
 static void MX_GPIO_Init(void);
 static void MX_SPI5_Init(void);
 static void MX_USART1_UART_Init(void);
-static void SystemIsolation_Config(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
 /* USER CODE END 0 */
 
 /**
@@ -94,8 +92,8 @@ int main(void) {
 	MX_GPIO_Init();
 	MX_SPI5_Init();
 	MX_USART1_UART_Init();
-	SystemIsolation_Config();
 	/* USER CODE BEGIN 2 */
+	// set up the debug console
 	DebugConsole_Configuration_t debug_console_configuration = { 0 };
 	debug_console_configuration.uart_handle_pointer = &huart1;
 	debug_console_configuration.uart_transmit_timeout_milliseconds = 100U;
@@ -106,17 +104,19 @@ int main(void) {
 
 	DebugConsole_Printf(
 			"Welcome to STM32 world!\r\nApplication project is running...\r\n");
+	// set up the debug leds
+	DebugLed_Configuration_t debug_led_configuration = {
+			.bsp_led_for_color_array = { LED_BLUE, LED_RED, LED_GREEN },
+			.delay_milliseconds_callback = DelayMilliseconds_ThreadX };
+
+	(void) DebugLed_Initialize(&debug_led_configuration);
 	/* USER CODE END 2 */
 
 	/* Initialize leds */
 	BSP_LED_Init(LED_BLUE);
 	BSP_LED_Init(LED_RED);
 	BSP_LED_Init(LED_GREEN);
-	DebugLed_Configuration_t debug_led_configuration = {
-			.bsp_led_for_color_array = { LED_BLUE, LED_RED, LED_GREEN },
-			.delay_milliseconds_callback = DelayMilliseconds_ThreadX };
 
-	(void) DebugLed_Initialize(&debug_led_configuration);
 	MX_ThreadX_Init();
 
 	/* USER CODE BEGIN BSP */
@@ -134,69 +134,6 @@ int main(void) {
 		/* USER CODE BEGIN 3 */
 	}
 	/* USER CODE END 3 */
-}
-
-/**
- * @brief RIF Initialization Function
- * @param None
- * @retval None
- */
-static void SystemIsolation_Config(void) {
-
-	/* USER CODE BEGIN RIF_Init 0 */
-
-	/* USER CODE END RIF_Init 0 */
-
-	/* set all required IPs as secure privileged */
-	__HAL_RCC_RIFSC_CLK_ENABLE();
-
-	/* RIF-Aware IPs Config */
-
-	/* set up GPIO configuration */
-	HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_3,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_5,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_7,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_0,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_3,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_6,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_7,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPIOC, GPIO_PIN_0,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPIOD, GPIO_PIN_2,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPIOD, GPIO_PIN_10,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_3,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_5,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_6,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_15,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPIOG, GPIO_PIN_1,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPIOG, GPIO_PIN_2,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPION, GPIO_PIN_7,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-	HAL_GPIO_ConfigPinAttributes(GPIOO, GPIO_PIN_5,
-	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-
-	/* USER CODE BEGIN RIF_Init 1 */
-
-	/* USER CODE END RIF_Init 1 */
-	/* USER CODE BEGIN RIF_Init 2 */
-
-	/* USER CODE END RIF_Init 2 */
-
 }
 
 /**

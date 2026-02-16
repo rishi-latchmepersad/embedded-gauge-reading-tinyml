@@ -1,0 +1,30 @@
+{
+  "config": {
+    "gauge_id": "littlegood_home_temp_gauge_c",
+    "image_height": 160,
+    "image_width": 160,
+    "batch_size": 16,
+    "epochs": 30,
+    "learning_rate": 0.001,
+    "seed": 42,
+    "val_fraction": 0.15,
+    "test_fraction": 0.15,
+    "strict_labels": false,
+    "crop_pad_ratio": 0.15,
+    "augment_training": true
+  },
+  "label_summary": {
+    "total_samples": 352,
+    "in_sweep": 341,
+    "out_of_sweep": 11,
+    "min_fraction": 0.01697168464957297,
+    "max_fraction": 1.0
+  },
+  "test_metrics": {
+    "loss": 34.32304763793945,
+    "mae": 18.142807006835938,
+    "rmse": 21.203174591064453,
+    "baseline_mae_mean_predictor": 18.20401954650879
+  },
+  "model_path": "D:\\Projects\\embedded-gauge-reading-tinyml\\ml\\artifacts\\training\\20260214_145329\\model.keras"
+}
