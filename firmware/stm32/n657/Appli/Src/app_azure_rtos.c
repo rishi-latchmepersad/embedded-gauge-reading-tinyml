@@ -1,28 +1,30 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * @file    app_azure_rtos.c
-  * @author  MCD Application Team
-  * @brief   app_azure_rtos application implementation file
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2024 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * @file    app_azure_rtos.c
+ * @author  MCD Application Team
+ * @brief   app_azure_rtos application implementation file
+ ******************************************************************************
+ * @attention
+ *
+ * Copyright (c) 2024 STMicroelectronics.
+ * All rights reserved.
+ *
+ * This software is licensed under terms that can be found in the LICENSE file
+ * in the root directory of this software component.
+ * If no LICENSE file comes with this software, it is provided AS-IS.
+ *
+ ******************************************************************************
+ */
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
 #include "app_azure_rtos.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "debug_console.h"
+#include "tx_api.h"
+#include "debug_led.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -87,13 +89,13 @@ VOID tx_application_define(VOID *first_unused_memory)
   if (tx_byte_pool_create(&tx_app_byte_pool, "Tx App memory pool", tx_byte_pool_buffer, TX_APP_MEM_POOL_SIZE) != TX_SUCCESS)
   {
     /* USER CODE BEGIN TX_Byte_Pool_Error */
-
+		DebugConsole_Printf("TX byte pool error.\r\n");
     /* USER CODE END TX_Byte_Pool_Error */
   }
   else
   {
     /* USER CODE BEGIN TX_Byte_Pool_Success */
-
+		DebugConsole_Printf("TX byte pool success.\r\n");
     /* USER CODE END TX_Byte_Pool_Success */
 
     memory_ptr = (VOID *)&tx_app_byte_pool;
@@ -101,26 +103,26 @@ VOID tx_application_define(VOID *first_unused_memory)
     if (status != TX_SUCCESS)
     {
       /* USER CODE BEGIN  App_ThreadX_Init_Error */
-      while(1)
-      {
-      }
+			DebugConsole_Printf("App ThreadX init error.\r\n");
+			while (1) {
+			}
       /* USER CODE END  App_ThreadX_Init_Error */
     }
     /* USER CODE BEGIN  App_ThreadX_Init_Success */
-
+		DebugConsole_Printf("App ThreadX init success.\r\n");
     /* USER CODE END  App_ThreadX_Init_Success */
 
   }
   if (tx_byte_pool_create(&fx_app_byte_pool, "Fx App memory pool", fx_byte_pool_buffer, FX_APP_MEM_POOL_SIZE) != TX_SUCCESS)
   {
     /* USER CODE BEGIN FX_Byte_Pool_Error */
-
+		DebugConsole_Printf("FX byte pool error.\r\n");
     /* USER CODE END FX_Byte_Pool_Error */
   }
   else
   {
     /* USER CODE BEGIN FX_Byte_Pool_Success */
-
+		DebugConsole_Printf("FX byte pool success.\r\n");
     /* USER CODE END FX_Byte_Pool_Success */
 
     memory_ptr = (VOID *)&fx_app_byte_pool;
@@ -128,13 +130,13 @@ VOID tx_application_define(VOID *first_unused_memory)
     if (status != FX_SUCCESS)
     {
       /* USER CODE BEGIN  MX_FileX_Init_Error */
-      while(1)
-      {
-      }
+			DebugConsole_Printf("MX FileX init failure.\r\n");
+			while (1) {
+			}
       /* USER CODE END  MX_FileX_Init_Error */
     }
     /* USER CODE BEGIN  MX_FileX_Init_Success */
-
+		DebugConsole_Printf("MX FileX init success.\r\n");
     /* USER CODE END  MX_FileX_Init_Success */
   }
 

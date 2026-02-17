@@ -26,6 +26,7 @@
 #include <string.h>
 #include "debug_console.h"
 #include "debug_led.h"
+#include "threadx_utils.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,6 +50,8 @@ __IO uint32_t BspButtonState = BUTTON_RELEASED;
 
 UART_HandleTypeDef hlpuart1;
 
+SPI_HandleTypeDef hspi5;
+
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -56,6 +59,7 @@ UART_HandleTypeDef hlpuart1;
 /* Private function prototypes -----------------------------------------------*/
 static void MX_GPIO_Init(void);
 static void MX_LPUART1_UART_Init(void);
+static void MX_SPI5_Init(void);
 static void SystemIsolation_Config(void);
 /* USER CODE BEGIN PFP */
 
@@ -90,6 +94,7 @@ int main(void) {
 	/* Initialize all configured peripherals */
 	MX_GPIO_Init();
 	MX_LPUART1_UART_Init();
+	MX_SPI5_Init();
 	SystemIsolation_Config();
 	/* USER CODE BEGIN 2 */
 	// set up the debug console
@@ -106,7 +111,7 @@ int main(void) {
 	// set up the debug leds
 	DebugLed_Configuration_t debug_led_configuration = {
 			.bsp_led_for_color_array = { LED_BLUE, LED_RED, LED_GREEN },
-			.delay_milliseconds_callback = NULL };
+			.delay_milliseconds_callback = DelayMilliseconds_ThreadX };
 
 	(void) DebugLed_Initialize(&debug_led_configuration);
 	/* USER CODE END 2 */
@@ -217,6 +222,8 @@ static void SystemIsolation_Config(void) {
 	/* RIF-Aware IPs Config */
 
 	/* set up GPIO configuration */
+	HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_3,
+	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
 	HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_5,
 	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
 	HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_7,
@@ -249,6 +256,12 @@ static void SystemIsolation_Config(void) {
 	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
 	HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_6,
 	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_15,
+	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOG, GPIO_PIN_1,
+	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOG, GPIO_PIN_2,
+	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
 	HAL_GPIO_ConfigPinAttributes(GPIOH, GPIO_PIN_9,
 	GPIO_PIN_SEC | GPIO_PIN_NPRIV);
 	HAL_GPIO_ConfigPinAttributes(GPION, GPIO_PIN_7,
@@ -266,17 +279,76 @@ static void SystemIsolation_Config(void) {
 }
 
 /**
+ * @brief SPI5 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_SPI5_Init(void) {
+
+	/* USER CODE BEGIN SPI5_Init 0 */
+
+	/* USER CODE END SPI5_Init 0 */
+
+	/* USER CODE BEGIN SPI5_Init 1 */
+
+	/* USER CODE END SPI5_Init 1 */
+	/* SPI5 parameter configuration*/
+	hspi5.Instance = SPI5;
+	hspi5.Init.Mode = SPI_MODE_MASTER;
+	hspi5.Init.Direction = SPI_DIRECTION_2LINES;
+	hspi5.Init.DataSize = SPI_DATASIZE_8BIT;
+	hspi5.Init.CLKPolarity = SPI_POLARITY_LOW;
+	hspi5.Init.CLKPhase = SPI_PHASE_1EDGE;
+	hspi5.Init.NSS = SPI_NSS_SOFT;
+	hspi5.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
+	hspi5.Init.FirstBit = SPI_FIRSTBIT_MSB;
+	hspi5.Init.TIMode = SPI_TIMODE_DISABLE;
+	hspi5.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+	hspi5.Init.CRCPolynomial = 0x7;
+	hspi5.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
+	hspi5.Init.NSSPolarity = SPI_NSS_POLARITY_LOW;
+	hspi5.Init.FifoThreshold = SPI_FIFO_THRESHOLD_01DATA;
+	hspi5.Init.MasterSSIdleness = SPI_MASTER_SS_IDLENESS_00CYCLE;
+	hspi5.Init.MasterInterDataIdleness = SPI_MASTER_INTERDATA_IDLENESS_00CYCLE;
+	hspi5.Init.MasterReceiverAutoSusp = SPI_MASTER_RX_AUTOSUSP_DISABLE;
+	hspi5.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_DISABLE;
+	hspi5.Init.IOSwap = SPI_IO_SWAP_DISABLE;
+	hspi5.Init.ReadyMasterManagement = SPI_RDY_MASTER_MANAGEMENT_INTERNALLY;
+	hspi5.Init.ReadyPolarity = SPI_RDY_POLARITY_HIGH;
+	if (HAL_SPI_Init(&hspi5) != HAL_OK) {
+		Error_Handler();
+	}
+	/* USER CODE BEGIN SPI5_Init 2 */
+
+	/* USER CODE END SPI5_Init 2 */
+
+}
+
+/**
  * @brief GPIO Initialization Function
  * @param None
  * @retval None
  */
 static void MX_GPIO_Init(void) {
+	GPIO_InitTypeDef GPIO_InitStruct = { 0 };
 	/* USER CODE BEGIN MX_GPIO_Init_1 */
 
 	/* USER CODE END MX_GPIO_Init_1 */
 
 	/* GPIO Ports Clock Enable */
 	__HAL_RCC_GPIOE_CLK_ENABLE();
+	__HAL_RCC_GPIOG_CLK_ENABLE();
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+
+	/*Configure GPIO pin Output Level */
+	HAL_GPIO_WritePin(SPI5_CS_GPIO_Port, SPI5_CS_Pin, GPIO_PIN_SET);
+
+	/*Configure GPIO pin : SPI5_CS_Pin */
+	GPIO_InitStruct.Pin = SPI5_CS_Pin;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(SPI5_CS_GPIO_Port, &GPIO_InitStruct);
 
 	/* USER CODE BEGIN MX_GPIO_Init_2 */
 
