@@ -38,7 +38,6 @@ extern "C" {
 #include "stm32n6xx_hal.h"
 
 #include "stm32n6xx_nucleo.h"
-#include <stdio.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
