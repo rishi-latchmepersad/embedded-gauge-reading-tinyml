@@ -1,0 +1,9 @@
+# ninja log v6
+17	227	7926436471388299	CMakeFiles/unit_tests.dir/D_/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/Appli/Middlewares/Third_Party/Unity/src/unity.c.obj	a484f2c5ad2db762
+45	201	7926436471679893	CMakeFiles/unit_tests.dir/test_sd_spi_protocol.c.obj	48be480432f761b
+54	201	7926436471755936	CMakeFiles/unit_tests.dir/test_sd_debug_log_core.c.obj	5bb7b7bde638ab1e
+38	182	7926436471596788	CMakeFiles/unit_tests.dir/test_runner.c.obj	5d1241c001fedfe0
+42	162	7926436471633547	CMakeFiles/unit_tests.dir/test_sanity.c.obj	91339ad50c1a9967
+29	136	7926436471510452	CMakeFiles/unit_tests.dir/D_/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/Appli/Src/sd_spi_protocol.c.obj	3c0511e1ed2b9859
+58	165	7926437566702680	CMakeFiles/unit_tests.dir/D_/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/Appli/Src/sd_debug_log_core.c.obj	abc3d87a51d09902
+165	249	7926437567775785	unit_tests.exe	714f70afaadfeb9e

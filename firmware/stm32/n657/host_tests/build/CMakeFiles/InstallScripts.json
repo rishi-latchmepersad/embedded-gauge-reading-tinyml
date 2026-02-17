@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
