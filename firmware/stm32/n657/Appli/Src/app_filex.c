@@ -82,11 +82,11 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* Main thread stack size */
-#define FX_APP_THREAD_STACK_SIZE         16000
+#define FX_APP_THREAD_STACK_SIZE         8196
 /* Main thread priority */
 #define FX_APP_THREAD_PRIO               10
 /* USER CODE BEGIN PD */
-#define FILEX_MEDIA_CACHE_BUFFER_SIZE    (4U * 512U) /* 4 sectors cache, 2048 bytes. */
+#define FILEX_MEDIA_CACHE_BUFFER_SIZE    (8U * 512U) /* 8 sectors cache, 2048 bytes. */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -96,7 +96,7 @@ typedef struct {
 
 /* Private variables ---------------------------------------------------------*/
 /* Main thread global data structures.  */
-TX_THREAD       fx_app_thread;
+TX_THREAD fx_app_thread;
 
 /* USER CODE BEGIN PV */
 static UCHAR *g_filex_media_cache_buffer = NULL; /* FileX cache buffer allocated from ThreadX byte pool. */
@@ -124,44 +124,44 @@ static void AppFileX_StateMachine_Step(
 /* USER CODE END PFP */
 
 /**
-  * @brief  Application FileX Initialization.
-  * @param memory_ptr: memory pointer
-  * @retval int
-*/
-UINT MX_FileX_Init(VOID *memory_ptr)
-{
-  UINT ret = FX_SUCCESS;
-  TX_BYTE_POOL *byte_pool = (TX_BYTE_POOL*)memory_ptr;
-  VOID *pointer;
+ * @brief  Application FileX Initialization.
+ * @param memory_ptr: memory pointer
+ * @retval int
+ */
+UINT MX_FileX_Init(VOID *memory_ptr) {
+	UINT ret = FX_SUCCESS;
+	TX_BYTE_POOL *byte_pool = (TX_BYTE_POOL*) memory_ptr;
+	VOID *pointer;
 
-/* USER CODE BEGIN MX_FileX_MEM_POOL */
+	/* USER CODE BEGIN MX_FileX_MEM_POOL */
 
-/* USER CODE END MX_FileX_MEM_POOL */
+	/* USER CODE END MX_FileX_MEM_POOL */
 
-/* USER CODE BEGIN 0 */
+	/* USER CODE BEGIN 0 */
 
-/* USER CODE END 0 */
+	/* USER CODE END 0 */
 
-/*Allocate memory for the main thread's stack*/
-  ret = tx_byte_allocate(byte_pool, &pointer, FX_APP_THREAD_STACK_SIZE, TX_NO_WAIT);
+	/*Allocate memory for the main thread's stack*/
+	ret = tx_byte_allocate(byte_pool, &pointer, FX_APP_THREAD_STACK_SIZE,
+	TX_NO_WAIT);
 
-/* Check FX_APP_THREAD_STACK_SIZE allocation*/
-  if (ret != FX_SUCCESS)
-  {
-    return TX_POOL_ERROR;
-  }
+	/* Check FX_APP_THREAD_STACK_SIZE allocation*/
+	if (ret != FX_SUCCESS) {
+		return TX_POOL_ERROR;
+	}
 
-/* Create the main thread.  */
-  ret = tx_thread_create(&fx_app_thread, FX_APP_THREAD_NAME, fx_app_thread_entry, 0, pointer, FX_APP_THREAD_STACK_SIZE,
-                         FX_APP_THREAD_PRIO, FX_APP_PREEMPTION_THRESHOLD, FX_APP_THREAD_TIME_SLICE, FX_APP_THREAD_AUTO_START);
+	/* Create the main thread.  */
+	ret = tx_thread_create(&fx_app_thread, FX_APP_THREAD_NAME,
+			fx_app_thread_entry, 0, pointer, FX_APP_THREAD_STACK_SIZE,
+			FX_APP_THREAD_PRIO, FX_APP_PREEMPTION_THRESHOLD,
+			FX_APP_THREAD_TIME_SLICE, FX_APP_THREAD_AUTO_START);
 
-/* Check main thread creation */
-  if (ret != FX_SUCCESS)
-  {
-    return TX_THREAD_ERROR;
-  }
+	/* Check main thread creation */
+	if (ret != FX_SUCCESS) {
+		return TX_THREAD_ERROR;
+	}
 
-/* USER CODE BEGIN MX_FileX_Init */
+	/* USER CODE BEGIN MX_FileX_Init */
 	g_filex_byte_pool_ptr = byte_pool;
 
 	/* Allocate FileX media cache buffer from the same byte pool used for thread stacks. */
@@ -171,33 +171,32 @@ UINT MX_FileX_Init(VOID *memory_ptr)
 	if (ret != TX_SUCCESS) {
 		return TX_POOL_ERROR;
 	}
-/* USER CODE END MX_FileX_Init */
+	/* USER CODE END MX_FileX_Init */
 
-/* Initialize FileX.  */
-  fx_system_initialize();
+	/* Initialize FileX.  */
+	fx_system_initialize();
 
-/* USER CODE BEGIN MX_FileX_Init 1*/
+	/* USER CODE BEGIN MX_FileX_Init 1*/
 
-/* USER CODE END MX_FileX_Init 1*/
+	/* USER CODE END MX_FileX_Init 1*/
 
-  return ret;
+	return ret;
 }
 
 /**
  * @brief  Main thread entry.
  * @param thread_input: ULONG user argument used by the thread entry
  * @retval none
-*/
- void fx_app_thread_entry(ULONG thread_input)
- {
+ */
+void fx_app_thread_entry(ULONG thread_input) {
 
-/* USER CODE BEGIN fx_app_thread_entry 0*/
+	/* USER CODE BEGIN fx_app_thread_entry 0*/
 	DebugLed_BlinkBlueBlocking(100, 100, 1);
 	DebugLed_BlinkGreenBlocking(100, 100, 1);
 	DebugLed_BlinkRedBlocking(100, 100, 1);
-/* USER CODE END fx_app_thread_entry 0*/
+	/* USER CODE END fx_app_thread_entry 0*/
 
-/* USER CODE BEGIN fx_app_thread_entry 1*/
+	/* USER CODE BEGIN fx_app_thread_entry 1*/
 	static AppFileX_StateMachineContext app_filex_context;
 	(void) thread_input;
 
@@ -210,8 +209,8 @@ UINT MX_FileX_Init(VOID *memory_ptr)
 		tx_thread_sleep(1U);
 	}
 
-/* USER CODE END fx_app_thread_entry 1*/
-  }
+	/* USER CODE END fx_app_thread_entry 1*/
+}
 
 /* USER CODE BEGIN 1 */
 
@@ -517,6 +516,8 @@ static void AppFileX_StateMachine_Step(
 				"Successfully wrote test.txt to root of SD card.\r\n");
 
 		context_ptr->last_progress_tick = tx_time_get();
+		DebugConsole_Printf(
+				"Now listening to debug messages and writing to .log files.");
 		context_ptr->state = APP_FILEX_STATE_RUNNING;
 		context_ptr->state_entry_tick = context_ptr->last_progress_tick;
 		break;
@@ -524,6 +525,7 @@ static void AppFileX_StateMachine_Step(
 
 	case APP_FILEX_STATE_RUNNING: {
 		/* Drain a bounded number of messages each cycle so we do not starve other work. */
+
 		if (context_ptr->log_service_is_initialized != 0U) {
 			SdDebugLogService_ServiceQueue(32U);
 		}
