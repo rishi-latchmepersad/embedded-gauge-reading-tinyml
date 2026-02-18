@@ -62,7 +62,7 @@ static TX_BYTE_POOL tx_app_byte_pool;
 #if defined ( __ICCARM__ )
 #pragma data_alignment=4
 #endif
-__ALIGN_BEGIN static UCHAR  fx_byte_pool_buffer[FX_APP_MEM_POOL_SIZE] __ALIGN_END;
+__ALIGN_BEGIN static UCHAR fx_byte_pool_buffer[FX_APP_MEM_POOL_SIZE] __ALIGN_END;
 static TX_BYTE_POOL fx_app_byte_pool;
 
 #endif
@@ -73,72 +73,69 @@ static TX_BYTE_POOL fx_app_byte_pool;
 /* USER CODE END PFP */
 
 /**
-  * @brief  Define the initial system.
-  * @param  first_unused_memory : Pointer to the first unused memory
-  * @retval None
-  */
-VOID tx_application_define(VOID *first_unused_memory)
-{
-  /* USER CODE BEGIN  tx_application_define_1*/
+ * @brief  Define the initial system.
+ * @param  first_unused_memory : Pointer to the first unused memory
+ * @retval None
+ */
+VOID tx_application_define(VOID *first_unused_memory) {
+	/* USER CODE BEGIN  tx_application_define_1*/
 
-  /* USER CODE END  tx_application_define_1 */
+	/* USER CODE END  tx_application_define_1 */
 #if (USE_STATIC_ALLOCATION == 1)
-  UINT status = TX_SUCCESS;
-  VOID *memory_ptr;
+	UINT status = TX_SUCCESS;
+	VOID *memory_ptr;
 
-  if (tx_byte_pool_create(&tx_app_byte_pool, "Tx App memory pool", tx_byte_pool_buffer, TX_APP_MEM_POOL_SIZE) != TX_SUCCESS)
-  {
-    /* USER CODE BEGIN TX_Byte_Pool_Error */
+	if (tx_byte_pool_create(&tx_app_byte_pool, "Tx App memory pool",
+			tx_byte_pool_buffer, TX_APP_MEM_POOL_SIZE) != TX_SUCCESS) {
+		/* USER CODE BEGIN TX_Byte_Pool_Error */
 		DebugConsole_Printf("TX byte pool error.\r\n");
-    /* USER CODE END TX_Byte_Pool_Error */
-  }
-  else
-  {
-    /* USER CODE BEGIN TX_Byte_Pool_Success */
+		/* USER CODE END TX_Byte_Pool_Error */
+	} else {
+		/* USER CODE BEGIN TX_Byte_Pool_Success */
 		DebugConsole_Printf("TX byte pool success.\r\n");
-    /* USER CODE END TX_Byte_Pool_Success */
+		PrintBytePoolUsage_ThreadX(&tx_app_byte_pool, "Tx App memory pool");
+		/* USER CODE END TX_Byte_Pool_Success */
 
-    memory_ptr = (VOID *)&tx_app_byte_pool;
-    status = App_ThreadX_Init(memory_ptr);
-    if (status != TX_SUCCESS)
-    {
-      /* USER CODE BEGIN  App_ThreadX_Init_Error */
+		memory_ptr = (VOID*) &tx_app_byte_pool;
+		status = App_ThreadX_Init(memory_ptr);
+		if (status != TX_SUCCESS) {
+			/* USER CODE BEGIN  App_ThreadX_Init_Error */
 			DebugConsole_Printf("App ThreadX init error.\r\n");
 			while (1) {
 			}
-      /* USER CODE END  App_ThreadX_Init_Error */
-    }
-    /* USER CODE BEGIN  App_ThreadX_Init_Success */
+			/* USER CODE END  App_ThreadX_Init_Error */
+		}
+		/* USER CODE BEGIN  App_ThreadX_Init_Success */
+
 		DebugConsole_Printf("App ThreadX init success.\r\n");
-    /* USER CODE END  App_ThreadX_Init_Success */
+		/* USER CODE END  App_ThreadX_Init_Success */
 
-  }
-  if (tx_byte_pool_create(&fx_app_byte_pool, "Fx App memory pool", fx_byte_pool_buffer, FX_APP_MEM_POOL_SIZE) != TX_SUCCESS)
-  {
-    /* USER CODE BEGIN FX_Byte_Pool_Error */
+	}
+	if (tx_byte_pool_create(&fx_app_byte_pool, "Fx App memory pool",
+			fx_byte_pool_buffer, FX_APP_MEM_POOL_SIZE) != TX_SUCCESS) {
+		/* USER CODE BEGIN FX_Byte_Pool_Error */
 		DebugConsole_Printf("FX byte pool error.\r\n");
-    /* USER CODE END FX_Byte_Pool_Error */
-  }
-  else
-  {
-    /* USER CODE BEGIN FX_Byte_Pool_Success */
-		DebugConsole_Printf("FX byte pool success.\r\n");
-    /* USER CODE END FX_Byte_Pool_Success */
+		/* USER CODE END FX_Byte_Pool_Error */
+	} else {
+		/* USER CODE BEGIN FX_Byte_Pool_Success */
 
-    memory_ptr = (VOID *)&fx_app_byte_pool;
-    status = MX_FileX_Init(memory_ptr);
-    if (status != FX_SUCCESS)
-    {
-      /* USER CODE BEGIN  MX_FileX_Init_Error */
+		DebugConsole_Printf("FX byte pool success.\r\n");
+		PrintBytePoolUsage_ThreadX(&fx_app_byte_pool, "Fx App memory pool");
+		/* USER CODE END FX_Byte_Pool_Success */
+
+		memory_ptr = (VOID*) &fx_app_byte_pool;
+		status = MX_FileX_Init(memory_ptr);
+		if (status != FX_SUCCESS) {
+			/* USER CODE BEGIN  MX_FileX_Init_Error */
 			DebugConsole_Printf("MX FileX init failure.\r\n");
 			while (1) {
 			}
-      /* USER CODE END  MX_FileX_Init_Error */
-    }
-    /* USER CODE BEGIN  MX_FileX_Init_Success */
+			/* USER CODE END  MX_FileX_Init_Error */
+		}
+		/* USER CODE BEGIN  MX_FileX_Init_Success */
 		DebugConsole_Printf("MX FileX init success.\r\n");
-    /* USER CODE END  MX_FileX_Init_Success */
-  }
+		/* USER CODE END  MX_FileX_Init_Success */
+	}
 
 #else
 /*

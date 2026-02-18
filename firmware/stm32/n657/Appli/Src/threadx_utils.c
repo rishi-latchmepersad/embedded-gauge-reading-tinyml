@@ -7,6 +7,7 @@
 
 #include "tx_api.h"
 #include <stdint.h>
+#include "debug_console.h"
 
 /**
  * @brief  Delay execution of the current ThreadX thread by a given number of milliseconds.
@@ -31,4 +32,48 @@ void DelayMilliseconds_ThreadX(const uint32_t delay_time_milliseconds) {
 	}
 
 	(void) tx_thread_sleep((ULONG) delay_ticks);
+}
+
+/**
+ * @brief  Print basic usage statistics for a ThreadX byte pool.
+ * @param  byte_pool_ptr Pointer to the ThreadX byte pool to query.
+ * @param  pool_friendly_name_ptr Short label to identify the pool in logs (e.g. "TX", "FX").
+ * @return None.
+ * @sideeffects Prints to the debug console.
+ * @preconditions ThreadX must be initialized; byte_pool_ptr must refer to a valid created pool.
+ * @concurrency Safe; values may change if other threads allocate/free concurrently.
+ * @timing Fast; suitable for startup diagnostics.
+ * @errors If tx_byte_pool_info_get() fails, prints the returned status code.
+ * @notes Useful to confirm remaining free bytes and fragmentation after middleware init.
+ */
+void PrintBytePoolUsage_ThreadX(TX_BYTE_POOL *byte_pool_ptr,
+		const char *pool_friendly_name_ptr) {
+	CHAR *pool_name_ptr = TX_NULL;
+	ULONG available_bytes = 0UL;
+	ULONG fragment_count = 0UL;
+	TX_THREAD *first_suspended_thread_ptr = TX_NULL;
+	ULONG suspended_thread_count = 0UL;
+	TX_BYTE_POOL *next_pool_ptr = TX_NULL;
+
+	if ((byte_pool_ptr == TX_NULL) || (pool_friendly_name_ptr == NULL)) {
+		DebugConsole_Printf("Byte pool usage print skipped, invalid args.\r\n");
+		return;
+	}
+
+	const UINT status = tx_byte_pool_info_get(byte_pool_ptr, &pool_name_ptr,
+			&available_bytes, &fragment_count, &first_suspended_thread_ptr,
+			&suspended_thread_count, &next_pool_ptr);
+
+	if (status != TX_SUCCESS) {
+		DebugConsole_Printf("%s pool info get failed, status=%lu\r\n",
+				pool_friendly_name_ptr, (unsigned long) status);
+		return;
+	}
+
+	DebugConsole_Printf(
+			"%s pool '%s': free=%lu bytes, fragments=%lu, suspended=%lu\r\n",
+			pool_friendly_name_ptr,
+			(pool_name_ptr != TX_NULL) ? pool_name_ptr : "unknown",
+			(unsigned long) available_bytes, (unsigned long) fragment_count,
+			(unsigned long) suspended_thread_count);
 }
