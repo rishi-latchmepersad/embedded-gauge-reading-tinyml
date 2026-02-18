@@ -82,7 +82,7 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* Main thread stack size */
-#define FX_APP_THREAD_STACK_SIZE         8196
+#define FX_APP_THREAD_STACK_SIZE         2048
 /* Main thread priority */
 #define FX_APP_THREAD_PRIO               10
 /* USER CODE BEGIN PD */
@@ -143,7 +143,7 @@ UINT MX_FileX_Init(VOID *memory_ptr) {
 
 	/*Allocate memory for the main thread's stack*/
 	ret = tx_byte_allocate(byte_pool, &pointer, FX_APP_THREAD_STACK_SIZE,
-	TX_NO_WAIT);
+			TX_NO_WAIT);
 
 	/* Check FX_APP_THREAD_STACK_SIZE allocation*/
 	if (ret != FX_SUCCESS) {
@@ -517,7 +517,7 @@ static void AppFileX_StateMachine_Step(
 
 		context_ptr->last_progress_tick = tx_time_get();
 		DebugConsole_Printf(
-				"Now listening to debug messages and writing to .log files.");
+				"Now listening to debug messages and writing to .log files.\r\n");
 		context_ptr->state = APP_FILEX_STATE_RUNNING;
 		context_ptr->state_entry_tick = context_ptr->last_progress_tick;
 		break;
