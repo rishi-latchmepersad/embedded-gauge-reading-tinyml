@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
+from typing import Literal
 
 import keras
 import numpy as np
@@ -18,6 +20,10 @@ from embedded_gauge_reading_tinyml.gauge.processing import (
     needle_value,
 )
 from embedded_gauge_reading_tinyml.labels import LabelSummary, summarize_label_sweep
+from embedded_gauge_reading_tinyml.models import (
+    build_mobilenetv2_regression_model,
+    build_regression_model,
+)
 
 
 # Resolve ML/data paths from this file so training works from any cwd.
@@ -35,22 +41,29 @@ class TrainConfig:
     image_width: int = 224
     batch_size: int = 8
     epochs: int = 40
-    learning_rate: float = 1e-3
+    learning_rate: float = 5e-4
     seed: int = 42
     val_fraction: float = 0.15
     test_fraction: float = 0.15
     strict_labels: bool = True
-    crop_pad_ratio: float = 0.15
+    crop_pad_ratio: float = 0.25
     augment_training: bool = True
+    device: Literal["auto", "cpu", "gpu"] = "auto"
+    gpu_memory_growth: bool = True
+    mixed_precision: bool = False
+    model_family: Literal["compact", "mobilenet_v2"] = "compact"
+    mobilenet_pretrained: bool = True
+    mobilenet_backbone_trainable: bool = False
 
 
 @dataclass(frozen=True)
 class TrainingExample:
-    """One training row with image path, scalar target, and dial crop box."""
+    """One training row with image path, targets, and dial crop box."""
 
     image_path: str
     value: float
     crop_box_xyxy: tuple[float, float, float, float]
+    needle_unit_xy: tuple[float, float]
 
 
 @dataclass(frozen=True)
@@ -82,6 +95,40 @@ def _validate_split_config(config: TrainConfig) -> None:
         raise ValueError("test_fraction must be in (0, 1).")
     if config.val_fraction + config.test_fraction >= 1.0:
         raise ValueError("val_fraction + test_fraction must be < 1.0.")
+
+
+def _configure_training_runtime(config: TrainConfig) -> None:
+    """Configure TensorFlow runtime for CPU/GPU selection and memory behavior."""
+    gpus: list[tf.config.PhysicalDevice] = tf.config.list_physical_devices("GPU")
+
+    if config.device == "cpu":
+        if gpus:
+            try:
+                tf.config.set_visible_devices([], "GPU")
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    "Unable to force CPU mode because TensorFlow runtime is already initialized."
+                ) from exc
+        keras.mixed_precision.set_global_policy("float32")
+        return
+
+    if config.device == "gpu" and not gpus:
+        raise ValueError(
+            "device='gpu' was requested, but TensorFlow did not detect a GPU."
+        )
+
+    if gpus and config.gpu_memory_growth:
+        for gpu in gpus:
+            try:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            except RuntimeError:
+                # Best effort only: tests and REPL sessions may initialize runtime first.
+                pass
+
+    if config.mixed_precision:
+        keras.mixed_precision.set_global_policy("mixed_float16")
+    else:
+        keras.mixed_precision.set_global_policy("float32")
 
 
 def _compute_crop_box(
@@ -117,16 +164,23 @@ def _build_training_examples(
             dropped_out_of_sweep += 1
             continue
 
-        # strict_labels is still respected for value computation behavior.
         value: float = needle_value(sample, spec, strict=strict_labels)
         crop_box: tuple[float, float, float, float] = _compute_crop_box(
             sample, crop_pad_ratio
         )
+        dx: float = sample.tip.x - sample.center.x
+        dy: float = sample.tip.y - sample.center.y
+        length: float = math.hypot(dx, dy)
+        if length <= 0.0:
+            dropped_out_of_sweep += 1
+            continue
+        needle_unit_xy: tuple[float, float] = (dx / length, dy / length)
         examples.append(
             TrainingExample(
                 image_path=str(sample.image_path),
                 value=value,
                 crop_box_xyxy=crop_box,
+                needle_unit_xy=needle_unit_xy,
             )
         )
 
@@ -210,7 +264,8 @@ def _load_crop_and_preprocess_image(
     image = tf.ensure_shape(image, [None, None, 3])
 
     image = _crop_image_with_xyxy(image, crop_box_xyxy)
-    image = tf.image.resize(image, [image_height, image_width])
+    # Preserve dial geometry (needle angle) by avoiding anisotropic warping.
+    image = tf.image.resize_with_pad(image, image_height, image_width)
 
     image = tf.cast(image, tf.float32) / 255.0
     target: tf.Tensor = tf.cast(value, tf.float32)
@@ -219,8 +274,32 @@ def _load_crop_and_preprocess_image(
 
 def _augment_image(image: tf.Tensor) -> tf.Tensor:
     """Apply light photometric augmentation that preserves gauge geometry."""
-    image = tf.image.random_brightness(image, max_delta=0.08)
-    image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
+    image_shape: tf.Tensor = tf.shape(image)
+    image_h: tf.Tensor = image_shape[0]
+    image_w: tf.Tensor = image_shape[1]
+
+    # Randomly crop-and-resize to inject slight scale/translation variation.
+    scale: tf.Tensor = tf.random.uniform([], minval=0.92, maxval=1.0, dtype=tf.float32)
+    crop_h: tf.Tensor = tf.maximum(
+        2, tf.cast(tf.cast(image_h, tf.float32) * scale, dtype=tf.int32)
+    )
+    crop_w: tf.Tensor = tf.maximum(
+        2, tf.cast(tf.cast(image_w, tf.float32) * scale, dtype=tf.int32)
+    )
+    image = tf.image.random_crop(image, size=[crop_h, crop_w, 3])
+    image = tf.image.resize(image, [image_h, image_w])
+
+    image = tf.image.random_brightness(image, max_delta=0.1)
+    image = tf.image.random_contrast(image, lower=0.85, upper=1.15)
+    image = tf.image.random_saturation(image, lower=0.9, upper=1.1)
+
+    noise: tf.Tensor = tf.random.normal(
+        shape=tf.shape(image),
+        mean=0.0,
+        stddev=0.01,
+        dtype=tf.float32,
+    )
+    image = image + noise
     image = tf.clip_by_value(image, 0.0, 1.0)
     return image
 
@@ -233,12 +312,10 @@ def _build_tf_dataset(
 ) -> tf.data.Dataset:
     """Create a tf.data pipeline for efficient training/eval input."""
     paths: np.ndarray = np.array([e.image_path for e in examples], dtype=str)
-    values: np.ndarray = np.array([e.value for e in examples], dtype=np.float32)
+    targets: np.ndarray = np.array([e.value for e in examples], dtype=np.float32)
     boxes: np.ndarray = np.array([e.crop_box_xyxy for e in examples], dtype=np.float32)
 
-    dataset: tf.data.Dataset = tf.data.Dataset.from_tensor_slices(
-        (paths, values, boxes)
-    )
+    dataset: tf.data.Dataset = tf.data.Dataset.from_tensor_slices((paths, targets, boxes))
 
     if training:
         dataset = dataset.shuffle(
@@ -269,46 +346,77 @@ def _build_tf_dataset(
     return dataset
 
 
-def build_regression_model(image_height: int, image_width: int) -> keras.Model:
-    """Build a compact CNN regressor for dial images."""
-    inputs = keras.Input(shape=(image_height, image_width, 3), name="image")
-
-    x = keras.layers.Conv2D(32, 3, padding="same", activation="relu")(inputs)
-    x = keras.layers.MaxPool2D()(x)
-
-    x = keras.layers.Conv2D(64, 3, padding="same", activation="relu")(x)
-    x = keras.layers.MaxPool2D()(x)
-
-    x = keras.layers.Conv2D(96, 3, padding="same", activation="relu")(x)
-    x = keras.layers.GlobalAveragePooling2D()(x)
-
-    x = keras.layers.Dense(128, activation="relu")(x)
-    x = keras.layers.Dropout(0.2)(x)
-    output = keras.layers.Dense(1, name="gauge_value")(x)
-
-    return keras.Model(inputs=inputs, outputs=output, name="gauge_value_regressor")
-
-
 def _compute_mean_baseline_mae(
     train_examples: list[TrainingExample],
     test_examples: list[TrainingExample],
 ) -> float:
     """Compute MAE of a trivial baseline that predicts train-mean value."""
-    train_values: np.ndarray = np.array(
-        [e.value for e in train_examples], dtype=np.float32
-    )
-    test_values: np.ndarray = np.array(
-        [e.value for e in test_examples], dtype=np.float32
-    )
+    train_values: np.ndarray = np.array([e.value for e in train_examples], dtype=np.float32)
+    test_values: np.ndarray = np.array([e.value for e in test_examples], dtype=np.float32)
 
     mean_pred: float = float(np.mean(train_values))
     baseline_mae: float = float(np.mean(np.abs(test_values - mean_pred)))
     return baseline_mae
 
 
+def _vectors_to_values_tf(y: tf.Tensor, spec: GaugeSpec) -> tf.Tensor:
+    """Convert unit needle direction vectors (dx, dy) to calibrated gauge values."""
+    min_angle: tf.Tensor = tf.constant(spec.min_angle_rad, dtype=tf.float32)
+    sweep: tf.Tensor = tf.constant(spec.sweep_rad, dtype=tf.float32)
+    min_value: tf.Tensor = tf.constant(spec.min_value, dtype=tf.float32)
+    value_span: tf.Tensor = tf.constant(spec.max_value - spec.min_value, dtype=tf.float32)
+    two_pi: tf.Tensor = tf.constant(2.0 * math.pi, dtype=tf.float32)
+
+    angles: tf.Tensor = tf.atan2(y[..., 1], y[..., 0])
+    shifted: tf.Tensor = tf.math.floormod(angles - min_angle, two_pi)
+    fractions: tf.Tensor = tf.clip_by_value(shifted / sweep, 0.0, 1.0)
+    return min_value + fractions * value_span
+
+
+def _make_value_mae_metric(spec: GaugeSpec):
+    """Create a Keras metric function that reports Celsius MAE from direction vectors."""
+
+    def value_mae(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        true_values: tf.Tensor = _vectors_to_values_tf(y_true, spec)
+        pred_values: tf.Tensor = _vectors_to_values_tf(y_pred, spec)
+        return tf.reduce_mean(tf.abs(true_values - pred_values))
+
+    value_mae.__name__ = "mae"
+    return value_mae
+
+
+def _make_value_rmse_metric(spec: GaugeSpec):
+    """Create a Keras metric function that reports Celsius RMSE from direction vectors."""
+
+    def value_rmse(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        true_values: tf.Tensor = _vectors_to_values_tf(y_true, spec)
+        pred_values: tf.Tensor = _vectors_to_values_tf(y_pred, spec)
+        sq_err: tf.Tensor = tf.square(true_values - pred_values)
+        return tf.sqrt(tf.reduce_mean(sq_err))
+
+    value_rmse.__name__ = "rmse"
+    return value_rmse
+
+
+def _make_angle_mae_metric():
+    """Create a Keras metric function that reports absolute angle error in degrees."""
+
+    def angle_mae_deg(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        true_angle: tf.Tensor = tf.atan2(y_true[..., 1], y_true[..., 0])
+        pred_angle: tf.Tensor = tf.atan2(y_pred[..., 1], y_pred[..., 0])
+        delta: tf.Tensor = pred_angle - true_angle
+        wrapped: tf.Tensor = tf.atan2(tf.sin(delta), tf.cos(delta))
+        deg_abs: tf.Tensor = tf.abs(wrapped) * (180.0 / math.pi)
+        return tf.reduce_mean(deg_abs)
+
+    angle_mae_deg.__name__ = "angle_mae_deg"
+    return angle_mae_deg
+
+
 def train(config: TrainConfig) -> TrainingResult:
     """Run one full training cycle and return model + metrics."""
     _validate_split_config(config)
+    _configure_training_runtime(config)
 
     keras.utils.set_random_seed(config.seed)
     np.random.seed(config.seed)
@@ -346,10 +454,25 @@ def train(config: TrainConfig) -> TrainingResult:
     val_ds = _build_tf_dataset(split.val_examples, config, training=False)
     test_ds = _build_tf_dataset(split.test_examples, config, training=False)
 
-    model: keras.Model = build_regression_model(config.image_height, config.image_width)
+    if config.model_family == "compact":
+        model = build_regression_model(config.image_height, config.image_width)
+    elif config.model_family == "mobilenet_v2":
+        model = build_mobilenetv2_regression_model(
+            config.image_height,
+            config.image_width,
+            pretrained=config.mobilenet_pretrained,
+            backbone_trainable=config.mobilenet_backbone_trainable,
+        )
+    else:
+        raise ValueError(f"Unsupported model_family '{config.model_family}'.")
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+        learning_rate=config.learning_rate,
+        clipnorm=1.0,
+    )
+
     model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=config.learning_rate),
-        loss=keras.losses.Huber(delta=2.0),
+        optimizer=optimizer,
+        loss=keras.losses.MeanSquaredError(),
         metrics=[
             keras.metrics.MeanAbsoluteError(name="mae"),
             keras.metrics.RootMeanSquaredError(name="rmse"),

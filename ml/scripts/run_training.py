@@ -23,13 +23,50 @@ def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for a reproducible training run."""
     parser = argparse.ArgumentParser(description="Train gauge value regressor.")
     parser.add_argument("--gauge-id", type=str, default="littlegood_home_temp_gauge_c")
-    parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--image-height", type=int, default=160)
-    parser.add_argument("--image-width", type=int, default=160)
-    parser.add_argument("--learning-rate", type=float, default=1e-3)
+    parser.add_argument("--epochs", type=int, default=40)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--image-height", type=int, default=224)
+    parser.add_argument("--image-width", type=int, default=224)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--model-family",
+        type=str,
+        choices=["compact", "mobilenet_v2"],
+        default="mobilenet_v2",
+        help="Select model architecture family.",
+    )
+    parser.add_argument(
+        "--mobilenet-backbone-trainable",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable end-to-end MobileNetV2 fine-tuning (default: enabled).",
+    )
+    parser.add_argument(
+        "--no-mobilenet-pretrained",
+        action="store_true",
+        help="Disable ImageNet pretrained weights for MobileNetV2.",
+    )
     parser.add_argument("--strict-labels", action="store_true")
+    parser.add_argument("--crop-pad-ratio", type=float, default=0.25)
+    parser.add_argument("--no-augment-training", action="store_true")
+    parser.add_argument(
+        "--device",
+        type=str,
+        choices=["auto", "cpu", "gpu"],
+        default="gpu",
+        help="Select accelerator mode. Default is 'gpu' for the best-performing setup.",
+    )
+    parser.add_argument(
+        "--no-gpu-memory-growth",
+        action="store_true",
+        help="Disable TensorFlow GPU memory growth.",
+    )
+    parser.add_argument(
+        "--mixed-precision",
+        action="store_true",
+        help="Enable Keras mixed_float16 policy (best on Tensor Core GPUs).",
+    )
     parser.add_argument(
         "--artifacts-dir",
         type=Path,
@@ -67,7 +104,15 @@ def main() -> None:
         epochs=args.epochs,
         learning_rate=args.learning_rate,
         seed=args.seed,
+        model_family=args.model_family,
+        mobilenet_pretrained=not args.no_mobilenet_pretrained,
+        mobilenet_backbone_trainable=args.mobilenet_backbone_trainable,
         strict_labels=args.strict_labels,
+        crop_pad_ratio=args.crop_pad_ratio,
+        augment_training=not args.no_augment_training,
+        device=args.device,
+        gpu_memory_growth=not args.no_gpu_memory_growth,
+        mixed_precision=args.mixed_precision,
     )
 
     # Execute training and evaluation.

@@ -132,6 +132,7 @@ def test_build_training_examples_filters_out_of_sweep(tmp_path: Path) -> None:
     assert len(examples) == 1
     assert examples[0].image_path.endswith("in.jpg")
     assert examples[0].value == pytest.approx(-30.0)
+    assert examples[0].needle_unit_xy == pytest.approx((1.0, 0.0))
 
 
 def test_split_examples_raises_for_too_few_examples() -> None:
@@ -144,11 +145,12 @@ def test_split_examples_raises_for_too_few_examples() -> None:
 def test_split_examples_is_deterministic_and_disjoint() -> None:
     """_split_examples should be reproducible and non-overlapping."""
     examples: list[training.TrainingExample] = [
-        training.TrainingExample(
-            image_path=f"img_{i:03d}.jpg",
-            value=float(i),
-            crop_box_xyxy=(0.0, 0.0, 10.0, 10.0),
-        )
+            training.TrainingExample(
+                image_path=f"img_{i:03d}.jpg",
+                value=float(i),
+                crop_box_xyxy=(0.0, 0.0, 10.0, 10.0),
+                needle_unit_xy=(1.0, 0.0),
+            )
         for i in range(20)
     ]
     config: training.TrainConfig = training.TrainConfig(
@@ -221,6 +223,7 @@ def test_build_tf_dataset_returns_batched_tensors(tmp_path: Path) -> None:
                 image_path=str(path),
                 value=float(i),
                 crop_box_xyxy=(1.0, 1.0, 7.0, 7.0),
+                needle_unit_xy=(1.0, 0.0),
             )
         )
 
@@ -257,12 +260,12 @@ def test_build_regression_model_output_shape() -> None:
 def test_compute_mean_baseline_mae() -> None:
     """_compute_mean_baseline_mae should match manual mean-predictor MAE."""
     train_examples: list[training.TrainingExample] = [
-        training.TrainingExample("a.jpg", 0.0, (0.0, 0.0, 1.0, 1.0)),
-        training.TrainingExample("b.jpg", 2.0, (0.0, 0.0, 1.0, 1.0)),
+        training.TrainingExample("a.jpg", 0.0, (0.0, 0.0, 1.0, 1.0), (1.0, 0.0)),
+        training.TrainingExample("b.jpg", 2.0, (0.0, 0.0, 1.0, 1.0), (1.0, 0.0)),
     ]
     test_examples: list[training.TrainingExample] = [
-        training.TrainingExample("c.jpg", 1.0, (0.0, 0.0, 1.0, 1.0)),
-        training.TrainingExample("d.jpg", 3.0, (0.0, 0.0, 1.0, 1.0)),
+        training.TrainingExample("c.jpg", 1.0, (0.0, 0.0, 1.0, 1.0), (1.0, 0.0)),
+        training.TrainingExample("d.jpg", 3.0, (0.0, 0.0, 1.0, 1.0), (1.0, 0.0)),
     ]
 
     mae: float = training._compute_mean_baseline_mae(train_examples, test_examples)
@@ -303,10 +306,10 @@ def test_train_happy_path_with_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     examples: list[training.TrainingExample] = [
-        training.TrainingExample("a.jpg", 1.0, (0.0, 0.0, 8.0, 8.0)),
-        training.TrainingExample("b.jpg", 2.0, (0.0, 0.0, 8.0, 8.0)),
-        training.TrainingExample("c.jpg", 3.0, (0.0, 0.0, 8.0, 8.0)),
-        training.TrainingExample("d.jpg", 4.0, (0.0, 0.0, 8.0, 8.0)),
+        training.TrainingExample("a.jpg", 1.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("b.jpg", 2.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("c.jpg", 3.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("d.jpg", 4.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
     ]
     split: training.DatasetSplit = training.DatasetSplit(
         train_examples=examples[:2],
@@ -369,7 +372,11 @@ def test_train_happy_path_with_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
         "_build_tf_dataset",
         lambda examples, config, training: {"n": len(examples), "train": training},
     )
-    monkeypatch.setattr(training, "build_regression_model", lambda h, w: fake_model)
+    monkeypatch.setattr(
+        training,
+        "build_regression_model",
+        lambda *args, **kwargs: fake_model,
+    )
     monkeypatch.setattr(
         training,
         "_compute_mean_baseline_mae",
