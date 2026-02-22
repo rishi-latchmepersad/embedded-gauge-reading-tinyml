@@ -64,3 +64,10 @@ firmware/stm32/N657X0_bringup/build/*
 firmware/stm32/N657X0_bringup/AppliSecure/build/*
 firmware/stm32/N657X0_bringup/FSBL/build/*
 firmware/stm32/N657X0_bringup/AppliNonSecure/build/*
+
+#ignore ML artifacts etc.
+ml/artifacts/*
+ml/__pycache__/*
+ml/.pytest_cache/*
+__pycache__/*
+*.pyc
