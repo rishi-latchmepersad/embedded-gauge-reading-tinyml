@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-height", type=int, default=224)
     parser.add_argument("--image-width", type=int, default=224)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=21)
     parser.add_argument(
         "--model-family",
         type=str,
@@ -46,6 +46,12 @@ def parse_args() -> argparse.Namespace:
         "--no-mobilenet-pretrained",
         action="store_true",
         help="Disable ImageNet pretrained weights for MobileNetV2.",
+    )
+    parser.add_argument(
+        "--mobilenet-warmup-epochs",
+        type=int,
+        default=8,
+        help="Warmup epochs with frozen MobileNetV2 backbone before fine-tuning.",
     )
     parser.add_argument("--strict-labels", action="store_true")
     parser.add_argument("--crop-pad-ratio", type=float, default=0.25)
@@ -107,6 +113,7 @@ def main() -> None:
         model_family=args.model_family,
         mobilenet_pretrained=not args.no_mobilenet_pretrained,
         mobilenet_backbone_trainable=args.mobilenet_backbone_trainable,
+        mobilenet_warmup_epochs=args.mobilenet_warmup_epochs,
         strict_labels=args.strict_labels,
         crop_pad_ratio=args.crop_pad_ratio,
         augment_training=not args.no_augment_training,
