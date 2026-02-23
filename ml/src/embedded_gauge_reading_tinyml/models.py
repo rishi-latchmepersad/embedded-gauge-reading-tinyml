@@ -150,4 +150,6 @@ def build_mobilenetv2_regression_model(
     output = keras.layers.Dense(1, name="gauge_value")(x)
 
     model = keras.Model(inputs=inputs, outputs=output, name="mobilenetv2_gauge_regressor")
+    # Store the backbone so training can run staged freeze/unfreeze schedules.
+    setattr(model, "_mobilenet_backbone", base_model)
     return model

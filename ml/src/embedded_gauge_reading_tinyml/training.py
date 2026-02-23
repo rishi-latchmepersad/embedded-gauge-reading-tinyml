@@ -42,7 +42,7 @@ class TrainConfig:
     batch_size: int = 8
     epochs: int = 40
     learning_rate: float = 5e-4
-    seed: int = 42
+    seed: int = 21
     val_fraction: float = 0.15
     test_fraction: float = 0.15
     strict_labels: bool = True
@@ -54,6 +54,7 @@ class TrainConfig:
     model_family: Literal["compact", "mobilenet_v2"] = "compact"
     mobilenet_pretrained: bool = True
     mobilenet_backbone_trainable: bool = False
+    mobilenet_warmup_epochs: int = 8
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,8 @@ def _validate_split_config(config: TrainConfig) -> None:
         raise ValueError("test_fraction must be in (0, 1).")
     if config.val_fraction + config.test_fraction >= 1.0:
         raise ValueError("val_fraction + test_fraction must be < 1.0.")
+    if config.mobilenet_warmup_epochs < 0:
+        raise ValueError("mobilenet_warmup_epochs must be >= 0.")
 
 
 def _configure_training_runtime(config: TrainConfig) -> None:
@@ -359,6 +362,58 @@ def _compute_mean_baseline_mae(
     return baseline_mae
 
 
+def _compile_regression_model(
+    model: keras.Model,
+    *,
+    learning_rate: float,
+) -> None:
+    """Compile a scalar regression model with standard losses and metrics."""
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+        learning_rate=learning_rate,
+        clipnorm=1.0,
+    )
+    model.compile(
+        optimizer=optimizer,
+        loss=keras.losses.MeanSquaredError(),
+        metrics=[
+            keras.metrics.MeanAbsoluteError(name="mae"),
+            keras.metrics.RootMeanSquaredError(name="rmse"),
+        ],
+    )
+
+
+def _make_training_callbacks() -> list[keras.callbacks.Callback]:
+    """Build standard callbacks used for the main training/fine-tuning phase."""
+    return [
+        keras.callbacks.EarlyStopping(
+            monitor="val_mae",
+            patience=8,
+            restore_best_weights=True,
+        ),
+        keras.callbacks.ReduceLROnPlateau(
+            monitor="val_mae",
+            factor=0.5,
+            patience=3,
+            min_lr=1e-6,
+        ),
+    ]
+
+
+def _merge_histories(
+    first: keras.callbacks.History,
+    second: keras.callbacks.History,
+) -> keras.callbacks.History:
+    """Concatenate metric histories from staged training runs into one History."""
+    merged_keys: set[str] = set(first.history) | set(second.history)
+    merged: dict[str, list[float]] = {}
+    for key in merged_keys:
+        vals_a: list[float] = [float(v) for v in first.history.get(key, [])]
+        vals_b: list[float] = [float(v) for v in second.history.get(key, [])]
+        merged[key] = vals_a + vals_b
+    second.history = merged
+    return second
+
+
 def _vectors_to_values_tf(y: tf.Tensor, spec: GaugeSpec) -> tf.Tensor:
     """Convert unit needle direction vectors (dx, dy) to calibrated gauge values."""
     min_angle: tf.Tensor = tf.constant(spec.min_angle_rad, dtype=tf.float32)
@@ -465,41 +520,55 @@ def train(config: TrainConfig) -> TrainingResult:
         )
     else:
         raise ValueError(f"Unsupported model_family '{config.model_family}'.")
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
-        learning_rate=config.learning_rate,
-        clipnorm=1.0,
+    callbacks: list[keras.callbacks.Callback] = _make_training_callbacks()
+    should_use_two_stage_mobilenet: bool = (
+        config.model_family == "mobilenet_v2"
+        and config.mobilenet_pretrained
+        and config.mobilenet_backbone_trainable
+        and config.mobilenet_warmup_epochs > 0
+        and config.epochs > 1
     )
 
-    model.compile(
-        optimizer=optimizer,
-        loss=keras.losses.MeanSquaredError(),
-        metrics=[
-            keras.metrics.MeanAbsoluteError(name="mae"),
-            keras.metrics.RootMeanSquaredError(name="rmse"),
-        ],
-    )
+    if should_use_two_stage_mobilenet:
+        warmup_epochs: int = min(config.mobilenet_warmup_epochs, config.epochs - 1)
+        backbone = getattr(model, "_mobilenet_backbone", None)
+        if backbone is None:
+            raise RuntimeError(
+                "MobileNetV2 staged training requested, but backbone handle was not found."
+            )
 
-    callbacks: list[keras.callbacks.Callback] = [
-        keras.callbacks.EarlyStopping(
-            monitor="val_mae",
-            patience=8,
-            restore_best_weights=True,
-        ),
-        keras.callbacks.ReduceLROnPlateau(
-            monitor="val_mae",
-            factor=0.5,
-            patience=3,
-            min_lr=1e-6,
-        ),
-    ]
+        # Stage 1: train regression head with frozen pretrained backbone.
+        backbone.trainable = False
+        _compile_regression_model(model, learning_rate=config.learning_rate)
+        warmup_history: keras.callbacks.History = model.fit(
+            train_ds,
+            validation_data=val_ds,
+            epochs=warmup_epochs,
+            callbacks=[],
+            verbose=2,
+        )
 
-    history: keras.callbacks.History = model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=config.epochs,
-        callbacks=callbacks,
-        verbose=2,
-    )
+        # Stage 2: unfreeze backbone and fine-tune end-to-end with callbacks.
+        backbone.trainable = True
+        _compile_regression_model(model, learning_rate=config.learning_rate)
+        fine_tune_history: keras.callbacks.History = model.fit(
+            train_ds,
+            validation_data=val_ds,
+            epochs=config.epochs,
+            initial_epoch=warmup_epochs,
+            callbacks=callbacks,
+            verbose=2,
+        )
+        history = _merge_histories(warmup_history, fine_tune_history)
+    else:
+        _compile_regression_model(model, learning_rate=config.learning_rate)
+        history = model.fit(
+            train_ds,
+            validation_data=val_ds,
+            epochs=config.epochs,
+            callbacks=callbacks,
+            verbose=2,
+        )
 
     raw_metrics: dict[str, float] = model.evaluate(test_ds, return_dict=True, verbose=0)
     test_metrics: dict[str, float] = {k: float(v) for k, v in raw_metrics.items()}
