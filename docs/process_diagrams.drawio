@@ -1,0 +1,51 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" version="28.1.2">
+  <diagram id="6fHF2__YJ60N_B--ARtN" name="CNN_Model_Process">
+    <mxGraphModel dx="972" dy="674" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="850" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="sample" value="An input image Sample is fed with data for the&lt;br&gt;center &amp;amp; tip" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1">
+          <mxGeometry x="20" y="210" width="180" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="spec" value="Set the GaugeSpec:&lt;br&gt;min_angle_rad&lt;br&gt;sweep_rad&lt;br&gt;min_value&lt;div&gt;max_value&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1">
+          <mxGeometry x="500" y="60" width="180" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="angle_fn" value="&lt;div&gt;We compute the angle of the needle in a standardized circle using the&lt;/div&gt;atan2() function" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+          <mxGeometry x="240" y="210" width="200" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="fraction_fn" value="Get the value of the current needle position relative to the min tick by subtracting the min_angle and taking a modulus of 2&lt;span style=&quot;color: rgb(32, 33, 34); font-family: sans-serif; font-size: 16px; text-align: start;&quot;&gt;&lt;span style=&quot;font-family: &amp;quot;Nimbus Roman No9 L&amp;quot;, &amp;quot;Times New Roman&amp;quot;, Times, serif; font-size: 18.88px; line-height: 1; font-variant-numeric: lining-nums tabular-nums; font-kerning: none; text-wrap-mode: nowrap; font-style: italic;&quot; class=&quot;texhtml mvar&quot;&gt;π&lt;/span&gt;&lt;/span&gt;&amp;nbsp;&amp;nbsp;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+          <mxGeometry x="480" y="210" width="220" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="fraction" value="Compute the fraction of the needle by dividing this value over the entire sweep range, and clamping to 0 or 1 as necessary" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+          <mxGeometry x="740" y="210" width="160" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="value_fn" value="Compute the actual needle value by using linear approximation across the entire sweep range" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+          <mxGeometry x="740" y="60" width="175" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="value" value="The output of the current needle value is obtained" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+          <mxGeometry x="940" y="60" width="160" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="e1" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="sample" target="angle_fn" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="angle_fn" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="470" y="275" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e4" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="spec" target="fraction_fn" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="fraction_fn" target="fraction" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="fraction" target="value_fn" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="value_fn" target="value" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
