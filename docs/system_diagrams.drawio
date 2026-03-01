@@ -67,7 +67,7 @@
     </mxGraphModel>
   </diagram>
   <diagram id="iEwAvYdhQwxvyET7TsUA" name="End-to-End Technical System">
-    <mxGraphModel dx="1355" dy="889" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+    <mxGraphModel dx="845" dy="586" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -92,7 +92,7 @@
         <mxCell id="pod3" value="Camera Pod #3&#xa;- Camera + MCU&#xa;- Battery + Solar&#xa;- Local inference (optional)&#xa;- LoRaWAN radio" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#cce5ff;strokeColor=#36393d;" parent="site_container" vertex="1">
           <mxGeometry x="20" y="440" width="220" height="160" as="geometry" />
         </mxCell>
-        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-1" value="One industrial customer site/plant" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1" vertex="1" parent="site_container">
+        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-1" value="One industrial customer site/plant" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1" parent="site_container" vertex="1">
           <mxGeometry x="165" y="10" width="230" height="30" as="geometry" />
         </mxCell>
         <mxCell id="gateway" value="LoRaWAN Gateway&#xa;- Concentrator&#xa;- Packet forwarder&#xa;- Site power (mains/solar)&#xa;- Backhaul: Ethernet/LTE" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#ffff88;strokeColor=#36393d;" parent="1" vertex="1">
@@ -102,9 +102,9 @@
           <mxGeometry x="680" y="390" width="180" height="120" as="geometry" />
         </mxCell>
         <mxCell id="cloud_container" value="" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;container=1;fillColor=#f9f7ed;strokeColor=#36393d;" parent="1" vertex="1">
-          <mxGeometry x="950" y="90" width="980" height="760" as="geometry" />
+          <mxGeometry x="890" y="280" width="980" height="760" as="geometry" />
         </mxCell>
-        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-2" value="Cloud Architecture" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1" vertex="1" parent="cloud_container">
+        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-2" value="Cloud Architecture" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1" parent="cloud_container" vertex="1">
           <mxGeometry x="355.6451612903226" y="10" width="268.7096774193549" height="30" as="geometry" />
         </mxCell>
         <mxCell id="lns" value="LoRaWAN Network Server (LNS)&#xa;(The Things Stack / ChirpStack / Managed LNS)&#xa;- Device registry&#xa;- Join/keys&#xa;- Uplink decode&#xa;- Downlink scheduling" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#b0e3e6;strokeColor=#0e8088;" parent="cloud_container" vertex="1">
@@ -149,25 +149,25 @@
         <mxCell id="e_django_db" style="endArrow=open;html=1;strokeWidth=3;endFill=0;startArrow=open;startFill=0;" parent="cloud_container" source="django" target="db" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-3" value="" style="image;aspect=fixed;perimeter=ellipsePerimeter;html=1;align=center;shadow=0;dashed=0;spacingTop=3;image=img/lib/active_directory/database.svg;" vertex="1" parent="cloud_container">
+        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-3" value="" style="image;aspect=fixed;perimeter=ellipsePerimeter;html=1;align=center;shadow=0;dashed=0;spacingTop=3;image=img/lib/active_directory/database.svg;" parent="cloud_container" vertex="1">
           <mxGeometry x="80" y="285" width="40.54" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-4" value="" style="outlineConnect=0;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;shape=mxgraph.aws3.queue;fillColor=#D9A741;gradientColor=none;" vertex="1" parent="cloud_container">
+        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-4" value="" style="outlineConnect=0;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;shape=mxgraph.aws3.queue;fillColor=#D9A741;gradientColor=none;" parent="cloud_container" vertex="1">
           <mxGeometry x="340" y="130" width="40" height="18" as="geometry" />
         </mxCell>
-        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-5" value="" style="image;html=1;image=img/lib/clip_art/computers/Server_128x128.png" vertex="1" parent="cloud_container">
+        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-5" value="" style="image;html=1;image=img/lib/clip_art/computers/Server_128x128.png" parent="cloud_container" vertex="1">
           <mxGeometry x="305.65" y="270" width="50" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-6" value="" style="aspect=fixed;sketch=0;html=1;dashed=0;whitespace=wrap;verticalLabelPosition=bottom;verticalAlign=top;fillColor=#2875E2;strokeColor=#ffffff;points=[[0.005,0.63,0],[0.1,0.2,0],[0.9,0.2,0],[0.5,0,0],[0.995,0.63,0],[0.72,0.99,0],[0.5,1,0],[0.28,0.99,0]];shape=mxgraph.kubernetes.icon2;prIcon=api" vertex="1" parent="cloud_container">
+        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-6" value="" style="aspect=fixed;sketch=0;html=1;dashed=0;whitespace=wrap;verticalLabelPosition=bottom;verticalAlign=top;fillColor=#2875E2;strokeColor=#ffffff;points=[[0.005,0.63,0],[0.1,0.2,0],[0.9,0.2,0],[0.5,0,0],[0.995,0.63,0],[0.72,0.99,0],[0.5,1,0],[0.28,0.99,0]];shape=mxgraph.kubernetes.icon2;prIcon=api" parent="cloud_container" vertex="1">
           <mxGeometry x="326.48" y="460" width="29.17" height="28" as="geometry" />
         </mxCell>
-        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-7" value="" style="image;aspect=fixed;perimeter=ellipsePerimeter;html=1;align=center;shadow=0;dashed=0;spacingTop=3;image=img/lib/active_directory/user_accounts.svg;" vertex="1" parent="cloud_container">
+        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-7" value="" style="image;aspect=fixed;perimeter=ellipsePerimeter;html=1;align=center;shadow=0;dashed=0;spacingTop=3;image=img/lib/active_directory/user_accounts.svg;" parent="cloud_container" vertex="1">
           <mxGeometry x="324.72" y="660" width="30.93" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-8" value="" style="image;html=1;image=img/lib/clip_art/finance/Graph_128x128.png" vertex="1" parent="cloud_container">
+        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-8" value="" style="image;html=1;image=img/lib/clip_art/finance/Graph_128x128.png" parent="cloud_container" vertex="1">
           <mxGeometry x="640" y="500" width="40" height="52" as="geometry" />
         </mxCell>
-        <mxCell id="DadrbJDqd3xpfDusq-m6-1" value="" style="points=[];aspect=fixed;html=1;align=center;shadow=0;dashed=0;fillColor=#FF6A00;strokeColor=none;shape=mxgraph.alibaba_cloud.cen_cloud_enterprise_network;" vertex="1" parent="cloud_container">
+        <mxCell id="DadrbJDqd3xpfDusq-m6-1" value="" style="points=[];aspect=fixed;html=1;align=center;shadow=0;dashed=0;fillColor=#FF6A00;strokeColor=none;shape=mxgraph.alibaba_cloud.cen_cloud_enterprise_network;" parent="cloud_container" vertex="1">
           <mxGeometry x="63.46" y="90" width="16.54" height="17" as="geometry" />
         </mxCell>
         <mxCell id="e_pod1_gw" style="endArrow=classic;html=1;strokeWidth=3;dashed=1;" parent="1" source="pod1" target="gateway" edge="1">
@@ -191,8 +191,8 @@
       </root>
     </mxGraphModel>
   </diagram>
-  <diagram id="6fHF2__YJ60N_B--ARtN" name="Page-3">
-    <mxGraphModel dx="1355" dy="889" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="850" math="0" shadow="0">
+  <diagram id="6fHF2__YJ60N_B--ARtN" name="Vision_Model_Process">
+    <mxGraphModel dx="670" dy="465" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="850" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
