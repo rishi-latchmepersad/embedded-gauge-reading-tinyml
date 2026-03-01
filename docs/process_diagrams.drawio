@@ -48,4 +48,63 @@
       </root>
     </mxGraphModel>
   </diagram>
+  <diagram id="classicalCVBaseline01" name="Classical_CV_Baseline_Process">
+    <mxGraphModel dx="1280" dy="820" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="cv_input" value="Input gauge image from dataset or camera" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1">
+          <mxGeometry x="40" y="320" width="180" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="cv_preprocess" value="Preprocess image:&lt;br&gt;- grayscale&lt;br&gt;- denoise blur&lt;br&gt;- contrast normalization" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+          <mxGeometry x="270" y="300" width="220" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="cv_dial" value="Detect dial geometry&lt;br&gt;(circle center + radius)&lt;br&gt;using Hough Circle or contour fitting" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+          <mxGeometry x="550" y="300" width="250" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="cv_roi" value="Crop/warp to dial ROI&lt;br&gt;for stable needle analysis" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+          <mxGeometry x="860" y="320" width="210" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="cv_needle" value="Detect needle candidate&lt;br&gt;with edge extraction + Hough line transform" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+          <mxGeometry x="1120" y="300" width="230" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="cv_angle" value="Estimate needle angle from selected line endpoint relative to dial center" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="1120" y="120" width="230" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="cv_spec" value="Gauge calibration spec:&lt;br&gt;min/max value, start angle, sweep" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1">
+          <mxGeometry x="860" y="120" width="220" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="cv_value" value="Map angle to engineering value&lt;br&gt;with linear interpolation + clamping" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+          <mxGeometry x="560" y="120" width="250" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="cv_output" value="Baseline CV prediction output&lt;br&gt;(value + optional debug overlays)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="1" vertex="1">
+          <mxGeometry x="260" y="120" width="250" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="cve1" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_input" target="cv_preprocess" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cve2" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_preprocess" target="cv_dial" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cve3" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_dial" target="cv_roi" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cve4" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_roi" target="cv_needle" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cve5" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_needle" target="cv_angle" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cve6" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_angle" target="cv_value" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cve7" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_spec" target="cv_value" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cve8" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_value" target="cv_output" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
 </mxfile>
