@@ -23,6 +23,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdbool.h>
+#include "debug_console.h"
+#include "threadx_utils.h"
 
 /* USER CODE END Includes */
 
@@ -34,6 +37,10 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+#define CAMERA_INIT_THREAD_STACK_SIZE_BYTES 2048U
+#define CAMERA_INIT_THREAD_PRIORITY         12U
+#define CAMERA_INIT_STARTUP_DELAY_MS        200U
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -44,10 +51,33 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
 
+/* Dedicated ThreadX object and stack for camera connection diagnostics. */
+static TX_THREAD camera_init_thread;
+static ULONG camera_init_thread_stack[CAMERA_INIT_THREAD_STACK_SIZE_BYTES / sizeof(ULONG)];
+static bool camera_init_thread_created = false;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
+
+/**
+ * @brief ThreadX entry point used to run camera bring-up diagnostics.
+ * @param thread_input Unused ThreadX input value.
+ */
+static VOID CameraInitThread_Entry(ULONG thread_input);
+
+/**
+ * @brief Print a staged diagnostic sequence for B-CAMS-IMX camera bring-up.
+ * @return true when a camera probe callback reports success, false otherwise.
+ */
+static bool Camera_ProbeBCamsImx(void);
+
+/**
+ * @brief Weak probe hook for board-specific camera/driver integration.
+ * @return TX_SUCCESS on successful camera detection, an error code otherwise.
+ */
+__attribute__((weak)) UINT CameraPlatform_ProbeBCamsImx(void);
 
 /* USER CODE END PFP */
 
@@ -63,9 +93,49 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
 
   /* USER CODE END App_ThreadX_MEM_POOL */
   /* USER CODE BEGIN App_ThreadX_Init */
+  (void) memory_ptr;
+
+  /* Defer thread creation until App_ThreadX_Start() so startup ordering is explicit. */
+  DebugConsole_Printf("[CAMERA][THREAD] ThreadX app init complete. Waiting to start camera thread...\r\n");
   /* USER CODE END App_ThreadX_Init */
 
   return ret;
+}
+
+/**
+ * @brief  Start application threads owned by app_threadx.c.
+ * @retval ThreadX return code.
+ */
+UINT App_ThreadX_Start(void)
+{
+  if (camera_init_thread_created)
+  {
+    DebugConsole_Printf("[CAMERA][THREAD] Camera init thread already created.\r\n");
+    return TX_SUCCESS;
+  }
+
+  /* Create a dedicated worker thread so camera diagnostics run after kernel start. */
+  const UINT create_status = tx_thread_create(&camera_init_thread,
+                                              (CHAR *)"camera_init_thread",
+                                              CameraInitThread_Entry,
+                                              0U,
+                                              camera_init_thread_stack,
+                                              sizeof(camera_init_thread_stack),
+                                              CAMERA_INIT_THREAD_PRIORITY,
+                                              CAMERA_INIT_THREAD_PRIORITY,
+                                              TX_NO_TIME_SLICE,
+                                              TX_AUTO_START);
+
+  if (create_status != TX_SUCCESS)
+  {
+    DebugConsole_Printf("[CAMERA][THREAD] Failed to create camera init thread, status=%lu\r\n",
+                        (unsigned long)create_status);
+    return create_status;
+  }
+
+  camera_init_thread_created = true;
+  DebugConsole_Printf("[CAMERA][THREAD] Camera init thread created and started.\r\n");
+  return TX_SUCCESS;
 }
 
   /**
@@ -87,5 +157,116 @@ void MX_ThreadX_Init(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+/**
+ * @brief ThreadX entry point used to run camera bring-up diagnostics.
+ * @param thread_input Unused ThreadX input value.
+ */
+static VOID CameraInitThread_Entry(ULONG thread_input)
+{
+  (void)thread_input;
+
+  DebugConsole_Printf("[CAMERA][THREAD] Initializing camera diagnostics thread...\r\n");
+
+  /* Delay a little to let other startup logs complete before camera probing. */
+  DelayMilliseconds_ThreadX(CAMERA_INIT_STARTUP_DELAY_MS);
+
+  DebugConsole_Printf("[CAMERA][THREAD] Starting B-CAMS-IMX MIPI connection attempt...\r\n");
+
+  if (Camera_ProbeBCamsImx())
+  {
+    DebugConsole_Printf("[CAMERA][THREAD] Camera probe completed successfully.\r\n");
+  }
+  else
+  {
+    DebugConsole_Printf("[CAMERA][THREAD] Camera probe failed or is not configured yet.\r\n");
+  }
+
+  /* Keep the diagnostics thread alive so the stack/object remain valid forever. */
+  while (1)
+  {
+    DelayMilliseconds_ThreadX(1000U);
+  }
+}
+
+/**
+ * @brief Print a staged diagnostic sequence for B-CAMS-IMX camera bring-up.
+ * @return true when a camera probe callback reports success, false otherwise.
+ */
+static bool Camera_ProbeBCamsImx(void)
+{
+  bool stage_ok = true;
+
+  DebugConsole_Printf("[CAMERA][PROBE] Stage 1/5: Validate firmware camera features.\r\n");
+#ifdef HAL_DCMIPP_MODULE_ENABLED
+  DebugConsole_Printf("[CAMERA][PROBE]   - HAL_DCMIPP_MODULE_ENABLED = ON\r\n");
+#else
+  DebugConsole_Printf("[CAMERA][PROBE]   - HAL_DCMIPP_MODULE_ENABLED = OFF (enable for image pipeline).\r\n");
+  stage_ok = false;
+#endif
+
+#ifdef HAL_I2C_MODULE_ENABLED
+  DebugConsole_Printf("[CAMERA][PROBE]   - HAL_I2C_MODULE_ENABLED = ON\r\n");
+#else
+  DebugConsole_Printf("[CAMERA][PROBE]   - HAL_I2C_MODULE_ENABLED = OFF (sensor control bus usually needed).\r\n");
+#endif
+
+#ifdef HAL_I3C_MODULE_ENABLED
+  DebugConsole_Printf("[CAMERA][PROBE]   - HAL_I3C_MODULE_ENABLED = ON\r\n");
+#else
+  DebugConsole_Printf("[CAMERA][PROBE]   - HAL_I3C_MODULE_ENABLED = OFF\r\n");
+#endif
+
+  DebugConsole_Printf("[CAMERA][PROBE] Stage 2/5: Check MIPI CSI/DCMIPP peripheral clocks.\r\n");
+  DebugConsole_Printf("[CAMERA][PROBE]   - CSI clock enabled: %lu\r\n",
+                      (unsigned long)__HAL_RCC_CSI_IS_CLK_ENABLED());
+  DebugConsole_Printf("[CAMERA][PROBE]   - DCMIPP clock enabled: %lu\r\n",
+                      (unsigned long)__HAL_RCC_DCMIPP_IS_CLK_ENABLED());
+
+  DebugConsole_Printf("[CAMERA][PROBE] Stage 3/5: Check likely control bus clocks (I2C/I3C).\r\n");
+  DebugConsole_Printf("[CAMERA][PROBE]   - I2C1 clock enabled: %lu\r\n",
+                      (unsigned long)__HAL_RCC_I2C1_IS_CLK_ENABLED());
+  DebugConsole_Printf("[CAMERA][PROBE]   - I2C2 clock enabled: %lu\r\n",
+                      (unsigned long)__HAL_RCC_I2C2_IS_CLK_ENABLED());
+  DebugConsole_Printf("[CAMERA][PROBE]   - I3C1 clock enabled: %lu\r\n",
+                      (unsigned long)__HAL_RCC_I3C1_IS_CLK_ENABLED());
+
+  DebugConsole_Printf("[CAMERA][PROBE] Stage 4/5: Run board-specific sensor probe callback.\r\n");
+  const UINT probe_status = CameraPlatform_ProbeBCamsImx();
+  if (probe_status == TX_SUCCESS)
+  {
+    DebugConsole_Printf("[CAMERA][PROBE]   - CameraPlatform_ProbeBCamsImx() returned TX_SUCCESS.\r\n");
+  }
+  else
+  {
+    DebugConsole_Printf("[CAMERA][PROBE]   - CameraPlatform_ProbeBCamsImx() failed, status=%lu\r\n",
+                        (unsigned long)probe_status);
+    stage_ok = false;
+  }
+
+  DebugConsole_Printf("[CAMERA][PROBE] Stage 5/5: Final diagnostic verdict.\r\n");
+  if (stage_ok)
+  {
+    DebugConsole_Printf("[CAMERA][PROBE]   - PASS: camera stack appears connected/configured.\r\n");
+  }
+  else
+  {
+    DebugConsole_Printf("[CAMERA][PROBE]   - FAIL: inspect earlier stages for missing config.\r\n");
+  }
+
+  return stage_ok;
+}
+
+/**
+ * @brief Weak probe hook for board-specific camera/driver integration.
+ * @return TX_NOT_AVAILABLE to indicate the probe is not wired yet.
+ */
+UINT CameraPlatform_ProbeBCamsImx(void)
+{
+  DebugConsole_Printf(
+      "[CAMERA][PROBE]   - No camera driver hook is implemented yet.\r\n"
+      "[CAMERA][PROBE]   - Implement CameraPlatform_ProbeBCamsImx() with BSP/driver sensor ID read.\r\n");
+  return TX_NOT_AVAILABLE;
+}
 
 /* USER CODE END 1 */

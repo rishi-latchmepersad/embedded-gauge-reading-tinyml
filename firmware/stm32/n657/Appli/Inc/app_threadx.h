@@ -61,6 +61,7 @@
 
 /* Exported functions prototypes ---------------------------------------------*/
 UINT App_ThreadX_Init(VOID *memory_ptr);
+UINT App_ThreadX_Start(void);
 void MX_ThreadX_Init(void);
 
 /* USER CODE BEGIN EFP */
