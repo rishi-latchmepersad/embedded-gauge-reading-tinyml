@@ -112,6 +112,14 @@ VOID tx_application_define(VOID *first_unused_memory)
     /* USER CODE BEGIN  App_ThreadX_Init_Success */
 
 		DebugConsole_Printf("App ThreadX init success.\r\n");
+		status = App_ThreadX_Start();
+		if (status != TX_SUCCESS)
+		{
+			DebugConsole_Printf("App ThreadX start failure.\r\n");
+			while (1) {
+			}
+		}
+		DebugConsole_Printf("App ThreadX start success.\r\n");
     /* USER CODE END  App_ThreadX_Init_Success */
 
   }
