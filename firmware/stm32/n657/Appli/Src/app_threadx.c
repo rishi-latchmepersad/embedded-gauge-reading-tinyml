@@ -102,42 +102,6 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
   return ret;
 }
 
-/**
- * @brief  Start application threads owned by app_threadx.c.
- * @retval ThreadX return code.
- */
-UINT App_ThreadX_Start(void)
-{
-  if (camera_init_thread_created)
-  {
-    DebugConsole_Printf("[CAMERA][THREAD] Camera init thread already created.\r\n");
-    return TX_SUCCESS;
-  }
-
-  /* Create a dedicated worker thread so camera diagnostics run after kernel start. */
-  const UINT create_status = tx_thread_create(&camera_init_thread,
-                                              (CHAR *)"camera_init_thread",
-                                              CameraInitThread_Entry,
-                                              0U,
-                                              camera_init_thread_stack,
-                                              sizeof(camera_init_thread_stack),
-                                              CAMERA_INIT_THREAD_PRIORITY,
-                                              CAMERA_INIT_THREAD_PRIORITY,
-                                              TX_NO_TIME_SLICE,
-                                              TX_AUTO_START);
-
-  if (create_status != TX_SUCCESS)
-  {
-    DebugConsole_Printf("[CAMERA][THREAD] Failed to create camera init thread, status=%lu\r\n",
-                        (unsigned long)create_status);
-    return create_status;
-  }
-
-  camera_init_thread_created = true;
-  DebugConsole_Printf("[CAMERA][THREAD] Camera init thread created and started.\r\n");
-  return TX_SUCCESS;
-}
-
   /**
   * @brief  Function that implements the kernel's initialization.
   * @param  None

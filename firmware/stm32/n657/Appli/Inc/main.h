@@ -77,8 +77,14 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define I2C2_SDA_Pin GPIO_PIN_11
+#define I2C2_SDA_GPIO_Port GPIOB
 #define SPI5_CS_Pin GPIO_PIN_3
 #define SPI5_CS_GPIO_Port GPIOA
+#define CAM1_Pin GPIO_PIN_0
+#define CAM1_GPIO_Port GPIOA
+#define I2C2_SCL_Pin GPIO_PIN_10
+#define I2C2_SCL_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
