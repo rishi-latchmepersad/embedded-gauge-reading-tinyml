@@ -87,48 +87,76 @@ static bool Camera_ProbeBCamsImx(void);
  * @brief Weak probe hook for board-specific camera/driver integration.
  * @return TX_SUCCESS on successful camera detection, an error code otherwise.
  */
-__attribute__((weak))  UINT CameraPlatform_ProbeBCamsImx(void);
+__attribute__((weak))   UINT CameraPlatform_ProbeBCamsImx(void);
 
 /* USER CODE END PFP */
 
 /**
-  * @brief  Application ThreadX Initialization.
-  * @param memory_ptr: memory pointer
-  * @retval int
-  */
-UINT App_ThreadX_Init(VOID *memory_ptr)
-{
-  UINT ret = TX_SUCCESS;
-  /* USER CODE BEGIN App_ThreadX_MEM_POOL */
+ * @brief  Application ThreadX Initialization.
+ * @param memory_ptr: memory pointer
+ * @retval int
+ */
+UINT App_ThreadX_Init(VOID *memory_ptr) {
+	UINT ret = TX_SUCCESS;
+	/* USER CODE BEGIN App_ThreadX_MEM_POOL */
 
-  /* USER CODE END App_ThreadX_MEM_POOL */
-  /* USER CODE BEGIN App_ThreadX_Init */
+	/* USER CODE END App_ThreadX_MEM_POOL */
+	/* USER CODE BEGIN App_ThreadX_Init */
 	(void) memory_ptr;
 
 	/* Defer thread creation until App_ThreadX_Start() so startup ordering is explicit. */
 	DebugConsole_Printf(
 			"[CAMERA][THREAD] ThreadX app init complete. Waiting to start camera thread...\r\n");
-  /* USER CODE END App_ThreadX_Init */
+	/* USER CODE END App_ThreadX_Init */
 
-  return ret;
+	return ret;
 }
 
-  /**
-  * @brief  Function that implements the kernel's initialization.
-  * @param  None
-  * @retval None
-  */
-void MX_ThreadX_Init(void)
-{
-  /* USER CODE BEGIN Before_Kernel_Start */
+UINT App_ThreadX_Start(void) {
+	/* Keep this function idempotent to protect against accidental double-start. */
+	if (camera_init_thread_created) {
+		DebugConsole_Printf(
+				"[CAMERA][THREAD] Start skipped: camera init thread already created.\r\n");
+		return TX_SUCCESS;
+	}
 
-  /* USER CODE END Before_Kernel_Start */
+	/* Create a dedicated thread so camera probing is isolated from other startup work. */
+	const UINT create_status = tx_thread_create(&camera_init_thread,
+			"camera_init", CameraInitThread_Entry, 0U, camera_init_thread_stack,
+			sizeof(camera_init_thread_stack),
+			CAMERA_INIT_THREAD_PRIORITY,
+			CAMERA_INIT_THREAD_PRIORITY,
+			TX_NO_TIME_SLICE,
+			TX_AUTO_START);
 
-  tx_kernel_enter();
+	if (create_status != TX_SUCCESS) {
+		DebugConsole_Printf(
+				"[CAMERA][THREAD] Failed to create camera init thread, status=%lu\r\n",
+				(unsigned long) create_status);
+		return create_status;
+	}
 
-  /* USER CODE BEGIN Kernel_Start_Error */
+	camera_init_thread_created = true;
+	DebugConsole_Printf(
+			"[CAMERA][THREAD] Camera init thread created and started.\r\n");
+	return TX_SUCCESS;
+}
 
-  /* USER CODE END Kernel_Start_Error */
+/**
+ * @brief  Function that implements the kernel's initialization.
+ * @param  None
+ * @retval None
+ */
+void MX_ThreadX_Init(void) {
+	/* USER CODE BEGIN Before_Kernel_Start */
+
+	/* USER CODE END Before_Kernel_Start */
+
+	tx_kernel_enter();
+
+	/* USER CODE BEGIN Kernel_Start_Error */
+
+	/* USER CODE END Kernel_Start_Error */
 }
 
 /* USER CODE BEGIN 1 */
@@ -247,9 +275,9 @@ UINT CameraPlatform_ProbeBCamsImx(void) {
 
 	/* Probe the camera control address to confirm the sensor bus is alive. */
 	probe_status = HAL_I2C_IsDeviceReady(&hi2c2,
-			BCAMS_IMX_I2C_ADDRESS_HAL,
-			BCAMS_IMX_I2C_PROBE_TRIALS,
-			BCAMS_IMX_I2C_PROBE_TIMEOUT_MS);
+	BCAMS_IMX_I2C_ADDRESS_HAL,
+	BCAMS_IMX_I2C_PROBE_TRIALS,
+	BCAMS_IMX_I2C_PROBE_TIMEOUT_MS);
 
 	if (probe_status == HAL_OK) {
 		DebugConsole_Printf(
