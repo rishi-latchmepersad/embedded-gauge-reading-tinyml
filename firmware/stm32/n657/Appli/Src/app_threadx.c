@@ -46,6 +46,8 @@
 #define BCAMS_IMX_I2C_PROBE_TRIALS          3U
 #define BCAMS_IMX_I2C_PROBE_TIMEOUT_MS      20U
 #define BCAMS_IMX_POWER_SETTLE_DELAY_MS     5U
+#define IMX335_REG_ID                       0x3912U
+#define IMX335_CHIP_ID                      0x00U
 
 /* USER CODE END PD */
 
@@ -268,6 +270,7 @@ static bool Camera_ProbeBCamsImx(void) {
  */
 UINT CameraPlatform_ProbeBCamsImx(void) {
 	HAL_StatusTypeDef probe_status = HAL_ERROR;
+	uint8_t chip_id = 0U;
 
 	/* Enable camera module power before attempting control-bus traffic. */
 	HAL_GPIO_WritePin(CAM1_GPIO_Port, CAM1_Pin, GPIO_PIN_SET);
@@ -283,6 +286,33 @@ UINT CameraPlatform_ProbeBCamsImx(void) {
 		DebugConsole_Printf(
 				"[CAMERA][PROBE]   - Sensor ACKed on I2C2 at 7-bit address 0x%02X.\r\n",
 				(unsigned int) BCAMS_IMX_I2C_ADDRESS_7BIT);
+
+		/* Read the IMX335 chip ID register to confirm the sensor identity. */
+		probe_status = HAL_I2C_Mem_Read(&hi2c2,
+				BCAMS_IMX_I2C_ADDRESS_HAL,
+				IMX335_REG_ID,
+				I2C_MEMADD_SIZE_16BIT,
+				&chip_id,
+				1U,
+				BCAMS_IMX_I2C_PROBE_TIMEOUT_MS);
+		if (probe_status != HAL_OK) {
+			DebugConsole_Printf(
+					"[CAMERA][PROBE]   - Failed to read IMX335 ID register 0x%04X.\r\n",
+					(unsigned int) IMX335_REG_ID);
+			return TX_NOT_AVAILABLE;
+		}
+
+		DebugConsole_Printf(
+				"[CAMERA][PROBE]   - IMX335 ID register 0x%04X = 0x%02X.\r\n",
+				(unsigned int) IMX335_REG_ID,
+				(unsigned int) chip_id);
+		if (chip_id != IMX335_CHIP_ID) {
+			DebugConsole_Printf(
+					"[CAMERA][PROBE]   - Unexpected chip ID, expected 0x%02X.\r\n",
+					(unsigned int) IMX335_CHIP_ID);
+			return TX_NOT_AVAILABLE;
+		}
+
 		return TX_SUCCESS;
 	}
 
