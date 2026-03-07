@@ -25,6 +25,7 @@
 #include "debug_console.h"
 #include "tx_api.h"
 #include "debug_led.h"
+#include "threadx_utils.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/

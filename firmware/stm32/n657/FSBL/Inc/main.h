@@ -95,8 +95,6 @@ void Error_Handler(void);
 #define TRACECLK_GPIO_Port GPIOB
 #define TRACED0_Pin GPIO_PIN_3
 #define TRACED0_GPIO_Port GPIOE
-#define CAM_NRST_Pin GPIO_PIN_5
-#define CAM_NRST_GPIO_Port GPIOO
 #define I2C2_SDA_Pin GPIO_PIN_11
 #define I2C2_SDA_GPIO_Port GPIOB
 #define JTDI_Pin GPIO_PIN_15
