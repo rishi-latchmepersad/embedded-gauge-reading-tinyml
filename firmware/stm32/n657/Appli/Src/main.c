@@ -69,6 +69,7 @@ static void MX_I2C2_Init(void);
 static void SystemIsolation_Config(void);
 /* USER CODE BEGIN PFP */
 static void App_SystemClock_Config(void);
+static void App_CameraKernelClock_Config(void);
 
 /* USER CODE END PFP */
 
@@ -180,6 +181,30 @@ static void App_SystemClock_Config(void)
   }
 }
 
+/**
+ * @brief Re-apply the camera kernel clocks after CubeMX peripheral init.
+ *
+ * CubeMX regenerates the DCMIPP MSP clock config with defaults that do not
+ * match the working IMX335 capture path. Keeping the final override here in
+ * application code makes it much less likely to be lost on regeneration.
+ */
+static void App_CameraKernelClock_Config(void)
+{
+  RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
+
+  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_DCMIPP | RCC_PERIPHCLK_CSI;
+  PeriphClkInitStruct.DcmippClockSelection = RCC_DCMIPPCLKSOURCE_IC17;
+  PeriphClkInitStruct.ICSelection[RCC_IC17].ClockSelection = RCC_ICCLKSOURCE_PLL1;
+  PeriphClkInitStruct.ICSelection[RCC_IC17].ClockDivider = 4;
+  PeriphClkInitStruct.ICSelection[RCC_IC18].ClockSelection = RCC_ICCLKSOURCE_PLL1;
+  PeriphClkInitStruct.ICSelection[RCC_IC18].ClockDivider = 60;
+
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -210,6 +235,7 @@ int main(void)
   MX_LPUART1_UART_Init();
   MX_SPI5_Init();
   MX_DCMIPP_Init();
+  App_CameraKernelClock_Config();
   MX_I2C2_Init();
   SystemIsolation_Config();
   /* USER CODE BEGIN 2 */

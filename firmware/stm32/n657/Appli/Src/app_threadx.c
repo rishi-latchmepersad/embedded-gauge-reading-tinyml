@@ -64,13 +64,12 @@
 #define CAMERA_STORAGE_WAIT_TIMEOUT_MS      10000U
 #define CAMERA_CAPTURE_RETRY_DELAY_MS       50U
 #define IMX335_CAPTURE_FRAMERATE_FPS        10
-#define CAMERA_CAPTURE_FILE_NAME            "capture_000.raw16"
+#define CAMERA_CAPTURE_FILE_NAME_LENGTH     32U
 /* Match ST's IMX335 middleware and upstream Linux driver ID check. */
 #define IMX335_CHIP_ID_REG                 0x3912U
 #define IMX335_CHIP_ID_VALUE               0x00U
-/* Temporary diagnostic: use the sensor's internal vertical color bars.
- * Set to -1 to return to the normal optical image path. */
-#define IMX335_TEST_PATTERN_MODE           11
+/* Disable the internal test pattern so captures use the optical image path. */
+#define IMX335_TEST_PATTERN_MODE           (-1)
 
 /* USER CODE END PD */
 
@@ -587,6 +586,7 @@ static bool CameraPlatform_WaitForStorageReady(uint32_t timeout_ms) {
 static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
 	uint32_t captured_bytes = 0U;
 	UINT filex_status = FX_SUCCESS;
+	CHAR capture_file_name[CAMERA_CAPTURE_FILE_NAME_LENGTH] = { 0 };
 
 	if (!CameraPlatform_WaitForStorageReady(CAMERA_STORAGE_WAIT_TIMEOUT_MS)) {
 		return false;
@@ -596,7 +596,16 @@ static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
 		return false;
 	}
 
-	filex_status = AppFileX_WriteCapturedImage(CAMERA_CAPTURE_FILE_NAME,
+	filex_status = AppFileX_GetNextCapturedImageName(capture_file_name,
+			sizeof(capture_file_name));
+	if (filex_status != FX_SUCCESS) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Failed to allocate a unique capture file name, status=%lu.\r\n",
+				(unsigned long) filex_status);
+		return false;
+	}
+
+	filex_status = AppFileX_WriteCapturedImage(capture_file_name,
 			camera_capture_buffer, (ULONG) captured_bytes);
 	if (filex_status != FX_SUCCESS) {
 		DebugConsole_Printf(
@@ -607,7 +616,7 @@ static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
 
 	DebugConsole_Printf(
 			"[CAMERA][CAPTURE] Stored %lu-byte 16-bit raw image at /captured_images/%s.\r\n",
-			(unsigned long) captured_bytes, CAMERA_CAPTURE_FILE_NAME);
+			(unsigned long) captured_bytes, capture_file_name);
 	return true;
 }
 
@@ -907,6 +916,9 @@ static bool CameraPlatform_InitializeImx335Sensor(void) {
 	DebugConsole_Printf(
 			"[CAMERA][PROBE]   - IMX335 test pattern mode %d enabled for capture diagnostics.\r\n",
 			IMX335_TEST_PATTERN_MODE);
+#else
+	DebugConsole_Printf(
+			"[CAMERA][PROBE]   - IMX335 test pattern disabled; using optical image path.\r\n");
 #endif
 
 	return true;
