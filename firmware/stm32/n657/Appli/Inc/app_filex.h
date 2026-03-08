@@ -30,6 +30,7 @@ extern "C" {
 #include "fx_api.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdbool.h>
 
 /* USER CODE END Includes */
 
@@ -52,6 +53,9 @@ extern "C" {
 UINT MX_FileX_Init(VOID *memory_ptr);
 
 /* USER CODE BEGIN EFP */
+bool AppFileX_IsMediaReady(void);
+UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
+		const VOID *data_ptr, ULONG data_length);
 
 /* USER CODE END EFP */
 

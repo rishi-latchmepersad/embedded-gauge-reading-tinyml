@@ -24,6 +24,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "sd_spi_ll.h"
@@ -48,6 +49,7 @@ typedef enum {
 	APP_FILEX_STATE_FILEX_MEDIA_OPEN,
 	APP_FILEX_STATE_LOG_SERVICE_INITIALIZE,
 	APP_FILEX_STATE_TEST_FILE_CREATE_OPEN_WRITE_CLOSE,
+	APP_FILEX_STATE_CAPTURE_DIRECTORY_CREATE,
 	APP_FILEX_STATE_RUNNING,
 	APP_FILEX_STATE_ERROR
 } AppFileX_State;
@@ -87,6 +89,8 @@ typedef struct {
 #define FX_APP_THREAD_PRIO               10
 /* USER CODE BEGIN PD */
 #define FILEX_MEDIA_CACHE_BUFFER_SIZE    (8U * 512U) /* 8 sectors cache, 2048 bytes. */
+#define CAPTURED_IMAGES_DIRECTORY_NAME   "captured_images"
+#define CAPTURED_IMAGE_MAX_PATH_LENGTH   96U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -106,6 +110,8 @@ static FX_FILE g_sd_fx_file; /* Simple test file object. */
 
 static Sd_FileX_DriverContext g_sd_filex_driver_context; /* Global driver context used by the media driver. */
 static TX_BYTE_POOL *g_filex_byte_pool_ptr = NULL; /* Byte pool used for queue + cache allocations. */
+static TX_MUTEX g_filex_media_mutex;
+static bool g_filex_media_ready = false;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -121,6 +127,9 @@ static void AppFileX_StateMachine_EnterError(
 		UINT error_code);
 static void AppFileX_StateMachine_Step(
 		AppFileX_StateMachineContext *context_ptr);
+static UINT AppFileX_LockMedia(void);
+static void AppFileX_UnlockMedia(void);
+static UINT AppFileX_CreateCapturedImagesDirectoryLocked(void);
 /* USER CODE END PFP */
 
 /**
@@ -171,6 +180,14 @@ UINT MX_FileX_Init(VOID *memory_ptr)
 	if (ret != TX_SUCCESS) {
 		return TX_POOL_ERROR;
 	}
+
+	ret = tx_mutex_create(&g_filex_media_mutex, "filex_media_mutex",
+	TX_INHERIT);
+	if (ret != TX_SUCCESS) {
+		return TX_MUTEX_ERROR;
+	}
+
+	g_filex_media_ready = false;
 /* USER CODE END MX_FileX_Init */
 
 /* Initialize FileX.  */
@@ -270,6 +287,7 @@ static void AppFileX_StateMachine_Initialize(
 
 	context_ptr->last_error_state = APP_FILEX_STATE_UNINITIALIZED;
 	context_ptr->last_error_code = 0U;
+	g_filex_media_ready = false;
 
 	/* Keep driver context visibility consistent for debugger. */
 	g_sd_filex_driver_context.is_initialized = 0U;
@@ -519,6 +537,37 @@ static void AppFileX_StateMachine_Step(
 		context_ptr->last_progress_tick = tx_time_get();
 		DebugConsole_Printf(
 				"Now listening to debug messages and writing to .log files.\r\n");
+		context_ptr->state = APP_FILEX_STATE_CAPTURE_DIRECTORY_CREATE;
+		context_ptr->state_entry_tick = context_ptr->last_progress_tick;
+		break;
+	}
+
+	case APP_FILEX_STATE_CAPTURE_DIRECTORY_CREATE: {
+		context_ptr->threadx_status = AppFileX_LockMedia();
+		if (context_ptr->threadx_status != TX_SUCCESS) {
+			AppFileX_StateMachine_EnterError(context_ptr,
+					APP_FILEX_STATE_CAPTURE_DIRECTORY_CREATE,
+					context_ptr->threadx_status);
+			break;
+		}
+
+		context_ptr->filex_status = AppFileX_CreateCapturedImagesDirectoryLocked();
+		AppFileX_UnlockMedia();
+
+		if ((context_ptr->filex_status != FX_SUCCESS)
+				&& (context_ptr->filex_status != FX_ALREADY_CREATED)) {
+			AppFileX_StateMachine_EnterError(context_ptr,
+					APP_FILEX_STATE_CAPTURE_DIRECTORY_CREATE,
+					context_ptr->filex_status);
+			break;
+		}
+
+		g_filex_media_ready = true;
+		DebugConsole_Printf(
+				"Verified /%s directory on SD card.\r\n",
+				CAPTURED_IMAGES_DIRECTORY_NAME);
+
+		context_ptr->last_progress_tick = tx_time_get();
 		context_ptr->state = APP_FILEX_STATE_RUNNING;
 		context_ptr->state_entry_tick = context_ptr->last_progress_tick;
 		break;
@@ -528,7 +577,11 @@ static void AppFileX_StateMachine_Step(
 		/* Drain a bounded number of messages each cycle so we do not starve other work. */
 
 		if (context_ptr->log_service_is_initialized != 0U) {
-			SdDebugLogService_ServiceQueue(32U);
+			context_ptr->threadx_status = AppFileX_LockMedia();
+			if (context_ptr->threadx_status == TX_SUCCESS) {
+				SdDebugLogService_ServiceQueue(32U);
+				AppFileX_UnlockMedia();
+			}
 		}
 
 		DebugLed_BlinkBlueBlocking(500U, 500U, 1U);
@@ -548,12 +601,16 @@ static void AppFileX_StateMachine_Step(
 
 		/* Best effort cleanup before restart. */
 		if (context_ptr->filex_media_is_open != 0U) {
-			(void) fx_media_flush(&g_sd_fx_media);
-			(void) fx_media_close(&g_sd_fx_media);
+			if (AppFileX_LockMedia() == TX_SUCCESS) {
+				(void) fx_media_flush(&g_sd_fx_media);
+				(void) fx_media_close(&g_sd_fx_media);
+				AppFileX_UnlockMedia();
+			}
 			context_ptr->filex_media_is_open = 0U;
 		}
 
 		g_sd_filex_driver_context.is_initialized = 0U;
+		g_filex_media_ready = false;
 
 		/* Restart the module from the beginning. */
 		AppFileX_StateMachine_Initialize(context_ptr);
@@ -567,5 +624,117 @@ static void AppFileX_StateMachine_Step(
 		break;
 	}
 	}
+}
+
+/*==============================================================================
+ * Function: AppFileX_IsMediaReady
+ *
+ * Purpose:
+ *   Report whether the SD card media is mounted and the capture directory is
+ *   ready for image storage.
+ *==============================================================================*/
+bool AppFileX_IsMediaReady(void) {
+	return g_filex_media_ready;
+}
+
+/*==============================================================================
+ * Function: AppFileX_WriteCapturedImage
+ *
+ * Purpose:
+ *   Write a binary image buffer to /captured_images/<file_name>.
+ *==============================================================================*/
+UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
+		const VOID *data_ptr, ULONG data_length) {
+	FX_FILE image_file;
+	CHAR path[CAPTURED_IMAGE_MAX_PATH_LENGTH];
+	CHAR file_name_buffer[CAPTURED_IMAGE_MAX_PATH_LENGTH];
+	int path_length = 0;
+	UINT tx_status = TX_SUCCESS;
+	UINT fx_status = FX_SUCCESS;
+
+	if ((file_name_ptr == NULL) || (data_ptr == NULL) || (data_length == 0U)) {
+		return FX_PTR_ERROR;
+	}
+
+	if (!g_filex_media_ready) {
+		return FX_MEDIA_NOT_OPEN;
+	}
+
+	path_length = snprintf(path, sizeof(path), "%s/%s",
+	CAPTURED_IMAGES_DIRECTORY_NAME,
+			file_name_ptr);
+	if ((path_length < 0) || ((ULONG) path_length >= sizeof(path))) {
+		return FX_INVALID_NAME;
+	}
+
+	(void) strncpy(file_name_buffer, file_name_ptr, sizeof(file_name_buffer) - 1U);
+	file_name_buffer[sizeof(file_name_buffer) - 1U] = '\0';
+
+	tx_status = AppFileX_LockMedia();
+	if (tx_status != TX_SUCCESS) {
+		return tx_status;
+	}
+
+	fx_status = fx_directory_default_set(&g_sd_fx_media,
+			CAPTURED_IMAGES_DIRECTORY_NAME);
+	if (fx_status != FX_SUCCESS) {
+		AppFileX_UnlockMedia();
+		return fx_status;
+	}
+
+	(void) fx_file_delete(&g_sd_fx_media, file_name_buffer);
+
+	fx_status = fx_file_create(&g_sd_fx_media, file_name_buffer);
+	if ((fx_status != FX_SUCCESS) && (fx_status != FX_ALREADY_CREATED)) {
+		(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
+		AppFileX_UnlockMedia();
+		return fx_status;
+	}
+
+	fx_status = fx_file_open(&g_sd_fx_media, &image_file, file_name_buffer,
+			FX_OPEN_FOR_WRITE);
+	if (fx_status == FX_SUCCESS) {
+		fx_status = fx_file_write(&image_file, (VOID*) data_ptr, data_length);
+		(void) fx_file_close(&image_file);
+		if (fx_status == FX_SUCCESS) {
+			(void) fx_media_flush(&g_sd_fx_media);
+		}
+	}
+
+	(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
+	AppFileX_UnlockMedia();
+
+	if (fx_status == FX_SUCCESS) {
+		DebugConsole_Printf(
+				"Saved captured image to /%s (%lu bytes).\r\n",
+				path, (unsigned long) data_length);
+	}
+
+	return fx_status;
+}
+
+/*==============================================================================
+ * Function: AppFileX_LockMedia
+ *
+ * Purpose:
+ *   Serialize access to the mounted FileX media across the FileX thread and
+ *   camera thread.
+ *==============================================================================*/
+static UINT AppFileX_LockMedia(void) {
+	return tx_mutex_get(&g_filex_media_mutex, TX_WAIT_FOREVER);
+}
+
+/*==============================================================================
+ * Function: AppFileX_UnlockMedia
+ *==============================================================================*/
+static void AppFileX_UnlockMedia(void) {
+	(void) tx_mutex_put(&g_filex_media_mutex);
+}
+
+/*==============================================================================
+ * Function: AppFileX_CreateCapturedImagesDirectoryLocked
+ *==============================================================================*/
+static UINT AppFileX_CreateCapturedImagesDirectoryLocked(void) {
+	return fx_directory_create(&g_sd_fx_media, CAPTURED_IMAGES_DIRECTORY_NAME);
 }
 /* USER CODE END 1 */

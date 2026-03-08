@@ -58,6 +58,7 @@
 extern TIM_HandleTypeDef htim5;
 
 /* USER CODE BEGIN EV */
+extern DCMIPP_HandleTypeDef hdcmipp;
 
 /* USER CODE END EV */
 
@@ -223,5 +224,21 @@ void TIM5_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+/**
+  * @brief This function handles CSI global interrupt.
+  */
+void CSI_IRQHandler(void)
+{
+  HAL_DCMIPP_CSI_IRQHandler(&hdcmipp);
+}
+
+/**
+  * @brief This function handles DCMIPP global interrupt.
+  */
+void DCMIPP_IRQHandler(void)
+{
+  HAL_DCMIPP_IRQHandler(&hdcmipp);
+}
 
 /* USER CODE END 1 */

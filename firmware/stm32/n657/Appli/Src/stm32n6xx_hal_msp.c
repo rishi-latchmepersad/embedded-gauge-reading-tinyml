@@ -112,6 +112,27 @@ void HAL_DCMIPP_MspInit(DCMIPP_HandleTypeDef* hdcmipp)
     __HAL_RCC_CSI_FORCE_RESET();
     __HAL_RCC_CSI_RELEASE_RESET();
     /* USER CODE BEGIN DCMIPP_MspInit 1 */
+    /* Override CubeMX's generated camera clocks with a known-good split:
+     * - DCMIPP on a few-hundred-MHz IC17 path
+     * - CSI on a much lower IC18 kernel clock, matching ST's reference flow
+     *
+     * Running DCMIPP directly from PLL4 at 1.6 GHz produces unstable capture
+     * behavior. Keep the receiver near the ST reference design range instead. */
+    PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_DCMIPP|RCC_PERIPHCLK_CSI;
+    PeriphClkInitStruct.DcmippClockSelection = RCC_DCMIPPCLKSOURCE_IC17;
+    PeriphClkInitStruct.ICSelection[RCC_IC17].ClockSelection = RCC_ICCLKSOURCE_PLL1;
+    PeriphClkInitStruct.ICSelection[RCC_IC17].ClockDivider = 4;
+    PeriphClkInitStruct.ICSelection[RCC_IC18].ClockSelection = RCC_ICCLKSOURCE_PLL1;
+    PeriphClkInitStruct.ICSelection[RCC_IC18].ClockDivider = 60;
+    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    HAL_NVIC_SetPriority(DCMIPP_IRQn, 7U, 0U);
+    HAL_NVIC_EnableIRQ(DCMIPP_IRQn);
+    HAL_NVIC_SetPriority(CSI_IRQn, 7U, 0U);
+    HAL_NVIC_EnableIRQ(CSI_IRQn);
 
     /* USER CODE END DCMIPP_MspInit 1 */
 
@@ -137,6 +158,8 @@ void HAL_DCMIPP_MspDeInit(DCMIPP_HandleTypeDef* hdcmipp)
     __HAL_RCC_CSI_FORCE_RESET();
     __HAL_RCC_CSI_RELEASE_RESET();
     /* USER CODE BEGIN DCMIPP_MspDeInit 1 */
+    HAL_NVIC_DisableIRQ(DCMIPP_IRQn);
+    HAL_NVIC_DisableIRQ(CSI_IRQn);
 
     /* USER CODE END DCMIPP_MspDeInit 1 */
   }
