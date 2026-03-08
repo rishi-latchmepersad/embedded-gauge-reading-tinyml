@@ -86,11 +86,15 @@ typedef struct {
 /* Main thread stack size */
 #define FX_APP_THREAD_STACK_SIZE         2048
 /* Main thread priority */
-#define FX_APP_THREAD_PRIO               10
+#define FX_APP_THREAD_PRIO               14
 /* USER CODE BEGIN PD */
 #define FILEX_MEDIA_CACHE_BUFFER_SIZE    (8U * 512U) /* 8 sectors cache, 2048 bytes. */
 #define CAPTURED_IMAGES_DIRECTORY_NAME   "captured_images"
 #define CAPTURED_IMAGE_MAX_PATH_LENGTH   96U
+#define CAPTURED_IMAGE_FILE_NAME_LENGTH  32U
+#define CAPTURED_IMAGE_MAX_INDEX         9999U
+#define FILEX_PARTITION_READ_RETRY_DELAY_MS   50U
+#define FILEX_PARTITION_READ_RETRY_TIMEOUT_MS 2000U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -130,6 +134,7 @@ static void AppFileX_StateMachine_Step(
 static UINT AppFileX_LockMedia(void);
 static void AppFileX_UnlockMedia(void);
 static UINT AppFileX_CreateCapturedImagesDirectoryLocked(void);
+static ULONG AppFileX_MillisecondsToTicks(uint32_t timeout_ms);
 /* USER CODE END PFP */
 
 /**
@@ -409,14 +414,25 @@ static void AppFileX_StateMachine_Step(
 	}
 
 	case APP_FILEX_STATE_SD_READ_PARTITION0_INFO: {
+		const ULONG retry_timeout_ticks = AppFileX_MillisecondsToTicks(
+				FILEX_PARTITION_READ_RETRY_TIMEOUT_MS);
+		const UINT partition_status = (UINT) SPI_ReadPartition0Info(
+				&context_ptr->partition_start_lba,
+				&context_ptr->partition_sector_count);
 		/**
 		 * Read the info on partition 0 on the sd card once we have sent all the commands
 		 * and received the correct responses in return.
 		 */
-		if (SPI_ReadPartition0Info(&context_ptr->partition_start_lba,
-				&context_ptr->partition_sector_count) != 0x00U) {
+		if (partition_status != 0x00U) {
+			if ((tx_time_get() - context_ptr->state_entry_tick)
+					< retry_timeout_ticks) {
+				/* Some cards need extra time after OCR before LBA0 becomes readable. */
+				DelayMilliseconds_ThreadX(FILEX_PARTITION_READ_RETRY_DELAY_MS);
+				break;
+			}
+
 			AppFileX_StateMachine_EnterError(context_ptr,
-					APP_FILEX_STATE_SD_READ_PARTITION0_INFO, (UINT) 1U);
+					APP_FILEX_STATE_SD_READ_PARTITION0_INFO, partition_status);
 			break;
 		}
 
@@ -583,8 +599,6 @@ static void AppFileX_StateMachine_Step(
 				AppFileX_UnlockMedia();
 			}
 		}
-
-		DebugLed_BlinkBlueBlocking(500U, 500U, 1U);
 		break;
 	}
 
@@ -638,6 +652,71 @@ bool AppFileX_IsMediaReady(void) {
 }
 
 /*==============================================================================
+ * Function: AppFileX_GetNextCapturedImageName
+ *
+ * Purpose:
+ *   Find the next unused capture_<index>.raw16 name inside /captured_images.
+ *==============================================================================*/
+UINT AppFileX_GetNextCapturedImageName(CHAR *file_name_ptr,
+		ULONG file_name_length) {
+	UINT tx_status = TX_SUCCESS;
+	UINT fx_status = FX_SUCCESS;
+	UINT file_attributes = 0U;
+	ULONG capture_index = 0U;
+	int file_name_chars = 0;
+
+	if ((file_name_ptr == NULL) || (file_name_length == 0U)) {
+		return FX_PTR_ERROR;
+	}
+
+	if (!g_filex_media_ready) {
+		return FX_MEDIA_NOT_OPEN;
+	}
+
+	tx_status = AppFileX_LockMedia();
+	if (tx_status != TX_SUCCESS) {
+		return tx_status;
+	}
+
+	fx_status = fx_directory_default_set(&g_sd_fx_media,
+			CAPTURED_IMAGES_DIRECTORY_NAME);
+	if (fx_status != FX_SUCCESS) {
+		AppFileX_UnlockMedia();
+		return fx_status;
+	}
+
+	for (capture_index = 0U; capture_index <= CAPTURED_IMAGE_MAX_INDEX;
+			capture_index++) {
+		file_name_chars = snprintf(file_name_ptr, (size_t) file_name_length,
+				"capture_%04lu.raw16", (unsigned long) capture_index);
+		if ((file_name_chars < 0)
+				|| ((ULONG) file_name_chars >= file_name_length)) {
+			fx_status = FX_INVALID_NAME;
+			break;
+		}
+
+		fx_status = fx_file_attributes_read(&g_sd_fx_media, file_name_ptr,
+				&file_attributes);
+		if (fx_status == FX_NOT_FOUND) {
+			fx_status = FX_SUCCESS;
+			break;
+		}
+
+		if (fx_status != FX_SUCCESS) {
+			break;
+		}
+	}
+
+	if ((capture_index > CAPTURED_IMAGE_MAX_INDEX) && (fx_status == FX_SUCCESS)) {
+		fx_status = FX_INVALID_NAME;
+	}
+
+	(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
+	AppFileX_UnlockMedia();
+	return fx_status;
+}
+
+/*==============================================================================
  * Function: AppFileX_WriteCapturedImage
  *
  * Purpose:
@@ -682,10 +761,8 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		return fx_status;
 	}
 
-	(void) fx_file_delete(&g_sd_fx_media, file_name_buffer);
-
 	fx_status = fx_file_create(&g_sd_fx_media, file_name_buffer);
-	if ((fx_status != FX_SUCCESS) && (fx_status != FX_ALREADY_CREATED)) {
+	if (fx_status != FX_SUCCESS) {
 		(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
 		AppFileX_UnlockMedia();
 		return fx_status;
@@ -708,6 +785,8 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		DebugConsole_Printf(
 				"Saved captured image to /%s (%lu bytes).\r\n",
 				path, (unsigned long) data_length);
+		/* Hold the blue LED on long enough to clearly indicate a completed image save. */
+		(void) DebugLed_BlinkBlueBlocking(3000U, 0U, 1U);
 	}
 
 	return fx_status;
@@ -736,5 +815,23 @@ static void AppFileX_UnlockMedia(void) {
  *==============================================================================*/
 static UINT AppFileX_CreateCapturedImagesDirectoryLocked(void) {
 	return fx_directory_create(&g_sd_fx_media, CAPTURED_IMAGES_DIRECTORY_NAME);
+}
+
+/*==============================================================================
+ * Function: AppFileX_MillisecondsToTicks
+ *
+ * Purpose:
+ *   Convert a millisecond timeout into ThreadX scheduler ticks, rounding up so
+ *   short delays still wait for at least one tick.
+ *==============================================================================*/
+static ULONG AppFileX_MillisecondsToTicks(uint32_t timeout_ms) {
+	uint32_t ticks = 0U;
+
+	ticks = (timeout_ms * (uint32_t) TX_TIMER_TICKS_PER_SECOND + 999U) / 1000U;
+	if ((timeout_ms > 0U) && (ticks == 0U)) {
+		ticks = 1U;
+	}
+
+	return (ULONG) ticks;
 }
 /* USER CODE END 1 */
