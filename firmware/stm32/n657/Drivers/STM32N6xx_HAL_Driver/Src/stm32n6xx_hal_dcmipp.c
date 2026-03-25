@@ -561,13 +561,6 @@ HAL_StatusTypeDef HAL_DCMIPP_PARALLEL_SetConfig(DCMIPP_HandleTypeDef *hdcmipp,
   return HAL_OK;
 }
 
-/**
-  * @brief  Configure the DCMIPP Serial Interface according to the user parameters.
-  * @param  hdcmipp     Pointer to DCMIPP handle
-  * @param  pCSI_Config pointer to DCMIPP_CSI_ConfTypeDef that contains the Serial Interface
-  *                     configuration information for DCMIPP.
-  * @retval HAL status
-  */
 HAL_StatusTypeDef HAL_DCMIPP_CSI_SetConfig(const DCMIPP_HandleTypeDef *hdcmipp,
                                            const DCMIPP_CSI_ConfTypeDef *pCSI_Config)
 {
@@ -8600,4 +8593,3 @@ static HAL_StatusTypeDef DCMIPP_CSI_VCStop(const DCMIPP_HandleTypeDef *hdcmipp, 
   */
 #endif /* DCMIPP */
 #endif /* HAL_DCMIPP_MODULE_ENABLED */
-

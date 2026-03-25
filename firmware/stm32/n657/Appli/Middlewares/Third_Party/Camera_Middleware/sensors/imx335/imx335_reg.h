@@ -52,6 +52,7 @@
   * @{
   */
 #define IMX335_REG_MODE_SELECT    0x3000
+#define IMX335_REG_XMSTA         0x3002
 #define IMX335_MODE_STREAMING       0x00
 #define IMX335_MODE_STANDBY         0x01
 

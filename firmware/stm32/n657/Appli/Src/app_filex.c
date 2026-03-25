@@ -93,6 +93,7 @@ typedef struct {
 #define CAPTURED_IMAGE_MAX_PATH_LENGTH   96U
 #define CAPTURED_IMAGE_FILE_NAME_LENGTH  32U
 #define CAPTURED_IMAGE_MAX_INDEX         9999U
+#define CAPTURED_IMAGE_READBACK_BYTES    32U
 #define FILEX_PARTITION_READ_RETRY_DELAY_MS   50U
 #define FILEX_PARTITION_READ_RETRY_TIMEOUT_MS 2000U
 /* USER CODE END PD */
@@ -655,7 +656,7 @@ bool AppFileX_IsMediaReady(void) {
  * Function: AppFileX_GetNextCapturedImageName
  *
  * Purpose:
- *   Find the next unused capture_<index>.raw16 name inside /captured_images.
+ *   Find the next unused capture_<index>.yuv422 name inside /captured_images.
  *==============================================================================*/
 UINT AppFileX_GetNextCapturedImageName(CHAR *file_name_ptr,
 		ULONG file_name_length) {
@@ -688,7 +689,7 @@ UINT AppFileX_GetNextCapturedImageName(CHAR *file_name_ptr,
 	for (capture_index = 0U; capture_index <= CAPTURED_IMAGE_MAX_INDEX;
 			capture_index++) {
 		file_name_chars = snprintf(file_name_ptr, (size_t) file_name_length,
-				"capture_%04lu.raw16", (unsigned long) capture_index);
+				"capture_%04lu.yuv422", (unsigned long) capture_index);
 		if ((file_name_chars < 0)
 				|| ((ULONG) file_name_chars >= file_name_length)) {
 			fx_status = FX_INVALID_NAME;
@@ -727,9 +728,11 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 	FX_FILE image_file;
 	CHAR path[CAPTURED_IMAGE_MAX_PATH_LENGTH];
 	CHAR file_name_buffer[CAPTURED_IMAGE_MAX_PATH_LENGTH];
+	UCHAR readback_buffer[CAPTURED_IMAGE_READBACK_BYTES] = { 0 };
 	int path_length = 0;
 	UINT tx_status = TX_SUCCESS;
 	UINT fx_status = FX_SUCCESS;
+	ULONG bytes_read = 0U;
 
 	if ((file_name_ptr == NULL) || (data_ptr == NULL) || (data_length == 0U)) {
 		return FX_PTR_ERROR;
@@ -774,7 +777,40 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		fx_status = fx_file_write(&image_file, (VOID*) data_ptr, data_length);
 		(void) fx_file_close(&image_file);
 		if (fx_status == FX_SUCCESS) {
-			(void) fx_media_flush(&g_sd_fx_media);
+			fx_status = fx_media_flush(&g_sd_fx_media);
+		}
+	}
+
+	if (fx_status == FX_SUCCESS) {
+		fx_status = fx_file_open(&g_sd_fx_media, &image_file, file_name_buffer,
+				FX_OPEN_FOR_READ);
+		if (fx_status == FX_SUCCESS) {
+			const ULONG readback_length = (data_length < CAPTURED_IMAGE_READBACK_BYTES) ?
+					data_length : CAPTURED_IMAGE_READBACK_BYTES;
+			fx_status = fx_file_read(&image_file, readback_buffer, readback_length,
+					&bytes_read);
+			(void) fx_file_close(&image_file);
+			if ((fx_status == FX_SUCCESS) && (bytes_read == readback_length)) {
+				DebugConsole_Printf(
+						"Readback /%s first16=[%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u].\r\n",
+						path,
+						(unsigned int) readback_buffer[0],
+						(unsigned int) readback_buffer[1],
+						(unsigned int) readback_buffer[2],
+						(unsigned int) readback_buffer[3],
+						(unsigned int) readback_buffer[4],
+						(unsigned int) readback_buffer[5],
+						(unsigned int) readback_buffer[6],
+						(unsigned int) readback_buffer[7],
+						(unsigned int) readback_buffer[8],
+						(unsigned int) readback_buffer[9],
+						(unsigned int) readback_buffer[10],
+						(unsigned int) readback_buffer[11],
+						(unsigned int) readback_buffer[12],
+						(unsigned int) readback_buffer[13],
+						(unsigned int) readback_buffer[14],
+						(unsigned int) readback_buffer[15]);
+			}
 		}
 	}
 

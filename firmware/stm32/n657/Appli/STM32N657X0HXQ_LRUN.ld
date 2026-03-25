@@ -46,6 +46,9 @@ MEMORY
 {
   ROM    (xrw)    : ORIGIN = 0x34000400,   LENGTH = 511K
   RAM    (xrw)    : ORIGIN = 0x34080000,   LENGTH = 1536K
+  /* Non-secure alias A/B test — DCMIPP with MSEC=1 writes to 0x24xxxxxx.
+   * Placed at top of AXISRAM1 non-secure alias, away from code/data. */
+  RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 64K
 }
 
 /* Sections */
@@ -146,14 +149,15 @@ SECTIONS
 
   } >RAM AT> ROM
 
-  .noncacheable :
+  .noncacheable (NOLOAD) :
   {
-    . = ALIGN(8);
+    . = ALIGN(32);
     __snoncacheable = .;/* create symbol for start of section */
     KEEP(*(.noncacheable))
-    . = ALIGN(8);
+    KEEP(*(.noncacheable*))
+    . = ALIGN(32);
     __enoncacheable = .;  /* create symbol for end of section */
-  } > RAM
+  } > RAM_NC
 
   .gnu.sgstubs :
   {
