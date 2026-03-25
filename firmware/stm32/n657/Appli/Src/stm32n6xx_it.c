@@ -22,6 +22,7 @@
 #include "stm32n6xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "cmw_camera.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -51,6 +52,25 @@
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+extern DCMIPP_HandleTypeDef hdcmipp;
+extern volatile uint32_t camera_capture_csi_irq_count;
+extern volatile uint32_t camera_capture_dcmipp_irq_count;
+
+/**
+  * @brief Return the DCMIPP handle currently owning the camera pipeline.
+  * @retval Middleware handle when initialized, otherwise CubeMX global handle.
+  */
+static DCMIPP_HandleTypeDef *IT_GetActiveDcmippHandle(void)
+{
+  DCMIPP_HandleTypeDef *cmw_handle = CMW_CAMERA_GetDCMIPPHandle();
+
+  if ((cmw_handle != NULL) && (cmw_handle->Instance == DCMIPP))
+  {
+    return cmw_handle;
+  }
+
+  return &hdcmipp;
+}
 
 /* USER CODE END 0 */
 
@@ -230,7 +250,8 @@ void TIM5_IRQHandler(void)
   */
 void CSI_IRQHandler(void)
 {
-  HAL_DCMIPP_CSI_IRQHandler(&hdcmipp);
+  camera_capture_csi_irq_count++;
+  HAL_DCMIPP_CSI_IRQHandler(IT_GetActiveDcmippHandle());
 }
 
 /**
@@ -238,7 +259,8 @@ void CSI_IRQHandler(void)
   */
 void DCMIPP_IRQHandler(void)
 {
-  HAL_DCMIPP_IRQHandler(&hdcmipp);
+  camera_capture_dcmipp_irq_count++;
+  HAL_DCMIPP_IRQHandler(IT_GetActiveDcmippHandle());
 }
 
 /* USER CODE END 1 */

@@ -110,6 +110,26 @@ int is_camera_started = 0;
 int is_pipe1_2_shared = 0;
 
 #if defined(USE_IMX335_SENSOR)
+/*
+ * Diagnostic toggle for the IMX335 CSI lane mapping.
+ *
+ * The reference BSP path for IMX335 uses the physical lane mapping, so we keep
+ * the IMX335 middleware aligned with that board-vendor configuration.
+ */
+#ifndef CMW_IMX335_CSI_LANE_MAPPING
+#define CMW_IMX335_CSI_LANE_MAPPING DCMIPP_CSI_PHYSICAL_DATA_LANES
+#endif
+
+/*
+ * Diagnostic toggle for the IMX335 CSI PHY bitrate.
+ *
+ * The reference IMX335 board path uses the 1600 Mbps Synopsys table, so we
+ * keep the middleware aligned with that vendor configuration.
+ */
+#ifndef CMW_IMX335_CSI_PHY_BITRATE
+#define CMW_IMX335_CSI_PHY_BITRATE DCMIPP_CSI_PHY_BT_1600
+#endif
+
 static int32_t CMW_CAMERA_IMX335_Init( CMW_Sensor_Init_t *initSensors_params);
 #endif
 #if defined(USE_VD55G1_SENSOR)
@@ -1917,9 +1937,10 @@ static int32_t CMW_CAMERA_IMX335_Init(CMW_Sensor_Init_t *initSensors_params)
       return CMW_ERROR_COMPONENT_FAILURE;
   }
 
+  /* Restored to 2-lane mode (1-lane diagnostic inconclusive). */
   csi_conf.NumberOfLanes = DCMIPP_CSI_TWO_DATA_LANES;
-  csi_conf.DataLaneMapping = DCMIPP_CSI_PHYSICAL_DATA_LANES;
-  csi_conf.PHYBitrate = DCMIPP_CSI_PHY_BT_1600;
+  csi_conf.DataLaneMapping = CMW_IMX335_CSI_LANE_MAPPING;
+  csi_conf.PHYBitrate = CMW_IMX335_CSI_PHY_BITRATE;
   ret = HAL_DCMIPP_CSI_SetConfig(&hcamera_dcmipp, &csi_conf);
   if (ret != HAL_OK)
   {

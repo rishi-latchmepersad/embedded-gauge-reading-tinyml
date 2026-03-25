@@ -57,7 +57,7 @@
 //   <i> Value for SAU->CTRL register bit ALLNS
 //   <i> When all Memory is Non-Secure (ALLNS is 1), IDAU can override memory map configuration.
 */
-#define SAU_INIT_CTRL_ALLNS  0
+#define SAU_INIT_CTRL_ALLNS  1
 
 /*
 // </e>

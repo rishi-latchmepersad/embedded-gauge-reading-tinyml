@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -n \"DebugConsole_SetLock\\\\|lock_callback\\\\|unlock_callback\" d:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/Appli/Inc/*.h)",
+      "Bash(python3 -c \":*)",
+      "Bash(python3:*)",
+      "Bash(grep -r \"CMW_IMX335_PowerOn\\\\|PowerOn\" d:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/Appli/Middlewares/Third_Party/Camera_Middleware/ --include=*.c -l)",
+      "Bash(echo 'not found' grep -r CMW_IMX335_PowerOn d:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/Appli/ --include=*.c)",
+      "Bash(head -20 grep -rn \"RISAF2\\\\|RISAF_\\\\|HAL_RIF_RISAF\\\\|MX_RISAF\" d:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/FSBL/Src/ --include=*.c)",
+      "Bash(grep -rn \"RISAF\\\\|24080\\\\|0x2408\\\\|AXISRAM\" d:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/FSBL/Src/ --include=*.c)",
+      "Bash(head -30 grep -rn \"RISAF\\\\|24080\\\\|0x2408\\\\|AXISRAM\" d:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/FSBL/Inc/ --include=*.h)",
+      "Bash(find d:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/FSBL -name *.c -o -name *.h)",
+      "Bash(grep -rn \"JUMP\\\\|jump\\\\|branch\\\\|LRUN\\\\|__set_MSP\\\\|SCB_NS\\\\|__TZ_set\\\\|NS_ENTRY\\\\|nonsecure\\\\|non_secure\\\\|AIRCR\\\\|VTOR_NS\" d:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/FSBL/ --include=*.c --include=*.s --include=*.S)",
+      "Bash(head -20 grep -n \"BREN\\\\|P0BREN\\\\|RISAF.*CFGR\" \"d:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/Drivers/CMSIS/Device/ST/STM32N6xx/Include/stm32n657xx.h\")",
+      "Bash(head -15 grep -n \"__HAL_RCC_RISAF\\\\|RISAF.*CLK_ENABLE\" d:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/Drivers/STM32N6xx_HAL_Driver/Inc/stm32n6xx_hal_rcc.h)",
+      "Bash(head -20 grep -n \"IPC1R\\\\|IPC2R\\\\|IPC3R\\\\|IPPLUG\\\\|IPPlug\\\\|ip_plug\" \"d:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_dcmipp.c\")",
+      "Bash(grep -r \"0x00002080\\\\|bit.*7\\\\|bit.*13\" d:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657 --include=*.c --include=*.h)",
+      "Bash(grep -n \"DCMIPP_.*SYNCERR\\\\|P0.*ERR.*Pos\\\\|DCMIPP.*P0.*Pos.*[0-9]$\" d:Projectsembedded-gauge-reading-tinymlfirmwarestm32n657DriversCMSISDeviceSTSTM32N6xxIncludestm32n657xx.h)",
+      "Bash(find d:/Projects/embedded-gauge-reading-tinyml/third_party_refs -name *.c)"
+    ]
+  }
+}

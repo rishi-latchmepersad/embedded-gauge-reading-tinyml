@@ -26,6 +26,10 @@ typedef struct {
 bool DebugConsole_Init(
 		const DebugConsole_Configuration_t *configuration_pointer);
 
+/* Install or replace lock/unlock callbacks after init — call once ThreadX is running */
+void DebugConsole_SetLockCallbacks(DebugConsole_LockCallback_t lock,
+		DebugConsole_UnlockCallback_t unlock);
+
 bool DebugConsole_IsInitialized(void);
 
 bool DebugConsole_WriteBytes(const uint8_t *byte_array_pointer,

@@ -68,6 +68,12 @@ bool DebugConsole_Init(
 	return true;
 }
 
+void DebugConsole_SetLockCallbacks(DebugConsole_LockCallback_t lock,
+		DebugConsole_UnlockCallback_t unlock) {
+	g_debug_console_configuration.lock_callback   = lock;
+	g_debug_console_configuration.unlock_callback = unlock;
+}
+
 /**
  * @brief  Checks whether the debug console has been initialized.
  * @param  None.
@@ -241,6 +247,8 @@ static void DebugConsole_InternalUnlock(void) {
 	}
 }
 
+static volatile uint32_t g_uart_busy = 0U;
+
 static bool DebugConsole_InternalUartTransmitBlocking(
 		const uint8_t *byte_array_pointer, size_t byte_array_length) {
 	HAL_StatusTypeDef transmit_status = HAL_ERROR;
@@ -249,10 +257,24 @@ static bool DebugConsole_InternalUartTransmitBlocking(
 		return false;
 	}
 
+	/* Spin-wait until the UART is free.  Uses a simple atomic flag rather
+	 * than disabling interrupts (which would deadlock HAL_UART_Transmit's
+	 * tick-based timeout) or a ThreadX mutex (which is illegal from ISR). */
+	uint32_t spin = 0U;
+	while (__atomic_test_and_set(&g_uart_busy, __ATOMIC_ACQUIRE)) {
+		if (++spin > 200000U) {
+			/* UART appears stuck — clear the flag and try anyway. */
+			__atomic_clear(&g_uart_busy, __ATOMIC_RELEASE);
+			break;
+		}
+	}
+
 	transmit_status = HAL_UART_Transmit(
 			g_debug_console_configuration.uart_handle_pointer,
 			(uint8_t*) byte_array_pointer, (uint16_t) byte_array_length,
 			g_debug_console_configuration.uart_transmit_timeout_milliseconds);
+
+	__atomic_clear(&g_uart_busy, __ATOMIC_RELEASE);
 
 	return (transmit_status == HAL_OK);
 }

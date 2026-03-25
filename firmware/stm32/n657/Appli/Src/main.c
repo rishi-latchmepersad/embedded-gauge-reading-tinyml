@@ -26,6 +26,7 @@
 #include <string.h>
 #include "debug_console.h"
 #include "debug_led.h"
+#include "stm32n6xx_hal_cortex.h"
 #include "threadx_utils.h"
 /* USER CODE END Includes */
 
@@ -70,6 +71,9 @@ static void SystemIsolation_Config(void);
 /* USER CODE BEGIN PFP */
 static void App_SystemClock_Config(void);
 static void App_CameraKernelClock_Config(void);
+static void Setup_Mpu(void);
+extern uint32_t __snoncacheable;
+extern uint32_t __enoncacheable;
 
 /* USER CODE END PFP */
 
@@ -197,12 +201,48 @@ static void App_CameraKernelClock_Config(void)
   PeriphClkInitStruct.ICSelection[RCC_IC17].ClockSelection = RCC_ICCLKSOURCE_PLL1;
   PeriphClkInitStruct.ICSelection[RCC_IC17].ClockDivider = 4;
   PeriphClkInitStruct.ICSelection[RCC_IC18].ClockSelection = RCC_ICCLKSOURCE_PLL1;
-  PeriphClkInitStruct.ICSelection[RCC_IC18].ClockDivider = 60;
+  /* 1.2 GHz / 50 = 24 MHz, which matches the IMX335 input clock setting. */
+  PeriphClkInitStruct.ICSelection[RCC_IC18].ClockDivider = 50;
 
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
   {
     Error_Handler();
   }
+}
+
+/**
+ * @brief Mark the camera DMA buffer region as non-cacheable.
+ *
+ * This mirrors the ST reference application, which places capture buffers in a
+ * dedicated memory section and protects that section with the MPU so DCMIPP
+ * writes are visible to the CPU without stale-cache effects.
+ */
+static void Setup_Mpu(void)
+{
+  MPU_Attributes_InitTypeDef attr = {0};
+  MPU_Region_InitTypeDef region = {0};
+  size_t noncacheable_size = (size_t)((uint8_t *)&__enoncacheable -
+                                      (uint8_t *)&__snoncacheable);
+
+  attr.Number = MPU_ATTRIBUTES_NUMBER0;
+  attr.Attributes = MPU_NOT_CACHEABLE;
+  HAL_MPU_ConfigMemoryAttributes(&attr);
+
+  region.Enable = MPU_REGION_ENABLE;
+  region.Number = MPU_REGION_NUMBER0;
+  region.BaseAddress = (uint32_t) &__snoncacheable;
+  region.LimitAddress = (uint32_t) &__enoncacheable - 1U;
+  region.AttributesIndex = MPU_ATTRIBUTES_NUMBER0;
+  region.AccessPermission = MPU_REGION_ALL_RW;
+  region.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE;
+  region.DisablePrivExec = MPU_PRIV_INSTRUCTION_ACCESS_ENABLE;
+  region.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
+  HAL_MPU_ConfigRegion(&region);
+  HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+  /* NOTE: do NOT memset the noncacheable buffer here — it lives at the NS alias
+   * address (0x24xxxxxx) which RISAF1 may not yet be open at this point in the
+   * init sequence.  The capture code fills the buffer with 0xAA sentinel before
+   * each DMA, so zero-init here is not required. */
 }
 
 /* USER CODE END 0 */
@@ -223,6 +263,7 @@ int main(void)
 
   /* USER CODE BEGIN Init */
   App_SystemClock_Config();
+  Setup_Mpu();
 
   /* USER CODE END Init */
 
@@ -303,67 +344,14 @@ int main(void)
   */
 static void MX_DCMIPP_Init(void)
 {
-
-  /* USER CODE BEGIN DCMIPP_Init 0 */
-
-  /* USER CODE END DCMIPP_Init 0 */
-
-  DCMIPP_CSI_PIPE_ConfTypeDef pCSI_PipeConfig = {0};
-  DCMIPP_CSI_ConfTypeDef pCSI_Config = {0};
-  DCMIPP_PipeConfTypeDef pPipeConfig = {0};
-
-  /* USER CODE BEGIN DCMIPP_Init 1 */
-
-  /* USER CODE END DCMIPP_Init 1 */
   hdcmipp.Instance = DCMIPP;
   if (HAL_DCMIPP_Init(&hdcmipp) != HAL_OK)
   {
     Error_Handler();
   }
-
-  /** Pipe 0 Config
-  */
-  pCSI_PipeConfig.DataTypeMode = DCMIPP_DTMODE_DTIDA;
-  pCSI_PipeConfig.DataTypeIDA = DCMIPP_DT_RAW10;
-  pCSI_PipeConfig.DataTypeIDB = DCMIPP_DT_YUV420_8;
-  if (HAL_DCMIPP_CSI_PIPE_SetConfig(&hdcmipp, DCMIPP_PIPE0, &pCSI_PipeConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  pCSI_Config.PHYBitrate = DCMIPP_CSI_PHY_BT_1600;
-  pCSI_Config.DataLaneMapping = DCMIPP_CSI_PHYSICAL_DATA_LANES;
-  pCSI_Config.NumberOfLanes = DCMIPP_CSI_TWO_DATA_LANES;
-  if (HAL_DCMIPP_CSI_SetConfig(&hdcmipp, &pCSI_Config) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  pPipeConfig.FrameRate = DCMIPP_FRAME_RATE_ALL;
-  pPipeConfig.PixelPipePitch = 10;
-  pPipeConfig.PixelPackerFormat = DCMIPP_PIXEL_PACKER_FORMAT_RGB888_YUV444_1;
-  if (HAL_DCMIPP_PIPE_SetConfig(&hdcmipp, DCMIPP_PIPE0, &pPipeConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  HAL_DCMIPP_CSI_SetVCConfig(&hdcmipp, 0U, DCMIPP_CSI_DT_BPP10);
-  /* USER CODE BEGIN DCMIPP_Init 2 */
-  /* Re-apply RAW10 dump-pipe settings here so CubeMX regeneration cannot force
-   * pixel-packer defaults back onto PIPE0. */
-  pCSI_PipeConfig.DataTypeIDB = 0U;
-  if (HAL_DCMIPP_CSI_PIPE_SetConfig(&hdcmipp, DCMIPP_PIPE0, &pCSI_PipeConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  pPipeConfig.FrameRate = DCMIPP_FRAME_RATE_ALL;
-  pPipeConfig.PixelPipePitch = 0U;
-  pPipeConfig.PixelPackerFormat = 0U;
-  if (HAL_DCMIPP_PIPE_SetConfig(&hdcmipp, DCMIPP_PIPE0, &pPipeConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /* USER CODE END DCMIPP_Init 2 */
-
+  /* Keep CubeMX from owning a second raw PIPE0 path here.
+   * The middleware configures the active camera pipe itself, and leaving this
+   * function as a bare peripheral init avoids fighting that setup. */
 }
 
 /**
@@ -476,14 +464,26 @@ static void MX_LPUART1_UART_Init(void)
 
   /* set all required IPs as secure privileged */
   __HAL_RCC_RIFSC_CLK_ENABLE();
+  /* RISAF (memory region access filter) needs its own AHB3 clock. Without
+   * this, writes to RISAF2_S->REG[0].CFGR are silently dropped. */
+  __HAL_RCC_RISAF_CLK_ENABLE();
 
   /*RIMC configuration*/
-  RIMC_MasterConfig_t RIMC_master = {0};
-  RIMC_master.MasterCID = RIF_CID_1;
-  RIMC_master.SecPriv = RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_NPRIV;
-  HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_DCMIPP, &RIMC_master);
+  RIMC_MasterConfig_t dcmipp_master = {0};
+  RIMC_MasterConfig_t eth1_master = {0};
 
-  HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_ETH1, &RIMC_master);
+  dcmipp_master.MasterCID = RIF_CID_1;
+  /* The ST forum fix for the N6 raw-dump/HPDMA symptom configures DCMIPP as
+   * secure and privileged on both the master and slave sides. We mirror that
+   * here so Pipe0 follows the same isolation model as the known-good setup. */
+  dcmipp_master.SecPriv = RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV;
+  HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_DCMIPP, &dcmipp_master);
+  HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_DCMIPP,
+                                        RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
+
+  eth1_master.MasterCID = RIF_CID_1;
+  eth1_master.SecPriv = RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_NPRIV;
+  HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_ETH1, &eth1_master);
 
   /* RIF-Aware IPs Config */
 
@@ -512,6 +512,73 @@ static void MX_LPUART1_UART_Init(void)
   HAL_GPIO_ConfigPinAttributes(GPIOO,GPIO_PIN_5,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
 
   /* USER CODE BEGIN RIF_Init 1 */
+
+  /* Disable all RIF security on AXISRAM1/2 so any master (including DCMIPP,
+   * whose AXI transactions arrive non-secure regardless of RIMC config) can
+   * read and write freely. RISC: non-secure, non-privileged. RISAF: BREN=0
+   * (filter disabled — all accesses pass through). */
+  HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RCC_PERIPH_INDEX_AXISRAM1,
+                                        RIF_ATTRIBUTE_NPRIV);
+  HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RCC_PERIPH_INDEX_AXISRAM2,
+                                        RIF_ATTRIBUTE_NPRIV);
+
+  {
+    volatile uint32_t r1_cfgr;
+    volatile uint32_t r2_cfgr;
+    volatile uint32_t r2_cidcfgr;
+    volatile uint32_t r2_startr;
+    volatile uint32_t r2_endr;
+    volatile uint32_t r3_cfgr;
+    volatile uint32_t r3_cidcfgr;
+
+    /* RISAF1 guards SRAM1 NS alias — disable the filter (belt-and-suspenders). */
+    RISAF1_NS->REG[0].STARTR  = 0x00000000U;
+    RISAF1_NS->REG[0].ENDR    = 0x000FFFFFU;
+    RISAF1_NS->REG[0].CIDCFGR = 0x00000000U;
+    RISAF1_NS->REG[0].CFGR    = 0x00000000U; /* BREN=0, SEC=0 — no filtering */
+    RISAF1_NS->IACR            = 0xFFFFFFFFU; /* clear any stale illegal-access flags */
+
+    /* RISAF2 guards the AXISRAM1 secure alias — disable filters so DCMIPP
+     * (MSEC=1) can write to the capture buffer even when we move it to the
+     * non-secure alias for this A/B test. */
+    RISAF2_S->REG[0].STARTR   = 0x00000000U;
+    RISAF2_S->REG[0].ENDR     = 0x000FFFFFU;
+    RISAF2_S->REG[0].CIDCFGR  = 0x00000000U;
+    RISAF2_S->REG[0].CFGR     = 0x00000000U; /* BREN=0 — no filtering */
+    RISAF2_S->IACR             = 0xFFFFFFFFU;
+    RISAF2_NS->REG[0].STARTR  = 0x00000000U;
+    RISAF2_NS->REG[0].ENDR    = 0x000FFFFFU;
+    RISAF2_NS->REG[0].CIDCFGR = 0x00000000U;
+    RISAF2_NS->REG[0].CFGR    = 0x00000000U;
+    RISAF2_NS->IACR            = 0xFFFFFFFFU;
+
+    /* RISAF3 guards AXISRAM2 — disable the filter */
+    RISAF3_NS->REG[0].STARTR  = 0x00000000U;
+    RISAF3_NS->REG[0].ENDR    = 0x000FFFFFU;
+    RISAF3_NS->REG[0].CIDCFGR = 0x00000000U;
+    RISAF3_NS->REG[0].CFGR    = 0x00000000U; /* BREN=0, SEC=0 — no filtering */
+    RISAF3_NS->IACR            = 0xFFFFFFFFU; /* clear any stale illegal-access flags */
+
+    /* Readback to confirm writes were accepted. */
+    r1_cfgr    = RISAF1_NS->REG[0].CFGR;
+    r2_cfgr    = RISAF2_NS->REG[0].CFGR;
+    r2_cidcfgr = RISAF2_NS->REG[0].CIDCFGR;
+    r2_startr  = RISAF2_NS->REG[0].STARTR;
+    r2_endr    = RISAF2_NS->REG[0].ENDR;
+    r3_cfgr    = RISAF3_NS->REG[0].CFGR;
+    r3_cidcfgr = RISAF3_NS->REG[0].CIDCFGR;
+    DebugConsole_Printf(
+        "[RIF] RISAF1 REG0: CFGR=0x%08lX (NS alias 0x24xxxxxx)\r\n",
+        (unsigned long) r1_cfgr);
+    DebugConsole_Printf(
+        "[RIF] RISAF2 NS REG0: CFGR=0x%08lX CIDCFGR=0x%08lX STARTR=0x%08lX ENDR=0x%08lX | S CFGR=0x%08lX\r\n",
+        (unsigned long) r2_cfgr, (unsigned long) r2_cidcfgr,
+        (unsigned long) r2_startr, (unsigned long) r2_endr,
+        (unsigned long) RISAF2_S->REG[0].CFGR);
+    DebugConsole_Printf(
+        "[RIF] RISAF3 REG0: CFGR=0x%08lX CIDCFGR=0x%08lX\r\n",
+        (unsigned long) r3_cfgr, (unsigned long) r3_cidcfgr);
+  }
 
   /* USER CODE END RIF_Init 1 */
   /* USER CODE BEGIN RIF_Init 2 */
