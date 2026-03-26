@@ -48,7 +48,7 @@ MEMORY
   RAM    (xrw)    : ORIGIN = 0x34080000,   LENGTH = 1536K
   /* Non-secure alias A/B test — DCMIPP with MSEC=1 writes to 0x24xxxxxx.
    * Placed at top of AXISRAM1 non-secure alias, away from code/data. */
-  RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 64K
+  RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 128K
 }
 
 /* Sections */

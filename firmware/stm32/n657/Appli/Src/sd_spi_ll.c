@@ -32,6 +32,12 @@ extern SPI_HandleTypeDef hspi5; // Use CubeMX-generated SPI handle, provided by 
  *==============================================================================*/
 static uint8_t g_sd_card_is_sdhc = 0U; /* 1 if SDHC or SDXC, 0 if SDSC (byte addressing). */
 
+/* Some cards need noticeably longer than the bare minimum to leave IDLE after
+ * power-up, especially when the board is doing a lot of other bring-up work at
+ * the same time. Keep this generous so the FileX thread is less timing-sensitive. */
+#define SD_SPI_ACMD41_MAX_ATTEMPTS       1500U
+#define SD_SPI_ACMD41_RETRY_DELAY_MS     20U
+
 /*==============================================================================
  * File-scope shared sector buffer.
  * Purpose:
@@ -312,7 +318,7 @@ uint8_t SPI_SendCMD0_GetR1(void) {
 	uint8_t r1 = 0xFFU; // Initialize with timeout value, will be replaced on success.
 
 	SD_Deselect();      // Keep CS high so we can provide idle clocks correctly.
-	DelayMilliseconds_ThreadX(5U); // Give the card a little time before attempting CMD0.
+	DelayMilliseconds_ThreadX(20U); // Give the card extra time before attempting CMD0.
 
 	SD_SendIdleClocks(10U); // Provide 80 idle clocks with CS high to enter SPI mode.
 	SD_Select();                 // Assert CS low to start the CMD0 transaction.
@@ -412,7 +418,7 @@ uint8_t SPI_SendCMD8_ReadR7(uint8_t r7_out[4]) {
  *   Not thread-safe.
  *
  * Timing:
- *   Up to 100 attempts, with 10 ms delay each attempt.
+ *   Up to 1500 attempts, with 20 ms delay each attempt.
  *
  * Errors:
  *   Returns non-zero R1 if card never becomes ready.
@@ -429,7 +435,7 @@ uint8_t SPI_SendACMD41_UntilReady(uint8_t *cmd55_r1_out) {
 		*cmd55_r1_out = 0xFFU; // Initialize output to 0xFF so "never ran" is obvious.
 	}
 
-	for (uint32_t attempt = 0U; attempt < 100U; attempt++) // Try multiple times because SD card init is allowed to take time.
+	for (uint32_t attempt = 0U; attempt < SD_SPI_ACMD41_MAX_ATTEMPTS; attempt++) // Try multiple times because SD card init is allowed to take time.
 			{
 		SD_Deselect(); // Ensure CS high between attempts to reset SPI framing expectations.
 		SD_SendIdleClocks(2U); // Provide clocks with CS high to satisfy idle timing between retries.
@@ -455,7 +461,7 @@ uint8_t SPI_SendACMD41_UntilReady(uint8_t *cmd55_r1_out) {
 			return 0x00U; // Return success, card is initialized and out of IDLE.
 		}
 
-		DelayMilliseconds_ThreadX(10U); // Delay so we do not hammer the card, and allow internal init to continue.
+		DelayMilliseconds_ThreadX(SD_SPI_ACMD41_RETRY_DELAY_MS); // Delay so we do not hammer the card, and allow internal init to continue.
 	}
 
 	return r1_acmd41; // Return last response so caller can diagnose why it never became ready.

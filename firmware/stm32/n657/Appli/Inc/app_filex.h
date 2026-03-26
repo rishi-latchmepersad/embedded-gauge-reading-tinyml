@@ -55,7 +55,7 @@ UINT MX_FileX_Init(VOID *memory_ptr);
 /* USER CODE BEGIN EFP */
 bool AppFileX_IsMediaReady(void);
 UINT AppFileX_GetNextCapturedImageName(CHAR *file_name_ptr,
-		ULONG file_name_length);
+		ULONG file_name_length, const CHAR *file_extension_ptr);
 UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		const VOID *data_ptr, ULONG data_length);
 

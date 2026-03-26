@@ -53,32 +53,29 @@
 #define CAMERA_INIT_STARTUP_DELAY_MS        200U
 #define BCAMS_IMX_I2C_ADDRESS_7BIT          0x1AU
 #define BCAMS_IMX_I2C_ADDRESS_HAL           (BCAMS_IMX_I2C_ADDRESS_7BIT << 1U)
-#define BCAMS_IMX_I2C_PROBE_TRIALS          3U
-#define BCAMS_IMX_I2C_PROBE_TIMEOUT_MS      20U
-#define BCAMS_IMX_POWER_SETTLE_DELAY_MS     5U
-#define BCAMS_IMX_RESET_ASSERT_DELAY_MS     1U
-#define BCAMS_IMX_RESET_RELEASE_DELAY_MS    1U
+#define BCAMS_IMX_I2C_PROBE_TRIALS          5U
+#define BCAMS_IMX_I2C_PROBE_TIMEOUT_MS      50U
+#define BCAMS_IMX_POWER_SETTLE_DELAY_MS     10U
+#define BCAMS_IMX_RESET_ASSERT_DELAY_MS     5U
+#define BCAMS_IMX_RESET_RELEASE_DELAY_MS    10U
 #define IMX335_SENSOR_WIDTH_PIXELS          2592U
 #define IMX335_SENSOR_HEIGHT_LINES          1944U
-#define CAMERA_CAPTURE_WIDTH_PIXELS         128U
-#define CAMERA_CAPTURE_HEIGHT_PIXELS        128U
-/* Temporarily run the vendor-aligned CMW/ISP path on PIPE1 so we can compare
- * it directly against the raw-dump experiment. Set back to 1 to re-enable the
- * PIPE0 raw-dump bypass. */
-#define CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC 1
-/* DCMIPP PIPE0 raw-dump mode stores each RAW10 pixel as a 32-bit DWORD
- * (10-bit value in the lower half-word, upper 22 bits = 0).  The ISP/YUV
- * path (PIPE1) uses 2 bytes/pixel (YUV422).  Select the right size here. */
+#define CAMERA_CAPTURE_WIDTH_PIXELS         256U
+#define CAMERA_CAPTURE_HEIGHT_PIXELS        256U
+/* Use the processed CMW/ISP path so AE/AWB and demosaicing can converge on a
+ * usable live image. Set back to 1 only if we need raw Pipe0 diagnostics. */
+#define CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC 0
+/* DCMIPP PIPE0 raw-dump mode stores RAW10 pixels in 16-bit sample words.
+ * We treat the low 10 bits as the sample value and preserve the full word
+ * when writing the raw capture file to disk. */
 #if CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC
-#define CAMERA_CAPTURE_BYTES_PER_PIXEL      4U  /* RAW10 → 32-bit DWORD per pixel */
+#define CAMERA_CAPTURE_BYTES_PER_PIXEL      2U  /* RAW10 → 16-bit padded pixel */
 #else
 #define CAMERA_CAPTURE_BYTES_PER_PIXEL      2U  /* YUV422 → 2 bytes per pixel */
 #endif
-#if CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC
+/* Keep the doubled 256x256 frame within the widened noncacheable window by
+ * using a single capture buffer in the processed path too. */
 #define CAMERA_CAPTURE_BUFFER_COUNT         1U
-#else
-#define CAMERA_CAPTURE_BUFFER_COUNT         2U
-#endif
 #define CAMERA_CAPTURE_TARGET_FRAME_COUNT   4U
 /* Capture crop is expressed directly in pixels/lines. */
 #define CAMERA_CAPTURE_CROP_HSTART_PIXELS   0U
@@ -93,13 +90,28 @@
  * sample a blank top-left margin from the sensor frame. */
 #define CAMERA_CAPTURE_RAW_CROP_HSTART_PIXELS   ((IMX335_SENSOR_WIDTH_PIXELS - CAMERA_CAPTURE_WIDTH_PIXELS) / 2U)
 #define CAMERA_CAPTURE_RAW_CROP_VSTART_LINES    ((IMX335_SENSOR_HEIGHT_LINES - CAMERA_CAPTURE_HEIGHT_PIXELS) / 2U)
+/* Pipe0 raw-capture frames store one 16-bit padded pixel per sample, so the
+ * preview code should read them as a 256x128 source image and upscale only the view. */
+#define CAMERA_CAPTURE_RAW_SOURCE_WIDTH_PIXELS    CAMERA_CAPTURE_WIDTH_PIXELS
+#define CAMERA_CAPTURE_RAW_SOURCE_HEIGHT_LINES    CAMERA_CAPTURE_HEIGHT_PIXELS
+#define CAMERA_CAPTURE_RAW_BMP_PREVIEW_SCALE      2U
+#define CAMERA_CAPTURE_RAW_BMP_PREVIEW_WIDTH_PIXELS   (CAMERA_CAPTURE_RAW_SOURCE_WIDTH_PIXELS * CAMERA_CAPTURE_RAW_BMP_PREVIEW_SCALE)
+#define CAMERA_CAPTURE_RAW_BMP_PREVIEW_HEIGHT_LINES   (CAMERA_CAPTURE_RAW_SOURCE_HEIGHT_LINES * CAMERA_CAPTURE_RAW_BMP_PREVIEW_SCALE)
+#define CAMERA_CAPTURE_RAW_BMP_PREVIEW_PIXEL_COUNT    (CAMERA_CAPTURE_RAW_BMP_PREVIEW_WIDTH_PIXELS * CAMERA_CAPTURE_RAW_BMP_PREVIEW_HEIGHT_LINES)
+#define CAMERA_CAPTURE_RAW_BMP_FILE_HEADER_BYTES  14U
+#define CAMERA_CAPTURE_RAW_BMP_INFO_HEADER_BYTES   40U
+#define CAMERA_CAPTURE_RAW_BMP_PALETTE_BYTES      (256U * 4U)
+#define CAMERA_CAPTURE_RAW_BMP_HEADER_BYTES       (CAMERA_CAPTURE_RAW_BMP_FILE_HEADER_BYTES + CAMERA_CAPTURE_RAW_BMP_INFO_HEADER_BYTES + CAMERA_CAPTURE_RAW_BMP_PALETTE_BYTES)
+/* Keep the latest preview at a stable path so it is easy to download and
+ * inspect without having to scan for unique names on the SD card. */
+#define CAMERA_CAPTURE_RAW_FILE_NAME      "capture_latest.raw16"
 /* IMX335 color-bar bring-up consistently shows four blank top lines before the
  * active test-pattern data starts, so we skip them in the raw Pipe0 view. */
 #define CAMERA_CAPTURE_RAW_TOP_SKIP_LINES       4U
 /* Give the ISP/AEC loop time to move the sensor away from its black-frame
  * startup state before we give up on the first saved capture. */
 #define CAMERA_CAPTURE_TIMEOUT_MS           8000U
-#define CAMERA_STORAGE_WAIT_TIMEOUT_MS      10000U
+#define CAMERA_STORAGE_WAIT_TIMEOUT_MS      70000U
 #define CAMERA_CAPTURE_RETRY_DELAY_MS       50U
 #define CAMERA_STREAM_WARMUP_DELAY_MS       250U
 #define IMX335_CAPTURE_FRAMERATE_FPS        10
@@ -107,11 +119,13 @@
 /* Match ST's IMX335 middleware and upstream Linux driver ID check. */
 #define IMX335_CHIP_ID_REG                 0x3912U
 #define IMX335_CHIP_ID_VALUE               0x00U
-/* Diagnostic: IMX335 test pattern.
+/* IMX335 test-pattern selection.
  * -1 = disabled (live image), 0 = disabled (same as -1 in driver),
  *  1 = solid color (default color regs = 0x000 = black — all-zero pixels, NOT useful),
  * 10 = color bars (non-zero pixel values — use this to verify DMA path). */
-#define IMX335_TEST_PATTERN_MODE           10
+/* Return to live optical input so the raw capture reflects the real gauge
+ * scene instead of a synthetic test pattern. */
+#define IMX335_TEST_PATTERN_MODE           -1
 
 /* ST treats PIPE0 as the raw dump pipe and PIPE1 as the processed/YUV pipe.
  * Use PIPE0 only while the raw diagnostic branch is enabled. */
@@ -191,6 +205,9 @@ static uint8_t camera_capture_buffers[CAMERA_CAPTURE_BUFFER_COUNT][CAMERA_CAPTUR
 /* Keep a separate scratch line so the CPU write proof does not contaminate
  * the live capture buffer before DMA arms. */
 static uint32_t camera_capture_write_probe_words[2U];
+/* Histogram bins for the RAW10 level summary. Keeping this static avoids
+ * allocating a large analysis buffer on the camera thread stack. */
+static uint32_t camera_capture_raw_level_histogram[1024U];
 
 /* Reuse the CubeMX-generated camera control I2C instance from main.c. */
 extern DCMIPP_HandleTypeDef hdcmipp;
@@ -240,6 +257,7 @@ static bool CameraPlatform_InitImx335Driver(void);
  */
 static bool CameraPlatform_InitializeImx335Sensor(void);
 static bool CameraPlatform_SeedImx335ExposureGain(void);
+static bool CameraPlatform_EnableImx335AutoExposure(void);
 static void CameraPlatform_ReapplyImx335TestPattern(void);
 static bool CameraPlatform_StartImx335Stream(void);
 static bool CameraPlatform_WaitForStorageReady(uint32_t timeout_ms);
@@ -252,6 +270,7 @@ static void CameraPlatform_PrepareCaptureBufferForDma(void);
 static void CameraPlatform_RefreshCaptureBufferFromDma(uint32_t captured_bytes);
 static uint32_t CameraPlatform_CountNonZeroBytes(const uint8_t *buffer_ptr,
 		uint32_t length_bytes);
+static uint16_t CameraPlatform_ReadRaw10Level(uint16_t raw_word);
 static void CameraPlatform_LogCsiStatus(const char *reason);
 static void CameraPlatform_LogCsiErrorRegisters(const char *reason);
 static void CameraPlatform_LogCsiLineByteCounters(const char *reason);
@@ -815,6 +834,10 @@ static bool CameraPlatform_StartImx335Stream(void) {
 			started_via_cmw_wrapper = true;
 			DebugConsole_Printf(
 					"[CAMERA][CAPTURE] CMW wrapper sensor start succeeded while raw capture path stays active.\r\n");
+			if (!CameraPlatform_EnableImx335AutoExposure()) {
+				DebugConsole_Printf(
+						"[CAMERA][CAPTURE] Warning: IMX335 auto exposure could not be confirmed after stream start.\r\n");
+			}
 		} else {
 			DebugConsole_Printf(
 					"[CAMERA][CAPTURE] CMW wrapper sensor start failed in raw diagnostic mode, status=%ld; falling back to raw driver.\r\n",
@@ -898,7 +921,9 @@ static bool CameraPlatform_StartImx335Stream(void) {
  * @retval true when the background step succeeded or is not used by this driver.
  */
 static bool CameraPlatform_RunImx335Background(void) {
-	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
+	/* The ISP background loop must run for both the processed image path and
+	 * the raw diagnostic path, because AE/AWB live in the ISP layer. */
+	if (camera_cmw_initialized) {
 		camera_capture_isp_run_count++;
 
 		if (CMW_CAMERA_Run() != CMW_ERROR_NONE) {
@@ -996,6 +1021,10 @@ static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
 	uint32_t captured_bytes = 0U;
 	UINT filex_status = FX_SUCCESS;
 	CHAR capture_file_name[CAMERA_CAPTURE_FILE_NAME_LENGTH] = { 0 };
+	uint8_t *image_ptr = NULL;
+	ULONG image_length = captured_bytes;
+	const CHAR *file_extension = camera_capture_use_cmw_pipeline ? "yuv422"
+			: "raw16";
 
 	if (!CameraPlatform_WaitForStorageReady(CAMERA_STORAGE_WAIT_TIMEOUT_MS)) {
 		return false;
@@ -1006,18 +1035,39 @@ static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
 	}
 
 	CameraPlatform_LogCaptureBufferSummary(captured_bytes);
+	image_length = captured_bytes;
 
-	filex_status = AppFileX_GetNextCapturedImageName(capture_file_name,
-			sizeof(capture_file_name));
-	if (filex_status != FX_SUCCESS) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Failed to allocate a unique capture file name, status=%lu.\r\n",
-				(unsigned long) filex_status);
-		return false;
+	if (camera_capture_use_cmw_pipeline) {
+		image_ptr = camera_capture_result_buffer;
+		if (image_ptr == NULL) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] Capture buffer pointer is NULL after frame completion.\r\n");
+			return false;
+		}
+
+		filex_status = AppFileX_GetNextCapturedImageName(capture_file_name,
+				sizeof(capture_file_name), file_extension);
+		if (filex_status != FX_SUCCESS) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] Failed to allocate a unique capture file name, status=%lu.\r\n",
+					(unsigned long) filex_status);
+			return false;
+		}
+	} else {
+		image_ptr = camera_capture_result_buffer;
+		(void) strncpy(capture_file_name, CAMERA_CAPTURE_RAW_FILE_NAME,
+				sizeof(capture_file_name) - 1U);
+		capture_file_name[sizeof(capture_file_name) - 1U] = '\0';
 	}
 
+	DebugConsole_Printf(
+			camera_capture_use_cmw_pipeline ?
+					"[CAMERA][CAPTURE] Saving YUV422 capture to /captured_images/%s (%lu bytes)...\r\n"
+					: "[CAMERA][CAPTURE] Saving raw Pipe0 capture to /captured_images/%s (%lu bytes)...\r\n",
+			capture_file_name, (unsigned long) image_length);
+
 	filex_status = AppFileX_WriteCapturedImage(capture_file_name,
-			camera_capture_result_buffer, (ULONG) captured_bytes);
+			image_ptr, image_length);
 	if (filex_status != FX_SUCCESS) {
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] Failed to write image to SD card, status=%lu.\r\n",
@@ -1028,61 +1078,147 @@ static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
 	DebugConsole_Printf(
 			camera_capture_use_cmw_pipeline ?
 					"[CAMERA][CAPTURE] Stored %lu-byte YUV422 image at /captured_images/%s.\r\n"
-					: "[CAMERA][CAPTURE] Stored %lu-byte RAW10 Pipe0 image at /captured_images/%s.\r\n",
-			(unsigned long) captured_bytes, capture_file_name);
+					: "[CAMERA][CAPTURE] Stored %lu-byte raw Pipe0 frame at /captured_images/%s.\r\n",
+			(unsigned long) image_length, capture_file_name);
 	return true;
 }
 
 /**
- * @brief Summarize a raw Pipe0 buffer using packed 32-bit words.
+ * @brief Extract the 10-bit RAW10 level from a raw-dump word.
+ * @param raw_word 16-bit padded pixel captured from the raw pipe.
+ * @retval The upper 10 bits, shifted down to a normal 0..1023 range.
+ */
+static uint16_t CameraPlatform_ReadRaw10Level(uint16_t raw_word) {
+	return (uint16_t) (raw_word & 0x03FFU);
+}
+
+/**
+ * @brief Report the two most common RAW10 sample levels in a live capture.
  *
- * Pipe0 raw captures are stored as packed RAW10 data, so word-level reporting
- * is clearer than halfword statistics and avoids misleading zero-sample noise.
+ * Pipe0 raw data is not RGB yet, so this gives us a quick proxy for what the
+ * scene is doing without pulling the SD card.
+ * @param buffer_ptr Raw capture buffer to inspect.
+ * @param length_bytes Number of valid bytes in the buffer.
+ */
+static void CameraPlatform_LogRawDominantLevels(const uint8_t *buffer_ptr,
+		uint32_t length_bytes) {
+	const uint16_t *samples = (const uint16_t*) buffer_ptr;
+	const uint32_t sample_count = length_bytes / sizeof(uint16_t);
+	uint32_t sum_levels = 0U;
+	uint32_t bright_count = 0U;
+	uint32_t top1_level = 0U;
+	uint32_t top2_level = 0U;
+	uint32_t top1_count = 0U;
+	uint32_t top2_count = 0U;
+
+	if ((buffer_ptr == NULL) || (length_bytes < sizeof(uint16_t))
+			|| ((length_bytes % sizeof(uint16_t)) != 0U) || (sample_count == 0U)) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] RAW10 dominant-level summary skipped for empty buffer.\r\n");
+		return;
+	}
+
+	(void) memset(camera_capture_raw_level_histogram, 0,
+			sizeof(camera_capture_raw_level_histogram));
+
+	for (uint32_t sample_index = 0U; sample_index < sample_count;
+			sample_index++) {
+		const uint32_t level = CameraPlatform_ReadRaw10Level(samples[sample_index]);
+
+		camera_capture_raw_level_histogram[level]++;
+		sum_levels += level;
+		if (level >= 900U) {
+			bright_count++;
+		}
+	}
+
+	for (uint32_t level = 0U; level < 1024U; level++) {
+		const uint32_t count = camera_capture_raw_level_histogram[level];
+
+		if ((count > top1_count) || ((count == top1_count)
+				&& (level > top1_level))) {
+			top2_level = top1_level;
+			top2_count = top1_count;
+			top1_level = level;
+			top1_count = count;
+		} else if ((count > top2_count) || ((count == top2_count)
+				&& (level > top2_level))) {
+			top2_level = level;
+			top2_count = count;
+		}
+	}
+
+	const uint32_t mean_level = sum_levels / sample_count;
+	const uint32_t top1_pct = ((top1_count * 100U) + (sample_count / 2U))
+			/ sample_count;
+	const uint32_t top2_pct = ((top2_count * 100U) + (sample_count / 2U))
+			/ sample_count;
+	const uint32_t bright_pct = ((bright_count * 100U) + (sample_count / 2U))
+			/ sample_count;
+
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] RAW10 dominant levels (not RGB): mean=%lu top1=%03lu (%lu px, %lu%%) top2=%03lu (%lu px, %lu%%) bright>=900=%lu px (%lu%%).\r\n",
+			(unsigned long) mean_level, (unsigned long) top1_level,
+			(unsigned long) top1_count, (unsigned long) top1_pct,
+			(unsigned long) top2_level, (unsigned long) top2_count,
+			(unsigned long) top2_pct, (unsigned long) bright_count,
+			(unsigned long) bright_pct);
+}
+
+/**
+ * @brief Summarize a raw Pipe0 buffer using padded 16-bit raw pixels.
+ *
+ * Pipe0 raw captures are padded 16-bit pixels, so halfword reporting matches
+ * the actual buffer layout and keeps the summary aligned with the preview.
  * @param captured_bytes Number of valid bytes reported by DCMIPP.
  */
 static void CameraPlatform_LogCaptureBufferSummaryRaw(uint32_t captured_bytes) {
-	const uint32_t word_count = captured_bytes / sizeof(uint32_t);
-	const uint32_t *words = (const uint32_t*) camera_capture_result_buffer;
-	uint32_t minimum_word = 0xFFFFFFFFU;
-	uint32_t maximum_word = 0U;
-	uint32_t nonzero_word_count = 0U;
-	uint32_t first_nonzero_index = word_count;
+	const uint32_t halfword_count = captured_bytes / sizeof(uint16_t);
+	const uint16_t *halfwords = (const uint16_t*) camera_capture_result_buffer;
+	uint16_t minimum_halfword = 0xFFFFU;
+	uint16_t maximum_halfword = 0U;
+	uint32_t nonzero_halfword_count = 0U;
+	uint32_t first_nonzero_index = halfword_count;
 	uint32_t last_nonzero_index = 0U;
 
-	if ((captured_bytes == 0U) || ((captured_bytes % sizeof(uint32_t)) != 0U)) {
+	if ((captured_bytes == 0U) || ((captured_bytes % sizeof(uint16_t)) != 0U)) {
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] Raw buffer summary skipped for odd/empty byte count %lu.\r\n",
 				(unsigned long) captured_bytes);
 		return;
 	}
 
-	for (uint32_t word_index = 0U; word_index < word_count; word_index++) {
-		const uint32_t word = words[word_index];
+	for (uint32_t halfword_index = 0U; halfword_index < halfword_count;
+			halfword_index++) {
+		const uint16_t halfword = halfwords[halfword_index];
 
-		if (word < minimum_word) {
-			minimum_word = word;
+		if (halfword < minimum_halfword) {
+			minimum_halfword = halfword;
 		}
 
-		if (word > maximum_word) {
-			maximum_word = word;
+		if (halfword > maximum_halfword) {
+			maximum_halfword = halfword;
 		}
 
-		if (word != 0U) {
-			nonzero_word_count++;
-			if (first_nonzero_index == word_count) {
-				first_nonzero_index = word_index;
+		if (halfword != 0U) {
+			nonzero_halfword_count++;
+			if (first_nonzero_index == halfword_count) {
+				first_nonzero_index = halfword_index;
 			}
-			last_nonzero_index = word_index;
+			last_nonzero_index = halfword_index;
 		}
 	}
 
 	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] Buffer summary (raw words): words=%lu nonzero=%lu min=0x%08lX max=0x%08lX first_nonzero=%lu last_nonzero=%lu.\r\n",
-			(unsigned long) word_count, (unsigned long) nonzero_word_count,
-			(unsigned long) minimum_word, (unsigned long) maximum_word,
+			"[CAMERA][CAPTURE] Buffer summary (raw halfwords): samples=%lu nonzero=%lu min=0x%04X max=0x%04X first_nonzero=%lu last_nonzero=%lu.\r\n",
+			(unsigned long) halfword_count, (unsigned long) nonzero_halfword_count,
+			(unsigned int) minimum_halfword, (unsigned int) maximum_halfword,
 			(unsigned long) (
-					(first_nonzero_index == word_count) ? 0U : first_nonzero_index),
+					(first_nonzero_index == halfword_count) ? 0U : first_nonzero_index),
 			(unsigned long) last_nonzero_index);
+
+	CameraPlatform_LogRawDominantLevels(camera_capture_result_buffer,
+			captured_bytes);
 }
 
 /**
@@ -1863,6 +1999,7 @@ static void CameraPlatform_LogCaptureState(const char *reason) {
 	uint32_t shutter_reg = 0U;
 	uint32_t vmax_reg = 0U;
 	int32_t cmw_exposure_mode = 0;
+	uint8_t cmw_aec_enabled = 0U;
 	int32_t cmw_exposure = 0;
 	int32_t cmw_gain = 0;
 	int32_t cmw_test_pattern = 0;
@@ -1886,6 +2023,10 @@ static void CameraPlatform_LogCaptureState(const char *reason) {
 			cmw_state_ok = false;
 		}
 		if (CMW_CAMERA_GetGain(&cmw_gain) != CMW_ERROR_NONE) {
+			cmw_state_ok = false;
+		}
+		if (ISP_GetAECState(&camera_sensor.hIsp, &cmw_aec_enabled)
+				!= ISP_OK) {
 			cmw_state_ok = false;
 		}
 		if (CMW_CAMERA_GetTestPattern(&cmw_test_pattern) != CMW_ERROR_NONE) {
@@ -1984,9 +2125,10 @@ static void CameraPlatform_LogCaptureState(const char *reason) {
 
 	if (cmw_state_ok) {
 		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] CMW state: exposure_mode=%ld exposure=%ld us gain=%ld mdB test_pattern=%ld sensor=%s %lux%lu gain=[%lu,%lu] again_max=%lu exposure=[%lu,%lu].\r\n",
-				(long) cmw_exposure_mode, (long) cmw_exposure, (long) cmw_gain,
-				(long) cmw_test_pattern, sensor_info.name,
+				"[CAMERA][CAPTURE] CMW state: exposure_mode=%ld aec=%u exposure=%ld us gain=%ld mdB test_pattern=%ld sensor=%s %lux%lu gain=[%lu,%lu] again_max=%lu exposure=[%lu,%lu].\r\n",
+				(long) cmw_exposure_mode, (unsigned int) cmw_aec_enabled,
+				(long) cmw_exposure, (long) cmw_gain, (long) cmw_test_pattern,
+				sensor_info.name,
 				(unsigned long) sensor_info.width,
 				(unsigned long) sensor_info.height,
 				(unsigned long) sensor_info.gain_min,
@@ -2019,7 +2161,7 @@ static void CameraPlatform_LogCaptureState(const char *reason) {
 }
 
 /**
- * @brief Configure the capture pipe for a 640x480 YUV422 capture sourced from RAW10 CSI input.
+ * @brief Configure the capture pipe for a 256x256 YUV422 capture sourced from RAW10 CSI input.
  * @param[out] captured_bytes_ptr Receives the final image byte count on success.
  * @retval true when a frame-complete interrupt arrives without a DCMIPP error.
  */
@@ -2027,6 +2169,7 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	const ULONG wait_ticks = CameraPlatform_MillisecondsToTicks(
 	CAMERA_CAPTURE_TIMEOUT_MS);
 	const ULONG poll_ticks = CameraPlatform_MillisecondsToTicks(20U);
+	ULONG next_wait_log_tick = 0U;
 	ULONG deadline_tick = 0U;
 	UINT semaphore_status = TX_SUCCESS;
 	DCMIPP_HandleTypeDef *capture_dcmipp =
@@ -2112,6 +2255,8 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 
 	CameraPlatform_LogCaptureState("snapshot armed");
 	deadline_tick = tx_time_get() + wait_ticks;
+	next_wait_log_tick = tx_time_get()
+			+ CameraPlatform_MillisecondsToTicks(1000U);
 	while (true) {
 		semaphore_status = tx_semaphore_get(&camera_capture_done_semaphore,
 				poll_ticks);
@@ -2189,41 +2334,6 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 								(unsigned long) nonzero_nonaa_count,
 								(unsigned long) nonaa_count);
 
-						/* Per-line nonzero word distribution: shows which lines have
-						 * active pixels vs OB/embedded zeros.
-						 * RAW10 4B/pixel: 128 pixels/line = 128 words/line. */
-						{
-							const uint32_t wpl = CAMERA_CAPTURE_WIDTH_PIXELS;
-							DebugConsole_Printf(
-									"[CAMERA][SCAN] Per-line nz words (%lu lines x %lu words): \r\n",
-									(unsigned long) CAMERA_CAPTURE_HEIGHT_PIXELS,
-									(unsigned long) wpl);
-							for (uint32_t ln = 0U;
-									ln < CAMERA_CAPTURE_HEIGHT_PIXELS; ln++) {
-								const uint32_t base = ln * wpl;
-								uint32_t nz = 0U;
-								uint32_t fv = 0U;
-								bool fset = false;
-								for (uint32_t w = base; w < base + wpl; w++) {
-									if (scan_base[w] != 0U) {
-										nz++;
-										if (!fset) {
-											fv = scan_base[w];
-											fset = true;
-										}
-									}
-								}
-								if (nz > 0U) {
-									DebugConsole_Printf(
-											"[CAMERA][SCAN]   line=%03lu nz=%lu first=0x%08lX \r\n",
-											(unsigned long) ln,
-											(unsigned long) nz,
-											(unsigned long) fv);
-								}
-							}
-							DebugConsole_Printf(
-									"[CAMERA][SCAN] Per-line scan done.\r\n");
-						}
 						/* Post-scan DCMIPP snapshot */
 						{
 							DCMIPP_HandleTypeDef *pdc =
@@ -2372,12 +2482,31 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 				}
 
 				if (keep_waiting_for_convergence) {
+					next_wait_log_tick = tx_time_get()
+							+ CameraPlatform_MillisecondsToTicks(1000U);
 					continue;
 				}
 
 				camera_capture_snapshot_armed = false;
 			}
 			break;
+		}
+
+		if ((LONG) (tx_time_get() - next_wait_log_tick) >= 0) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] Waiting for frame: sem=%lu armed=%u stream_started=%u frame_events=%lu vsync_events=%lu isp_runs=%lu sof=%u eof=%u line_errs=%lu err=0x%08lX.\r\n",
+					(unsigned long) semaphore_status,
+					camera_capture_snapshot_armed ? 1U : 0U,
+					camera_stream_started ? 1U : 0U,
+					(unsigned long) camera_capture_frame_event_count,
+					(unsigned long) camera_capture_vsync_event_count,
+					(unsigned long) camera_capture_isp_run_count,
+					camera_capture_sof_seen ? 1U : 0U,
+					camera_capture_eof_seen ? 1U : 0U,
+					(unsigned long) camera_capture_line_error_count,
+					(unsigned long) camera_capture_error_code);
+			next_wait_log_tick = tx_time_get()
+					+ CameraPlatform_MillisecondsToTicks(1000U);
 		}
 
 		if ((LONG) (deadline_tick - tx_time_get()) <= 0) {
@@ -2547,7 +2676,7 @@ static bool CameraPlatform_StartDcmippSnapshot(void) {
 
 /**
  * @brief Configure the capture pipe using ST's camera middleware crop/downsize helpers.
- * @retval true when the output path is ready for a 640x480 YUV422 frame.
+ * @retval true when the output path is ready for a 256x256 YUV422 frame.
  */
 static bool CameraPlatform_PrepareDcmippSnapshot(void) {
 	DCMIPP_HandleTypeDef *capture_dcmipp =
@@ -2818,11 +2947,11 @@ static bool CameraPlatform_ConfigureCsiLineByteProbe(void) {
 }
 
 /**
- * @brief Seed IMX335 exposure and gain with a brighter starting point.
+ * @brief Seed IMX335 exposure and gain with a conservative starting point.
  *
- * ST's middleware initializes the sensor conservatively. For our bench setup,
- * starting a bit brighter helps avoid a long run of black frames while the ISP
- * loop settles.
+ * ST's middleware initializes the sensor conservatively. We back off the
+ * previous maxed-out seed so the live optical path does not clip immediately
+ * on bright scenes.
  * @retval true when the middleware accepted the seed settings.
  */
 static bool CameraPlatform_SeedImx335ExposureGain(void) {
@@ -2839,12 +2968,17 @@ static bool CameraPlatform_SeedImx335ExposureGain(void) {
 		return false;
 	}
 
-	seed_exposure_us = sensor_info.exposure_max;
+	/* Start conservatively but not at the absolute floor, so the first live
+	 * frame stays out of clipping while still preserving some scene detail. */
+	/* Start a little brighter than the previous seed so the first usable frame
+	 * lands closer to the scene instead of hugging the dark end. */
+	seed_exposure_us = sensor_info.exposure_min
+			+ ((sensor_info.exposure_max - sensor_info.exposure_min) / 6U);
 	if (seed_exposure_us < sensor_info.exposure_min) {
 		seed_exposure_us = sensor_info.exposure_min;
 	}
 
-	seed_gain_mdb = sensor_info.gain_max;
+	seed_gain_mdb = sensor_info.gain_min;
 	if (seed_gain_mdb < sensor_info.gain_min) {
 		seed_gain_mdb = sensor_info.gain_min;
 	}
@@ -2868,6 +3002,34 @@ static bool CameraPlatform_SeedImx335ExposureGain(void) {
 	DebugConsole_Printf(
 			"[CAMERA][PROBE]   - Seeded IMX335 exposure to %lu us and gain to %ld mdB.\r\n",
 			(unsigned long) seed_exposure_us, (long) seed_gain_mdb);
+
+	return true;
+}
+
+/**
+ * @brief Force the IMX335 ISP path into auto-exposure mode.
+ *
+ * The IMX335 middleware bridge does not expose a sensor-level exposure-mode
+ * setter, so the ISP AEC state is the control point for auto exposure here.
+ * @retval true when the ISP accepted the AEC enable request.
+ */
+static bool CameraPlatform_EnableImx335AutoExposure(void) {
+	uint8_t aec_enabled = 0U;
+
+	if (ISP_SetAECState(&camera_sensor.hIsp, 1U) != ISP_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][PROBE]   - Failed to enable IMX335 ISP auto exposure.\r\n");
+		return false;
+	}
+
+	if (ISP_GetAECState(&camera_sensor.hIsp, &aec_enabled) == ISP_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][PROBE]   - IMX335 ISP auto exposure enabled (AEC=%u).\r\n",
+				(unsigned int) aec_enabled);
+	} else {
+		DebugConsole_Printf(
+				"[CAMERA][PROBE]   - IMX335 ISP auto exposure requested, but readback failed.\r\n");
+	}
 
 	return true;
 }
@@ -3166,8 +3328,10 @@ int CMW_CAMERA_PIPE_FrameEventCallback(uint32_t pipe) {
 	} else if (!camera_capture_use_cmw_pipeline
 			&& (byte_count > CAMERA_CAPTURE_BUFFER_SIZE_BYTES)) {
 		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Raw pipe counter %lu exceeds the 640x480 capture buffer; normalizing to %lu bytes for save.\r\n",
+				"[CAMERA][CAPTURE] Raw pipe counter %lu exceeds the %lux%lu capture buffer; normalizing to %lu bytes for save.\r\n",
 				(unsigned long) byte_count,
+				(unsigned long) CAMERA_CAPTURE_WIDTH_PIXELS,
+				(unsigned long) CAMERA_CAPTURE_HEIGHT_PIXELS,
 				(unsigned long) CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
 		byte_count = CAMERA_CAPTURE_BUFFER_SIZE_BYTES;
 	}
