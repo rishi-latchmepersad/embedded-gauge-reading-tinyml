@@ -11,6 +11,10 @@ import pytest
 import tensorflow as tf
 
 import embedded_gauge_reading_tinyml.training as training
+from embedded_gauge_reading_tinyml.models import (
+    build_mobilenetv2_direction_model,
+    build_mobilenetv2_regression_model,
+)
 from embedded_gauge_reading_tinyml.dataset import EllipseLabel, PointLabel, Sample
 from embedded_gauge_reading_tinyml.gauge.processing import GaugeSpec
 from embedded_gauge_reading_tinyml.labels import LabelSummary
@@ -63,12 +67,106 @@ def _write_test_jpeg(path: Path, *, h: int = 16, w: int = 16) -> None:
     tf.io.write_file(str(path), encoded)
 
 
+def _write_test_png(path: Path, *, h: int = 16, w: int = 16) -> None:
+    """Write a tiny PNG image to disk for manifest-loader tests."""
+    image_np: np.ndarray = np.zeros((h, w, 3), dtype=np.uint8)
+    image_np[..., 0] = 192
+    image_np[..., 1] = 96
+    image_np[..., 2] = 32
+    encoded: tf.Tensor = tf.io.encode_png(tf.constant(image_np, dtype=tf.uint8))
+    tf.io.write_file(str(path), encoded)
+
+
 def test_validate_split_config_accepts_valid_values() -> None:
     """_validate_split_config should not raise for valid fractions."""
     config: training.TrainConfig = training.TrainConfig(
         val_fraction=0.2, test_fraction=0.2
     )
     training._validate_split_config(config)
+
+
+def test_train_config_defaults_match_strong_mobilenetv2_preset() -> None:
+    """TrainConfig defaults should match the strongest MobileNetV2 preset."""
+    config: training.TrainConfig = training.TrainConfig()
+
+    assert config.gauge_id == "littlegood_home_temp_gauge_c"
+    assert config.image_height == 224
+    assert config.image_width == 224
+    assert config.batch_size == 8
+    assert config.epochs == 40
+    assert config.learning_rate == pytest.approx(1e-4)
+    assert config.seed == 21
+    assert config.strict_labels is False
+    assert config.model_family == "mobilenet_v2"
+    assert config.mobilenet_pretrained is True
+    assert config.mobilenet_backbone_trainable is True
+    assert config.mobilenet_warmup_epochs == 8
+    assert config.mobilenet_alpha == pytest.approx(1.0)
+    assert config.mobilenet_head_units == 128
+    assert config.mobilenet_head_dropout == pytest.approx(0.2)
+    assert config.init_model_path is None
+
+
+def test_build_mobilenetv2_tiny_regression_model_is_smaller() -> None:
+    """The tiny MobileNetV2 variant should keep the same output contract."""
+    standard = build_mobilenetv2_regression_model(
+        image_height=224,
+        image_width=224,
+        pretrained=False,
+        backbone_trainable=False,
+    )
+    tiny = build_mobilenetv2_regression_model(
+        image_height=224,
+        image_width=224,
+        pretrained=False,
+        backbone_trainable=False,
+        alpha=0.35,
+        head_units=64,
+        head_dropout=0.15,
+    )
+
+    assert tiny.name == "mobilenetv2_gauge_regressor_a035_h064"
+    assert tiny.output_shape == (None, 1)
+    assert tiny.count_params() < standard.count_params()
+
+
+def test_build_mobilenetv2_direction_model_outputs_unit_vector() -> None:
+    """Direction CNN should emit a 2D normalized needle vector."""
+    model = build_mobilenetv2_direction_model(
+        image_height=224,
+        image_width=224,
+        pretrained=False,
+        backbone_trainable=False,
+    )
+
+    assert model.name == "mobilenetv2_needle_direction_regressor"
+    assert model.output_shape == (None, 2)
+
+
+def test_load_hard_case_examples_reads_manifest_and_uses_full_image_crop(
+    tmp_path: Path,
+) -> None:
+    """Hard-case manifest rows should load as scalar training examples."""
+    image_path: Path = tmp_path / "capture_0c_preview.png"
+    _write_test_png(image_path)
+
+    manifest_path: Path = tmp_path / "hard_cases.csv"
+    manifest_path.write_text(
+        "image_path,value\n"
+        f"{image_path},0\n",
+        encoding="utf-8",
+    )
+
+    examples = training._load_hard_case_examples(
+        manifest_path,
+        image_height=224,
+        image_width=224,
+    )
+
+    assert len(examples) == 1
+    assert examples[0].image_path == str(image_path)
+    assert examples[0].value == pytest.approx(0.0)
+    assert examples[0].crop_box_xyxy == pytest.approx((0.0, 0.0, 224.0, 224.0))
 
 
 @pytest.mark.parametrize(
@@ -370,7 +468,11 @@ def test_train_happy_path_with_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         training,
         "_build_tf_dataset",
-        lambda examples, config, training: {"n": len(examples), "train": training},
+        lambda examples, config, training, target_kind="value": {
+            "n": len(examples),
+            "train": training,
+            "target_kind": target_kind,
+        },
     )
     monkeypatch.setattr(
         training,
@@ -379,11 +481,18 @@ def test_train_happy_path_with_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(
         training,
+        "build_mobilenetv2_regression_model",
+        lambda *args, **kwargs: fake_model,
+    )
+    monkeypatch.setattr(
+        training,
         "_compute_mean_baseline_mae",
         lambda train_examples, test_examples: 2.5,
     )
 
-    result: training.TrainingResult = training.train(training.TrainConfig(epochs=1))
+    result: training.TrainingResult = training.train(
+        training.TrainConfig(epochs=1, model_family="compact")
+    )
 
     assert result.model is fake_model
     assert result.label_summary == label_summary
@@ -395,3 +504,129 @@ def test_train_happy_path_with_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
         "rmse": 0.75,
         "baseline_mae_mean_predictor": 2.5,
     }
+
+
+def test_train_can_warm_start_from_existing_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """train should load an initial model path when warm-starting fine-tune runs."""
+    spec: GaugeSpec = _make_spec()
+
+    label_summary: LabelSummary = LabelSummary(
+        total_samples=10,
+        in_sweep=9,
+        out_of_sweep=1,
+        min_fraction=0.0,
+        max_fraction=1.0,
+    )
+
+    examples: list[training.TrainingExample] = [
+        training.TrainingExample("a.jpg", 1.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("b.jpg", 2.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("c.jpg", 3.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("d.jpg", 4.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+    ]
+    split: training.DatasetSplit = training.DatasetSplit(
+        train_examples=examples[:2],
+        val_examples=examples[2:3],
+        test_examples=examples[3:],
+    )
+
+    class _FakeHistory:
+        """Small stand-in for keras.callbacks.History."""
+
+        def __init__(self) -> None:
+            self.history: dict[str, list[float]] = {"loss": [1.0], "val_loss": [1.2]}
+
+    class _FakeModel:
+        """Small stand-in for a warm-started Keras model."""
+
+        def __init__(self) -> None:
+            self.trainable = False
+
+        def compile(self, **kwargs: Any) -> None:
+            _ = kwargs
+
+        def fit(
+            self,
+            train_ds: Any,
+            validation_data: Any,
+            epochs: int,
+            callbacks: list[Any],
+            verbose: int,
+        ) -> _FakeHistory:
+            assert train_ds is not None
+            assert validation_data is not None
+            assert epochs == 1
+            assert len(callbacks) == 2
+            assert verbose == 2
+            return _FakeHistory()
+
+        def evaluate(
+            self, test_ds: Any, return_dict: bool, verbose: int
+        ) -> dict[str, float]:
+            assert test_ds is not None
+            assert return_dict is True
+            assert verbose == 0
+            return {"loss": 1.0, "mae": 0.5, "rmse": 0.75}
+
+    fake_model = _FakeModel()
+    init_model_path: Path = tmp_path / "existing.keras"
+    init_model_path.write_text("placeholder", encoding="utf-8")
+
+    monkeypatch.setattr(training, "load_gauge_specs", lambda: {spec.gauge_id: spec})
+    monkeypatch.setattr(
+        training, "load_dataset", lambda labelled_dir, raw_dir: [object()] * 10
+    )
+    monkeypatch.setattr(
+        training, "summarize_label_sweep", lambda samples, spec: label_summary
+    )
+    monkeypatch.setattr(
+        training,
+        "_build_training_examples",
+        lambda samples, spec, strict_labels, crop_pad_ratio: (examples, 1),
+    )
+    monkeypatch.setattr(training, "_split_examples", lambda examples, config: split)
+    monkeypatch.setattr(
+        training,
+        "_build_tf_dataset",
+        lambda examples, config, training, target_kind="value": {
+            "n": len(examples),
+            "train": training,
+            "target_kind": target_kind,
+        },
+    )
+    monkeypatch.setattr(
+        training.keras.models,
+        "load_model",
+        lambda path, compile=False, **kwargs: fake_model,
+    )
+    monkeypatch.setattr(
+        training,
+        "build_regression_model",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not build")),
+    )
+    monkeypatch.setattr(
+        training,
+        "build_mobilenetv2_regression_model",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not build")),
+    )
+    monkeypatch.setattr(
+        training,
+        "_compute_mean_baseline_mae",
+        lambda train_examples, test_examples: 2.5,
+    )
+
+    result: training.TrainingResult = training.train(
+        training.TrainConfig(
+            epochs=1,
+            model_family="mobilenet_v2",
+            init_model_path=str(init_model_path),
+        )
+    )
+
+    assert result.model is fake_model
+    assert result.label_summary == label_summary
+    assert result.dropped_out_of_sweep == 1
+    assert result.baseline_test_mae == pytest.approx(2.5)

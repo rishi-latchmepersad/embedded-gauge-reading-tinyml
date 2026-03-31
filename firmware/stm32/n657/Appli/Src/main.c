@@ -1,4 +1,4 @@
-/* USER CODE BEGIN Header */
+﻿/* USER CODE BEGIN Header */
 /**
  ******************************************************************************
  * @file           : main.c
@@ -261,6 +261,10 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
   HAL_Init();
 
+  /* Temporary LED-only smoke test.
+   * Keep the old init path disabled while we confirm the board can execute
+   * the simplest possible runtime code. */
+#if 0
   /* USER CODE BEGIN Init */
   App_SystemClock_Config();
   Setup_Mpu();
@@ -278,25 +282,28 @@ int main(void)
   MX_DCMIPP_Init();
   App_CameraKernelClock_Config();
   MX_I2C2_Init();
+
+  /* Bring up the console before the isolation setup so we can see exactly
+   * which early boot step stops making progress. */
+  DebugConsole_Configuration_t debug_console_configuration = { 0 };
+  debug_console_configuration.uart_handle_pointer = &hlpuart1;
+  debug_console_configuration.uart_transmit_timeout_milliseconds = 100U;
+  debug_console_configuration.lock_callback = NULL;
+  debug_console_configuration.unlock_callback = NULL;
+  (void) DebugConsole_Init(&debug_console_configuration);
+  DebugConsole_Printf("[BOOT] UART console initialized.\r\n");
+
+  DebugConsole_Printf("[BOOT] Entering SystemIsolation_Config().\r\n");
   SystemIsolation_Config();
   /* USER CODE BEGIN 2 */
-	// set up the debug console
-	DebugConsole_Configuration_t debug_console_configuration = { 0 };
-	debug_console_configuration.uart_handle_pointer = &hlpuart1;
-	debug_console_configuration.uart_transmit_timeout_milliseconds = 100U;
-	debug_console_configuration.lock_callback = NULL;
-	debug_console_configuration.unlock_callback = NULL;
+  DebugConsole_Printf(
+      "Welcome to STM32 world!\r\nApplication project is running...\r\n");
+  // set up the debug leds
+  DebugLed_Configuration_t debug_led_configuration = {
+      .bsp_led_for_color_array = { LED_BLUE, LED_RED, LED_GREEN },
+      .delay_milliseconds_callback = DelayMilliseconds_ThreadX };
 
-	(void) DebugConsole_Init(&debug_console_configuration);
-
-	DebugConsole_Printf(
-			"Welcome to STM32 world!\r\nApplication project is running...\r\n");
-	// set up the debug leds
-	DebugLed_Configuration_t debug_led_configuration = {
-			.bsp_led_for_color_array = { LED_BLUE, LED_RED, LED_GREEN },
-			.delay_milliseconds_callback = DelayMilliseconds_ThreadX };
-
-	(void) DebugLed_Initialize(&debug_led_configuration);
+  (void) DebugLed_Initialize(&debug_led_configuration);
   /* USER CODE END 2 */
 
   /* Initialize leds */
@@ -335,6 +342,15 @@ int main(void)
     /* USER CODE BEGIN 3 */
 	}
   /* USER CODE END 3 */
+#endif
+
+  BSP_LED_Init(LED_RED);
+
+  while (1)
+  {
+    BSP_LED_Toggle(LED_RED);
+    HAL_Delay(500U);
+  }
 }
 
 /**

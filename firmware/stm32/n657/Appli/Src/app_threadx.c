@@ -60,8 +60,8 @@
 #define BCAMS_IMX_RESET_RELEASE_DELAY_MS    10U
 #define IMX335_SENSOR_WIDTH_PIXELS          2592U
 #define IMX335_SENSOR_HEIGHT_LINES          1944U
-#define CAMERA_CAPTURE_WIDTH_PIXELS         256U
-#define CAMERA_CAPTURE_HEIGHT_PIXELS        256U
+#define CAMERA_CAPTURE_WIDTH_PIXELS         224U
+#define CAMERA_CAPTURE_HEIGHT_PIXELS        224U
 /* Use the processed CMW/ISP path so AE/AWB and demosaicing can converge on a
  * usable live image. Set back to 1 only if we need raw Pipe0 diagnostics. */
 #define CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC 0
@@ -73,7 +73,7 @@
 #else
 #define CAMERA_CAPTURE_BYTES_PER_PIXEL      2U  /* YUV422 → 2 bytes per pixel */
 #endif
-/* Keep the doubled 256x256 frame within the widened noncacheable window by
+/* Keep the standard 224x224 frame within the widened noncacheable window by
  * using a single capture buffer in the processed path too. */
 #define CAMERA_CAPTURE_BUFFER_COUNT         1U
 #define CAMERA_CAPTURE_TARGET_FRAME_COUNT   4U
@@ -91,7 +91,7 @@
 #define CAMERA_CAPTURE_RAW_CROP_HSTART_PIXELS   ((IMX335_SENSOR_WIDTH_PIXELS - CAMERA_CAPTURE_WIDTH_PIXELS) / 2U)
 #define CAMERA_CAPTURE_RAW_CROP_VSTART_LINES    ((IMX335_SENSOR_HEIGHT_LINES - CAMERA_CAPTURE_HEIGHT_PIXELS) / 2U)
 /* Pipe0 raw-capture frames store one 16-bit padded pixel per sample, so the
- * preview code should read them as a 256x128 source image and upscale only the view. */
+ * preview code should read them as a 224x224 source image and upscale only the view. */
 #define CAMERA_CAPTURE_RAW_SOURCE_WIDTH_PIXELS    CAMERA_CAPTURE_WIDTH_PIXELS
 #define CAMERA_CAPTURE_RAW_SOURCE_HEIGHT_LINES    CAMERA_CAPTURE_HEIGHT_PIXELS
 #define CAMERA_CAPTURE_RAW_BMP_PREVIEW_SCALE      2U
@@ -2161,7 +2161,7 @@ static void CameraPlatform_LogCaptureState(const char *reason) {
 }
 
 /**
- * @brief Configure the capture pipe for a 256x256 YUV422 capture sourced from RAW10 CSI input.
+ * @brief Configure the capture pipe for a 224x224 YUV422 capture sourced from RAW10 CSI input.
  * @param[out] captured_bytes_ptr Receives the final image byte count on success.
  * @retval true when a frame-complete interrupt arrives without a DCMIPP error.
  */
@@ -2676,7 +2676,7 @@ static bool CameraPlatform_StartDcmippSnapshot(void) {
 
 /**
  * @brief Configure the capture pipe using ST's camera middleware crop/downsize helpers.
- * @retval true when the output path is ready for a 256x256 YUV422 frame.
+ * @retval true when the output path is ready for a 224x224 YUV422 frame.
  */
 static bool CameraPlatform_PrepareDcmippSnapshot(void) {
 	DCMIPP_HandleTypeDef *capture_dcmipp =
@@ -2694,10 +2694,21 @@ static bool CameraPlatform_PrepareDcmippSnapshot(void) {
 		pipe_request.enable_swap = 0;
 		pipe_request.enable_gamma_conversion = 0;
 		pipe_request.mode = CMW_Aspect_ratio_manual_roi;
-		pipe_request.manual_conf.width = IMX335_SENSOR_WIDTH_PIXELS;
-		pipe_request.manual_conf.height = IMX335_SENSOR_HEIGHT_LINES;
-		pipe_request.manual_conf.offset_x = 0U;
-		pipe_request.manual_conf.offset_y = 0U;
+		/* Crop a centered square ROI first so the 4:3 sensor frame does not get
+		 * stretched into a square output and turn circular dials into ellipses. */
+		{
+			const uint32_t sensor_square_side =
+					(IMX335_SENSOR_WIDTH_PIXELS < IMX335_SENSOR_HEIGHT_LINES) ?
+							IMX335_SENSOR_WIDTH_PIXELS :
+							IMX335_SENSOR_HEIGHT_LINES;
+
+			pipe_request.manual_conf.width = sensor_square_side;
+			pipe_request.manual_conf.height = sensor_square_side;
+			pipe_request.manual_conf.offset_x =
+					(IMX335_SENSOR_WIDTH_PIXELS - sensor_square_side) / 2U;
+			pipe_request.manual_conf.offset_y =
+					(IMX335_SENSOR_HEIGHT_LINES - sensor_square_side) / 2U;
+		}
 
 		if (CMW_CAMERA_SetPipeConfig(CAMERA_CAPTURE_PIPE, &pipe_request,
 				&pitch_bytes) != CMW_ERROR_NONE) {
