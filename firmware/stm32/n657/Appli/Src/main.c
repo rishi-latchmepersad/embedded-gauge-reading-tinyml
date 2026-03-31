@@ -260,6 +260,7 @@ int main(void)
 
   /* MCU Configuration--------------------------------------------------------*/
   HAL_Init();
+  App_SystemClock_Config();
 
   /* Temporary LED-only smoke test.
    * Keep the old init path disabled while we confirm the board can execute
@@ -343,6 +344,29 @@ int main(void)
 	}
   /* USER CODE END 3 */
 #endif
+
+  MX_GPIO_Init();
+  MX_LPUART1_UART_Init();
+
+  DebugConsole_Configuration_t debug_console_configuration = { 0 };
+  debug_console_configuration.uart_handle_pointer = &hlpuart1;
+  debug_console_configuration.uart_transmit_timeout_milliseconds = 100U;
+  debug_console_configuration.lock_callback = NULL;
+  debug_console_configuration.unlock_callback = NULL;
+  (void) DebugConsole_Init(&debug_console_configuration);
+  DebugConsole_Printf("[BOOT] UART banner test is alive.\r\n");
+  DebugConsole_Printf("[BOOT] LPUART1 init ok.\r\n");
+
+  DebugConsole_Printf("[BOOT] Initializing I2C2...\r\n");
+  MX_I2C2_Init();
+  DebugConsole_Printf("[BOOT] I2C2 init ok.\r\n");
+
+  DebugConsole_Printf("[BOOT] Initializing SPI5 for SD card...\r\n");
+  MX_SPI5_Init();
+  DebugConsole_Printf("[BOOT] SPI5 init ok.\r\n");
+
+  DebugConsole_Printf("[BOOT] Starting ThreadX/FileX handoff...\r\n");
+  MX_ThreadX_Init();
 
   BSP_LED_Init(LED_RED);
 
