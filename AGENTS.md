@@ -2,7 +2,7 @@
 
 <INSTRUCTIONS>
 ## Project goals
-- Train a CNN to read analog gauges on low-power embedded hardware.
+- Train a baseline CV model, a CNN and then a vision transformer to read analog gauges on low-power embedded hardware.
 - Initial hardware will be an STM32 N6 NPU nucleo board.
 - Data has been labelled in the CVAT for images 1.1 format, using CVAT, and is stored in the /ml/data/labelled directory.
 
@@ -10,7 +10,7 @@
 - Prefer small, testable changes. Don't change code that you don't need to.
 - We will use Pytest for Python code and Unity for C code. 
 - Explain your suggestions to me with code and I'll do the implementation. Teach me.
-- All of our code should be typed.
+- All of our Python code should be typed.
 - Each block of code should have a docstring or comment explaining what it does. Every few lines should have inline comments explaining why we're doing the lines.
 - We will use keras and tensorflow for ML.
 - We will use TFLM for export, and STM32 Cube.AI for integration into the board.
@@ -21,6 +21,9 @@
 ## Commands
 - Use `poetry` for env management and scripts.
 - Prefer `pytest` for tests.
+- Use WSL for ML work, with the GPU preferred.
+- Always restart WSL before starting a new session. Sometimes it hangs.
+- Always run jobs in bash scripts inside WSL, and tail the logs so you can see when they hang or fail.
 
 ## Notes
 </INSTRUCTIONS>

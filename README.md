@@ -40,3 +40,51 @@ I want to pursue a thesis in embedded computer vision and TinyML, building on th
 
 ## Status and Links
 For the latest updates, check the project timeline at: https://github.com/users/rishi-latchmepersad/projects/1
+
+## ML Workflow
+
+The ML work is WSL-first and documented in [ml/README.md](ml/README.md).
+Use that path for the classical baseline, CNN training, and future export/evaluation runs.
+
+## STM32 N657 Flashing
+
+The N657 application target is built in `firmware/stm32/n657/Appli/Debug/n657_Appli.elf`.
+CubeIDE's Debug launch uses ST-LINK over SWD with the `MX25UM51245G_STM32N6570-NUCLEO.stldr` external loader.
+For this board, CubeProgrammer's normal SWD connect mode worked reliably from the command line.
+If you just want a visible LED smoke test, the FSBL build already contains a blink loop and runs from RAM.
+
+To flash from the command line on Windows, run:
+
+```powershell
+.\scripts\flash_n657.ps1
+```
+
+For the RAM-resident FSBL blink demo:
+
+```powershell
+.\scripts\run_fsbl_blink.ps1
+```
+
+For the one-command combined smoke test:
+
+```powershell
+.\scripts\run_n657_boot_chain.ps1
+```
+
+If you want the raw ST command, the script is wrapping the same CubeProgrammer flow:
+
+```powershell
+& "C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe" `
+  -c port=SWD ap=1 mode=NORMAL `
+  -el "C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\ExternalLoader\MX25UM51245G_STM32N6570-NUCLEO.stldr" `
+  -d "firmware\stm32\n657\Appli\Debug\n657_Appli.elf" -v -rst
+```
+
+And for the FSBL blink demo:
+
+```powershell
+& "C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe" `
+  -c port=SWD mode=NORMAL `
+  -d "firmware\stm32\n657\FSBL\Debug\n657_FSBL.elf" `
+  -g 0x34180400
+```

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import keras
 
 
@@ -95,6 +97,48 @@ def _build_feature_backbone(
     return inputs, x
 
 
+def _build_mobilenetv2_backbone(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool,
+    backbone_trainable: bool,
+    alpha: float,
+) -> tuple[keras.KerasTensor, keras.KerasTensor, keras.Model]:
+    """Build a MobileNetV2 feature backbone and return the pooled feature map."""
+    inputs = keras.Input(shape=(image_height, image_width, 3), name="image")
+
+    # The pipeline emits [0, 1] floats; MobileNetV2 expects [-1, 1].
+    x = keras.layers.Rescaling(1.0 / 127.5, offset=-1.0, name="mobilenetv2_preprocess")(
+        inputs
+    )
+
+    base_model = keras.applications.MobileNetV2(
+        include_top=False,
+        weights="imagenet" if pretrained else None,
+        input_shape=(image_height, image_width, 3),
+        alpha=alpha,
+    )
+    base_model.trainable = backbone_trainable
+
+    x = base_model(x, training=backbone_trainable)
+    return inputs, x, base_model
+
+
+def _mobilenetv2_model_name(
+    *,
+    regression_kind: str,
+    alpha: float,
+    head_units: int,
+) -> str:
+    """Generate a stable model name for a MobileNetV2 variant."""
+    if math.isclose(alpha, 1.0, rel_tol=0.0, abs_tol=1e-6) and head_units == 128:
+        return f"mobilenetv2_{regression_kind}_regressor"
+
+    alpha_tag: int = int(round(alpha * 100.0))
+    return f"mobilenetv2_{regression_kind}_regressor_a{alpha_tag:03d}_h{head_units:03d}"
+
+
 def build_regression_model(image_height: int, image_width: int) -> keras.Model:
     """Build a compact residual CNN regressor for scalar gauge value output."""
     inputs, x = _build_feature_backbone(image_height, image_width)
@@ -124,32 +168,90 @@ def build_mobilenetv2_regression_model(
     *,
     pretrained: bool = True,
     backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
 ) -> keras.Model:
     """Build a transfer-learning regressor on top of MobileNetV2 features."""
-    inputs = keras.Input(shape=(image_height, image_width, 3), name="image")
-
-    # Training pipeline emits [0,1] floats; MobileNetV2 preprocessing expects [0,255].
-    x = keras.layers.Rescaling(255.0, name="to_255")(inputs)
-    x = keras.layers.Lambda(
-        keras.applications.mobilenet_v2.preprocess_input,
-        name="mobilenetv2_preprocess",
-    )(x)
-
-    base_model = keras.applications.MobileNetV2(
-        include_top=False,
-        weights="imagenet" if pretrained else None,
-        input_shape=(image_height, image_width, 3),
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
     )
-    base_model.trainable = backbone_trainable
-
-    x = base_model(x, training=backbone_trainable)
     x = keras.layers.GlobalAveragePooling2D()(x)
-    x = keras.layers.Dropout(0.2)(x)
-    x = keras.layers.Dense(128, activation="swish")(x)
-    x = keras.layers.Dropout(0.2)(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+    x = keras.layers.Dense(head_units, activation="swish")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
     output = keras.layers.Dense(1, name="gauge_value")(x)
 
-    model = keras.Model(inputs=inputs, outputs=output, name="mobilenetv2_gauge_regressor")
+    model = keras.Model(
+        inputs=inputs,
+        outputs=output,
+        name=_mobilenetv2_model_name(
+            regression_kind="gauge",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
     # Store the backbone so training can run staged freeze/unfreeze schedules.
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_tiny_regression_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+) -> keras.Model:
+    """Build a narrower MobileNetV2 regressor sized for STM32N6 deployment."""
+    return build_mobilenetv2_regression_model(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=0.35,
+        head_units=64,
+        head_dropout=0.15,
+    )
+
+
+def build_mobilenetv2_direction_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a transfer-learning model that predicts unit needle direction."""
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    x = keras.layers.GlobalAveragePooling2D()(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+    x = keras.layers.Dense(head_units, activation="swish")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+    x = keras.layers.Dense(2, name="needle_xy_raw")(x)
+    output = keras.layers.UnitNormalization(axis=-1, name="needle_xy")(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs=output,
+        name=_mobilenetv2_model_name(
+            regression_kind="needle_direction",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
     setattr(model, "_mobilenet_backbone", base_model)
     return model

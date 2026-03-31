@@ -12,34 +12,75 @@ from typing import Any
 
 # Add `ml/src` to sys.path so this script works even before `poetry install`.
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
+REPO_ROOT: Path = PROJECT_ROOT.parent
 SRC_DIR: Path = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from embedded_gauge_reading_tinyml.training import TrainConfig, train
+from embedded_gauge_reading_tinyml.presets import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_CLI_DEVICE,
+    DEFAULT_CROP_PAD_RATIO,
+    DEFAULT_EPOCHS,
+    DEFAULT_GAUGE_ID,
+    DEFAULT_IMAGE_HEIGHT,
+    DEFAULT_IMAGE_WIDTH,
+    DEFAULT_LEARNING_RATE,
+    DEFAULT_MOBILENET_ALPHA,
+    DEFAULT_MOBILENET_BACKBONE_TRAINABLE,
+    DEFAULT_MOBILENET_HEAD_DROPOUT,
+    DEFAULT_MOBILENET_HEAD_UNITS,
+    DEFAULT_MOBILENET_WARMUP_EPOCHS,
+    DEFAULT_MODEL_FAMILY,
+    DEFAULT_SEED,
+)
 
 
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for a reproducible training run."""
     parser = argparse.ArgumentParser(description="Train gauge value regressor.")
-    parser.add_argument("--gauge-id", type=str, default="littlegood_home_temp_gauge_c")
-    parser.add_argument("--epochs", type=int, default=40)
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--image-height", type=int, default=224)
-    parser.add_argument("--image-width", type=int, default=224)
-    parser.add_argument("--learning-rate", type=float, default=1e-4)
-    parser.add_argument("--seed", type=int, default=21)
+    parser.add_argument("--gauge-id", type=str, default=DEFAULT_GAUGE_ID)
+    parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument("--image-height", type=int, default=DEFAULT_IMAGE_HEIGHT)
+    parser.add_argument("--image-width", type=int, default=DEFAULT_IMAGE_WIDTH)
+    parser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument(
         "--model-family",
         type=str,
-        choices=["compact", "mobilenet_v2"],
-        default="mobilenet_v2",
+        choices=[
+            "compact",
+            "mobilenet_v2",
+            "mobilenet_v2_tiny",
+            "mobilenet_v2_direction",
+        ],
+        default=DEFAULT_MODEL_FAMILY,
         help="Select model architecture family.",
+    )
+    parser.add_argument(
+        "--mobilenet-alpha",
+        type=float,
+        default=DEFAULT_MOBILENET_ALPHA,
+        help="MobileNetV2 width multiplier. Smaller values shrink the model.",
+    )
+    parser.add_argument(
+        "--mobilenet-head-units",
+        type=int,
+        default=DEFAULT_MOBILENET_HEAD_UNITS,
+        help="Dense layer width used after the MobileNetV2 backbone.",
+    )
+    parser.add_argument(
+        "--mobilenet-head-dropout",
+        type=float,
+        default=DEFAULT_MOBILENET_HEAD_DROPOUT,
+        help="Dropout rate applied in the MobileNetV2 regression head.",
     )
     parser.add_argument(
         "--mobilenet-backbone-trainable",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=DEFAULT_MOBILENET_BACKBONE_TRAINABLE,
         help="Enable end-to-end MobileNetV2 fine-tuning (default: enabled).",
     )
     parser.add_argument(
@@ -50,23 +91,43 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mobilenet-warmup-epochs",
         type=int,
-        default=8,
+        default=DEFAULT_MOBILENET_WARMUP_EPOCHS,
         help="Warmup epochs with frozen MobileNetV2 backbone before fine-tuning.",
     )
     parser.add_argument("--strict-labels", action="store_true")
-    parser.add_argument("--crop-pad-ratio", type=float, default=0.25)
+    parser.add_argument(
+        "--crop-pad-ratio", type=float, default=DEFAULT_CROP_PAD_RATIO
+    )
     parser.add_argument("--no-augment-training", action="store_true")
     parser.add_argument(
         "--device",
         type=str,
         choices=["auto", "cpu", "gpu"],
-        default="gpu",
+        default=DEFAULT_CLI_DEVICE,
         help="Select accelerator mode. Default is 'gpu' for the best-performing setup.",
     )
     parser.add_argument(
         "--no-gpu-memory-growth",
         action="store_true",
         help="Disable TensorFlow GPU memory growth.",
+    )
+    parser.add_argument(
+        "--hard-case-manifest",
+        type=Path,
+        default=None,
+        help="Optional CSV manifest of extra hard board captures to upweight.",
+    )
+    parser.add_argument(
+        "--hard-case-repeat",
+        type=int,
+        default=0,
+        help="Repeat count for each hard-case row when fine-tuning.",
+    )
+    parser.add_argument(
+        "--init-model",
+        type=Path,
+        default=None,
+        help="Optional warm-start Keras model to fine-tune instead of building from scratch.",
     )
     parser.add_argument(
         "--mixed-precision",
@@ -114,12 +175,37 @@ def main() -> None:
         mobilenet_pretrained=not args.no_mobilenet_pretrained,
         mobilenet_backbone_trainable=args.mobilenet_backbone_trainable,
         mobilenet_warmup_epochs=args.mobilenet_warmup_epochs,
+        mobilenet_alpha=args.mobilenet_alpha,
+        mobilenet_head_units=args.mobilenet_head_units,
+        mobilenet_head_dropout=args.mobilenet_head_dropout,
+        hard_case_manifest=str(args.hard_case_manifest) if args.hard_case_manifest else None,
+        hard_case_repeat=args.hard_case_repeat,
+        init_model_path=str(args.init_model) if args.init_model else None,
         strict_labels=args.strict_labels,
         crop_pad_ratio=args.crop_pad_ratio,
         augment_training=not args.no_augment_training,
         device=args.device,
         gpu_memory_growth=not args.no_gpu_memory_growth,
         mixed_precision=args.mixed_precision,
+    )
+
+    print(
+        "[RUN] Training job: "
+        f"model_family={config.model_family} "
+        f"image_size={config.image_height}x{config.image_width} "
+        f"epochs={config.epochs} "
+        f"batch_size={config.batch_size} "
+        f"device={config.device}"
+    )
+    print(
+        "[RUN] MobileNetV2 options: "
+        f"pretrained={config.mobilenet_pretrained} "
+        f"backbone_trainable={config.mobilenet_backbone_trainable} "
+        f"warmup_epochs={config.mobilenet_warmup_epochs} "
+        f"alpha={config.mobilenet_alpha} "
+        f"head_units={config.mobilenet_head_units} "
+        f"head_dropout={config.mobilenet_head_dropout} "
+        f"init_model={config.init_model_path}"
     )
 
     # Execute training and evaluation.

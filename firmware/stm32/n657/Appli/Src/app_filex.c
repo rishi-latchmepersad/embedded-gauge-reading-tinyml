@@ -896,8 +896,8 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		DebugConsole_Printf(
 				"Saved captured image to /%s (%lu bytes).\r\n",
 				path, (unsigned long) data_length);
-		/* Hold the blue LED on long enough to clearly indicate a completed image save. */
-		(void) DebugLed_BlinkBlueBlocking(3000U, 0U, 1U);
+		/* Hold the blue LED on for a short, visible success indication. */
+		(void) DebugLed_BlinkBlueBlocking(2000U, 0U, 1U);
 	}
 
 	return fx_status;

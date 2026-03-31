@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 import math
 from pathlib import Path
@@ -20,41 +21,85 @@ from embedded_gauge_reading_tinyml.gauge.processing import (
     needle_value,
 )
 from embedded_gauge_reading_tinyml.labels import LabelSummary, summarize_label_sweep
+from embedded_gauge_reading_tinyml.presets import (
+    DEFAULT_AUGMENT_TRAINING,
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_CROP_PAD_RATIO,
+    DEFAULT_EPOCHS,
+    DEFAULT_GAUGE_ID,
+    DEFAULT_GPU_MEMORY_GROWTH,
+    DEFAULT_MOBILENET_ALPHA,
+    DEFAULT_MOBILENET_HEAD_DROPOUT,
+    DEFAULT_MOBILENET_HEAD_UNITS,
+    DEFAULT_IMAGE_HEIGHT,
+    DEFAULT_IMAGE_WIDTH,
+    DEFAULT_LEARNING_RATE,
+    DEFAULT_LIBRARY_DEVICE,
+    DEFAULT_MOBILENET_BACKBONE_TRAINABLE,
+    DEFAULT_MOBILENET_PRETRAINED,
+    DEFAULT_MOBILENET_WARMUP_EPOCHS,
+    DEFAULT_MIXED_PRECISION,
+    DEFAULT_MODEL_FAMILY,
+    DEFAULT_SEED,
+    DEFAULT_STRICT_LABELS,
+    DEFAULT_TEST_FRACTION,
+    DEFAULT_VAL_FRACTION,
+)
 from embedded_gauge_reading_tinyml.models import (
     build_mobilenetv2_regression_model,
+    build_mobilenetv2_direction_model,
     build_regression_model,
 )
 
 
 # Resolve ML/data paths from this file so training works from any cwd.
 ML_ROOT: Path = Path(__file__).resolve().parents[2]
+REPO_ROOT: Path = ML_ROOT.parent
 LABELLED_DIR: Path = ML_ROOT / "data" / "labelled"
 RAW_DIR: Path = ML_ROOT / "data" / "raw"
 
 
 @dataclass(frozen=True)
 class TrainConfig:
-    """Config values for reproducible training runs."""
+    """Config values for reproducible training runs.
 
-    gauge_id: str = "littlegood_home_temp_gauge_c"
-    image_height: int = 224
-    image_width: int = 224
-    batch_size: int = 8
-    epochs: int = 40
-    learning_rate: float = 5e-4
-    seed: int = 21
-    val_fraction: float = 0.15
-    test_fraction: float = 0.15
-    strict_labels: bool = True
-    crop_pad_ratio: float = 0.25
-    augment_training: bool = True
-    device: Literal["auto", "cpu", "gpu"] = "auto"
-    gpu_memory_growth: bool = True
-    mixed_precision: bool = False
-    model_family: Literal["compact", "mobilenet_v2"] = "compact"
-    mobilenet_pretrained: bool = True
-    mobilenet_backbone_trainable: bool = False
-    mobilenet_warmup_epochs: int = 8
+    The defaults track the strongest known MobileNetV2 preset on this dataset,
+    while callers can still override individual fields for ablations or the
+    compact CNN baseline.
+    """
+
+    gauge_id: str = DEFAULT_GAUGE_ID
+    image_height: int = DEFAULT_IMAGE_HEIGHT
+    image_width: int = DEFAULT_IMAGE_WIDTH
+    batch_size: int = DEFAULT_BATCH_SIZE
+    epochs: int = DEFAULT_EPOCHS
+    learning_rate: float = DEFAULT_LEARNING_RATE
+    seed: int = DEFAULT_SEED
+    val_fraction: float = DEFAULT_VAL_FRACTION
+    test_fraction: float = DEFAULT_TEST_FRACTION
+    strict_labels: bool = DEFAULT_STRICT_LABELS
+    crop_pad_ratio: float = DEFAULT_CROP_PAD_RATIO
+    augment_training: bool = DEFAULT_AUGMENT_TRAINING
+    device: Literal["auto", "cpu", "gpu"] = DEFAULT_LIBRARY_DEVICE
+    gpu_memory_growth: bool = DEFAULT_GPU_MEMORY_GROWTH
+    mixed_precision: bool = DEFAULT_MIXED_PRECISION
+    model_family: Literal[
+        "compact",
+        "mobilenet_v2",
+        "mobilenet_v2_tiny",
+        "mobilenet_v2_direction",
+    ] = (
+        DEFAULT_MODEL_FAMILY
+    )
+    mobilenet_pretrained: bool = DEFAULT_MOBILENET_PRETRAINED
+    mobilenet_backbone_trainable: bool = DEFAULT_MOBILENET_BACKBONE_TRAINABLE
+    mobilenet_warmup_epochs: int = DEFAULT_MOBILENET_WARMUP_EPOCHS
+    mobilenet_alpha: float = DEFAULT_MOBILENET_ALPHA
+    mobilenet_head_units: int = DEFAULT_MOBILENET_HEAD_UNITS
+    mobilenet_head_dropout: float = DEFAULT_MOBILENET_HEAD_DROPOUT
+    hard_case_manifest: str | None = None
+    hard_case_repeat: int = 0
+    init_model_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +143,12 @@ def _validate_split_config(config: TrainConfig) -> None:
         raise ValueError("val_fraction + test_fraction must be < 1.0.")
     if config.mobilenet_warmup_epochs < 0:
         raise ValueError("mobilenet_warmup_epochs must be >= 0.")
+    if config.mobilenet_alpha <= 0.0:
+        raise ValueError("mobilenet_alpha must be > 0.")
+    if config.mobilenet_head_units <= 0:
+        raise ValueError("mobilenet_head_units must be > 0.")
+    if not (0.0 <= config.mobilenet_head_dropout < 1.0):
+        raise ValueError("mobilenet_head_dropout must be in [0, 1).")
 
 
 def _configure_training_runtime(config: TrainConfig) -> None:
@@ -132,6 +183,59 @@ def _configure_training_runtime(config: TrainConfig) -> None:
         keras.mixed_precision.set_global_policy("mixed_float16")
     else:
         keras.mixed_precision.set_global_policy("float32")
+
+
+def _log_runtime_state(config: TrainConfig) -> None:
+    """Print the TensorFlow runtime state we care about before training starts."""
+    visible_gpus: list[tf.config.PhysicalDevice] = tf.config.list_physical_devices(
+        "GPU"
+    )
+    visible_cpus: list[tf.config.PhysicalDevice] = tf.config.list_physical_devices(
+        "CPU"
+    )
+    print(
+        "[TRAIN] Runtime: "
+        f"device={config.device} "
+        f"gpu_memory_growth={config.gpu_memory_growth} "
+        f"mixed_precision={keras.mixed_precision.global_policy().name}"
+    )
+    print(f"[TRAIN] TensorFlow CPUs: {visible_cpus}")
+    print(f"[TRAIN] TensorFlow GPUs: {visible_gpus}")
+
+
+def _log_dataset_state(
+    config: TrainConfig,
+    *,
+    label_summary: LabelSummary,
+    split: DatasetSplit,
+    dropped_out_of_sweep: int,
+) -> None:
+    """Print dataset and split sizes so long runs stay easy to monitor."""
+    print(
+        "[TRAIN] Dataset: "
+        f"gauge_id={config.gauge_id} "
+        f"labelled_samples={label_summary.total_samples} "
+        f"in_sweep={label_summary.in_sweep} "
+        f"out_of_sweep={label_summary.out_of_sweep} "
+        f"dropped_after_filter={dropped_out_of_sweep}"
+    )
+    print(
+        "[TRAIN] Split sizes: "
+        f"train={len(split.train_examples)} "
+        f"val={len(split.val_examples)} "
+        f"test={len(split.test_examples)}"
+    )
+
+
+def _log_model_choice(config: TrainConfig) -> None:
+    """Print the selected model family and input geometry before building it."""
+    print(
+        "[TRAIN] Model: "
+        f"family={config.model_family} "
+        f"image_size={config.image_height}x{config.image_width} "
+        f"batch_size={config.batch_size} "
+        f"epochs={config.epochs}"
+    )
 
 
 def _compute_crop_box(
@@ -188,6 +292,60 @@ def _build_training_examples(
         )
 
     return examples, dropped_out_of_sweep
+
+
+def _load_hard_case_examples(
+    manifest_path: Path,
+    *,
+    image_height: int,
+    image_width: int,
+) -> list[TrainingExample]:
+    """Load extra board captures that should be upweighted during fine-tuning."""
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Hard-case manifest not found: {manifest_path}")
+
+    examples: list[TrainingExample] = []
+    with manifest_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None:
+            raise ValueError(f"Hard-case manifest has no header: {manifest_path}")
+        required_columns: set[str] = {"image_path", "value"}
+        if not required_columns.issubset(reader.fieldnames):
+            raise ValueError(
+                "Hard-case manifest must include image_path and value columns."
+            )
+
+        for row in reader:
+            raw_path = Path(row["image_path"])
+            image_path = raw_path if raw_path.is_absolute() else (REPO_ROOT / raw_path)
+            value = float(row["value"])
+            examples.append(
+                TrainingExample(
+                    image_path=str(image_path),
+                    value=value,
+                    crop_box_xyxy=(0.0, 0.0, float(image_width), float(image_height)),
+                    needle_unit_xy=(1.0, 0.0),
+                )
+            )
+
+    return examples
+
+
+def _load_init_model(init_model_path: Path) -> keras.Model:
+    """Load a previously trained Keras model for warm-start fine-tuning."""
+    if not init_model_path.exists():
+        raise FileNotFoundError(f"Initial model not found: {init_model_path}")
+
+    print(f"[TRAIN] Loading warm-start model from {init_model_path}.")
+    model: keras.Model = keras.models.load_model(
+        init_model_path,
+        compile=False,
+        custom_objects={
+            "preprocess_input": keras.applications.mobilenet_v2.preprocess_input,
+        },
+    )
+    model.trainable = True
+    return model
 
 
 def _split_examples(
@@ -263,7 +421,11 @@ def _load_crop_and_preprocess_image(
 ) -> tuple[tf.Tensor, tf.Tensor]:
     """Read image, crop dial ROI, resize, and normalize to [0, 1]."""
     image_bytes: tf.Tensor = tf.io.read_file(image_path)
-    image: tf.Tensor = tf.image.decode_jpeg(image_bytes, channels=3)
+    image: tf.Tensor = tf.io.decode_image(
+        image_bytes,
+        channels=3,
+        expand_animations=False,
+    )
     image = tf.ensure_shape(image, [None, None, 3])
 
     image = _crop_image_with_xyxy(image, crop_box_xyxy)
@@ -312,10 +474,16 @@ def _build_tf_dataset(
     config: TrainConfig,
     *,
     training: bool,
+    target_kind: Literal["value", "needle_unit_xy"] = "value",
 ) -> tf.data.Dataset:
     """Create a tf.data pipeline for efficient training/eval input."""
     paths: np.ndarray = np.array([e.image_path for e in examples], dtype=str)
-    targets: np.ndarray = np.array([e.value for e in examples], dtype=np.float32)
+    if target_kind == "value":
+        targets: np.ndarray = np.array([e.value for e in examples], dtype=np.float32)
+    elif target_kind == "needle_unit_xy":
+        targets = np.array([e.needle_unit_xy for e in examples], dtype=np.float32)
+    else:
+        raise ValueError(f"Unsupported target_kind '{target_kind}'.")
     boxes: np.ndarray = np.array([e.crop_box_xyxy for e in examples], dtype=np.float32)
 
     dataset: tf.data.Dataset = tf.data.Dataset.from_tensor_slices((paths, targets, boxes))
@@ -382,16 +550,47 @@ def _compile_regression_model(
     )
 
 
+def _direction_cosine_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+    """Optimize angular agreement between unit needle vectors."""
+    dot: tf.Tensor = tf.reduce_sum(y_true * y_pred, axis=-1)
+    clipped: tf.Tensor = tf.clip_by_value(dot, -1.0, 1.0)
+    return tf.reduce_mean(1.0 - clipped)
+
+
+def _compile_direction_model(
+    model: keras.Model,
+    *,
+    learning_rate: float,
+    spec: GaugeSpec,
+) -> None:
+    """Compile a direction-regression model with value-space metrics."""
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+        learning_rate=learning_rate,
+        clipnorm=1.0,
+    )
+    model.compile(
+        optimizer=optimizer,
+        loss=_direction_cosine_loss,
+        metrics=[
+            _make_angle_mae_metric(),
+            _make_value_mae_metric(spec),
+            _make_value_rmse_metric(spec),
+        ],
+    )
+
+
 def _make_training_callbacks() -> list[keras.callbacks.Callback]:
     """Build standard callbacks used for the main training/fine-tuning phase."""
     return [
         keras.callbacks.EarlyStopping(
             monitor="val_mae",
+            mode="min",
             patience=8,
             restore_best_weights=True,
         ),
         keras.callbacks.ReduceLROnPlateau(
             monitor="val_mae",
+            mode="min",
             factor=0.5,
             patience=3,
             min_lr=1e-6,
@@ -470,8 +669,12 @@ def _make_angle_mae_metric():
 
 def train(config: TrainConfig) -> TrainingResult:
     """Run one full training cycle and return model + metrics."""
+    print("[TRAIN] Entering train().")
     _validate_split_config(config)
+    print("[TRAIN] Split config validated.")
     _configure_training_runtime(config)
+    print("[TRAIN] Runtime configured.")
+    _log_runtime_state(config)
 
     keras.utils.set_random_seed(config.seed)
     np.random.seed(config.seed)
@@ -482,16 +685,22 @@ def train(config: TrainConfig) -> TrainingResult:
             f"Unknown gauge_id '{config.gauge_id}'. Available: {list(specs)}"
         )
     spec: GaugeSpec = specs[config.gauge_id]
+    print(f"[TRAIN] Loaded gauge spec for '{config.gauge_id}'.")
 
+    print("[TRAIN] Loading labelled dataset...")
     samples: list[Sample] = load_dataset(labelled_dir=LABELLED_DIR, raw_dir=RAW_DIR)
     if not samples:
         raise ValueError(
             "No samples found. Check labelled/raw paths and annotation zips."
         )
+    print(f"[TRAIN] Loaded {len(samples)} labelled samples.")
 
     # This summary is still useful for visibility into raw annotation quality.
+    print("[TRAIN] Summarizing label sweep...")
     label_summary: LabelSummary = summarize_label_sweep(samples, spec)
+    print("[TRAIN] Label sweep summary complete.")
 
+    print("[TRAIN] Building training examples...")
     examples, dropped_out_of_sweep = _build_training_examples(
         samples,
         spec,
@@ -502,31 +711,127 @@ def train(config: TrainConfig) -> TrainingResult:
         raise ValueError(
             "Not enough valid examples after filtering invalid sweep labels."
         )
+    print(
+        "[TRAIN] Training examples ready: "
+        f"examples={len(examples)} dropped_out_of_sweep={dropped_out_of_sweep}"
+    )
 
+    print("[TRAIN] Splitting dataset...")
     split: DatasetSplit = _split_examples(examples, config)
 
-    train_ds = _build_tf_dataset(split.train_examples, config, training=True)
-    val_ds = _build_tf_dataset(split.val_examples, config, training=False)
-    test_ds = _build_tf_dataset(split.test_examples, config, training=False)
+    if config.hard_case_manifest and config.model_family != "mobilenet_v2_direction":
+        hard_case_manifest_path: Path = Path(config.hard_case_manifest)
+        if not hard_case_manifest_path.is_absolute():
+            hard_case_manifest_path = ML_ROOT / hard_case_manifest_path
+        hard_case_examples: list[TrainingExample] = _load_hard_case_examples(
+            hard_case_manifest_path,
+            image_height=config.image_height,
+            image_width=config.image_width,
+        )
+        hard_case_repeat: int = max(config.hard_case_repeat, 0)
+        if hard_case_repeat > 0 and hard_case_examples:
+            repeated_hard_cases: list[TrainingExample] = hard_case_examples * hard_case_repeat
+            split = DatasetSplit(
+                train_examples=split.train_examples + repeated_hard_cases,
+                val_examples=split.val_examples,
+                test_examples=split.test_examples,
+            )
+            print(
+                "[TRAIN] Hard-case fine-tuning examples loaded: "
+                f"base={len(hard_case_examples)} repeat={hard_case_repeat} "
+                f"added={len(repeated_hard_cases)}"
+            )
 
-    if config.model_family == "compact":
+    _log_dataset_state(
+        config,
+        label_summary=label_summary,
+        split=split,
+        dropped_out_of_sweep=dropped_out_of_sweep,
+    )
+
+    _log_model_choice(config)
+    if config.init_model_path:
+        init_model_path: Path = Path(config.init_model_path)
+        if not init_model_path.is_absolute():
+            init_model_path = ML_ROOT / init_model_path
+        model = _load_init_model(init_model_path)
+    elif config.model_family == "compact":
+        print("[TRAIN] Building compact CNN model...")
         model = build_regression_model(config.image_height, config.image_width)
     elif config.model_family == "mobilenet_v2":
+        print("[TRAIN] Building MobileNetV2 model...")
         model = build_mobilenetv2_regression_model(
             config.image_height,
             config.image_width,
             pretrained=config.mobilenet_pretrained,
             backbone_trainable=config.mobilenet_backbone_trainable,
+            alpha=config.mobilenet_alpha,
+            head_units=config.mobilenet_head_units,
+            head_dropout=config.mobilenet_head_dropout,
+        )
+    elif config.model_family == "mobilenet_v2_tiny":
+        print("[TRAIN] Building tiny MobileNetV2 model...")
+        model = build_mobilenetv2_regression_model(
+            config.image_height,
+            config.image_width,
+            pretrained=config.mobilenet_pretrained,
+            backbone_trainable=config.mobilenet_backbone_trainable,
+            alpha=config.mobilenet_alpha,
+            head_units=config.mobilenet_head_units,
+            head_dropout=config.mobilenet_head_dropout,
+        )
+    elif config.model_family == "mobilenet_v2_direction":
+        print("[TRAIN] Building MobileNetV2 direction model...")
+        model = build_mobilenetv2_direction_model(
+            config.image_height,
+            config.image_width,
+            pretrained=config.mobilenet_pretrained,
+            backbone_trainable=config.mobilenet_backbone_trainable,
+            alpha=config.mobilenet_alpha,
+            head_units=config.mobilenet_head_units,
+            head_dropout=config.mobilenet_head_dropout,
         )
     else:
         raise ValueError(f"Unsupported model_family '{config.model_family}'.")
+    target_kind: Literal["value", "needle_unit_xy"] = (
+        "needle_unit_xy"
+        if config.model_family == "mobilenet_v2_direction"
+        else "value"
+    )
+    train_ds = _build_tf_dataset(
+        split.train_examples,
+        config,
+        training=True,
+        target_kind=target_kind,
+    )
+    val_ds = _build_tf_dataset(
+        split.val_examples,
+        config,
+        training=False,
+        target_kind=target_kind,
+    )
+    test_ds = _build_tf_dataset(
+        split.test_examples,
+        config,
+        training=False,
+        target_kind=target_kind,
+    )
+    print("[TRAIN] TensorFlow datasets built.")
+    model_name: str = getattr(model, "name", model.__class__.__name__)
+    if hasattr(model, "count_params"):
+        model_params: str = f"{int(model.count_params()):,}"
+    else:
+        model_params = "unknown"
+    print(f"[TRAIN] Built model '{model_name}' with {model_params} parameters.")
     callbacks: list[keras.callbacks.Callback] = _make_training_callbacks()
     should_use_two_stage_mobilenet: bool = (
-        config.model_family == "mobilenet_v2"
+        config.model_family
+        in {"mobilenet_v2", "mobilenet_v2_tiny", "mobilenet_v2_direction"}
         and config.mobilenet_pretrained
         and config.mobilenet_backbone_trainable
         and config.mobilenet_warmup_epochs > 0
         and config.epochs > 1
+        and config.init_model_path is None
     )
 
     if should_use_two_stage_mobilenet:
@@ -538,8 +843,20 @@ def train(config: TrainConfig) -> TrainingResult:
             )
 
         # Stage 1: train regression head with frozen pretrained backbone.
+        print(
+            "[TRAIN] MobileNetV2 stage 1: "
+            f"warmup_epochs={warmup_epochs} "
+            "backbone_trainable=False"
+        )
         backbone.trainable = False
-        _compile_regression_model(model, learning_rate=config.learning_rate)
+        if config.model_family == "mobilenet_v2_direction":
+            _compile_direction_model(
+                model,
+                learning_rate=config.learning_rate,
+                spec=spec,
+            )
+        else:
+            _compile_regression_model(model, learning_rate=config.learning_rate)
         warmup_history: keras.callbacks.History = model.fit(
             train_ds,
             validation_data=val_ds,
@@ -549,8 +866,20 @@ def train(config: TrainConfig) -> TrainingResult:
         )
 
         # Stage 2: unfreeze backbone and fine-tune end-to-end with callbacks.
+        print(
+            "[TRAIN] MobileNetV2 stage 2: "
+            f"fine_tune_epochs={config.epochs - warmup_epochs} "
+            "backbone_trainable=True"
+        )
         backbone.trainable = True
-        _compile_regression_model(model, learning_rate=config.learning_rate)
+        if config.model_family == "mobilenet_v2_direction":
+            _compile_direction_model(
+                model,
+                learning_rate=config.learning_rate,
+                spec=spec,
+            )
+        else:
+            _compile_regression_model(model, learning_rate=config.learning_rate)
         fine_tune_history: keras.callbacks.History = model.fit(
             train_ds,
             validation_data=val_ds,
@@ -561,7 +890,15 @@ def train(config: TrainConfig) -> TrainingResult:
         )
         history = _merge_histories(warmup_history, fine_tune_history)
     else:
-        _compile_regression_model(model, learning_rate=config.learning_rate)
+        print("[TRAIN] Compact CNN stage: training end-to-end with callbacks.")
+        if config.model_family == "mobilenet_v2_direction":
+            _compile_direction_model(
+                model,
+                learning_rate=config.learning_rate,
+                spec=spec,
+            )
+        else:
+            _compile_regression_model(model, learning_rate=config.learning_rate)
         history = model.fit(
             train_ds,
             validation_data=val_ds,
