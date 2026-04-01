@@ -22,6 +22,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include "debug_console.h"
@@ -38,6 +39,13 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+#define DS3231_I2C_ADDRESS_7BIT     0x68U
+#define DS3231_I2C_ADDRESS_HAL      (DS3231_I2C_ADDRESS_7BIT << 1U)
+#define DS3231_I2C_PROBE_TRIALS     3U
+#define DS3231_I2C_PROBE_TIMEOUT_MS  50U
+#define DS3231_READ_RETRY_ATTEMPTS   5U
+#define DS3231_READ_RETRY_DELAY_MS   10U
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -51,6 +59,7 @@ __IO uint32_t BspButtonState = BUTTON_RELEASED;
 
 DCMIPP_HandleTypeDef hdcmipp;
 
+I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c2;
 
 UART_HandleTypeDef hlpuart1;
@@ -66,12 +75,19 @@ static void MX_GPIO_Init(void);
 static void MX_LPUART1_UART_Init(void);
 static void MX_SPI5_Init(void);
 static void MX_DCMIPP_Init(void);
+static void MX_I2C1_Init(void);
 static void MX_I2C2_Init(void);
 static void SystemIsolation_Config(void);
 /* USER CODE BEGIN PFP */
 static void App_SystemClock_Config(void);
 static void App_CameraKernelClock_Config(void);
 static void Setup_Mpu(void);
+static void DS3231_LogI2c1LineState(void);
+static void DS3231_ScanI2C1Bus(void);
+static bool DS3231_ReadDateTime(char *buffer, size_t buffer_length);
+static void DS3231_LogBootTime(void);
+static char g_ds3231_last_timestamp[32];
+static bool g_ds3231_last_timestamp_valid = false;
 extern uint32_t __snoncacheable;
 extern uint32_t __enoncacheable;
 
@@ -245,6 +261,258 @@ static void Setup_Mpu(void)
    * each DMA, so zero-init here is not required. */
 }
 
+/**
+  * @brief Convert a packed BCD byte into binary.
+  * @param value Packed BCD value from the DS3231.
+  * @retval Converted binary value.
+  */
+static uint8_t DS3231_BcdToBin(uint8_t value)
+{
+  return (uint8_t)(((value >> 4U) * 10U) + (value & 0x0FU));
+}
+
+/**
+  * @brief Decode a DS3231 hour register into 24-hour binary form.
+  * @param value Raw hour register byte.
+  * @retval Hour in the range 0-23.
+  */
+static uint8_t DS3231_DecodeHour(uint8_t value)
+{
+  if ((value & 0x40U) == 0U)
+  {
+    return DS3231_BcdToBin((uint8_t) (value & 0x3FU));
+  }
+
+  uint8_t hour = DS3231_BcdToBin((uint8_t) (value & 0x1FU));
+  if ((value & 0x20U) != 0U)
+  {
+    if (hour != 12U)
+    {
+      hour = (uint8_t) (hour + 12U);
+    }
+  }
+  else if (hour == 12U)
+  {
+    hour = 0U;
+  }
+
+  return hour;
+}
+
+/**
+  * @brief Log the I2C1 pin state so we can spot wiring or pull-up issues.
+  *
+  * This cannot prove the solder bridges themselves, but it does tell us whether
+  * the firmware sees PC1/PH9 configured and whether the bus is idling high.
+  */
+static void DS3231_LogI2c1LineState(void)
+{
+  uint32_t pc1_moder = (GPIOC->MODER >> (1U * 2U)) & 0x3U;
+  uint32_t ph9_moder = (GPIOH->MODER >> (9U * 2U)) & 0x3U;
+  uint32_t pc1_pupdr = (GPIOC->PUPDR >> (1U * 2U)) & 0x3U;
+  uint32_t ph9_pupdr = (GPIOH->PUPDR >> (9U * 2U)) & 0x3U;
+  uint32_t pc1_afr = (GPIOC->AFR[0] >> (1U * 4U)) & 0xFU;
+  uint32_t ph9_afr = (GPIOH->AFR[1] >> ((9U - 8U) * 4U)) & 0xFU;
+  GPIO_PinState sda_state = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1);
+  GPIO_PinState scl_state = HAL_GPIO_ReadPin(GPIOH, GPIO_PIN_9);
+
+  DebugConsole_Printf(
+      "[RTC] I2C1 lines: PC1(MODE=%lu PUPD=%lu AF=%lu state=%u) PH9(MODE=%lu PUPD=%lu AF=%lu state=%u)\r\n",
+      (unsigned long) pc1_moder, (unsigned long) pc1_pupdr,
+      (unsigned long) pc1_afr, (unsigned int) sda_state,
+      (unsigned long) ph9_moder, (unsigned long) ph9_pupdr,
+      (unsigned long) ph9_afr, (unsigned int) scl_state);
+}
+
+/**
+  * @brief Scan the I2C1 bus for any responding device addresses.
+  *
+  * This keeps the output compact while telling us whether the RTC is missing,
+  * mis-addressed, or blocked by routing/pull-up issues.
+  */
+static void DS3231_ScanI2C1Bus(void)
+{
+  uint32_t found_count = 0U;
+  char found_list[128] = {0};
+  size_t used = 0U;
+
+  DebugConsole_Printf("[RTC] I2C1 scan starting.\r\n");
+
+  for (uint32_t address = 0x03U; address <= 0x77U; ++address)
+  {
+    if (HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t) (address << 1U), 1U, 10U) == HAL_OK)
+    {
+      if (found_count == 0U)
+      {
+        used = (size_t) snprintf(found_list, sizeof(found_list), "[RTC] I2C1 ACKs:");
+      }
+
+      if (used < sizeof(found_list))
+      {
+        int written = snprintf(&found_list[used], sizeof(found_list) - used,
+                               " 0x%02lX", (unsigned long) address);
+        if (written > 0)
+        {
+          used += (size_t) written;
+        }
+      }
+
+      ++found_count;
+    }
+  }
+
+  if (found_count > 0U)
+  {
+    DebugConsole_Printf("%s\r\n", found_list);
+  }
+  else
+  {
+    DebugConsole_Printf("[RTC] I2C1 scan found no ACKs.\r\n");
+  }
+}
+
+/**
+  * @brief Read the DS3231 clock registers and format a timestamp.
+  * @param buffer Output buffer for the human-readable time string.
+  * @param buffer_length Size of the output buffer.
+  * @retval true when the RTC replied with a valid timestamp.
+  */
+static bool DS3231_ReadDateTime(char *buffer, size_t buffer_length)
+{
+  uint8_t raw_registers[7] = {0};
+  HAL_StatusTypeDef status;
+  int printed = 0;
+
+  if ((buffer == NULL) || (buffer_length == 0U))
+  {
+    return false;
+  }
+
+  status = HAL_I2C_IsDeviceReady(&hi2c1, DS3231_I2C_ADDRESS_HAL,
+                                 DS3231_I2C_PROBE_TRIALS,
+                                 DS3231_I2C_PROBE_TIMEOUT_MS);
+  if (status != HAL_OK)
+  {
+    return false;
+  }
+
+  status = HAL_I2C_Mem_Read(&hi2c1, DS3231_I2C_ADDRESS_HAL, 0x00U,
+                            I2C_MEMADD_SIZE_8BIT, raw_registers,
+                            sizeof(raw_registers), 100U);
+  if (status != HAL_OK)
+  {
+    return false;
+  }
+
+  printed = snprintf(buffer, buffer_length,
+                     "%04u-%02u-%02u %02u:%02u:%02u",
+                     (unsigned int) (2000U + DS3231_BcdToBin(raw_registers[6])),
+                     (unsigned int) DS3231_BcdToBin((uint8_t) (raw_registers[5] & 0x1FU)),
+                     (unsigned int) DS3231_BcdToBin(raw_registers[4]),
+                     (unsigned int) DS3231_DecodeHour(raw_registers[2]),
+                     (unsigned int) DS3231_BcdToBin(raw_registers[1]),
+                     (unsigned int) DS3231_BcdToBin((uint8_t) (raw_registers[0] & 0x7FU)));
+  return (printed > 0) && ((size_t) printed < buffer_length);
+}
+
+/**
+  * @brief Try to read the DS3231 clock registers a few times before giving up.
+  * @param buffer Output buffer for the human-readable time string.
+  * @param buffer_length Size of the output buffer.
+  * @retval true when the RTC replied with a valid timestamp.
+  */
+static bool DS3231_ReadDateTimeWithRetry(char *buffer, size_t buffer_length)
+{
+  for (uint32_t attempt = 0U; attempt < DS3231_READ_RETRY_ATTEMPTS; ++attempt)
+  {
+    if (DS3231_ReadDateTime(buffer, buffer_length))
+    {
+      return true;
+    }
+
+    if ((attempt + 1U) < DS3231_READ_RETRY_ATTEMPTS)
+    {
+      HAL_Delay(DS3231_READ_RETRY_DELAY_MS);
+    }
+  }
+
+  return false;
+}
+
+/**
+  * @brief Print the DS3231 time once during boot so we can confirm the module.
+  */
+static void DS3231_LogBootTime(void)
+{
+  char rtc_text[32] = {0};
+
+  if (DS3231_ReadDateTimeWithRetry(rtc_text, sizeof(rtc_text)))
+  {
+    (void) snprintf(g_ds3231_last_timestamp, sizeof(g_ds3231_last_timestamp),
+                    "%s", rtc_text);
+    g_ds3231_last_timestamp_valid = true;
+    DebugConsole_Printf("[RTC] DS3231 time: %s\r\n", rtc_text);
+  }
+  else
+  {
+    DebugConsole_Printf("[RTC] DS3231 probe/read failed on I2C1.\r\n");
+  }
+}
+
+/**
+  * @brief Format the current DS3231 time for use in a capture filename.
+  *
+  * The RTC returns a human-readable timestamp with spaces and colons.
+  * Those characters are sanitized here so the string is safe to use in a
+  * filesystem path.
+  */
+bool App_Clock_GetCaptureTimestamp(char *buffer, uint32_t buffer_length)
+{
+  char rtc_text[32] = {0};
+  uint32_t source_index = 0U;
+  uint32_t dest_index = 0U;
+
+  if ((buffer == NULL) || (buffer_length == 0U))
+  {
+    return false;
+  }
+
+  if (!DS3231_ReadDateTimeWithRetry(rtc_text, sizeof(rtc_text)))
+  {
+    if (!g_ds3231_last_timestamp_valid)
+    {
+      return false;
+    }
+
+    (void) snprintf(rtc_text, sizeof(rtc_text), "%s",
+                    g_ds3231_last_timestamp);
+  }
+
+  (void) snprintf(g_ds3231_last_timestamp, sizeof(g_ds3231_last_timestamp),
+                  "%s", rtc_text);
+  g_ds3231_last_timestamp_valid = true;
+
+  while ((rtc_text[source_index] != '\0')
+         && ((dest_index + 1U) < buffer_length))
+  {
+    char ch = rtc_text[source_index++];
+
+    if (ch == ' ')
+    {
+      ch = '_';
+    }
+    else if (ch == ':')
+    {
+      ch = '-';
+    }
+
+    buffer[dest_index++] = ch;
+  }
+
+  buffer[dest_index] = '\0';
+  return (rtc_text[source_index] == '\0');
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -361,6 +629,13 @@ int main(void)
   MX_I2C2_Init();
   DebugConsole_Printf("[BOOT] I2C2 init ok.\r\n");
 
+  DebugConsole_Printf("[BOOT] Initializing I2C1 for DS3231...\r\n");
+  MX_I2C1_Init();
+  DebugConsole_Printf("[BOOT] I2C1 init ok.\r\n");
+  DS3231_LogI2c1LineState();
+  DS3231_ScanI2C1Bus();
+  DS3231_LogBootTime();
+
   DebugConsole_Printf("[BOOT] Initializing SPI5 for SD card...\r\n");
   MX_SPI5_Init();
   DebugConsole_Printf("[BOOT] SPI5 init ok.\r\n");
@@ -392,6 +667,52 @@ static void MX_DCMIPP_Init(void)
   /* Keep CubeMX from owning a second raw PIPE0 path here.
    * The middleware configures the active camera pipe itself, and leaving this
    * function as a bare peripheral init avoids fighting that setup. */
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.Timing = 0x009034B6;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
 }
 
 /**
