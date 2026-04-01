@@ -46,9 +46,9 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define CAMERA_INIT_THREAD_STACK_SIZE_BYTES 2048U
+#define CAMERA_INIT_THREAD_STACK_SIZE_BYTES 8192U
 #define CAMERA_INIT_THREAD_PRIORITY         12U
-#define CAMERA_ISP_THREAD_STACK_SIZE_BYTES  1024U
+#define CAMERA_ISP_THREAD_STACK_SIZE_BYTES  4096U
 #define CAMERA_ISP_THREAD_PRIORITY          11U
 #define CAMERA_INIT_STARTUP_DELAY_MS        200U
 #define BCAMS_IMX_I2C_ADDRESS_7BIT          0x1AU
@@ -102,9 +102,6 @@
 #define CAMERA_CAPTURE_RAW_BMP_INFO_HEADER_BYTES   40U
 #define CAMERA_CAPTURE_RAW_BMP_PALETTE_BYTES      (256U * 4U)
 #define CAMERA_CAPTURE_RAW_BMP_HEADER_BYTES       (CAMERA_CAPTURE_RAW_BMP_FILE_HEADER_BYTES + CAMERA_CAPTURE_RAW_BMP_INFO_HEADER_BYTES + CAMERA_CAPTURE_RAW_BMP_PALETTE_BYTES)
-/* Keep the latest preview at a stable path so it is easy to download and
- * inspect without having to scan for unique names on the SD card. */
-#define CAMERA_CAPTURE_RAW_FILE_NAME      "capture_latest.raw16"
 /* IMX335 color-bar bring-up consistently shows four blank top lines before the
  * active test-pattern data starts, so we skip them in the raw Pipe0 view. */
 #define CAMERA_CAPTURE_RAW_TOP_SKIP_LINES       4U
@@ -116,6 +113,7 @@
 #define CAMERA_STREAM_WARMUP_DELAY_MS       250U
 #define IMX335_CAPTURE_FRAMERATE_FPS        10
 #define CAMERA_CAPTURE_FILE_NAME_LENGTH     32U
+#define CAMERA_STORAGE_READY_EVENT_FLAG     0x00000001U
 /* Match ST's IMX335 middleware and upstream Linux driver ID check. */
 #define IMX335_CHIP_ID_REG                 0x3912U
 #define IMX335_CHIP_ID_VALUE               0x00U
@@ -171,8 +169,10 @@ static bool camera_cmw_initialized = false;
 static bool camera_capture_use_cmw_pipeline = false;
 static TX_SEMAPHORE camera_capture_done_semaphore;
 static TX_SEMAPHORE camera_capture_isp_semaphore;
+static TX_EVENT_FLAGS_GROUP camera_storage_ready_flags;
 static TX_MUTEX debug_uart_mutex;
 static bool camera_capture_sync_created = false;
+static bool camera_storage_ready_sync_created = false;
 static bool camera_stream_started = false;
 static volatile bool camera_capture_failed = false;
 static volatile uint32_t camera_capture_error_code = 0U;
@@ -188,9 +188,6 @@ static volatile uint32_t camera_capture_csi_linebyte_event_count = 0U;
 static volatile bool camera_capture_csi_linebyte_event_logged = false;
 static volatile bool camera_capture_csi_status_logged = false;
 static volatile bool camera_capture_csi_error_regs_logged = false;
-static volatile bool camera_capture_line_error_state_logged = false;
-static volatile bool camera_capture_zero_frame_state_logged = false;
-static volatile bool camera_capture_timeout_state_logged = false;
 static volatile uint32_t camera_capture_vsync_event_count = 0U;
 static volatile uint32_t camera_capture_isp_run_count = 0U;
 /* Count raw IRQ entry points so we can tell whether the interrupt chain is
@@ -385,6 +382,11 @@ UINT App_ThreadX_Init(VOID *memory_ptr) {
 /* USER CODE BEGIN App_ThreadX_Start */
 UINT App_ThreadX_Start(void) {
 	/* Keep this function idempotent to protect against accidental double-start. */
+	/* Turn all LEDs on here so a visible change proves the ThreadX startup hook
+	 * ran before we hand control to the camera threads. */
+	BSP_LED_On(LED_RED);
+	BSP_LED_On(LED_BLUE);
+	BSP_LED_On(LED_GREEN);
 	if (camera_init_thread_created && camera_isp_thread_created) {
 		DebugConsole_Printf(
 				"[CAMERA][THREAD] Start skipped: camera threads already created.\r\n");
@@ -417,6 +419,19 @@ UINT App_ThreadX_Start(void) {
 		(void) tx_mutex_create(&debug_uart_mutex, "debug_uart", TX_NO_INHERIT);
 
 		camera_capture_sync_created = true;
+	}
+
+	if (!camera_storage_ready_sync_created) {
+		const UINT ready_flags_status = tx_event_flags_create(
+				&camera_storage_ready_flags, "camera_storage_ready");
+		if (ready_flags_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[CAMERA][THREAD] Failed to create storage-ready event flags, status=%lu\r\n",
+					(unsigned long) ready_flags_status);
+			return ready_flags_status;
+		}
+
+		camera_storage_ready_sync_created = true;
 	}
 
 	if (!camera_isp_thread_created) {
@@ -489,6 +504,8 @@ void MX_ThreadX_Init(void) {
 static VOID CameraInitThread_Entry(ULONG thread_input) {
 	(void) thread_input;
 
+	/* Keep the LEDs on once the camera init thread starts so we can tell the
+	 * scheduler reached this entry point. */
 	DebugConsole_Printf(
 			"[CAMERA][THREAD] Initializing camera diagnostics thread...\r\n");
 
@@ -502,6 +519,12 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 		DebugConsole_Printf(
 				"[CAMERA][THREAD] Camera probe completed successfully.\r\n");
 
+		/* Turn blue off right before capture so a stuck-on LED means the probe
+		 * completed and the freeze moved into the capture path. */
+		BSP_LED_Off(LED_BLUE);
+		BSP_LED_On(LED_GREEN);
+		DebugConsole_Printf(
+				"[CAMERA][THREAD] Entering first image capture/save attempt...\r\n");
 		if (CameraPlatform_CaptureAndStoreSingleFrame()) {
 			DebugConsole_Printf(
 					"[CAMERA][THREAD] Captured and stored first image successfully.\r\n");
@@ -558,65 +581,21 @@ static VOID CameraIspThread_Entry(ULONG thread_input) {
 static bool Camera_ProbeBCamsImx(void) {
 	bool stage_ok = true;
 
-	DebugConsole_Printf(
-			"[CAMERA][PROBE] Stage 1/5: Validate firmware camera features.\r\n");
-#ifdef HAL_DCMIPP_MODULE_ENABLED
-	DebugConsole_Printf(
-			"[CAMERA][PROBE]   - HAL_DCMIPP_MODULE_ENABLED = ON\r\n");
-#else
-  DebugConsole_Printf("[CAMERA][PROBE]   - HAL_DCMIPP_MODULE_ENABLED = OFF (enable for image pipeline).\r\n");
-  stage_ok = false;
-#endif
-
-#ifdef HAL_I2C_MODULE_ENABLED
-	DebugConsole_Printf("[CAMERA][PROBE]   - HAL_I2C_MODULE_ENABLED = ON\r\n");
-#else
-  DebugConsole_Printf("[CAMERA][PROBE]   - HAL_I2C_MODULE_ENABLED = OFF (sensor control bus usually needed).\r\n");
-#endif
-
-#ifdef HAL_I3C_MODULE_ENABLED
-  DebugConsole_Printf("[CAMERA][PROBE]   - HAL_I3C_MODULE_ENABLED = ON\r\n");
-#else
-	DebugConsole_Printf("[CAMERA][PROBE]   - HAL_I3C_MODULE_ENABLED = OFF\r\n");
-#endif
-
-	DebugConsole_Printf(
-			"[CAMERA][PROBE] Stage 2/5: Check MIPI CSI/DCMIPP peripheral clocks.\r\n");
-	DebugConsole_Printf("[CAMERA][PROBE]   - CSI clock enabled: %lu\r\n",
-			(unsigned long) __HAL_RCC_CSI_IS_CLK_ENABLED());
-	DebugConsole_Printf("[CAMERA][PROBE]   - DCMIPP clock enabled: %lu\r\n",
-			(unsigned long) __HAL_RCC_DCMIPP_IS_CLK_ENABLED());
-
-	DebugConsole_Printf(
-			"[CAMERA][PROBE] Stage 3/5: Check likely control bus clocks (I2C/I3C).\r\n");
-	DebugConsole_Printf("[CAMERA][PROBE]   - I2C1 clock enabled: %lu\r\n",
-			(unsigned long) __HAL_RCC_I2C1_IS_CLK_ENABLED());
-	DebugConsole_Printf("[CAMERA][PROBE]   - I2C2 clock enabled: %lu\r\n",
-			(unsigned long) __HAL_RCC_I2C2_IS_CLK_ENABLED());
-	DebugConsole_Printf("[CAMERA][PROBE]   - I3C1 clock enabled: %lu\r\n",
-			(unsigned long) __HAL_RCC_I3C1_IS_CLK_ENABLED());
-
-	DebugConsole_Printf(
-			"[CAMERA][PROBE] Stage 4/5: Run board-specific sensor probe callback.\r\n");
+	DebugConsole_Printf("[CAMERA][PROBE] Probing camera stack...\r\n");
 	const UINT probe_status = CameraPlatform_ProbeBCamsImx();
 	if (probe_status == TX_SUCCESS) {
-		DebugConsole_Printf(
-				"[CAMERA][PROBE]   - CameraPlatform_ProbeBCamsImx() returned TX_SUCCESS.\r\n");
+		DebugConsole_Printf("[CAMERA][PROBE] Sensor probe OK.\r\n");
 	} else {
 		DebugConsole_Printf(
-				"[CAMERA][PROBE]   - CameraPlatform_ProbeBCamsImx() failed, status=%lu\r\n",
+				"[CAMERA][PROBE] Sensor probe failed, status=%lu\r\n",
 				(unsigned long) probe_status);
 		stage_ok = false;
 	}
 
-	DebugConsole_Printf(
-			"[CAMERA][PROBE] Stage 5/5: Final diagnostic verdict.\r\n");
 	if (stage_ok) {
-		DebugConsole_Printf(
-				"[CAMERA][PROBE]   - PASS: camera stack appears connected/configured.\r\n");
+		DebugConsole_Printf("[CAMERA][PROBE] Camera stack ready.\r\n");
 	} else {
-		DebugConsole_Printf(
-				"[CAMERA][PROBE]   - FAIL: inspect earlier stages for missing config.\r\n");
+		DebugConsole_Printf("[CAMERA][PROBE] Camera stack not ready.\r\n");
 	}
 
 	return stage_ok;
@@ -806,34 +785,13 @@ static bool CameraPlatform_StartImx335Stream(void) {
 		return true;
 	}
 
-	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] StartImx335Stream entry: use_cmw=%u cmw_init=%u stream_started=%u sensor_start=%u sensor_run=%u sensor_ctx_init=%u raw_ctx_init=%u raw_obj_init=%u.\r\n",
-			camera_capture_use_cmw_pipeline ? 1U : 0U,
-			camera_cmw_initialized ? 1U : 0U, camera_stream_started ? 1U : 0U,
-			(camera_sensor_driver.Start != NULL) ? 1U : 0U,
-			(camera_sensor_driver.Run != NULL) ? 1U : 0U,
-			(unsigned int) camera_sensor.ctx_driver.IsInitialized,
-			(unsigned int) camera_raw_sensor.IsInitialized,
-			(unsigned int) camera_sensor.IsInitialized);
-
 #if CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC
 	int32_t cmw_start_status = CMW_ERROR_NONE;
 
 	if (camera_sensor_driver.Start != NULL) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Raw diagnostic sensor start via CMW wrapper: sensor_init=%u raw_init=%u.\r\n",
-				(unsigned int) camera_sensor.ctx_driver.IsInitialized,
-				(unsigned int) camera_raw_sensor.IsInitialized);
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Calling camera_sensor_driver.Start(&camera_sensor).\r\n");
 		cmw_start_status = camera_sensor_driver.Start(&camera_sensor);
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] camera_sensor_driver.Start returned %ld.\r\n",
-				(long) cmw_start_status);
 		if (cmw_start_status == CMW_ERROR_NONE) {
 			started_via_cmw_wrapper = true;
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] CMW wrapper sensor start succeeded while raw capture path stays active.\r\n");
 			if (!CameraPlatform_EnableImx335AutoExposure()) {
 				DebugConsole_Printf(
 						"[CAMERA][CAPTURE] Warning: IMX335 auto exposure could not be confirmed after stream start.\r\n");
@@ -865,8 +823,6 @@ static bool CameraPlatform_StartImx335Stream(void) {
 		uint8_t streaming_value = IMX335_MODE_STREAMING; /* 0x00 */
 		uint8_t xmsta_master_start_value = 0x00U;
 
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Starting sensor: MODE_SELECT then XMSTA (correct IMX335 sequence).\r\n");
 		if (CameraPlatform_I2cWriteReg(BCAMS_IMX_I2C_ADDRESS_HAL,
 		IMX335_REG_MODE_SELECT, &streaming_value, 1U) != IMX335_OK) {
 			DebugConsole_Printf(
@@ -879,9 +835,6 @@ static bool CameraPlatform_StartImx335Stream(void) {
 		IMX335_REG_XMSTA, &xmsta_master_start_value, 1U) != IMX335_OK) {
 			DebugConsole_Printf(
 					"[CAMERA][CAPTURE] Warning: XMSTA write failed after MODE_SELECT.\r\n");
-		} else {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] XMSTA (0x3002=0x00) written after MODE_SELECT start.\r\n");
 		}
 		DelayMilliseconds_ThreadX(5U);
 
@@ -905,11 +858,6 @@ static bool CameraPlatform_StartImx335Stream(void) {
 	IMX335_REG_MODE_SELECT, &mode_select, 1U) != IMX335_OK) {
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] IMX335 entered streaming, but mode-select readback failed.\r\n");
-	} else {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] IMX335 mode-select register = 0x%02X after %s stream start.\r\n",
-				(unsigned int) mode_select,
-				started_via_cmw_wrapper ? "CMW wrapper" : "HAL");
 	}
 
 	camera_stream_started = true;
@@ -923,27 +871,14 @@ static bool CameraPlatform_StartImx335Stream(void) {
 static bool CameraPlatform_RunImx335Background(void) {
 	/* The ISP background loop must run for both the processed image path and
 	 * the raw diagnostic path, because AE/AWB live in the ISP layer. */
-	if (camera_cmw_initialized) {
+		if (camera_cmw_initialized) {
 		camera_capture_isp_run_count++;
 
 		if (CMW_CAMERA_Run() != CMW_ERROR_NONE) {
 			DebugConsole_Printf(
 					"[CAMERA][CAPTURE] CMW_CAMERA_Run() failed on ISP wake %lu.\r\n",
 					(unsigned long) camera_capture_isp_run_count);
-			CameraPlatform_LogCaptureState("isp background failure");
 			return false;
-		}
-
-		if ((camera_capture_isp_run_count <= 3U)
-				|| ((camera_capture_isp_run_count % 16U) == 0U)) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] ISP background wake %lu serviced (vsync=%lu armed=%u sof=%u eof=%u failed=%u).\r\n",
-					(unsigned long) camera_capture_isp_run_count,
-					(unsigned long) camera_capture_vsync_event_count,
-					camera_capture_snapshot_armed ? 1U : 0U,
-					camera_capture_sof_seen ? 1U : 0U,
-					camera_capture_eof_seen ? 1U : 0U,
-					camera_capture_failed ? 1U : 0U);
 		}
 
 		return true;
@@ -999,6 +934,7 @@ HAL_StatusTypeDef MX_DCMIPP_ClockConfig(DCMIPP_HandleTypeDef *hdcmipp) {
 static bool CameraPlatform_WaitForStorageReady(uint32_t timeout_ms) {
 	const ULONG deadline_tick = tx_time_get()
 			+ CameraPlatform_MillisecondsToTicks(timeout_ms);
+	ULONG actual_flags = 0U;
 
 	while (!AppFileX_IsMediaReady()) {
 		if (tx_time_get() >= deadline_tick) {
@@ -1007,10 +943,30 @@ static bool CameraPlatform_WaitForStorageReady(uint32_t timeout_ms) {
 			return false;
 		}
 
-		DelayMilliseconds_ThreadX(50U);
+		if (camera_storage_ready_sync_created) {
+			const UINT flag_status = tx_event_flags_get(
+					&camera_storage_ready_flags,
+					CAMERA_STORAGE_READY_EVENT_FLAG, TX_OR_CLEAR, &actual_flags,
+					CameraPlatform_MillisecondsToTicks(50U));
+			if ((flag_status == TX_SUCCESS)
+					&& ((actual_flags & CAMERA_STORAGE_READY_EVENT_FLAG) != 0U)) {
+				break;
+			}
+		} else {
+			DelayMilliseconds_ThreadX(50U);
+		}
 	}
 
 	return true;
+}
+
+void App_ThreadX_NotifyStorageReady(void) {
+	if (!camera_storage_ready_sync_created) {
+		return;
+	}
+
+	(void) tx_event_flags_set(&camera_storage_ready_flags,
+			CAMERA_STORAGE_READY_EVENT_FLAG, TX_OR);
 }
 
 /**
@@ -1025,7 +981,6 @@ static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
 	ULONG image_length = captured_bytes;
 	const CHAR *file_extension = camera_capture_use_cmw_pipeline ? "yuv422"
 			: "raw16";
-
 	if (!CameraPlatform_WaitForStorageReady(CAMERA_STORAGE_WAIT_TIMEOUT_MS)) {
 		return false;
 	}
@@ -1034,7 +989,6 @@ static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
 		return false;
 	}
 
-	CameraPlatform_LogCaptureBufferSummary(captured_bytes);
 	image_length = captured_bytes;
 
 	if (camera_capture_use_cmw_pipeline) {
@@ -1045,19 +999,15 @@ static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
 			return false;
 		}
 
-		filex_status = AppFileX_GetNextCapturedImageName(capture_file_name,
-				sizeof(capture_file_name), file_extension);
-		if (filex_status != FX_SUCCESS) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] Failed to allocate a unique capture file name, status=%lu.\r\n",
-					(unsigned long) filex_status);
-			return false;
-		}
 	} else {
 		image_ptr = camera_capture_result_buffer;
-		(void) strncpy(capture_file_name, CAMERA_CAPTURE_RAW_FILE_NAME,
-				sizeof(capture_file_name) - 1U);
-		capture_file_name[sizeof(capture_file_name) - 1U] = '\0';
+	}
+
+	if (AppFileX_GetNextCapturedImageName(capture_file_name,
+			sizeof(capture_file_name), file_extension) != FX_SUCCESS) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Failed to allocate next capture filename.\r\n");
+		return false;
 	}
 
 	DebugConsole_Printf(
@@ -2179,8 +2129,8 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 		return false;
 	}
 
-	CameraPlatform_LogDcmippClocking();
-
+	/* Mark entry into the capture path without printing the heavy debug dump. */
+	BSP_LED_On(LED_BLUE);
 	if (!CameraPlatform_PrepareDcmippSnapshot()) {
 		return false;
 	}
@@ -2199,9 +2149,6 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	camera_capture_csi_linebyte_event_logged = false;
 	camera_capture_csi_status_logged = false;
 	camera_capture_csi_error_regs_logged = false;
-	camera_capture_line_error_state_logged = false;
-	camera_capture_zero_frame_state_logged = false;
-	camera_capture_timeout_state_logged = false;
 	camera_capture_vsync_event_count = 0U;
 	camera_capture_isp_run_count = 0U;
 	camera_capture_csi_irq_count = 0U;
@@ -2210,18 +2157,13 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	camera_capture_counter_status = (uint32_t) HAL_ERROR;
 	camera_capture_active_buffer_index = 0U;
 	camera_capture_result_buffer = camera_capture_buffers[0];
-	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] Preparing capture buffers before DMA arm.\r\n");
 	CameraPlatform_PrepareCaptureBufferForDma();
-	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] Capture buffers prepared for DMA arm.\r\n");
 
 	/* Drain any stale semaphore token before arming the next snapshot. */
 	while (tx_semaphore_get(&camera_capture_done_semaphore, TX_NO_WAIT)
 			== TX_SUCCESS) {
 	}
 
-	DebugConsole_Printf("[CAMERA][CAPTURE] Calling StartDcmippSnapshot.\r\n");
 	/* Match ST's CMW_CAMERA_Start() ordering: arm the CSI/DCMIPP receiver first,
 	 * then start the ISP + sensor stream. This avoids missing the first valid
 	 * frame while the middleware is bringing the stream up. */
@@ -2233,12 +2175,6 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	}
 
 	camera_capture_snapshot_armed = true;
-
-	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] About to start IMX335 stream for snapshot: use_cmw=%u cmw_init=%u stream_started=%u raw_diag=%u.\r\n",
-			camera_capture_use_cmw_pipeline ? 1U : 0U,
-			camera_cmw_initialized ? 1U : 0U, camera_stream_started ? 1U : 0U,
-			CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC ? 1U : 0U);
 
 	if (!camera_stream_started) {
 		if (!CameraPlatform_StartImx335Stream()) {
@@ -2253,7 +2189,6 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 		DelayMilliseconds_ThreadX(CAMERA_STREAM_WARMUP_DELAY_MS);
 	}
 
-	CameraPlatform_LogCaptureState("snapshot armed");
 	deadline_tick = tx_time_get() + wait_ticks;
 	next_wait_log_tick = tx_time_get()
 			+ CameraPlatform_MillisecondsToTicks(1000U);
@@ -2261,14 +2196,6 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 		semaphore_status = tx_semaphore_get(&camera_capture_done_semaphore,
 				poll_ticks);
 		if (semaphore_status == TX_SUCCESS) {
-			if ((camera_capture_line_error_count > 0U)
-					&& !camera_capture_line_error_state_logged) {
-				camera_capture_line_error_state_logged = true;
-				CameraPlatform_LogCaptureState("first line error observed");
-			}
-
-			uint32_t observed_frame_count = camera_capture_frame_event_count;
-
 			if (!camera_capture_failed) {
 				const uint32_t completed_buffer_index =
 						camera_capture_active_buffer_index;
@@ -2278,6 +2205,7 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 
 				completed_buffer_ptr =
 						camera_capture_buffers[completed_buffer_index];
+				#if 0
 				/* Buffer is noncacheable — no invalidate needed, reads go to SRAM. */
 				/* Read first 8 bytes straight from SRAM after invalidate — before
 				 * the nonzero scan — to show whether the cache or DMA is the issue. */
@@ -2378,31 +2306,15 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 							(unsigned long) r2_iaddr, (unsigned long) r2s_iasr,
 							(unsigned long) r2s_iaesr);
 				}
+				#endif
 				completed_nonzero_bytes = CameraPlatform_CountNonZeroBytes(
 						completed_buffer_ptr,
 						CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
 				camera_capture_result_buffer = completed_buffer_ptr;
 
-				DebugConsole_Printf(
-						"[CAMERA][CAPTURE] PIPE%lu frame %lu completed on buffer %lu (nonzero_bytes=%lu, reported_bytes=%lu, counter_status=%lu).\r\n",
-						(unsigned long) CAMERA_CAPTURE_PIPE,
-						(unsigned long) observed_frame_count,
-						(unsigned long) completed_buffer_index,
-						(unsigned long) completed_nonzero_bytes,
-						(unsigned long) camera_capture_reported_byte_count,
-						(unsigned long) camera_capture_counter_status);
-
 				if (camera_capture_use_cmw_pipeline) {
 					const uint32_t next_buffer_index = (completed_buffer_index
 							+ 1U) % CAMERA_CAPTURE_BUFFER_COUNT;
-
-					if (observed_frame_count < CAMERA_CAPTURE_TARGET_FRAME_COUNT) {
-						DebugConsole_Printf(
-								"[CAMERA][CAPTURE] Warm-up frame %lu/%lu complete; rotating capture buffer.\r\n",
-								(unsigned long) observed_frame_count,
-								(unsigned long) (CAMERA_CAPTURE_TARGET_FRAME_COUNT
-										- 1U));
-					}
 
 					if (HAL_DCMIPP_PIPE_SetMemoryAddress(capture_dcmipp,
 					CAMERA_CAPTURE_PIPE, DCMIPP_MEMORY_ADDRESS_0,
@@ -2421,28 +2333,6 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 					camera_capture_frame_done = false;
 
 					if (completed_nonzero_bytes == 0U) {
-						CameraPlatform_LogCsiStatus("all-zero frame");
-
-						if (observed_frame_count
-								< CAMERA_CAPTURE_TARGET_FRAME_COUNT) {
-							DebugConsole_Printf(
-									"[CAMERA][CAPTURE] Frame %lu is still all-zero; waiting for ISP/AEC convergence.\r\n",
-									(unsigned long) observed_frame_count);
-						} else if (observed_frame_count
-								== CAMERA_CAPTURE_TARGET_FRAME_COUNT) {
-							DebugConsole_Printf(
-									"[CAMERA][CAPTURE] Warm-up complete; continuing to wait for the first nonzero frame.\r\n");
-						}
-
-						if ((observed_frame_count
-								>= CAMERA_CAPTURE_TARGET_FRAME_COUNT)
-								&& !camera_capture_zero_frame_state_logged) {
-							camera_capture_zero_frame_state_logged =
-							true;
-							CameraPlatform_LogCaptureState(
-									"first post-warm-up all-zero frame");
-						}
-
 						/* Keep the stream alive until the ISP/AEC pipeline produces a
 						 * nonzero frame or the overall capture timeout expires. */
 						keep_waiting_for_convergence = true;
@@ -2454,30 +2344,6 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 				 * nonzero payload or run out of the overall capture timeout. */
 				if (!camera_capture_use_cmw_pipeline
 						&& (completed_nonzero_bytes == 0U)) {
-					CameraPlatform_LogCsiStatus("all-zero raw frame");
-
-					if (observed_frame_count < CAMERA_CAPTURE_TARGET_FRAME_COUNT) {
-						DebugConsole_Printf(
-								"[CAMERA][CAPTURE] Raw frame %lu is still all-zero; waiting for sensor/pipe convergence.\r\n",
-								(unsigned long) observed_frame_count);
-					} else if (observed_frame_count
-							== CAMERA_CAPTURE_TARGET_FRAME_COUNT) {
-						DebugConsole_Printf(
-								"[CAMERA][CAPTURE] Raw warm-up complete; continuing to wait for the first nonzero frame.\r\n");
-					}
-
-					if ((observed_frame_count
-							>= CAMERA_CAPTURE_TARGET_FRAME_COUNT)
-							&& !camera_capture_zero_frame_state_logged) {
-						camera_capture_zero_frame_state_logged = true;
-						CameraPlatform_LogCaptureState(
-								"first post-warm-up all-zero raw frame");
-						CameraPlatform_LogCaptureBufferPreview(
-								"first post-warm-up all-zero raw frame",
-								completed_buffer_ptr,
-								CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
-					}
-
 					keep_waiting_for_convergence = true;
 				}
 
@@ -2493,18 +2359,6 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 		}
 
 		if ((LONG) (tx_time_get() - next_wait_log_tick) >= 0) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] Waiting for frame: sem=%lu armed=%u stream_started=%u frame_events=%lu vsync_events=%lu isp_runs=%lu sof=%u eof=%u line_errs=%lu err=0x%08lX.\r\n",
-					(unsigned long) semaphore_status,
-					camera_capture_snapshot_armed ? 1U : 0U,
-					camera_stream_started ? 1U : 0U,
-					(unsigned long) camera_capture_frame_event_count,
-					(unsigned long) camera_capture_vsync_event_count,
-					(unsigned long) camera_capture_isp_run_count,
-					camera_capture_sof_seen ? 1U : 0U,
-					camera_capture_eof_seen ? 1U : 0U,
-					(unsigned long) camera_capture_line_error_count,
-					(unsigned long) camera_capture_error_code);
 			next_wait_log_tick = tx_time_get()
 					+ CameraPlatform_MillisecondsToTicks(1000U);
 		}
@@ -2515,11 +2369,6 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	}
 
 	if (semaphore_status != TX_SUCCESS) {
-		if (!camera_capture_timeout_state_logged) {
-			camera_capture_timeout_state_logged = true;
-			CameraPlatform_LogCaptureState("capture timeout");
-		}
-
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] Timed out waiting for frame event, status=%lu cmsr1=0x%08lX cmsr2=0x%08lX sr0=0x%08lX pipe=%lu state=%lu sof=%u eof=%u line_err_count=%lu line_err_mask=0x%08lX.\r\n",
 				(unsigned long) semaphore_status,
@@ -2593,43 +2442,23 @@ static bool CameraPlatform_StartDcmippSnapshot(void) {
 			IMX335_REG_XMSTA, &xmsta_master_start_value, 1U) != IMX335_OK) {
 				DebugConsole_Printf(
 						"[CAMERA][CAPTURE] Warning: XMSTA post-start write failed.\r\n");
-			} else {
-				DebugConsole_Printf(
-						"[CAMERA][CAPTURE] XMSTA (0x3002=0x00) written after stream start.\r\n");
 			}
 
 			DelayMilliseconds_ThreadX(5U);
 		}
 
-		if (!CameraPlatform_SeedImx335ExposureGain()) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] Warning: failed to re-seed IMX335 exposure/gain after CMW stream start.\r\n");
-		}
-
-		CameraPlatform_ReapplyImx335TestPattern();
-
-		if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL,
-		IMX335_REG_MODE_SELECT, &mode_select, 1U) != IMX335_OK) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] IMX335 stream started through CMW, but mode-select readback failed.\r\n");
-		} else {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] IMX335 mode-select register = 0x%02X after stream start.\r\n",
-					(unsigned int) mode_select);
-		}
-
-		/* Snapshot the CSI PHY state after the middleware starts the sensor and
-		 * after the explicit PFCR/XMSTA timing experiment. The N6 CSI block
-		 * exposes PMCR/PFCR rather than the DLxCR names from some other STM32
-		 * camera examples, so we dump the registers that actually exist on this
-		 * device. */
+	if (!CameraPlatform_SeedImx335ExposureGain()) {
 		DebugConsole_Printf(
-				"[CAMERA][DPHY] After CMW start: CR=0x%08lX PMCR=0x%08lX PFCR=0x%08lX LMCFGR=0x%08lX PRCR=0x%08lX.\r\n",
-				(unsigned long) CSI->CR, (unsigned long) CSI->PMCR,
-				(unsigned long) CSI->PFCR, (unsigned long) CSI->LMCFGR,
-				(unsigned long) CSI->PRCR);
+				"[CAMERA][CAPTURE] Warning: failed to re-seed IMX335 exposure/gain after CMW stream start.\r\n");
+	}
 
-		CameraPlatform_LogDcmippPipeRegisters("after CMW camera start");
+	CameraPlatform_ReapplyImx335TestPattern();
+
+	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL,
+	IMX335_REG_MODE_SELECT, &mode_select, 1U) != IMX335_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] IMX335 stream started through CMW, but mode-select readback failed.\r\n");
+	}
 
 		return true;
 	}
@@ -2637,11 +2466,6 @@ static bool CameraPlatform_StartDcmippSnapshot(void) {
 	/* Keep the raw diagnostic pipe in continuous mode so it matches the
 	 * reference capture start sequence, while the app still stops after the
 	 * first useful frame. */
-	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] Calling HAL_DCMIPP_CSI_PIPE_Start: pipe_state=%lu buf=0x%08lX\r\n",
-			(unsigned long) HAL_DCMIPP_PIPE_GetState(capture_dcmipp,
-			CAMERA_CAPTURE_PIPE),
-			(unsigned long) camera_capture_buffers[camera_capture_active_buffer_index]);
 	if (HAL_DCMIPP_CSI_PIPE_Start(capture_dcmipp, CAMERA_CAPTURE_PIPE,
 	DCMIPP_VIRTUAL_CHANNEL0,
 			(uint32_t) camera_capture_buffers[camera_capture_active_buffer_index],
@@ -2656,19 +2480,10 @@ static bool CameraPlatform_StartDcmippSnapshot(void) {
 		return false;
 	}
 
-	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] HAL_DCMIPP_CSI_PIPE_Start() succeeded. pipe_state=%lu\r\n",
-			(unsigned long) HAL_DCMIPP_PIPE_GetState(capture_dcmipp,
-			CAMERA_CAPTURE_PIPE));
-
 	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL,
 	IMX335_REG_MODE_SELECT, &mode_select, 1U) != IMX335_OK) {
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] DCMIPP pipe started through HAL, but IMX335 mode-select readback failed.\r\n");
-	} else {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] IMX335 mode-select register = 0x%02X after DCMIPP pipe start.\r\n",
-				(unsigned int) mode_select);
 	}
 
 	return true;
@@ -2716,16 +2531,6 @@ static bool CameraPlatform_PrepareDcmippSnapshot(void) {
 					"[CAMERA][CAPTURE] CMW_CAMERA_SetPipeConfig() failed for PIPE1.\r\n");
 			return false;
 		}
-
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] SetPipeConfig ok: pitch=%lu P1FSCR=0x%08lX P1PPCR=0x%08lX P1PPM0AR1=0x%08lX P1CFSCR=0x%08lX pipe_state=%lu\r\n",
-				(unsigned long) pitch_bytes,
-				(unsigned long) capture_dcmipp->Instance->P1FSCR,
-				(unsigned long) capture_dcmipp->Instance->P1PPCR,
-				(unsigned long) capture_dcmipp->Instance->P1PPM0AR1,
-				(unsigned long) capture_dcmipp->Instance->P1CFSCR,
-				(unsigned long) HAL_DCMIPP_PIPE_GetState(capture_dcmipp,
-				CAMERA_CAPTURE_PIPE));
 
 		/* CMW_CAMERA_SetPipeConfig already configures YUV conversion internally
 		 * when output_format == DCMIPP_PIXEL_PACKER_FORMAT_YUV422_1. Calling
@@ -2859,23 +2664,6 @@ static bool CameraPlatform_InitializeImx335Sensor(void) {
 
 	CameraPlatform_LogCsiDphySettle();
 
-	DebugConsole_Printf(
-			"[CAMERA][PROBE]   - IMX335 middleware pixel format = %s (0x%08lX).\r\n",
-			CameraPlatform_DescribeCmwPixelFormat(
-					camera_advanced_config.config_sensor.imx335_config.pixel_format),
-			(unsigned long) camera_advanced_config.config_sensor.imx335_config.pixel_format);
-	DebugConsole_Printf(
-			"[CAMERA][PROBE]   - CSI PFCR after middleware init = 0x%08lX, LMCFGR=0x%08lX.\r\n",
-			(unsigned long) CSI->PFCR, (unsigned long) CSI->LMCFGR);
-
-	DebugConsole_Printf(
-			"[CAMERA][PROBE]   - CMW camera init selected %lux%lu sensor mode.\r\n",
-			(unsigned long) camera_init.width,
-			(unsigned long) camera_init.height);
-	DebugConsole_Printf(
-			"[CAMERA][PROBE]   - IMX335 frame rate set to %d fps.\r\n",
-			IMX335_CAPTURE_FRAMERATE_FPS);
-
 	cmw_status = CMW_CAMERA_SetTestPattern(IMX335_TEST_PATTERN_MODE);
 	if (cmw_status != CMW_ERROR_NONE) {
 		DebugConsole_Printf(
@@ -2885,12 +2673,9 @@ static bool CameraPlatform_InitializeImx335Sensor(void) {
 	}
 
 #if IMX335_TEST_PATTERN_MODE >= 0
-	DebugConsole_Printf(
-			"[CAMERA][PROBE]   - IMX335 test pattern enabled in diagnostic mode %d; using sensor-generated frames.\r\n",
-			IMX335_TEST_PATTERN_MODE);
+	DebugConsole_Printf("[CAMERA][PROBE] IMX335 test pattern enabled.\r\n");
 #else
-	DebugConsole_Printf(
-			"[CAMERA][PROBE]   - IMX335 test pattern disabled; using optical image path.\r\n");
+	DebugConsole_Printf("[CAMERA][PROBE] IMX335 live optical path enabled.\r\n");
 #endif
 
 	if (!CameraPlatform_SeedImx335ExposureGain()) {
@@ -2899,12 +2684,10 @@ static bool CameraPlatform_InitializeImx335Sensor(void) {
 
 #if CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC
 	camera_capture_use_cmw_pipeline = false;
-	DebugConsole_Printf(
-			"[CAMERA][PROBE]   - RAW diagnostic capture enabled; bypassing CMW/ISP output path.\r\n");
+	DebugConsole_Printf("[CAMERA][PROBE] RAW diagnostic capture enabled.\r\n");
 #else
 	camera_capture_use_cmw_pipeline = true;
-	DebugConsole_Printf(
-			"[CAMERA][PROBE]   - Using CMW/ISP capture path for saved images.\r\n");
+	DebugConsole_Printf("[CAMERA][PROBE] Using CMW/ISP capture path.\r\n");
 #endif
 
 	camera_cmw_initialized = true;
@@ -2952,8 +2735,6 @@ static bool CameraPlatform_ConfigureCsiLineByteProbe(void) {
 			(unsigned long) CAMERA_CAPTURE_CSI_LB_PROBE_COUNTER,
 			(unsigned long) linebyte_config.LineCounter,
 			(unsigned long) linebyte_config.ByteCounter);
-	CameraPlatform_LogCsiLineByteCounters("after probe arm");
-
 	return true;
 }
 

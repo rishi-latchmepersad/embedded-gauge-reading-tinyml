@@ -15,6 +15,7 @@
 #include "fx_api.h"                                                           /* FileX types and driver request codes. */
 #include "tx_api.h"
 #include "threadx_utils.h"
+#include "debug_console.h"
 #include <stdint.h>
 #include "sd_spi_protocol.h"
 
@@ -929,6 +930,7 @@ VOID SPI_FileX_SdSpiMediaDriver(FX_MEDIA *media_ptr) {
 	if (context == NULL) /* Driver must have context to know partition offsets. */
 	{
 		media_ptr->fx_media_driver_status = FX_PTR_ERROR; /* Report pointer error to FileX. */
+		DebugConsole_Printf("[SD][FX] ctx null\r\n");
 		return; /* Exit immediately. */
 	}
 
@@ -973,6 +975,13 @@ VOID SPI_FileX_SdSpiMediaDriver(FX_MEDIA *media_ptr) {
 		}
 
 		media_ptr->fx_media_driver_status = status; /* Return final status to FileX. */
+		if (status != FX_SUCCESS) /* Only report read problems. */
+		{
+			DebugConsole_Printf(
+					"[SD][FX] rd err=%u l=%lu n=%lu\r\n",
+					(unsigned int) status, (unsigned long) logical_sector,
+					(unsigned long) sector_count);
+		}
 		break; /* Done with read. */
 	}
 
@@ -996,6 +1005,13 @@ VOID SPI_FileX_SdSpiMediaDriver(FX_MEDIA *media_ptr) {
 		}
 
 		media_ptr->fx_media_driver_status = status; /* Return final status to FileX. */
+		if (status != FX_SUCCESS) /* Only report write problems. */
+		{
+			DebugConsole_Printf(
+					"[SD][FX] wr err=%u l=%lu n=%lu\r\n",
+					(unsigned int) status, (unsigned long) logical_sector,
+					(unsigned long) sector_count);
+		}
 		break; /* Done with write. */
 	}
 

@@ -65,6 +65,7 @@ void MX_ThreadX_Init(void);
 
 /* USER CODE BEGIN EFP */
 UINT App_ThreadX_Start(void);
+void App_ThreadX_NotifyStorageReady(void);
 /* USER CODE END EFP */
 
 /* USER CODE BEGIN 1 */
