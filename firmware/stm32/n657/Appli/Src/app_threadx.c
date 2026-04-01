@@ -2205,8 +2205,8 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 		return false;
 	}
 
-	/* Mark entry into the capture path without printing the heavy debug dump. */
-	BSP_LED_On(LED_BLUE);
+	/* Keep blue available for the save-success flash later in the flow. */
+	BSP_LED_Off(LED_BLUE);
 	if (!CameraPlatform_PrepareDcmippSnapshot()) {
 		return false;
 	}

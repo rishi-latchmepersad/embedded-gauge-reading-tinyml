@@ -120,6 +120,7 @@ static Sd_FileX_DriverContext g_sd_filex_driver_context; /* Global driver contex
 static TX_BYTE_POOL *g_filex_byte_pool_ptr = NULL; /* Byte pool used for queue + cache allocations. */
 static TX_MUTEX g_filex_media_mutex;
 static volatile bool g_filex_media_ready = false;
+static bool g_capture_blue_gpio_initialized = false;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -139,6 +140,7 @@ static UINT AppFileX_LockMedia(void);
 static void AppFileX_UnlockMedia(void);
 static UINT AppFileX_CreateCapturedImagesDirectoryLocked(void);
 static ULONG AppFileX_MillisecondsToTicks(uint32_t timeout_ms);
+static void AppFileX_FlashCaptureSuccessBlue(void);
 /* USER CODE END PFP */
 
 /**
@@ -921,8 +923,7 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		DebugConsole_Printf(
 				"Saved captured image to /%s (%lu bytes).\r\n",
 				path, (unsigned long) data_length);
-		/* Hold the blue LED on for a short, visible success indication. */
-		(void) DebugLed_BlinkBlueBlocking(2000U, 0U, 1U);
+		AppFileX_FlashCaptureSuccessBlue();
 	}
 
 	return fx_status;
@@ -969,5 +970,32 @@ static ULONG AppFileX_MillisecondsToTicks(uint32_t timeout_ms) {
 	}
 
 	return (ULONG) ticks;
+}
+
+/**
+ * @brief Flash the board's blue LED after a successful capture save.
+ *
+ * This uses the raw GPIO pin directly so the cue matches the ST example path
+ * and stays independent of the BSP LED wrapper.
+ */
+static void AppFileX_FlashCaptureSuccessBlue(void) {
+	GPIO_InitTypeDef gpio_init = { 0 };
+
+	if (!g_capture_blue_gpio_initialized) {
+		__HAL_RCC_GPIOG_CLK_ENABLE();
+		HAL_GPIO_WritePin(GPIOG, GPIO_PIN_8, GPIO_PIN_SET);
+
+		gpio_init.Pin = GPIO_PIN_8;
+		gpio_init.Mode = GPIO_MODE_OUTPUT_PP;
+		gpio_init.Pull = GPIO_NOPULL;
+		gpio_init.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+		HAL_GPIO_Init(GPIOG, &gpio_init);
+
+		g_capture_blue_gpio_initialized = true;
+	}
+
+	HAL_GPIO_WritePin(GPIOG, GPIO_PIN_8, GPIO_PIN_RESET);
+	DelayMilliseconds_ThreadX(3000U);
+	HAL_GPIO_WritePin(GPIOG, GPIO_PIN_8, GPIO_PIN_SET);
 }
 /* USER CODE END 1 */
