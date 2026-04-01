@@ -118,7 +118,7 @@
 #define CAMERA_CAPTURE_RETRY_DELAY_MS       50U
 #define CAMERA_STREAM_WARMUP_DELAY_MS       250U
 #define IMX335_CAPTURE_FRAMERATE_FPS        10
-#define CAMERA_CAPTURE_FILE_NAME_LENGTH     32U
+#define CAMERA_CAPTURE_FILE_NAME_LENGTH     64U
 #define CAMERA_STORAGE_READY_EVENT_FLAG     0x00000001U
 /* Match ST's IMX335 middleware and upstream Linux driver ID check. */
 #define IMX335_CHIP_ID_REG                 0x3912U
@@ -270,6 +270,8 @@ static bool CameraPlatform_EnableImx335AutoExposure(void);
 static void CameraPlatform_ReapplyImx335TestPattern(void);
 static bool CameraPlatform_StartImx335Stream(void);
 static bool CameraPlatform_WaitForStorageReady(uint32_t timeout_ms);
+static bool CameraPlatform_BuildCaptureFileName(CHAR *file_name_ptr,
+		ULONG file_name_length, const CHAR *file_extension_ptr);
 static bool CameraPlatform_CaptureAndStoreSingleFrame(void);
 static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr);
 static void CameraPlatform_LogCaptureBufferSummary(uint32_t captured_bytes);
@@ -1046,6 +1048,41 @@ void App_ThreadX_NotifyStorageReady(void) {
 }
 
 /**
+ * @brief Build a capture filename from the DS3231 time if available.
+ *
+ * We prefer timestamped names so saved images are easy to correlate with the
+ * RTC and the boot log. If the RTC cannot be read, we fall back to the legacy
+ * numbered naming helper.
+ */
+static bool CameraPlatform_BuildCaptureFileName(CHAR *file_name_ptr,
+		ULONG file_name_length, const CHAR *file_extension_ptr) {
+	CHAR rtc_stamp[32] = { 0 };
+	int written = 0;
+	const bool rtc_ready = App_Clock_GetCaptureTimestamp(rtc_stamp,
+			sizeof(rtc_stamp));
+
+	if ((file_name_ptr == NULL) || (file_name_length == 0U)
+			|| (file_extension_ptr == NULL) || (file_extension_ptr[0] == '\0')) {
+		return false;
+	}
+
+	if (rtc_ready) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Using RTC timestamp %s for capture name.\r\n",
+				rtc_stamp);
+		written = snprintf(file_name_ptr, (size_t) file_name_length,
+				"capture_%s.%s", rtc_stamp, file_extension_ptr);
+		return (written > 0)
+				&& ((ULONG) written < file_name_length);
+	}
+
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] RTC timestamp unavailable; using numbered fallback.\r\n");
+	return (AppFileX_GetNextCapturedImageName(file_name_ptr, file_name_length,
+			file_extension_ptr) == FX_SUCCESS);
+}
+
+/**
  * @brief Capture a single frame and save it to the SD card.
  * @retval true when the frame reaches the SD card successfully.
  */
@@ -1079,10 +1116,10 @@ static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
 		image_ptr = camera_capture_result_buffer;
 	}
 
-	if (AppFileX_GetNextCapturedImageName(capture_file_name,
-			sizeof(capture_file_name), file_extension) != FX_SUCCESS) {
+	if (!CameraPlatform_BuildCaptureFileName(capture_file_name,
+			sizeof(capture_file_name), file_extension)) {
 		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Failed to allocate next capture filename.\r\n");
+				"[CAMERA][CAPTURE] Failed to build capture filename.\r\n");
 		return false;
 	}
 

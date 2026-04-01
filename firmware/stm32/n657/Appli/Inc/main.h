@@ -36,6 +36,7 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32n6xx_hal.h"
+#include <stdbool.h>
 
 #include "stm32n6xx_nucleo.h"
 
@@ -73,12 +74,17 @@ typedef funcptr funcptr_NS;
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
+bool App_Clock_GetCaptureTimestamp(char *buffer, uint32_t buffer_length);
 
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
 #define CAM_NRST_Pin GPIO_PIN_5
 #define CAM_NRST_GPIO_Port GPIOO
+#define I2C1_SDA_Pin GPIO_PIN_1
+#define I2C1_SDA_GPIO_Port GPIOC
+#define I2C1_SCL_Pin GPIO_PIN_9
+#define I2C1_SCL_GPIO_Port GPIOH
 #define I2C2_SDA_Pin GPIO_PIN_11
 #define I2C2_SDA_GPIO_Port GPIOB
 #define SPI5_CS_Pin GPIO_PIN_3
