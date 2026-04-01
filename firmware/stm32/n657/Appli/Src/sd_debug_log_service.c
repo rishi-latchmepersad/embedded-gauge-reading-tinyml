@@ -551,14 +551,6 @@ void SdDebugLogService_ServiceQueue(ULONG max_messages_to_process) {
 		/* Release buffer back to pool. */
 		(void) tx_block_release((VOID*) log_buffer_ptr);
 	}
-
-	/* Keep Option A durability behavior. */
-	(void) SdDebugLogCore_ForceFlushAndClose(&g_sd_debug_log_core_context,
-			&g_sd_debug_log_file_ops);
-
-	/* Optional: reopen immediately. */
-	(void) SdDebugLogCore_OpenIfNeeded(&g_sd_debug_log_core_context,
-			&g_sd_debug_log_file_ops);
 }
 
 void SdDebugLogService_ForceFlush(void) {

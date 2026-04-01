@@ -100,6 +100,9 @@ VOID tx_application_define(VOID *first_unused_memory)
 		PrintBytePoolUsage_ThreadX(&tx_app_byte_pool, "Tx App memory pool");
     /* USER CODE END TX_Byte_Pool_Success */
 
+    /* This marker tells us whether we make it into the ThreadX app handoff
+     * before any of the camera or FileX threads start. */
+    DebugConsole_Printf("[AR] Calling App_ThreadX_Init().\r\n");
     memory_ptr = (VOID *)&tx_app_byte_pool;
     status = App_ThreadX_Init(memory_ptr);
     if (status != TX_SUCCESS)
@@ -113,6 +116,7 @@ VOID tx_application_define(VOID *first_unused_memory)
     /* USER CODE BEGIN  App_ThreadX_Init_Success */
 
 		DebugConsole_Printf("App ThreadX init success.\r\n");
+		DebugConsole_Printf("[AR] Calling App_ThreadX_Start().\r\n");
 		status = App_ThreadX_Start();
 		if (status != TX_SUCCESS)
 		{
@@ -121,6 +125,7 @@ VOID tx_application_define(VOID *first_unused_memory)
 			}
 		}
 		DebugConsole_Printf("App ThreadX start success.\r\n");
+		DebugConsole_Printf("[AR] App_ThreadX_Start() returned.\r\n");
     /* USER CODE END  App_ThreadX_Init_Success */
 
   }

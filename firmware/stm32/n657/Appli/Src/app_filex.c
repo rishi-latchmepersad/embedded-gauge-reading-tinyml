@@ -29,6 +29,7 @@
 
 #include "sd_spi_ll.h"
 #include "main.h"
+#include "app_threadx.h"
 #include "tx_api.h" /* ThreadX services like tx_thread_sleep. */
 #include "debug_console.h"
 #include "debug_led.h"
@@ -114,13 +115,11 @@ static UCHAR *g_filex_media_cache_buffer = NULL; /* FileX cache buffer allocated
 
 static FX_MEDIA g_sd_fx_media; /* FileX media control block for the SD card. */
 static FX_FILE g_sd_fx_file; /* Simple test file object. */
-static FX_FILE g_capture_preview_fx_file; /* Persistent handle for the camera capture file. */
 
 static Sd_FileX_DriverContext g_sd_filex_driver_context; /* Global driver context used by the media driver. */
 static TX_BYTE_POOL *g_filex_byte_pool_ptr = NULL; /* Byte pool used for queue + cache allocations. */
 static TX_MUTEX g_filex_media_mutex;
-static bool g_filex_media_ready = false;
-static uint8_t g_capture_preview_file_is_open = 0U;
+static volatile bool g_filex_media_ready = false;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -198,7 +197,6 @@ UINT MX_FileX_Init(VOID *memory_ptr)
 	}
 
 	g_filex_media_ready = false;
-	g_capture_preview_file_is_open = 0U;
 /* USER CODE END MX_FileX_Init */
 
 /* Initialize FileX.  */
@@ -628,10 +626,6 @@ static void AppFileX_StateMachine_Step(
 				DebugConsole_Printf(
 						"[FILEX][CAPTURE] Failed to select capture directory for capture priming, status=%lu.\r\n",
 						(unsigned long) context_ptr->filex_status);
-			} else {
-				g_capture_preview_file_is_open = 0U;
-				DebugConsole_Printf(
-						"[FILEX][CAPTURE] Capture directory ready; files will be opened on demand.\r\n");
 			}
 		}
 		(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
@@ -646,6 +640,7 @@ static void AppFileX_StateMachine_Step(
 		}
 
 		g_filex_media_ready = true;
+		App_ThreadX_NotifyStorageReady();
 		DebugConsole_Printf(
 				"Verified /%s directory on SD card.\r\n",
 				CAPTURED_IMAGES_DIRECTORY_NAME);
@@ -683,10 +678,6 @@ static void AppFileX_StateMachine_Step(
 		/* Best effort cleanup before restart. */
 		if (context_ptr->filex_media_is_open != 0U) {
 			if (AppFileX_LockMedia() == TX_SUCCESS) {
-				if (g_capture_preview_file_is_open != 0U) {
-					(void) fx_file_close(&g_capture_preview_fx_file);
-					g_capture_preview_file_is_open = 0U;
-				}
 				(void) fx_media_flush(&g_sd_fx_media);
 				(void) fx_media_close(&g_sd_fx_media);
 				AppFileX_UnlockMedia();
@@ -801,7 +792,6 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 	int path_length = 0;
 	UINT tx_status = TX_SUCCESS;
 	UINT fx_status = FX_SUCCESS;
-	FX_FILE capture_file;
 
 	if ((file_name_ptr == NULL) || (data_ptr == NULL) || (data_length == 0U)) {
 		return FX_PTR_ERROR;
@@ -820,13 +810,31 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 
 	DebugConsole_Printf("[FILEX][CAPTURE] Preparing to save capture /%s.\r\n", path);
 
-	tx_status = AppFileX_LockMedia();
+	DebugConsole_Printf("[FILEX][CAPTURE] Waiting for media lock before opening /%s.\r\n",
+			path);
+	for (ULONG waited_ms = 0U; waited_ms < 15000U; waited_ms += 1000U) {
+		tx_status = tx_mutex_get(&g_filex_media_mutex,
+				AppFileX_MillisecondsToTicks(1000U));
+		if (tx_status == TX_SUCCESS) {
+			break;
+		}
+
+		DebugConsole_Printf(
+				"[FILEX][CAPTURE] Media lock still busy after %lu ms for /%s.\r\n",
+				(unsigned long) (waited_ms + 1000U), path);
+	}
+
 	if (tx_status != TX_SUCCESS) {
 		DebugConsole_Printf("[FILEX][CAPTURE] Failed to lock media, status=%lu.\r\n",
 				(unsigned long) tx_status);
 		return tx_status;
 	}
 
+	DebugConsole_Printf("[FILEX][CAPTURE] Media lock acquired for /%s.\r\n", path);
+
+	DebugConsole_Printf(
+			"[FILEX][CAPTURE] Setting default directory to /%s before opening.\r\n",
+			CAPTURED_IMAGES_DIRECTORY_NAME);
 	fx_status = fx_directory_default_set(&g_sd_fx_media,
 			CAPTURED_IMAGES_DIRECTORY_NAME);
 	if (fx_status != FX_SUCCESS) {
@@ -836,55 +844,72 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		AppFileX_UnlockMedia();
 		return fx_status;
 	}
-
-	fx_status = fx_file_open(&g_sd_fx_media, &capture_file,
-			(CHAR*) file_name_ptr, FX_OPEN_FOR_WRITE);
-	if (fx_status == FX_NOT_FOUND) {
-		fx_status = fx_file_create(&g_sd_fx_media, (CHAR*) file_name_ptr);
-		if ((fx_status == FX_SUCCESS) || (fx_status == FX_ALREADY_CREATED)) {
-			fx_status = fx_file_open(&g_sd_fx_media, &capture_file,
-					(CHAR*) file_name_ptr, FX_OPEN_FOR_WRITE);
-		}
-	}
-	(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
-	if (fx_status != FX_SUCCESS) {
-		DebugConsole_Printf("[FILEX][CAPTURE] Failed to open capture file /%s, status=%lu.\r\n",
-				path, (unsigned long) fx_status);
-		AppFileX_UnlockMedia();
-		return fx_status;
-	}
-
-	fx_status = fx_file_seek(&capture_file, 0U);
-	if (fx_status != FX_SUCCESS) {
-		DebugConsole_Printf("[FILEX][CAPTURE] Failed to seek capture file /%s, status=%lu.\r\n",
-				path, (unsigned long) fx_status);
-		(void) fx_file_close(&capture_file);
-		AppFileX_UnlockMedia();
-		return fx_status;
-	}
-
-	DebugConsole_Printf("[FILEX][CAPTURE] Writing %lu bytes to /%s.\r\n",
-			(unsigned long) data_length, path);
-	fx_status = fx_file_write(&capture_file, (VOID*) data_ptr,
-			data_length);
-	if (fx_status == FX_SUCCESS) {
-		DebugConsole_Printf("[FILEX][CAPTURE] Flushing /%s after write.\r\n", path);
-		fx_status = fx_media_flush(&g_sd_fx_media);
-		if (fx_status != FX_SUCCESS) {
-			DebugConsole_Printf("[FILEX][CAPTURE] Failed to flush capture file /%s, status=%lu.\r\n",
-					path, (unsigned long) fx_status);
-		}
-	}
+	DebugConsole_Printf(
+			"[FILEX][CAPTURE] Default directory set for /%s.\r\n",
+			CAPTURED_IMAGES_DIRECTORY_NAME);
 
 	{
-		UINT close_status = fx_file_close(&capture_file);
-		if ((close_status != FX_SUCCESS) && (fx_status == FX_SUCCESS)) {
-			DebugConsole_Printf("[FILEX][CAPTURE] Failed to close capture file /%s, status=%lu.\r\n",
-					path, (unsigned long) close_status);
-			fx_status = close_status;
-		}
-	}
+		FX_FILE capture_fx_file;
+		UINT file_status = FX_SUCCESS;
+		bool capture_file_open = false;
 
+		DebugConsole_Printf("[FILEX][CAPTURE] Opening capture file /%s.\r\n",
+				path);
+		fx_status = fx_file_open(&g_sd_fx_media, &capture_fx_file,
+				(CHAR*) file_name_ptr, FX_OPEN_FOR_WRITE);
+		if (fx_status == FX_NOT_FOUND) {
+			DebugConsole_Printf(
+					"[FILEX][CAPTURE] Capture file not found; creating /%s.\r\n",
+					path);
+			fx_status = fx_file_create(&g_sd_fx_media, (CHAR*) file_name_ptr);
+			if ((fx_status == FX_SUCCESS) || (fx_status == FX_ALREADY_CREATED)) {
+				fx_status = fx_file_open(&g_sd_fx_media, &capture_fx_file,
+						(CHAR*) file_name_ptr, FX_OPEN_FOR_WRITE);
+			}
+		}
+
+		if (fx_status != FX_SUCCESS) {
+			DebugConsole_Printf(
+					"[FILEX][CAPTURE] Failed to open capture file /%s, status=%lu.\r\n",
+					path, (unsigned long) fx_status);
+			(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
+			AppFileX_UnlockMedia();
+			return fx_status;
+		}
+
+		capture_file_open = true;
+
+		file_status = fx_file_seek(&capture_fx_file, 0U);
+		if (file_status != FX_SUCCESS) {
+			DebugConsole_Printf(
+					"[FILEX][CAPTURE] Failed to seek capture file /%s, status=%lu.\r\n",
+					path, (unsigned long) file_status);
+			(void) fx_file_close(&capture_fx_file);
+			(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
+			AppFileX_UnlockMedia();
+			return file_status;
+		}
+
+		DebugConsole_Printf("[FILEX][CAPTURE] Writing %lu bytes to /%s.\r\n",
+				(unsigned long) data_length, path);
+		file_status = fx_file_write(&capture_fx_file, (VOID*) data_ptr,
+				data_length);
+		if (file_status == FX_SUCCESS) {
+			DebugConsole_Printf("[FILEX][CAPTURE] Flushing /%s after write.\r\n",
+					path);
+			file_status = fx_media_flush(&g_sd_fx_media);
+			if (file_status != FX_SUCCESS) {
+				DebugConsole_Printf("[FILEX][CAPTURE] Failed to flush capture file /%s, status=%lu.\r\n",
+						path, (unsigned long) file_status);
+			}
+		}
+
+		if (capture_file_open) {
+			(void) fx_file_close(&capture_fx_file);
+		}
+
+		fx_status = file_status;
+	}
 	if (fx_status == FX_SUCCESS) {
 		DebugConsole_Printf("[FILEX][CAPTURE] Flushed /%s (%lu bytes).\r\n",
 				path, (unsigned long) data_length);
