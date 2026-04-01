@@ -75,6 +75,8 @@
 									<listOptionValue builtIn="false" value="../../Middlewares/ST/threadx/ports/cortex_m55/gnu/inc"/>
 									<listOptionValue builtIn="false" value="../../Middlewares/ST/filex/common/inc"/>
 									<listOptionValue builtIn="false" value="../../Middlewares/ST/filex/ports/generic/inc"/>
+									<listOptionValue builtIn="false" value="C:/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Middlewares/ST/AI/Npu/ll_aton"/>
+									<listOptionValue builtIn="false" value="C:/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Middlewares/ST/AI/Npu/Devices/STM32N6XX"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.1936101341" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 							</tool>
@@ -130,6 +132,8 @@
 									<listOptionValue builtIn="false" value="../../Middlewares/ST/threadx/ports/cortex_m55/gnu/inc"/>
 									<listOptionValue builtIn="false" value="../../Middlewares/ST/filex/common/inc"/>
 									<listOptionValue builtIn="false" value="../../Middlewares/ST/filex/ports/generic/inc"/>
+									<listOptionValue builtIn="false" value="C:/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Middlewares/ST/AI/Npu/ll_aton"/>
+									<listOptionValue builtIn="false" value="C:/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Middlewares/ST/AI/Npu/Devices/STM32N6XX"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.531064083" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 							</tool>
@@ -174,6 +178,8 @@
 									<listOptionValue builtIn="false" value="../../Middlewares/ST/threadx/ports/cortex_m55/gnu/inc"/>
 									<listOptionValue builtIn="false" value="../../Middlewares/ST/filex/common/inc"/>
 									<listOptionValue builtIn="false" value="../../Middlewares/ST/filex/ports/generic/inc"/>
+									<listOptionValue builtIn="false" value="C:/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Middlewares/ST/AI/Npu/ll_aton"/>
+									<listOptionValue builtIn="false" value="C:/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Middlewares/ST/AI/Npu/Devices/STM32N6XX"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.673595684" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 							</tool>
