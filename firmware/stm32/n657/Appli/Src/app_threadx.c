@@ -50,6 +50,12 @@
 #define CAMERA_INIT_THREAD_PRIORITY         12U
 #define CAMERA_ISP_THREAD_STACK_SIZE_BYTES  4096U
 #define CAMERA_ISP_THREAD_PRIORITY          11U
+#define CAMERA_HEARTBEAT_THREAD_STACK_SIZE_BYTES 1024U
+#define CAMERA_HEARTBEAT_THREAD_PRIORITY    10U
+#define CAMERA_HEARTBEAT_PERIOD_MS          5000U
+#define CAMERA_HEARTBEAT_PULSE_MS           1000U
+#define CAMERA_HEARTBEAT_LED_GPIO_PORT      GPIOG
+#define CAMERA_HEARTBEAT_LED_PIN            GPIO_PIN_0
 #define CAMERA_INIT_STARTUP_DELAY_MS        200U
 #define BCAMS_IMX_I2C_ADDRESS_7BIT          0x1AU
 #define BCAMS_IMX_I2C_ADDRESS_HAL           (BCAMS_IMX_I2C_ADDRESS_7BIT << 1U)
@@ -157,6 +163,10 @@ static TX_THREAD camera_isp_thread;
 static ULONG camera_isp_thread_stack[CAMERA_ISP_THREAD_STACK_SIZE_BYTES
 		/ sizeof(ULONG)];
 static bool camera_isp_thread_created = false;
+static TX_THREAD camera_heartbeat_thread;
+static ULONG camera_heartbeat_thread_stack[CAMERA_HEARTBEAT_THREAD_STACK_SIZE_BYTES
+		/ sizeof(ULONG)];
+static bool camera_heartbeat_thread_created = false;
 static CMW_IMX335_t camera_sensor;
 static CMW_Sensor_if_t camera_sensor_driver;
 static CMW_IMX335_config_t camera_sensor_config;
@@ -171,6 +181,7 @@ static TX_SEMAPHORE camera_capture_done_semaphore;
 static TX_SEMAPHORE camera_capture_isp_semaphore;
 static TX_EVENT_FLAGS_GROUP camera_storage_ready_flags;
 static TX_MUTEX debug_uart_mutex;
+static bool camera_heartbeat_gpio_initialized = false;
 static bool camera_capture_sync_created = false;
 static bool camera_storage_ready_sync_created = false;
 static bool camera_stream_started = false;
@@ -217,6 +228,7 @@ extern I2C_HandleTypeDef hi2c2;
 
 static void DebugUartMutex_Lock(void);
 static void DebugUartMutex_Unlock(void);
+static VOID CameraHeartbeatThread_Entry(ULONG thread_input);
 
 /**
  * @brief ThreadX entry point used to run camera bring-up diagnostics.
@@ -382,12 +394,13 @@ UINT App_ThreadX_Init(VOID *memory_ptr) {
 /* USER CODE BEGIN App_ThreadX_Start */
 UINT App_ThreadX_Start(void) {
 	/* Keep this function idempotent to protect against accidental double-start. */
-	/* Turn all LEDs on here so a visible change proves the ThreadX startup hook
-	 * ran before we hand control to the camera threads. */
+	/* Leave the heartbeat LED under the dedicated thread so it reflects liveness
+	 * instead of startup state. */
 	BSP_LED_On(LED_RED);
-	BSP_LED_On(LED_BLUE);
-	BSP_LED_On(LED_GREEN);
-	if (camera_init_thread_created && camera_isp_thread_created) {
+	BSP_LED_Off(LED_BLUE);
+	BSP_LED_Off(LED_GREEN);
+	if (camera_init_thread_created && camera_isp_thread_created
+			&& camera_heartbeat_thread_created) {
 		DebugConsole_Printf(
 				"[CAMERA][THREAD] Start skipped: camera threads already created.\r\n");
 		return TX_SUCCESS;
@@ -453,6 +466,28 @@ UINT App_ThreadX_Start(void) {
 				"[CAMERA][THREAD] Camera ISP thread created and started.\r\n");
 	}
 
+	if (!camera_heartbeat_thread_created) {
+		const UINT heartbeat_create_status = tx_thread_create(
+				&camera_heartbeat_thread, "camera_heartbeat",
+				CameraHeartbeatThread_Entry, 0U,
+				camera_heartbeat_thread_stack,
+				sizeof(camera_heartbeat_thread_stack),
+				CAMERA_HEARTBEAT_THREAD_PRIORITY,
+				CAMERA_HEARTBEAT_THREAD_PRIORITY,
+				TX_NO_TIME_SLICE, TX_AUTO_START);
+
+		if (heartbeat_create_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[CAMERA][THREAD] Failed to create heartbeat thread, status=%lu\r\n",
+					(unsigned long) heartbeat_create_status);
+			return heartbeat_create_status;
+		}
+
+		camera_heartbeat_thread_created = true;
+		DebugConsole_Printf(
+				"[CAMERA][THREAD] Heartbeat thread created and started.\r\n");
+	}
+
 	if (!camera_init_thread_created) {
 		/* Create a dedicated thread so camera probing is isolated from other startup work. */
 		const UINT create_status = tx_thread_create(&camera_init_thread,
@@ -504,8 +539,8 @@ void MX_ThreadX_Init(void) {
 static VOID CameraInitThread_Entry(ULONG thread_input) {
 	(void) thread_input;
 
-	/* Keep the LEDs on once the camera init thread starts so we can tell the
-	 * scheduler reached this entry point. */
+	/* Use the blue LED as the camera-thread marker; the green LED is owned by
+	 * the heartbeat thread so it can keep pulsing independently. */
 	DebugConsole_Printf(
 			"[CAMERA][THREAD] Initializing camera diagnostics thread...\r\n");
 
@@ -522,7 +557,6 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 		/* Turn blue off right before capture so a stuck-on LED means the probe
 		 * completed and the freeze moved into the capture path. */
 		BSP_LED_Off(LED_BLUE);
-		BSP_LED_On(LED_GREEN);
 		DebugConsole_Printf(
 				"[CAMERA][THREAD] Entering first image capture/save attempt...\r\n");
 		if (CameraPlatform_CaptureAndStoreSingleFrame()) {
@@ -540,6 +574,48 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 	/* Keep the diagnostics thread alive so the stack/object remain valid forever. */
 	while (1) {
 		DelayMilliseconds_ThreadX(1000U);
+	}
+}
+
+/**
+ * @brief Low-priority heartbeat thread that toggles the board's LED1
+ * every 5 seconds.
+ * @param thread_input Unused ThreadX input value.
+ */
+static VOID CameraHeartbeatThread_Entry(ULONG thread_input) {
+	(void) thread_input;
+
+	if (!camera_heartbeat_gpio_initialized) {
+		GPIO_InitTypeDef gpio_init = { 0 };
+
+		/* Match the board's green LED pin: LED3 is PG0 on this board. */
+		__HAL_RCC_GPIOG_CLK_ENABLE();
+		HAL_GPIO_WritePin(CAMERA_HEARTBEAT_LED_GPIO_PORT,
+				CAMERA_HEARTBEAT_LED_PIN, GPIO_PIN_SET);
+
+		gpio_init.Pin = CAMERA_HEARTBEAT_LED_PIN;
+		gpio_init.Mode = GPIO_MODE_OUTPUT_PP;
+		gpio_init.Pull = GPIO_NOPULL;
+		gpio_init.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+		HAL_GPIO_Init(CAMERA_HEARTBEAT_LED_GPIO_PORT, &gpio_init);
+
+		camera_heartbeat_gpio_initialized = true;
+	}
+
+	HAL_GPIO_WritePin(CAMERA_HEARTBEAT_LED_GPIO_PORT,
+			CAMERA_HEARTBEAT_LED_PIN, GPIO_PIN_SET);
+	DebugConsole_Printf("[WATCHDOG] heartbeat thread running.\r\n");
+
+	while (1) {
+		DebugConsole_Printf("[WATCHDOG] pulse\r\n");
+		/* Toggle the green user LED directly. */
+		HAL_GPIO_TogglePin(CAMERA_HEARTBEAT_LED_GPIO_PORT,
+				CAMERA_HEARTBEAT_LED_PIN);
+		DelayMilliseconds_ThreadX(CAMERA_HEARTBEAT_PULSE_MS);
+		HAL_GPIO_TogglePin(CAMERA_HEARTBEAT_LED_GPIO_PORT,
+				CAMERA_HEARTBEAT_LED_PIN);
+		DelayMilliseconds_ThreadX(CAMERA_HEARTBEAT_PERIOD_MS
+				- CAMERA_HEARTBEAT_PULSE_MS);
 	}
 }
 
