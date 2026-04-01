@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "app_filex.h"
+#include "app_ai.h"
 #include "main.h"
 #include "debug_console.h"
 #include "threadx_utils.h"
@@ -555,6 +556,11 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 	if (Camera_ProbeBCamsImx()) {
 		DebugConsole_Printf(
 				"[CAMERA][THREAD] Camera probe completed successfully.\r\n");
+
+		if (!App_AI_Model_Init()) {
+			DebugConsole_Printf(
+					"[AI] Model runtime init failed; continuing without inference.\r\n");
+		}
 
 		/* Turn blue off right before capture so a stuck-on LED means the probe
 		 * completed and the freeze moved into the capture path. */
