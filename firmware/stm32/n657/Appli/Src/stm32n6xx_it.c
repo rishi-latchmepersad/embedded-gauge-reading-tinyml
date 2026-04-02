@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "cmw_camera.h"
+#include "debug_console.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -55,6 +56,73 @@
 extern DCMIPP_HandleTypeDef hdcmipp;
 extern volatile uint32_t camera_capture_csi_irq_count;
 extern volatile uint32_t camera_capture_dcmipp_irq_count;
+extern void CDNN0_IRQHandler(void);
+
+static void IT_LogFaultSnapshot(const char *fault_name, uint32_t stacked_pc, uint32_t stacked_lr)
+{
+  static volatile uint32_t fault_cfsr = 0U;
+  static volatile uint32_t fault_hfsr = 0U;
+  static volatile uint32_t fault_dfsr = 0U;
+  static volatile uint32_t fault_afsr = 0U;
+  static volatile uint32_t fault_mmar = 0U;
+  static volatile uint32_t fault_bfar = 0U;
+  static volatile uint32_t fault_sfsr = 0U;
+  static volatile uint32_t fault_sfar = 0U;
+
+  __disable_irq();
+
+  fault_cfsr = SCB->CFSR;
+  fault_hfsr = SCB->HFSR;
+  fault_dfsr = SCB->DFSR;
+  fault_afsr = SCB->AFSR;
+  fault_mmar = SCB->MMFAR;
+  fault_bfar = SCB->BFAR;
+#if defined(SCB_SFSR_SFSR_Msk)
+  fault_sfsr = SCB->SFSR;
+  fault_sfar = SCB->SFAR;
+#endif
+
+  DebugConsole_Printf(
+      "[FAULT] %s PC=0x%08lX LR=0x%08lX CFSR=0x%08lX HFSR=0x%08lX DFSR=0x%08lX AFSR=0x%08lX MMFAR=0x%08lX BFAR=0x%08lX SFSR=0x%08lX SFAR=0x%08lX\r\n",
+      fault_name,
+      (unsigned long)stacked_pc,
+      (unsigned long)stacked_lr,
+      (unsigned long)fault_cfsr,
+      (unsigned long)fault_hfsr,
+      (unsigned long)fault_dfsr,
+      (unsigned long)fault_afsr,
+      (unsigned long)fault_mmar,
+      (unsigned long)fault_bfar,
+      (unsigned long)fault_sfsr,
+      (unsigned long)fault_sfar);
+}
+
+void HardFault_Handler_C(uint32_t *stacked_regs, uint32_t exc_lr)
+{
+  const uint32_t stacked_r0 = stacked_regs[0];
+  const uint32_t stacked_r1 = stacked_regs[1];
+  const uint32_t stacked_r2 = stacked_regs[2];
+  const uint32_t stacked_r3 = stacked_regs[3];
+  const uint32_t stacked_r12 = stacked_regs[4];
+  const uint32_t stacked_lr = stacked_regs[5];
+  const uint32_t stacked_pc = stacked_regs[6];
+  const uint32_t stacked_psr = stacked_regs[7];
+
+  (void)stacked_r0;
+  (void)stacked_r1;
+  (void)stacked_r2;
+  (void)stacked_r3;
+  (void)stacked_r12;
+  (void)stacked_psr;
+  (void)exc_lr;
+
+  IT_LogFaultSnapshot("HardFault", stacked_pc, stacked_lr);
+  __BKPT(0);
+  while (1)
+  {
+    __NOP();
+  }
+}
 
 /**
   * @brief Return the DCMIPP handle currently owning the camera pipeline.
@@ -103,36 +171,16 @@ void NMI_Handler(void)
 /**
   * @brief This function handles Hard fault interrupt.
   */
+void HardFault_Handler(void) __attribute__((naked));
 void HardFault_Handler(void)
 {
-  /* USER CODE BEGIN HardFault_IRQn 0 */
-	  /* Capture fault state as early as possible, then break into debugger. */
-	  __disable_irq();
-
-	  /* These are volatile so the compiler keeps them and you can inspect them. */
-	  static volatile uint32_t hardfault_cfsr = 0U;
-	  static volatile uint32_t hardfault_hfsr = 0U;
-	  static volatile uint32_t hardfault_dfsr = 0U;
-	  static volatile uint32_t hardfault_afsr = 0U;
-	  static volatile uint32_t hardfault_mmar = 0U;
-	  static volatile uint32_t hardfault_bfar = 0U;
-
-	  hardfault_cfsr = SCB->CFSR;
-	  hardfault_hfsr = SCB->HFSR;
-	  hardfault_dfsr = SCB->DFSR;
-	  hardfault_afsr = SCB->AFSR;
-	  hardfault_mmar = SCB->MMFAR;
-	  hardfault_bfar = SCB->BFAR;
-
-	  /* If you're attached with a debugger, this will stop execution here. */
-	  __BKPT(0);
-  /* USER CODE END HardFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_HardFault_IRQn 0 */
-	  __NOP();
-    /* USER CODE END W1_HardFault_IRQn 0 */
-  }
+  __asm volatile(
+      "tst lr, #4                        \n"
+      "ite eq                            \n"
+      "mrseq r0, msp                     \n"
+      "mrsne r0, psp                     \n"
+      "mov r1, lr                        \n"
+      "b HardFault_Handler_C             \n");
 }
 
 /**
@@ -141,7 +189,7 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-
+  IT_LogFaultSnapshot("MemManage", 0U, 0U);
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
   {
@@ -156,7 +204,7 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
-
+  IT_LogFaultSnapshot("BusFault", 0U, 0U);
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
   {
@@ -171,7 +219,7 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
-
+  IT_LogFaultSnapshot("UsageFault", 0U, 0U);
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
   {
@@ -186,7 +234,7 @@ void UsageFault_Handler(void)
 void SecureFault_Handler(void)
 {
   /* USER CODE BEGIN SecureFault_IRQn 0 */
-
+  IT_LogFaultSnapshot("SecureFault", 0U, 0U);
   /* USER CODE END SecureFault_IRQn 0 */
   while (1)
   {
@@ -261,6 +309,33 @@ void DCMIPP_IRQHandler(void)
 {
   camera_capture_dcmipp_irq_count++;
   HAL_DCMIPP_IRQHandler(IT_GetActiveDcmippHandle());
+}
+
+/**
+  * @brief Forward the NPU interrupt lines into the ATON runtime handler.
+  *
+  * Cube's startup file exposes four NPU vectors. The runtime installs the
+  * ATON-standard handler, so we forward each vector to keep the completion
+  * path alive even if the active line changes.
+  */
+void NPU0_IRQHandler(void)
+{
+  CDNN0_IRQHandler();
+}
+
+void NPU1_IRQHandler(void)
+{
+  CDNN0_IRQHandler();
+}
+
+void NPU2_IRQHandler(void)
+{
+  CDNN0_IRQHandler();
+}
+
+void NPU3_IRQHandler(void)
+{
+  CDNN0_IRQHandler();
 }
 
 /* USER CODE END 1 */

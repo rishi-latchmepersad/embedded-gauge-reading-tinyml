@@ -53,6 +53,8 @@
 #define CAMERA_ISP_THREAD_PRIORITY          11U
 #define CAMERA_HEARTBEAT_THREAD_STACK_SIZE_BYTES 1024U
 #define CAMERA_HEARTBEAT_THREAD_PRIORITY    10U
+#define CAMERA_AI_THREAD_STACK_SIZE_BYTES    16384U
+#define CAMERA_AI_THREAD_PRIORITY            13U
 #define CAMERA_HEARTBEAT_PERIOD_MS          5000U
 #define CAMERA_HEARTBEAT_PULSE_MS           1000U
 #define CAMERA_HEARTBEAT_LED_GPIO_PORT      GPIOG
@@ -168,6 +170,10 @@ static TX_THREAD camera_heartbeat_thread;
 static ULONG camera_heartbeat_thread_stack[CAMERA_HEARTBEAT_THREAD_STACK_SIZE_BYTES
 		/ sizeof(ULONG)];
 static bool camera_heartbeat_thread_created = false;
+static TX_THREAD camera_ai_thread;
+static ULONG camera_ai_thread_stack[CAMERA_AI_THREAD_STACK_SIZE_BYTES
+		/ sizeof(ULONG)];
+static bool camera_ai_thread_created = false;
 static CMW_IMX335_t camera_sensor;
 static CMW_Sensor_if_t camera_sensor_driver;
 static CMW_IMX335_config_t camera_sensor_config;
@@ -180,12 +186,16 @@ static bool camera_cmw_initialized = false;
 static bool camera_capture_use_cmw_pipeline = false;
 static TX_SEMAPHORE camera_capture_done_semaphore;
 static TX_SEMAPHORE camera_capture_isp_semaphore;
+static TX_SEMAPHORE camera_ai_request_semaphore;
 static TX_EVENT_FLAGS_GROUP camera_storage_ready_flags;
 static TX_MUTEX debug_uart_mutex;
 static bool camera_heartbeat_gpio_initialized = false;
 static bool camera_capture_sync_created = false;
 static bool camera_storage_ready_sync_created = false;
+static bool camera_ai_sync_created = false;
 static bool camera_stream_started = false;
+static volatile const uint8_t *camera_ai_request_frame_ptr = NULL;
+static volatile ULONG camera_ai_request_frame_length = 0U;
 static volatile bool camera_capture_failed = false;
 static volatile uint32_t camera_capture_error_code = 0U;
 static volatile uint32_t camera_capture_byte_count = 0U;
@@ -230,6 +240,7 @@ extern I2C_HandleTypeDef hi2c2;
 static void DebugUartMutex_Lock(void);
 static void DebugUartMutex_Unlock(void);
 static VOID CameraHeartbeatThread_Entry(ULONG thread_input);
+static VOID CameraAIThread_Entry(ULONG thread_input);
 
 /**
  * @brief ThreadX entry point used to run camera bring-up diagnostics.
@@ -274,6 +285,8 @@ static bool CameraPlatform_WaitForStorageReady(uint32_t timeout_ms);
 static bool CameraPlatform_BuildCaptureFileName(CHAR *file_name_ptr,
 		ULONG file_name_length, const CHAR *file_extension_ptr);
 static bool CameraPlatform_CaptureAndStoreSingleFrame(void);
+static bool CameraPlatform_RequestDryInference(const uint8_t *frame_ptr,
+		ULONG frame_length);
 static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr);
 static void CameraPlatform_LogCaptureBufferSummary(uint32_t captured_bytes);
 static void CameraPlatform_LogCaptureBufferPreview(const char *reason,
@@ -403,7 +416,7 @@ UINT App_ThreadX_Start(void) {
 	BSP_LED_Off(LED_BLUE);
 	BSP_LED_Off(LED_GREEN);
 	if (camera_init_thread_created && camera_isp_thread_created
-			&& camera_heartbeat_thread_created) {
+			&& camera_heartbeat_thread_created && camera_ai_thread_created) {
 		DebugConsole_Printf(
 				"[CAMERA][THREAD] Start skipped: camera threads already created.\r\n");
 		return TX_SUCCESS;
@@ -450,6 +463,19 @@ UINT App_ThreadX_Start(void) {
 		camera_storage_ready_sync_created = true;
 	}
 
+	if (!camera_ai_sync_created) {
+		const UINT ai_request_status = tx_semaphore_create(
+				&camera_ai_request_semaphore, "camera_ai_request", 0U);
+		if (ai_request_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[CAMERA][THREAD] Failed to create AI request semaphore, status=%lu\r\n",
+					(unsigned long) ai_request_status);
+			return ai_request_status;
+		}
+
+		camera_ai_sync_created = true;
+	}
+
 	if (!camera_isp_thread_created) {
 		const UINT isp_create_status = tx_thread_create(&camera_isp_thread,
 				"camera_isp", CameraIspThread_Entry, 0U,
@@ -489,6 +515,25 @@ UINT App_ThreadX_Start(void) {
 		camera_heartbeat_thread_created = true;
 		DebugConsole_Printf(
 				"[CAMERA][THREAD] Heartbeat thread created and started.\r\n");
+	}
+
+	if (!camera_ai_thread_created) {
+		const UINT ai_create_status = tx_thread_create(&camera_ai_thread,
+				"camera_ai", CameraAIThread_Entry, 0U,
+				camera_ai_thread_stack, sizeof(camera_ai_thread_stack),
+				CAMERA_AI_THREAD_PRIORITY, CAMERA_AI_THREAD_PRIORITY,
+				TX_NO_TIME_SLICE, TX_AUTO_START);
+
+		if (ai_create_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[CAMERA][THREAD] Failed to create camera AI thread, status=%lu\r\n",
+					(unsigned long) ai_create_status);
+			return ai_create_status;
+		}
+
+		camera_ai_thread_created = true;
+		DebugConsole_Printf(
+				"[CAMERA][THREAD] Camera AI thread created and started.\r\n");
 	}
 
 	if (!camera_init_thread_created) {
@@ -568,11 +613,11 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 		DebugConsole_Printf(
 				"[CAMERA][THREAD] Entering first image capture/save attempt...\r\n");
 		if (CameraPlatform_CaptureAndStoreSingleFrame()) {
-			DebugConsole_Printf(
-					"[CAMERA][THREAD] Captured and stored first image successfully.\r\n");
-		} else {
-			DebugConsole_Printf(
-					"[CAMERA][THREAD] First image capture/save attempt failed.\r\n");
+		DebugConsole_Printf(
+				"[CAMERA][THREAD] Captured and stored first image successfully.\r\n");
+	} else {
+		DebugConsole_Printf(
+				"[CAMERA][THREAD] First image capture/save attempt failed.\r\n");
 		}
 	} else {
 		DebugConsole_Printf(
@@ -624,6 +669,44 @@ static VOID CameraHeartbeatThread_Entry(ULONG thread_input) {
 				CAMERA_HEARTBEAT_LED_PIN);
 		DelayMilliseconds_ThreadX(CAMERA_HEARTBEAT_PERIOD_MS
 				- CAMERA_HEARTBEAT_PULSE_MS);
+	}
+}
+
+/**
+ * @brief Low-priority AI worker that runs one queued dry inference at a time.
+ * @param thread_input Unused ThreadX input value.
+ */
+static VOID CameraAIThread_Entry(ULONG thread_input) {
+	(void) thread_input;
+
+	DebugConsole_Printf("[AI] Worker thread running.\r\n");
+
+	while (1) {
+		const UINT request_status = tx_semaphore_get(&camera_ai_request_semaphore,
+				TX_WAIT_FOREVER);
+		const uint8_t *frame_ptr = NULL;
+		ULONG frame_length = 0U;
+
+		if (request_status != TX_SUCCESS) {
+			continue;
+		}
+
+		frame_ptr = (const uint8_t *) camera_ai_request_frame_ptr;
+		frame_length = camera_ai_request_frame_length;
+		camera_ai_request_frame_ptr = NULL;
+		camera_ai_request_frame_length = 0U;
+
+		if ((frame_ptr == NULL) || (frame_length == 0U)) {
+			DebugConsole_Printf(
+					"[AI] Worker woke without a queued frame; ignoring.\r\n");
+			continue;
+		}
+
+		if (!App_AI_RunDryInferenceFromYuv422(frame_ptr,
+				(size_t) frame_length)) {
+			DebugConsole_Printf(
+					"[AI] One-shot dry-run inference failed; continuing.\r\n");
+		}
 	}
 }
 
@@ -1149,7 +1232,35 @@ static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
 					"[CAMERA][CAPTURE] Stored %lu-byte YUV422 image at /captured_images/%s.\r\n"
 					: "[CAMERA][CAPTURE] Stored %lu-byte raw Pipe0 frame at /captured_images/%s.\r\n",
 			(unsigned long) image_length, capture_file_name);
+
+	if (camera_capture_use_cmw_pipeline) {
+		if (!CameraPlatform_RequestDryInference((const uint8_t *) image_ptr,
+				(ULONG) image_length)) {
+			DebugConsole_Printf(
+					"[AI] Failed to queue one-shot dry-run inference.\r\n");
+		}
+	}
+
 	return true;
+}
+
+/**
+ * @brief Queue a dry-run inference request for the dedicated AI worker thread.
+ * @param frame_ptr Pointer to the captured frame bytes.
+ * @param frame_length Length of the captured frame in bytes.
+ * @retval true when the request was queued successfully.
+ */
+static bool CameraPlatform_RequestDryInference(const uint8_t *frame_ptr,
+		ULONG frame_length) {
+	if (!camera_ai_sync_created) {
+		DebugConsole_Printf(
+				"[AI] Dry-run request dropped; AI queue not initialized.\r\n");
+		return false;
+	}
+
+	camera_ai_request_frame_ptr = frame_ptr;
+	camera_ai_request_frame_length = frame_length;
+	return (tx_semaphore_put(&camera_ai_request_semaphore) == TX_SUCCESS);
 }
 
 /**

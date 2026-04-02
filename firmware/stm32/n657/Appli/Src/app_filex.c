@@ -716,6 +716,42 @@ bool AppFileX_IsMediaReady(void) {
 }
 
 /*==============================================================================
+ * Function: AppFileX_GetMediaHandle
+ *
+ * Purpose:
+ *   Expose the mounted FileX media handle so other boot-time loaders can read
+ *   assets from the SD card without duplicating the mount state.
+ *==============================================================================*/
+FX_MEDIA *AppFileX_GetMediaHandle(void) {
+	if (!g_filex_media_ready) {
+		return NULL;
+	}
+
+	return &g_sd_fx_media;
+}
+
+/*==============================================================================
+ * Function: AppFileX_AcquireMediaLock
+ *
+ * Purpose:
+ *   Export the media mutex for other boot-time readers that need serialized
+ *   access to the mounted SD card.
+ *==============================================================================*/
+UINT AppFileX_AcquireMediaLock(void) {
+	return AppFileX_LockMedia();
+}
+
+/*==============================================================================
+ * Function: AppFileX_ReleaseMediaLock
+ *
+ * Purpose:
+ *   Release the exported media mutex after a serialized SD card access.
+ *==============================================================================*/
+void AppFileX_ReleaseMediaLock(void) {
+	AppFileX_UnlockMedia();
+}
+
+/*==============================================================================
  * Function: AppFileX_GetNextCapturedImageName
  *
  * Purpose:
