@@ -46,6 +46,7 @@ MEMORY
 {
   ROM    (xrw)    : ORIGIN = 0x34000400,   LENGTH = 511K
   RAM    (xrw)    : ORIGIN = 0x34080000,   LENGTH = 1536K
+  EXTRAM (rw)     : ORIGIN = 0x70000000,   LENGTH = 64M
   /* Non-secure alias A/B test — DCMIPP with MSEC=1 writes to 0x24xxxxxx.
    * Placed at top of AXISRAM1 non-secure alias, away from code/data. */
   RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 128K
@@ -89,6 +90,13 @@ SECTIONS
     *(.rodata*)        /* .rodata* sections (constants, strings, etc.) */
     . = ALIGN(4);
   } >ROM
+
+  .xspi2_pool (NOLOAD) :
+  {
+    . = ALIGN(32);
+    KEEP(*(.xspi2_pool))
+    . = ALIGN(32);
+  } >EXTRAM
 
   .ARM.extab   : {
     . = ALIGN(4);
