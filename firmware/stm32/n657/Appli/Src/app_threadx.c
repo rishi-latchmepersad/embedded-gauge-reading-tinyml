@@ -72,7 +72,7 @@
 #define CAMERA_CAPTURE_WIDTH_PIXELS         224U
 #define CAMERA_CAPTURE_HEIGHT_PIXELS        224U
 /* Use the processed CMW/ISP path so AE/AWB and demosaicing can converge on a
- * usable live image. Set back to 1 only if we need raw Pipe0 diagnostics. */
+ * usable live image. Set to 1 only if we need raw Pipe0 diagnostics. */
 #define CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC 0
 /* DCMIPP PIPE0 raw-dump mode stores RAW10 pixels in 16-bit sample words.
  * We treat the low 10 bits as the sample value and preserve the full word
@@ -119,6 +119,7 @@
 #define CAMERA_CAPTURE_TIMEOUT_MS           8000U
 #define CAMERA_STORAGE_WAIT_TIMEOUT_MS      70000U
 #define CAMERA_CAPTURE_RETRY_DELAY_MS       50U
+#define CAMERA_FIRST_FRAME_WARMUP_DELAY_MS  1500U
 #define CAMERA_STREAM_WARMUP_DELAY_MS       250U
 #define IMX335_CAPTURE_FRAMERATE_FPS        10
 #define CAMERA_CAPTURE_FILE_NAME_LENGTH     64U
@@ -290,6 +291,8 @@ static bool CameraPlatform_RequestDryInference(const uint8_t *frame_ptr,
 static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr);
 static void CameraPlatform_LogCaptureBufferSummary(uint32_t captured_bytes);
 static void CameraPlatform_LogCaptureBufferPreview(const char *reason,
+		const uint8_t *buffer_ptr, uint32_t length_bytes);
+static void CameraPlatform_LogProcessedFrameDiagnostics(const char *reason,
 		const uint8_t *buffer_ptr, uint32_t length_bytes);
 static void CameraPlatform_PrepareCaptureBufferForDma(void);
 static void CameraPlatform_RefreshCaptureBufferFromDma(uint32_t captured_bytes);
@@ -972,6 +975,9 @@ static bool CameraPlatform_StartImx335Stream(void) {
 #else
 	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
 		camera_stream_started = true;
+		/* The first processed frame often lands before AEC has climbed out of
+		 * the startup black level, so give the ISP a short head start here. */
+		DelayMilliseconds_ThreadX(CAMERA_FIRST_FRAME_WARMUP_DELAY_MS);
 		return true;
 	}
 #endif
@@ -1036,9 +1042,10 @@ static bool CameraPlatform_StartImx335Stream(void) {
  * @retval true when the background step succeeded or is not used by this driver.
  */
 static bool CameraPlatform_RunImx335Background(void) {
-	/* The ISP background loop must run for both the processed image path and
-	 * the raw diagnostic path, because AE/AWB live in the ISP layer. */
-		if (camera_cmw_initialized) {
+	/* The ISP background loop is only needed for the processed image path.
+	 * Raw Pipe0 diagnostics bypass the ISP output path, so running AWB/AEC
+	 * updates there can trip middleware code that expects the YUV pipeline. */
+	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
 		camera_capture_isp_run_count++;
 
 		if (CMW_CAMERA_Run() != CMW_ERROR_NONE) {
@@ -1060,12 +1067,10 @@ static bool CameraPlatform_RunImx335Background(void) {
  *         CubeMX-generated application handle.
  */
 static DCMIPP_HandleTypeDef* CameraPlatform_GetCaptureDcmippHandle(void) {
-	if (camera_capture_use_cmw_pipeline) {
-		DCMIPP_HandleTypeDef *cmw_handle = CMW_CAMERA_GetDCMIPPHandle();
+	DCMIPP_HandleTypeDef *cmw_handle = CMW_CAMERA_GetDCMIPPHandle();
 
-		if ((cmw_handle != NULL) && (cmw_handle->Instance != NULL)) {
-			return cmw_handle;
-		}
+	if ((cmw_handle != NULL) && (cmw_handle->Instance != NULL)) {
+		return cmw_handle;
 	}
 
 	return &hdcmipp;
@@ -1210,6 +1215,12 @@ static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] Failed to build capture filename.\r\n");
 		return false;
+	}
+
+	if (camera_capture_use_cmw_pipeline) {
+		CameraPlatform_LogCaptureState("processed-capture");
+		CameraPlatform_LogProcessedFrameDiagnostics("processed-capture",
+				image_ptr, (uint32_t) image_length);
 	}
 
 	DebugConsole_Printf(
@@ -1690,6 +1701,100 @@ static void CameraPlatform_LogCaptureBufferPreview(const char *reason,
 			(unsigned long) preview_bytes[15], (unsigned long) preview_words[0],
 			(unsigned long) preview_words[1], (unsigned long) preview_words[2],
 			(unsigned long) preview_words[3]);
+}
+
+/**
+ * @brief Log a compact diagnostic window from the processed YUV frame.
+ *
+ * This helps distinguish a truly dark frame from a frame that just needs the
+ * center ROI or exposure state to settle.
+ * @param reason Human-readable reason that triggered the diagnostics.
+ * @param buffer_ptr Processed YUV422 frame bytes.
+ * @param length_bytes Number of bytes available in the frame buffer.
+ */
+static void CameraPlatform_LogProcessedFrameDiagnostics(const char *reason,
+		const uint8_t *buffer_ptr, uint32_t length_bytes) {
+	const uint32_t roi_size_pixels = 32U;
+	const uint32_t frame_width_pixels = CAMERA_CAPTURE_WIDTH_PIXELS;
+	const uint32_t frame_height_lines = CAMERA_CAPTURE_HEIGHT_PIXELS;
+	const uint32_t bytes_per_pixel = CAMERA_CAPTURE_BYTES_PER_PIXEL;
+	const uint32_t stride_bytes = frame_width_pixels * bytes_per_pixel;
+	uint32_t roi_start_x = 0U;
+	uint32_t roi_start_y = 0U;
+	uint32_t roi_min = 0xFFU;
+	uint32_t roi_max = 0U;
+	uint64_t roi_sum = 0U;
+	uint32_t roi_samples = 0U;
+	uint32_t center_line = 0U;
+	uint32_t center_preview[8U] = { 0U };
+
+	if ((buffer_ptr == NULL) || (length_bytes < stride_bytes)) {
+		return;
+	}
+
+	if ((frame_width_pixels < roi_size_pixels)
+			|| (frame_height_lines < roi_size_pixels)) {
+		return;
+	}
+
+	roi_start_x = (frame_width_pixels - roi_size_pixels) / 2U;
+	roi_start_y = (frame_height_lines - roi_size_pixels) / 2U;
+	center_line = roi_start_y + (roi_size_pixels / 2U);
+
+	for (uint32_t row = 0U; row < roi_size_pixels; row++) {
+		const uint32_t src_y = roi_start_y + row;
+		const uint32_t row_base = src_y * stride_bytes;
+
+		if ((row_base + ((roi_start_x + roi_size_pixels) * bytes_per_pixel))
+				> length_bytes) {
+			break;
+		}
+
+		for (uint32_t col = 0U; col < roi_size_pixels; col++) {
+			const uint32_t sample_index = row_base
+					+ ((roi_start_x + col) * bytes_per_pixel);
+			const uint8_t y_sample = buffer_ptr[sample_index];
+
+			if (y_sample < roi_min) {
+				roi_min = y_sample;
+			}
+			if (y_sample > roi_max) {
+				roi_max = y_sample;
+			}
+			roi_sum += y_sample;
+			roi_samples++;
+		}
+	}
+
+	for (uint32_t index = 0U; index < 8U; index++) {
+		const uint32_t sample_x = roi_start_x + index;
+		const uint32_t sample_index = (center_line * stride_bytes)
+				+ (sample_x * bytes_per_pixel);
+
+		if (sample_index < length_bytes) {
+			center_preview[index] = buffer_ptr[sample_index];
+		}
+	}
+
+	if (roi_samples == 0U) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Processed ROI stats skipped (%s): no valid samples.\r\n",
+				(reason != NULL) ? reason : "capture");
+		return;
+	}
+
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] Processed ROI stats (%s): roi=%lux%lu start=(%lu,%lu) y_min=%lu y_max=%lu y_mean=%lu.%02lu center8=[%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu].\r\n",
+			(reason != NULL) ? reason : "capture",
+			(unsigned long) roi_size_pixels, (unsigned long) roi_size_pixels,
+			(unsigned long) roi_start_x, (unsigned long) roi_start_y,
+			(unsigned long) roi_min, (unsigned long) roi_max,
+			(unsigned long) (roi_sum / roi_samples),
+			(unsigned long) (((roi_sum * 100U) / roi_samples) % 100U),
+			(unsigned long) center_preview[0], (unsigned long) center_preview[1],
+			(unsigned long) center_preview[2], (unsigned long) center_preview[3],
+			(unsigned long) center_preview[4], (unsigned long) center_preview[5],
+			(unsigned long) center_preview[6], (unsigned long) center_preview[7]);
 }
 
 /**
@@ -2917,6 +3022,10 @@ static bool CameraPlatform_InitializeImx335Sensor(void) {
 	DebugConsole_Printf("[CAMERA][PROBE] RAW diagnostic capture enabled.\r\n");
 #else
 	camera_capture_use_cmw_pipeline = true;
+	/* Let the ISP/AEC loop settle quickly on the first processed frame. */
+	if (!CameraPlatform_EnableImx335AutoExposure()) {
+		return false;
+	}
 	DebugConsole_Printf("[CAMERA][PROBE] Using CMW/ISP capture path.\r\n");
 #endif
 
@@ -2994,8 +3103,10 @@ static bool CameraPlatform_SeedImx335ExposureGain(void) {
 	 * frame stays out of clipping while still preserving some scene detail. */
 	/* Start a little brighter than the previous seed so the first usable frame
 	 * lands closer to the scene instead of hugging the dark end. */
+	/* Bias the very first frame a little brighter so the processed pipeline
+	 * has a better starting point before AEC takes over. */
 	seed_exposure_us = sensor_info.exposure_min
-			+ ((sensor_info.exposure_max - sensor_info.exposure_min) / 6U);
+			+ ((sensor_info.exposure_max - sensor_info.exposure_min) / 3U);
 	if (seed_exposure_us < sensor_info.exposure_min) {
 		seed_exposure_us = sensor_info.exposure_min;
 	}
