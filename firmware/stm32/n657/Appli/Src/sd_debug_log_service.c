@@ -9,6 +9,8 @@
 
 #include <string.h>
 
+#include "app_filex.h"
+
 /*==============================================================================
  * Type: SdDebugLogService_LogBuffer
  *
@@ -55,6 +57,32 @@ static SdDebugLogCore_Context g_sd_debug_log_core_context;
 static SdDebugLogCore_FileOps g_sd_debug_log_file_ops;
 
 static uint8_t g_sd_debug_log_file_is_open = 0U;
+
+/*==============================================================================
+ * Function: SdDebugLogService_LockMedia
+ *
+ * Purpose:
+ *   Acquire the shared FileX media mutex before touching the SD card.
+ *============================================================================*/
+static int32_t SdDebugLogService_LockMedia(void) {
+	UINT status = AppFileX_AcquireMediaLock();
+
+	if (status != TX_SUCCESS) {
+		return -1;
+	}
+
+	return 0;
+}
+
+/*==============================================================================
+ * Function: SdDebugLogService_UnlockMedia
+ *
+ * Purpose:
+ *   Release the shared FileX media mutex after touching the SD card.
+ *============================================================================*/
+static void SdDebugLogService_UnlockMedia(void) {
+	AppFileX_ReleaseMediaLock();
+}
 
 /*==============================================================================
  * Function: SdDebugLogService_StrnlenBounded
@@ -111,8 +139,13 @@ static int32_t SdDebugLogService_FileX_OpenAppend(void *user_context_ptr,
 		return -1;
 	}
 
+	if (SdDebugLogService_LockMedia() != 0) {
+		return -2;
+	}
+
 	/* If already open, nothing to do. */
 	if (g_sd_debug_log_file_is_open != 0U) {
+		SdDebugLogService_UnlockMedia();
 		return 0;
 	}
 
@@ -121,6 +154,7 @@ static int32_t SdDebugLogService_FileX_OpenAppend(void *user_context_ptr,
 			(CHAR*) file_name_ptr,
 			FX_OPEN_FOR_WRITE);
 	if (status != FX_SUCCESS) {
+		SdDebugLogService_UnlockMedia();
 		return -2;
 	}
 
@@ -130,11 +164,13 @@ static int32_t SdDebugLogService_FileX_OpenAppend(void *user_context_ptr,
 	if (status != FX_SUCCESS) {
 		/* If seek fails, close to avoid leaked handle. */
 		(void) fx_file_close(&g_sd_debug_log_fx_file);
+		SdDebugLogService_UnlockMedia();
 		return -3;
 	}
 
 	/* Mark file handle open. */
 	g_sd_debug_log_file_is_open = 1U;
+	SdDebugLogService_UnlockMedia();
 
 	return 0;
 }
@@ -158,14 +194,20 @@ static int32_t SdDebugLogService_FileX_CreateNew(void *user_context_ptr,
 		return -1;
 	}
 
+	if (SdDebugLogService_LockMedia() != 0) {
+		return -2;
+	}
+
 	/* Create the file. */
 	status = fx_file_create(g_sd_debug_log_media_ptr, (CHAR*) file_name_ptr);
 
 	/* If it already exists, FileX returns FX_ALREADY_CREATED, which is okay. */
 	if ((status == FX_SUCCESS) || (status == FX_ALREADY_CREATED)) {
+		SdDebugLogService_UnlockMedia();
 		return 0;
 	}
 
+	SdDebugLogService_UnlockMedia();
 	return -2;
 }
 
@@ -186,11 +228,16 @@ static int32_t SdDebugLogService_FileX_Close(void *user_context_ptr) {
 		return 0;
 	}
 
+	if (SdDebugLogService_LockMedia() != 0) {
+		return -1;
+	}
+
 	/* Close file handle. */
 	(void) fx_file_close(&g_sd_debug_log_fx_file);
 
 	/* Update state. */
 	g_sd_debug_log_file_is_open = 0U;
+	SdDebugLogService_UnlockMedia();
 
 	return 0;
 }
@@ -214,12 +261,19 @@ static int32_t SdDebugLogService_FileX_Write(void *user_context_ptr,
 		return -1;
 	}
 
+	if (SdDebugLogService_LockMedia() != 0) {
+		return -2;
+	}
+
 	/* Write to file. */
 	status = fx_file_write(&g_sd_debug_log_fx_file, (VOID*) data_ptr,
 			(ULONG) data_length_bytes);
 	if (status != FX_SUCCESS) {
+		SdDebugLogService_UnlockMedia();
 		return -2;
 	}
+
+	SdDebugLogService_UnlockMedia();
 
 	return 0;
 }
@@ -245,6 +299,10 @@ static int32_t SdDebugLogService_FileX_Flush(void *user_context_ptr) {
 		return -1;
 	}
 
+	if (SdDebugLogService_LockMedia() != 0) {
+		return -2;
+	}
+
 	/* Flush file if open. */
 	if (g_sd_debug_log_file_is_open != 0U) {
 		(void) fx_media_flush(g_sd_debug_log_media_ptr);
@@ -252,6 +310,7 @@ static int32_t SdDebugLogService_FileX_Flush(void *user_context_ptr) {
 
 	/* Flush media to commit cached FAT changes, etc. */
 	(void) fx_media_flush(g_sd_debug_log_media_ptr);
+	SdDebugLogService_UnlockMedia();
 
 	return 0;
 }
@@ -275,12 +334,19 @@ static int32_t SdDebugLogService_FileX_Rename(void *user_context_ptr,
 		return -1;
 	}
 
+	if (SdDebugLogService_LockMedia() != 0) {
+		return -2;
+	}
+
 	/* Perform rename. */
 	status = fx_file_rename(g_sd_debug_log_media_ptr, (CHAR*) old_name_ptr,
 			(CHAR*) new_name_ptr);
 	if (status != FX_SUCCESS) {
+		SdDebugLogService_UnlockMedia();
 		return -2;
 	}
+
+	SdDebugLogService_UnlockMedia();
 
 	return 0;
 }
@@ -308,12 +374,17 @@ static int32_t SdDebugLogService_FileX_Exists(void *user_context_ptr,
 		return -1;
 	}
 
+	if (SdDebugLogService_LockMedia() != 0) {
+		return -2;
+	}
+
 	/* Try opening the file for read. If it opens, it exists. */
 	status = fx_file_open(g_sd_debug_log_media_ptr, &temp_file,
 			(CHAR*) file_name_ptr, FX_OPEN_FOR_READ);
 	if (status == FX_SUCCESS) {
 		/* Close immediately, we only wanted existence. */
 		(void) fx_file_close(&temp_file);
+		SdDebugLogService_UnlockMedia();
 
 		*exists_out_ptr = 1U;
 		return 0;
@@ -321,11 +392,13 @@ static int32_t SdDebugLogService_FileX_Exists(void *user_context_ptr,
 
 	/* If not found, return exists = 0. */
 	if (status == FX_NOT_FOUND) {
+		SdDebugLogService_UnlockMedia();
 		*exists_out_ptr = 0U;
 		return 0;
 	}
 
 	/* Any other error is a real failure. */
+	SdDebugLogService_UnlockMedia();
 	return -2;
 }
 
@@ -357,6 +430,10 @@ static int32_t SdDebugLogService_FileX_GetSize(void *user_context_ptr,
 		return -1;
 	}
 
+	if (SdDebugLogService_LockMedia() != 0) {
+		return -2;
+	}
+
 	/* Default output to 0 so callers never read an uninitialized value. */
 	*size_out_bytes_ptr = 0U;
 
@@ -367,11 +444,13 @@ static int32_t SdDebugLogService_FileX_GetSize(void *user_context_ptr,
 
 	/* If the file does not exist, treat it as size 0 and succeed. */
 	if (status == FX_NOT_FOUND) {
+		SdDebugLogService_UnlockMedia();
 		return 0;
 	}
 
 	/* Any other open failure is a real error. */
 	if (status != FX_SUCCESS) {
+		SdDebugLogService_UnlockMedia();
 		return -2;
 	}
 
@@ -383,6 +462,7 @@ static int32_t SdDebugLogService_FileX_GetSize(void *user_context_ptr,
 
 	/* Return size back as uint32_t for our core. */
 	*size_out_bytes_ptr = (uint32_t) file_size_bytes;
+	SdDebugLogService_UnlockMedia();
 
 	return 0;
 }
