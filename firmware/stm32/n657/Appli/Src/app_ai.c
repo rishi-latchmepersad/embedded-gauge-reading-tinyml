@@ -108,6 +108,10 @@ static void AppAI_LogXspi2ProgramChunkProgress(ULONG chunk_index,
 		ULONG flash_offset, ULONG chunk_size);
 static void AppAI_LogXspi2PrefixBytes(const char *label,
 		const uint8_t *bytes);
+static void AppAI_LogFrameSignature(const uint8_t *frame_bytes,
+		size_t frame_size);
+static void AppAI_LogInputSignature(const float *input_buffer,
+		size_t input_float_count);
 static bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr);
 static void AppAI_LogXspi2FlashPrefix(void);
 static void AppAI_LogXspi2MappedScaleBytes(void);
@@ -255,6 +259,95 @@ static void AppAI_LogXspi2PrefixBytes(const char *label,
 			label, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
 			bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11],
 			bytes[12], bytes[13], bytes[14], bytes[15]);
+}
+
+/**
+ * @brief Print a compact signature for the captured input frame.
+ *
+ * This makes it easy to compare whether two runs actually fed different
+ * camera data into the model.
+ */
+static void AppAI_LogFrameSignature(const uint8_t *frame_bytes,
+		size_t frame_size) {
+	uint8_t first_bytes[8U] = { 0U };
+	uint32_t hash = 2166136261UL;
+	size_t preview_count = 0U;
+
+	if ((frame_bytes == NULL) || (frame_size == 0U)) {
+		DebugConsole_Printf("[AI] Frame signature skipped: empty frame.\r\n");
+		return;
+	}
+
+	preview_count = (frame_size < sizeof(first_bytes)) ? frame_size
+			: sizeof(first_bytes);
+	for (size_t index = 0U; index < preview_count; index++) {
+		first_bytes[index] = frame_bytes[index];
+	}
+
+	for (size_t index = 0U; index < frame_size; index++) {
+		hash ^= frame_bytes[index];
+		hash *= 16777619UL;
+	}
+
+	DebugConsole_Printf(
+			"[AI] Frame signature: len=%lu hash=0x%08lX first8=[%02X %02X %02X %02X %02X %02X %02X %02X]\r\n",
+			(unsigned long) frame_size, (unsigned long) hash,
+			(unsigned int) first_bytes[0], (unsigned int) first_bytes[1],
+			(unsigned int) first_bytes[2], (unsigned int) first_bytes[3],
+			(unsigned int) first_bytes[4], (unsigned int) first_bytes[5],
+			(unsigned int) first_bytes[6], (unsigned int) first_bytes[7]);
+}
+
+/**
+ * @brief Print a compact signature for the preprocessed model input tensor.
+ *
+ * This tells us whether the captured scene is still distinct after the YUV422
+ * to grayscale preprocessing step.
+ */
+static void AppAI_LogInputSignature(const float *input_buffer,
+		size_t input_float_count) {
+	const uint8_t *bytes = NULL;
+	uint8_t first_bytes[8U] = { 0U };
+	uint32_t first_words[4U] = { 0U };
+	uint32_t hash = 2166136261UL;
+	size_t byte_count = 0U;
+	size_t preview_bytes = 0U;
+	size_t preview_words = 0U;
+
+	if ((input_buffer == NULL) || (input_float_count == 0U)) {
+		DebugConsole_Printf("[AI] Input signature skipped: empty tensor.\r\n");
+		return;
+	}
+
+	bytes = (const uint8_t *) input_buffer;
+	byte_count = input_float_count * sizeof(float);
+	preview_bytes = (byte_count < sizeof(first_bytes)) ? byte_count
+			: sizeof(first_bytes);
+	preview_words = (input_float_count < 4U) ? input_float_count : 4U;
+
+	for (size_t index = 0U; index < preview_bytes; index++) {
+		first_bytes[index] = bytes[index];
+	}
+
+	for (size_t index = 0U; index < preview_words; index++) {
+		(void) memcpy(&first_words[index], &input_buffer[index],
+				sizeof(uint32_t));
+	}
+
+	for (size_t index = 0U; index < byte_count; index++) {
+		hash ^= bytes[index];
+		hash *= 16777619UL;
+	}
+
+	DebugConsole_Printf(
+			"[AI] Input signature: floats=%lu hash=0x%08lX first8=[%02X %02X %02X %02X %02X %02X %02X %02X] first4=[0x%08lX,0x%08lX,0x%08lX,0x%08lX]\r\n",
+			(unsigned long) input_float_count, (unsigned long) hash,
+			(unsigned int) first_bytes[0], (unsigned int) first_bytes[1],
+			(unsigned int) first_bytes[2], (unsigned int) first_bytes[3],
+			(unsigned int) first_bytes[4], (unsigned int) first_bytes[5],
+			(unsigned int) first_bytes[6], (unsigned int) first_bytes[7],
+			(unsigned long) first_words[0], (unsigned long) first_words[1],
+			(unsigned long) first_words[2], (unsigned long) first_words[3]);
 }
 
 static bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr) {
@@ -523,10 +616,34 @@ static bool AppAI_EnsureXspi2ModelImageReady(void) {
 		return true;
 	}
 
-	if (!AppAI_ProgramXspi2ModelImageFromSd()) {
-		DebugConsole_Printf(
-				"[AI] xSPI2 model image provisioning failed.\r\n");
+	/* The runtime consumes the blob through the mapped xSPI2 window, so verify
+	 * that view first. Some boots leave the indirect probe path in a misleading
+	 * state even when the programmed image is still present. */
+	if (!AppAI_ReconfigureXspi2ForRuntime()) {
+		AppAI_LogXspi2LoadFailure("runtime reconfigure", FX_SUCCESS,
+				BSP_ERROR_COMPONENT_FAILURE);
 		return false;
+	}
+
+	if (AppAI_Xspi2ModelImageMatchesMappedFlash()) {
+		DebugConsole_Printf(
+				"[AI] xSPI2 model image already present; skipping provisioning.\r\n");
+		AppAI_LogXspi2IndirectAndMappedPrefix();
+		AppAI_LogXspi2MappedScaleBytes();
+	} else {
+		DebugConsole_Printf(
+				"[AI] xSPI2 model image missing or stale; programming from SD card.\r\n");
+		if (!AppAI_EnsureXspi2MemoryReady()) {
+			AppAI_LogXspi2LoadFailure("xSPI2 memory", FX_SUCCESS,
+					BSP_ERROR_COMPONENT_FAILURE);
+			return false;
+		}
+
+		if (!AppAI_ProgramXspi2ModelImageFromSd()) {
+			DebugConsole_Printf(
+					"[AI] xSPI2 model image provisioning failed.\r\n");
+			return false;
+		}
 	}
 
 	if (!AppAI_Xspi2ModelImageMatchesMappedFlash()) {
@@ -668,8 +785,8 @@ static void AppAI_LogFloatApprox(const char *label, float value) {
 	} bits = {
 		.f = value
 	};
-	uint64_t magnitude_whole = 0U;
-	uint64_t magnitude_frac = 0U;
+	unsigned long magnitude_whole = 0U;
+	unsigned long magnitude_frac = 0U;
 	const char *sign = "";
 	double abs_value = 0.0;
 
@@ -697,17 +814,16 @@ static void AppAI_LogFloatApprox(const char *label, float value) {
 		abs_value = 0.0;
 	}
 
-	magnitude_whole = (uint64_t) abs_value;
-	magnitude_frac = (uint64_t) ((abs_value - (double) magnitude_whole)
+	magnitude_whole = (unsigned long) abs_value;
+	magnitude_frac = (unsigned long) ((abs_value - (double) magnitude_whole)
 			* 1000000.0 + 0.5);
 	if (magnitude_frac >= 1000000U) {
 		magnitude_whole++;
 		magnitude_frac -= 1000000U;
 	}
 
-	DebugConsole_Printf("%s%s%llu.%06llu\r\n", label, sign,
-			(unsigned long long) magnitude_whole,
-			(unsigned long long) magnitude_frac);
+	DebugConsole_Printf("%s%s%lu.%06lu\r\n", label, sign,
+			magnitude_whole, magnitude_frac);
 }
 
 static bool AppAI_RuntimeInitStepwise(void) {
@@ -934,6 +1050,9 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		return false;
 	}
 
+	AppAI_LogFrameSignature(frame_bytes, frame_size);
+	AppAI_LogInputSignature(input_ptr, input_float_count);
+
 	/* Make sure the NPU sees the freshly prepared float input. */
 	(void) mcu_cache_clean_range((uint32_t) (uintptr_t) input_ptr,
 			(uint32_t) ((uintptr_t) input_ptr + input_len_bytes));
@@ -1037,12 +1156,6 @@ static void AppAI_LogInferenceResult(
 	} output_bits = {
 		.f = 0.0f
 	};
-	union {
-		float f;
-		uint32_t u;
-	} dequant_scale_bits = {
-		.f = 0.0f
-	};
 	int8_t raw_output_value = 0;
 	int8_t dequant_zero_point = 0;
 
@@ -1070,8 +1183,6 @@ static void AppAI_LogInferenceResult(
 
 	if ((scale_info != NULL) && (LL_Buffer_addr_start(scale_info) != NULL)) {
 		scale_bytes = (const uint8_t *) LL_Buffer_addr_start(scale_info);
-		(void) memcpy(&dequant_scale_bits.u, scale_bytes,
-				sizeof(dequant_scale_bits.u));
 	}
 
 	if ((zero_point_info != NULL)
@@ -1081,13 +1192,11 @@ static void AppAI_LogInferenceResult(
 	}
 
 	DebugConsole_Printf(
-			"[AI] Inference OK; raw=%d output_bits=0x%08lx scale_bits=0x%08lx zp=%d\r\n",
+			"[AI] Inference OK; raw=%d output_bits=0x%08lx zp=%d\r\n",
 			(int) raw_output_value,
 			(unsigned long) output_bits.u,
-			(unsigned long) dequant_scale_bits.u,
 			(int) dequant_zero_point);
 	AppAI_LogFloatApprox("[AI] Inference output value: ", output_bits.f);
-	AppAI_LogFloatApprox("[AI] Dequant scale value: ", dequant_scale_bits.f);
 
 	if (scale_bytes != NULL) {
 		DebugConsole_Printf("[AI] Dequant scale bytes @%p = %02x %02x %02x %02x\r\n",
