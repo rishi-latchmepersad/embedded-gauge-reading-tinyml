@@ -54,7 +54,10 @@
 #define APP_AI_XSPI2_PROBE_BYTES           16U
 #define APP_AI_XSPI2_SCALE_OFFSET          3218160UL
 #define APP_AI_XSPI2_ZERO_POINT_OFFSET     3218864UL
-#define APP_AI_FILEX_MEDIA_READY_TIMEOUT_MS 60000U
+/* FileX can take a while to recover from card init retries or media errors.
+ * Give the loader a longer window so we do not give up just before the stack
+ * settles. */
+#define APP_AI_FILEX_MEDIA_READY_TIMEOUT_MS 180000U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -103,6 +106,13 @@ static void AppAI_LogXspi2LoadFailure(const char *step, UINT fx_status,
 		int32_t bsp_status);
 static void AppAI_LogXspi2ProgramChunkProgress(ULONG chunk_index,
 		ULONG flash_offset, ULONG chunk_size);
+static void AppAI_LogXspi2PrefixBytes(const char *label,
+		const uint8_t *bytes);
+static bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr);
+static void AppAI_LogXspi2FlashPrefix(void);
+static void AppAI_LogXspi2MappedScaleBytes(void);
+static void AppAI_LogXspi2IndirectAndMappedPrefix(void);
+static void AppAI_LogFloatApprox(const char *label, float value);
 static void AppAI_LogInferenceResult(
 		const LL_Buffer_InfoTypeDef *output_buffer_info);
 static int AppAI_ApplyCacheRange(uint32_t start_addr, uint32_t end_addr,
@@ -168,9 +178,33 @@ static bool AppAI_EnsureXspi2MemoryReady(void) {
 	}
 
 	flash.InterfaceMode = BSP_XSPI_NOR_OPI_MODE;
+	/* Keep the initial bring-up and provisioning path in STR. We can switch the
+	 * flash to DTR after the model blob has been programmed. */
+	flash.TransferRate = BSP_XSPI_NOR_STR_TRANSFER;
+	bsp_status = BSP_XSPI_NOR_Init(0U, &flash);
+	if (bsp_status != BSP_ERROR_NONE) {
+		return false;
+	}
+
+	return true;
+}
+
+static bool AppAI_ReconfigureXspi2ForRuntime(void) {
+	BSP_XSPI_NOR_Init_t flash = { 0 };
+	int32_t bsp_status = BSP_ERROR_NONE;
+
+	/* Drop out of memory-mapped mode before changing the flash transfer rate. */
+	(void) BSP_XSPI_NOR_DisableMemoryMappedMode(0U);
+	(void) BSP_XSPI_NOR_DeInit(0U);
+
+	flash.InterfaceMode = BSP_XSPI_NOR_OPI_MODE;
 	flash.TransferRate = BSP_XSPI_NOR_DTR_TRANSFER;
 	bsp_status = BSP_XSPI_NOR_Init(0U, &flash);
 	if (bsp_status != BSP_ERROR_NONE) {
+		return false;
+	}
+
+	if (BSP_XSPI_NOR_EnableMemoryMappedMode(0U) != BSP_ERROR_NONE) {
 		return false;
 	}
 
@@ -194,20 +228,133 @@ static bool AppAI_Xspi2ReadFlashProbe(const uint32_t flash_offset,
 	return (memcmp(flash_bytes, expected_bytes, expected_length) == 0);
 }
 
+static bool AppAI_Xspi2ReadMappedProbe(const uint32_t flash_offset,
+		const uint8_t *expected_bytes, const size_t expected_length) {
+	const uint8_t *const flash_ptr = (const uint8_t *) (0x70000000UL
+			+ flash_offset);
+
+	if ((expected_bytes == NULL) || (expected_length == 0U)
+			|| (expected_length > APP_AI_XSPI2_PROBE_BYTES)) {
+		return false;
+	}
+
+	(void) mcu_cache_invalidate_range((uint32_t) flash_ptr,
+			(uint32_t) flash_ptr + (uint32_t) expected_length);
+
+	return (memcmp(flash_ptr, expected_bytes, expected_length) == 0);
+}
+
+static void AppAI_LogXspi2PrefixBytes(const char *label,
+		const uint8_t *bytes) {
+	if ((label == NULL) || (bytes == NULL)) {
+		return;
+	}
+
+	DebugConsole_Printf(
+			"[AI] %s %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+			label, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
+			bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11],
+			bytes[12], bytes[13], bytes[14], bytes[15]);
+}
+
+static bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr) {
+	uint8_t source_bytes[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
+	ULONG bytes_read = 0U;
+	UINT fx_status = FX_SUCCESS;
+
+	if (model_file_ptr == NULL) {
+		return false;
+	}
+
+	fx_status = fx_file_read(model_file_ptr, source_bytes,
+			APP_AI_XSPI2_PROBE_BYTES, &bytes_read);
+	if ((fx_status != FX_SUCCESS)
+			|| (bytes_read != APP_AI_XSPI2_PROBE_BYTES)) {
+		DebugConsole_Printf(
+				"[AI] xSPI2 source prefix read failed (fx=%lu n=%lu).\r\n",
+				(unsigned long) fx_status, (unsigned long) bytes_read);
+		return false;
+	}
+
+	AppAI_LogXspi2PrefixBytes("xSPI2 source prefix:", source_bytes);
+
+	fx_status = fx_file_seek(model_file_ptr, 0U);
+	if (fx_status != FX_SUCCESS) {
+		DebugConsole_Printf(
+				"[AI] xSPI2 source rewind failed (fx=%lu).\r\n",
+				(unsigned long) fx_status);
+		return false;
+	}
+
+	return true;
+}
+
 static bool AppAI_Xspi2ModelImageMatchesFlash(void) {
-	return AppAI_Xspi2ReadFlashProbe(0U, app_ai_xspi2_signature_start,
-			sizeof(app_ai_xspi2_signature_start))
-			&& AppAI_Xspi2ReadFlashProbe(APP_AI_XSPI2_SCALE_OFFSET,
-					app_ai_xspi2_signature_scale,
-					sizeof(app_ai_xspi2_signature_scale))
-			&& AppAI_Xspi2ReadFlashProbe(APP_AI_XSPI2_ZERO_POINT_OFFSET,
-					app_ai_xspi2_signature_zero_point,
-					sizeof(app_ai_xspi2_signature_zero_point))
-			&& AppAI_Xspi2ReadFlashProbe(
-					APP_AI_XSPI2_MODEL_IMAGE_SIZE
-							- APP_AI_XSPI2_PROBE_BYTES,
-					app_ai_xspi2_signature_tail,
-					sizeof(app_ai_xspi2_signature_tail));
+	if (!AppAI_Xspi2ReadFlashProbe(0U, app_ai_xspi2_signature_start,
+			sizeof(app_ai_xspi2_signature_start))) {
+		DebugConsole_Printf("[AI] xSPI2 verify failed at start signature.\r\n");
+		return false;
+	}
+
+	if (!AppAI_Xspi2ReadFlashProbe(APP_AI_XSPI2_SCALE_OFFSET,
+			app_ai_xspi2_signature_scale,
+			sizeof(app_ai_xspi2_signature_scale))) {
+		DebugConsole_Printf("[AI] xSPI2 verify failed at scale signature.\r\n");
+		return false;
+	}
+
+	if (!AppAI_Xspi2ReadFlashProbe(APP_AI_XSPI2_ZERO_POINT_OFFSET,
+			app_ai_xspi2_signature_zero_point,
+			sizeof(app_ai_xspi2_signature_zero_point))) {
+		DebugConsole_Printf("[AI] xSPI2 verify failed at zero-point byte.\r\n");
+		return false;
+	}
+
+	if (!AppAI_Xspi2ReadFlashProbe(
+			APP_AI_XSPI2_MODEL_IMAGE_SIZE - APP_AI_XSPI2_PROBE_BYTES,
+			app_ai_xspi2_signature_tail,
+			sizeof(app_ai_xspi2_signature_tail))) {
+		DebugConsole_Printf("[AI] xSPI2 verify failed at tail signature.\r\n");
+		return false;
+	}
+
+	return true;
+}
+
+static bool AppAI_Xspi2ModelImageMatchesMappedFlash(void) {
+	if (!AppAI_Xspi2ReadMappedProbe(0U, app_ai_xspi2_signature_start,
+			sizeof(app_ai_xspi2_signature_start))) {
+		DebugConsole_Printf(
+				"[AI] xSPI2 mapped verify failed at start signature.\r\n");
+		return false;
+	}
+
+	if (!AppAI_Xspi2ReadMappedProbe(APP_AI_XSPI2_SCALE_OFFSET,
+			app_ai_xspi2_signature_scale,
+			sizeof(app_ai_xspi2_signature_scale))) {
+		DebugConsole_Printf(
+				"[AI] xSPI2 mapped verify failed at scale signature.\r\n");
+		return false;
+	}
+
+	if (!AppAI_Xspi2ReadMappedProbe(APP_AI_XSPI2_ZERO_POINT_OFFSET,
+			app_ai_xspi2_signature_zero_point,
+			sizeof(app_ai_xspi2_signature_zero_point))) {
+		DebugConsole_Printf(
+				"[AI] xSPI2 mapped verify failed at zero-point byte.\r\n");
+		return false;
+	}
+
+	if (!AppAI_Xspi2ReadMappedProbe(
+			APP_AI_XSPI2_MODEL_IMAGE_SIZE - APP_AI_XSPI2_PROBE_BYTES,
+			app_ai_xspi2_signature_tail,
+			sizeof(app_ai_xspi2_signature_tail))) {
+		DebugConsole_Printf(
+				"[AI] xSPI2 mapped verify failed at tail signature.\r\n");
+		return false;
+	}
+
+	return true;
 }
 
 static bool AppAI_ProgramXspi2ModelImageFromSd(void) {
@@ -275,6 +422,15 @@ static bool AppAI_ProgramXspi2ModelImageFromSd(void) {
 		return false;
 	}
 
+	if (!AppAI_LogXspi2ModelFilePrefix(&model_file)) {
+		(void) fx_file_close(&model_file);
+		(void) fx_directory_default_set(media_ptr, FX_NULL);
+		AppFileX_ReleaseMediaLock();
+		AppAI_LogXspi2LoadFailure("source prefix", FX_SUCCESS,
+				BSP_ERROR_COMPONENT_FAILURE);
+		return false;
+	}
+
 	for (ULONG erase_addr = 0U; erase_addr < file_size;
 			erase_addr += APP_AI_XSPI2_ERASE_BLOCK_BYTES) {
 		bsp_status = BSP_XSPI_NOR_Erase_Block(0U, erase_addr,
@@ -335,10 +491,14 @@ static bool AppAI_ProgramXspi2ModelImageFromSd(void) {
 	(void) fx_directory_default_set(media_ptr, FX_NULL);
 	AppFileX_ReleaseMediaLock();
 
-	if (!AppAI_Xspi2ModelImageMatchesFlash()) {
-		AppAI_LogXspi2LoadFailure("flash verify", FX_SUCCESS, BSP_ERROR_NONE);
+	if (!AppAI_ReconfigureXspi2ForRuntime()) {
+		AppAI_LogXspi2LoadFailure("runtime reconfigure", FX_SUCCESS,
+				BSP_ERROR_COMPONENT_FAILURE);
 		return false;
 	}
+
+	AppAI_LogXspi2IndirectAndMappedPrefix();
+	AppAI_LogXspi2MappedScaleBytes();
 
 	return true;
 }
@@ -363,15 +523,15 @@ static bool AppAI_EnsureXspi2ModelImageReady(void) {
 		return true;
 	}
 
-	if (!AppAI_Xspi2ModelImageMatchesFlash()) {
-		DebugConsole_Printf("[AI] xSPI2 model image missing; programming from SD card.\r\n");
-		if (!AppAI_ProgramXspi2ModelImageFromSd()) {
-			return false;
-		}
+	if (!AppAI_ProgramXspi2ModelImageFromSd()) {
+		DebugConsole_Printf(
+				"[AI] xSPI2 model image provisioning failed.\r\n");
+		return false;
 	}
 
-	if (BSP_XSPI_NOR_EnableMemoryMappedMode(0U) != BSP_ERROR_NONE) {
-		return false;
+	if (!AppAI_Xspi2ModelImageMatchesMappedFlash()) {
+		DebugConsole_Printf(
+				"[AI] xSPI2 mapped verify failed after provisioning.\r\n");
 	}
 
 	app_ai_xspi2_initialized = true;
@@ -444,6 +604,110 @@ static void AppAI_LogXspi2ProgramChunkProgress(ULONG chunk_index,
 			(unsigned long) chunk_index,
 			(unsigned long) flash_offset,
 			(unsigned long) chunk_size);
+}
+
+static void AppAI_LogXspi2FlashPrefix(void) {
+	uint8_t flash_bytes[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
+
+	if (BSP_XSPI_NOR_Read(0U, flash_bytes, 0U,
+			APP_AI_XSPI2_PROBE_BYTES) != BSP_ERROR_NONE) {
+		DebugConsole_Printf("[AI] xSPI2 prefix readback failed.\r\n");
+		return;
+	}
+
+	AppAI_LogXspi2PrefixBytes("xSPI2 prefix readback:", flash_bytes);
+}
+
+static void AppAI_LogXspi2MappedScaleBytes(void) {
+	const uint8_t *const scale_ptr = (const uint8_t *) (0x70000000UL
+			+ APP_AI_XSPI2_SCALE_OFFSET);
+
+	(void) mcu_cache_invalidate_range((uint32_t) (uintptr_t) scale_ptr,
+			(uint32_t) ((uintptr_t) scale_ptr + 4U));
+
+	DebugConsole_Printf(
+			"[AI] xSPI2 mapped scale bytes @%p = %02X %02X %02X %02X\r\n",
+			(const void *) scale_ptr, scale_ptr[0], scale_ptr[1], scale_ptr[2],
+			scale_ptr[3]);
+}
+
+static void AppAI_LogXspi2IndirectAndMappedPrefix(void) {
+	uint8_t indirect_bytes[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
+	uint8_t mapped_bytes[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
+	const int32_t disable_status = BSP_XSPI_NOR_DisableMemoryMappedMode(0U);
+
+	if (disable_status != BSP_ERROR_NONE) {
+		DebugConsole_Printf(
+				"[AI] xSPI2 disable-mapped before compare returned %ld.\r\n",
+				(long) disable_status);
+	}
+
+	if (BSP_XSPI_NOR_Read(0U, indirect_bytes, 0U,
+			APP_AI_XSPI2_PROBE_BYTES) != BSP_ERROR_NONE) {
+		DebugConsole_Printf("[AI] xSPI2 indirect prefix read failed.\r\n");
+	} else {
+		AppAI_LogXspi2PrefixBytes("xSPI2 indirect prefix:", indirect_bytes);
+	}
+
+	if (BSP_XSPI_NOR_EnableMemoryMappedMode(0U) != BSP_ERROR_NONE) {
+		DebugConsole_Printf("[AI] xSPI2 re-enable mapped compare failed.\r\n");
+		return;
+	}
+
+	(void) mcu_cache_invalidate_range(0x70000000UL,
+			0x70000000UL + APP_AI_XSPI2_PROBE_BYTES);
+	(void) memcpy(mapped_bytes, (const void *) 0x70000000UL,
+			APP_AI_XSPI2_PROBE_BYTES);
+	AppAI_LogXspi2PrefixBytes("xSPI2 mapped prefix:", mapped_bytes);
+}
+
+static void AppAI_LogFloatApprox(const char *label, float value) {
+	union {
+		float f;
+		uint32_t u;
+	} bits = {
+		.f = value
+	};
+	uint64_t magnitude_whole = 0U;
+	uint64_t magnitude_frac = 0U;
+	const char *sign = "";
+	double abs_value = 0.0;
+
+	if (label == NULL) {
+		return;
+	}
+
+	if ((bits.u & 0x7F800000U) == 0x7F800000U) {
+		if ((bits.u & 0x007FFFFFU) != 0U) {
+			DebugConsole_Printf("%sNaN\r\n", label);
+		} else if ((bits.u & 0x80000000U) != 0U) {
+			DebugConsole_Printf("%s-Inf\r\n", label);
+		} else {
+			DebugConsole_Printf("%s+Inf\r\n", label);
+		}
+		return;
+	}
+
+	if ((bits.u & 0x80000000U) != 0U) {
+		sign = "-";
+	}
+
+	abs_value = (bits.u & 0x80000000U) != 0U ? -(double) value : (double) value;
+	if (abs_value < 0.0) {
+		abs_value = 0.0;
+	}
+
+	magnitude_whole = (uint64_t) abs_value;
+	magnitude_frac = (uint64_t) ((abs_value - (double) magnitude_whole)
+			* 1000000.0 + 0.5);
+	if (magnitude_frac >= 1000000U) {
+		magnitude_whole++;
+		magnitude_frac -= 1000000U;
+	}
+
+	DebugConsole_Printf("%s%s%llu.%06llu\r\n", label, sign,
+			(unsigned long long) magnitude_whole,
+			(unsigned long long) magnitude_frac);
 }
 
 static bool AppAI_RuntimeInitStepwise(void) {
@@ -674,6 +938,8 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	(void) mcu_cache_clean_range((uint32_t) (uintptr_t) input_ptr,
 			(uint32_t) ((uintptr_t) input_ptr + input_len_bytes));
 
+	AppAI_LogXspi2MappedScaleBytes();
+
 	LL_ATON_RT_Reset_Network(&NN_Instance_mobilenetv2_scalar_hardcase_warmstart_int8);
 
 	for (uint32_t epoch_step = 0U;; ++epoch_step) {
@@ -785,7 +1051,8 @@ static void AppAI_LogInferenceResult(
 		return;
 	}
 
-	output_bits.f = *(const float *) LL_Buffer_addr_start(output_buffer_info);
+	(void) memcpy(&output_bits.u, LL_Buffer_addr_start(output_buffer_info),
+			sizeof(output_bits.u));
 
 	internal_buffers =
 			LL_ATON_Internal_Buffers_Info(
@@ -803,7 +1070,8 @@ static void AppAI_LogInferenceResult(
 
 	if ((scale_info != NULL) && (LL_Buffer_addr_start(scale_info) != NULL)) {
 		scale_bytes = (const uint8_t *) LL_Buffer_addr_start(scale_info);
-		dequant_scale_bits.f = *(const float *) LL_Buffer_addr_start(scale_info);
+		(void) memcpy(&dequant_scale_bits.u, scale_bytes,
+				sizeof(dequant_scale_bits.u));
 	}
 
 	if ((zero_point_info != NULL)
@@ -813,11 +1081,13 @@ static void AppAI_LogInferenceResult(
 	}
 
 	DebugConsole_Printf(
-			"[AI] Inference OK; raw=0x%02x output=0x%08lx scale=0x%08lx zp=%d\r\n",
-			(unsigned int) (uint8_t) raw_output_value,
+			"[AI] Inference OK; raw=%d output_bits=0x%08lx scale_bits=0x%08lx zp=%d\r\n",
+			(int) raw_output_value,
 			(unsigned long) output_bits.u,
 			(unsigned long) dequant_scale_bits.u,
 			(int) dequant_zero_point);
+	AppAI_LogFloatApprox("[AI] Inference output value: ", output_bits.f);
+	AppAI_LogFloatApprox("[AI] Dequant scale value: ", dequant_scale_bits.f);
 
 	if (scale_bytes != NULL) {
 		DebugConsole_Printf("[AI] Dequant scale bytes @%p = %02x %02x %02x %02x\r\n",
