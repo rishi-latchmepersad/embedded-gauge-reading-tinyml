@@ -311,7 +311,7 @@ def test_load_crop_and_preprocess_image_outputs_normalized_tensor(
 
 
 def test_build_tf_dataset_returns_batched_tensors(tmp_path: Path) -> None:
-    """_build_tf_dataset should emit batched (image, value) tensors."""
+    """_build_tf_dataset should emit batched (image, value, weight) tensors."""
     examples: list[training.TrainingExample] = []
     for i in range(3):
         path: Path = tmp_path / f"img_{i}.jpg"
@@ -338,11 +338,46 @@ def test_build_tf_dataset_returns_batched_tensors(tmp_path: Path) -> None:
     batches = list(dataset.as_numpy_iterator())
 
     assert len(batches) == 2
-    images, targets = batches[0]
+    images, targets, weights = batches[0]
     assert images.shape == (2, 16, 16, 3)
     assert targets.shape == (2,)
+    assert weights.shape == (2,)
     assert images.dtype == np.float32
     assert targets.dtype == np.float32
+    assert weights.dtype == np.float32
+
+
+def test_compute_edge_weights_emphasizes_extremes() -> None:
+    """Edge-focused weights should favor samples near the gauge limits."""
+    examples: list[training.TrainingExample] = [
+        training.TrainingExample(
+            "low.jpg",
+            -30.0,
+            (0.0, 0.0, 1.0, 1.0),
+            (1.0, 0.0),
+            value_norm=0.0,
+        ),
+        training.TrainingExample(
+            "mid.jpg",
+            10.0,
+            (0.0, 0.0, 1.0, 1.0),
+            (1.0, 0.0),
+            value_norm=0.5,
+        ),
+        training.TrainingExample(
+            "high.jpg",
+            50.0,
+            (0.0, 0.0, 1.0, 1.0),
+            (1.0, 0.0),
+            value_norm=1.0,
+        ),
+    ]
+
+    weights = training._compute_edge_weights(examples, strength=1.0)
+
+    assert weights[0] > weights[1]
+    assert weights[2] > weights[1]
+    assert weights[0] == pytest.approx(weights[2])
 
 
 def test_build_regression_model_output_shape() -> None:

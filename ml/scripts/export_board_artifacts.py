@@ -29,7 +29,7 @@ def _parse_args() -> argparse.Namespace:
         default=PROJECT_ROOT
         / "artifacts"
         / "training"
-        / "scalar_hardcase_boost_v1_calibrated"
+        / "scalar_full_finetune_from_best_piecewise_calibrated"
         / "model.keras",
         help="Path to the calibrated scalar Keras model.",
     )
@@ -45,7 +45,7 @@ def _parse_args() -> argparse.Namespace:
         default=PROJECT_ROOT
         / "artifacts"
         / "deployment"
-        / "scalar_hardcase_boost_v1_calibrated_int8",
+        / "scalar_full_finetune_from_best_piecewise_calibrated_int8",
         help="Directory where TFLite and metadata should be written.",
     )
     parser.add_argument(

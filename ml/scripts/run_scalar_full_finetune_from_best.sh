@@ -27,7 +27,8 @@ echo "[WRAPPER] Log file: ${LOG_FILE}"
 "${POETRY_BIN}" run python -u scripts/finetune_scalar_from_best.py \
   --device gpu \
   --no-freeze-backbone \
-  --hard-case-repeat 2 \
+  --hard-case-repeat 4 \
+  --edge-focus-strength 1.25 \
   --epochs 6 \
   --learning-rate 5e-6 \
   --run-name scalar_full_finetune_from_best \

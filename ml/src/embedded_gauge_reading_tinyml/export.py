@@ -115,6 +115,7 @@ def _build_representative_examples(
         hard_case_manifest,
         image_height=image_height,
         image_width=image_width,
+        value_range=(spec.min_value, spec.max_value),
     )
 
     print(

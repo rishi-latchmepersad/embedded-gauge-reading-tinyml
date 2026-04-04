@@ -25,6 +25,7 @@ echo "[WRAPPER] Log file: ${LOG_FILE}"
 # Keep the job chatty so it does not look stuck while the first epoch is running.
 "${POETRY_BIN}" run python -u scripts/finetune_scalar_from_best.py \
   --device gpu \
-  --hard-case-repeat 4 \
+  --hard-case-repeat 12 \
+  --edge-focus-strength 1.25 \
   --epochs 8 \
   2>&1 | tee "${LOG_FILE}"

@@ -44,3 +44,4 @@ DEFAULT_LIBRARY_DEVICE: Literal["auto", "cpu", "gpu"] = "auto"
 DEFAULT_CLI_DEVICE: Literal["auto", "cpu", "gpu"] = "gpu"
 DEFAULT_GPU_MEMORY_GROWTH: bool = True
 DEFAULT_MIXED_PRECISION: bool = False
+DEFAULT_EDGE_FOCUS_STRENGTH: float = 0.75

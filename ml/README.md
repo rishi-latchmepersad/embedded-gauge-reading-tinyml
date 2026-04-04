@@ -103,10 +103,14 @@ cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml
 ~/.local/bin/poetry run python scripts/export_board_artifacts.py
 ```
 
-The default export reads the calibrated hard-case model and writes the board
-bundle under `artifacts/deployment/scalar_hardcase_boost_v1_calibrated_int8/`.
+The default export reads the calibrated full-finetune model and writes the
+board bundle under `artifacts/deployment/scalar_full_finetune_from_best_calibrated_int8/`.
 The metadata file records the `224x224` board input size and the TFLite tensor
 quantization parameters the MCU runtime will need.
+
+The packaging step also refreshes the canonical raw blob at
+`../st_ai_output/atonbuf.xSPI2.raw`. That is the single file you should copy to
+the SD card root for board boot testing.
 
 If you prefer the WSL helper:
 

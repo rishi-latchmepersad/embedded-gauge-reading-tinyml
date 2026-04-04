@@ -23,7 +23,7 @@ DEFAULT_MODEL: Path = (
     / "ml"
     / "artifacts"
     / "deployment"
-    / "scalar_hardcase_boost_v1_calibrated_int8"
+    / "scalar_full_finetune_from_best_piecewise_calibrated_int8"
     / "model_int8.tflite"
 )
 DEFAULT_OUTPUT_DIR: Path = (
@@ -31,29 +31,30 @@ DEFAULT_OUTPUT_DIR: Path = (
     / "ml"
     / "artifacts"
     / "runtime"
-    / "scalar_hardcase_boost_v1_calibrated_int8_reloc"
+    / "scalar_full_finetune_from_best_piecewise_calibrated_int8_reloc"
 )
+DEFAULT_CANONICAL_XSPI2_RAW: Path = REPO_ROOT / "st_ai_output" / "atonbuf.xSPI2.raw"
 DEFAULT_WORKSPACE_DIR: Path = (
     REPO_ROOT
     / "st_ai_output"
     / "packages"
-    / "scalar_hardcase_boost_v1_calibrated_int8"
+    / "scalar_full_finetune_from_best_piecewise_calibrated_int8"
     / "st_ai_ws"
 )
 DEFAULT_STAI_OUTPUT_DIR: Path = (
     REPO_ROOT
     / "st_ai_output"
     / "packages"
-    / "scalar_hardcase_boost_v1_calibrated_int8"
+    / "scalar_full_finetune_from_best_piecewise_calibrated_int8"
     / "st_ai_output"
 )
 DEFAULT_PACK_ROOT: Path = Path(
     os.environ.get(
         "X_CUBE_AI_PACK_ROOT",
-        r"C:\Users\rishi_latchmepersad\STM32Cube\Repository\Packs\STMicroelectronics\X-CUBE-AI\10.2.0",
+        "/mnt/c/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0",
     )
 )
-DEFAULT_MODEL_NAME: str = "scalar_hardcase_boost_v1_calibrated_int8"
+DEFAULT_MODEL_NAME: str = "scalar_full_finetune_from_best_piecewise_calibrated_int8"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -129,6 +130,11 @@ def _ensure_file(path: Path, description: str) -> None:
         raise FileNotFoundError(f"{description} not found: {path}")
 
 
+def _to_windows_path(path: Path) -> str:
+    """Convert a WSL path to a Windows path for Windows-hosted pack tools."""
+    return subprocess.check_output(["wslpath", "-w", str(path.resolve())], text=True).strip()
+
+
 def _find_generated_c_file(*search_dirs: Path, model_name: str) -> Path:
     """Locate the generated C entry point emitted by the ST generator."""
     for search_dir in search_dirs:
@@ -143,6 +149,23 @@ def _find_generated_c_file(*search_dirs: Path, model_name: str) -> Path:
     joined_dirs = ", ".join(str(path) for path in search_dirs)
     raise FileNotFoundError(
         f"Unable to find the generated C file for '{model_name}' under {joined_dirs}"
+    )
+
+
+def _find_generated_xspi2_raw_file(*search_dirs: Path, model_name: str) -> Path:
+    """Locate the generated xSPI2 raw blob emitted by the ST generator."""
+    for search_dir in search_dirs:
+        direct = search_dir / f"{model_name}_atonbuf.xSPI2.raw"
+        if direct.is_file():
+            return direct
+
+        nested = sorted(search_dir.glob("**/atonbuf.xSPI2.raw"))
+        if nested:
+            return nested[0]
+
+    joined_dirs = ", ".join(str(path) for path in search_dirs)
+    raise FileNotFoundError(
+        f"Unable to find the generated xSPI2 raw blob for '{model_name}' under {joined_dirs}"
     )
 
 
@@ -180,13 +203,20 @@ def main() -> None:
     args.stai_output_dir.mkdir(parents=True, exist_ok=True)
 
     # The relocatable driver resolves the ST Edge AI core from this env var.
-    os.environ["STEDGEAI_CORE_DIR"] = str(args.pack_root.resolve())
+    os.environ["STEDGEAI_CORE_DIR"] = _to_windows_path(args.pack_root)
+    windows_model = _to_windows_path(args.model)
+    windows_workspace = _to_windows_path(args.workspace_dir)
+    windows_output = _to_windows_path(args.stai_output_dir)
+    windows_mpool = _to_windows_path(mpool_path)
+    windows_neural_art = _to_windows_path(
+        args.pack_root / "scripts" / "N6_reloc" / "test" / "neural_art_reloc.json"
+    )
 
     generate_cmd: list[str] = [
         str(stedgeai_exe),
         "generate",
         "--model",
-        str(args.model.resolve()),
+        windows_model,
         "--target",
         "stm32n6",
         "--type",
@@ -206,13 +236,13 @@ def main() -> None:
         "--outputs-ch-position",
         "chlast",
         "--memory-pool",
-        str(mpool_path),
+        windows_mpool,
         "--st-neural-art",
-        f"test@{(args.pack_root / 'scripts' / 'N6_reloc' / 'test' / 'neural_art_reloc.json').resolve()}",
+        f"test@{windows_neural_art}",
         "--workspace",
-        str(args.workspace_dir.resolve()),
+        windows_workspace,
         "--output",
-        str(args.stai_output_dir.resolve()),
+        windows_output,
         "--relocatable",
         "--no-report",
     ]
@@ -232,11 +262,11 @@ def main() -> None:
 
     npu_cmd: list[str] = [
         str(pack_python),
-        str(npu_driver),
+        _to_windows_path(npu_driver),
         "-i",
-        str(generated_c_file.resolve()),
+        _to_windows_path(generated_c_file),
         "-o",
-        str(build_dir.resolve()),
+        _to_windows_path(build_dir),
         "-n",
         args.name,
         "--no-clean",
@@ -253,6 +283,20 @@ def main() -> None:
     shutil.copy2(reloc_bin, final_bin)
     print(f"[RELOC] Final relocatable binary: {final_bin}", flush=True)
     print(f"[RELOC] Size: {final_bin.stat().st_size} bytes", flush=True)
+
+    canonical_raw = DEFAULT_CANONICAL_XSPI2_RAW
+    canonical_raw.parent.mkdir(parents=True, exist_ok=True)
+    generated_raw = _find_generated_xspi2_raw_file(
+        args.stai_output_dir,
+        args.workspace_dir,
+        model_name=args.name,
+    )
+    shutil.copy2(generated_raw, canonical_raw)
+    print(
+        "[RELOC] Canonical xSPI2 raw blob refreshed: "
+        f"{canonical_raw} (source={generated_raw})",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
