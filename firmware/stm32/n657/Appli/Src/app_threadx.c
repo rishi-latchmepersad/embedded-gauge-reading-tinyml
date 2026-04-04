@@ -25,11 +25,13 @@
 /* USER CODE BEGIN Includes */
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include "app_filex.h"
 #include "app_ai.h"
 #include "main.h"
 #include "debug_console.h"
+#include "debug_led.h"
 #include "threadx_utils.h"
 #include "cmw_camera.h"
 #include "cmw_imx335.h"
@@ -46,6 +48,16 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define INFERENCE_LOG_THREAD_STACK_SIZE_BYTES  4096U
+#define INFERENCE_LOG_THREAD_PRIORITY          14U
+#define INFERENCE_LOG_DIRECTORY_NAME           "inference"
+#define INFERENCE_LOG_FILE_NAME_LENGTH         32U
+#define INFERENCE_LOG_ROW_MAX_LENGTH           48U
+#define INFERENCE_LOG_NO_RTC_BLINK_ON_MS       200U
+#define INFERENCE_LOG_NO_RTC_BLINK_OFF_MS      200U
+#define INFERENCE_LOG_NO_RTC_RETRY_DELAY_MS    2000U
+#define INFERENCE_LOG_QUEUE_DEPTH              8U
 
 #define CAMERA_INIT_THREAD_STACK_SIZE_BYTES 8192U
 #define CAMERA_INIT_THREAD_PRIORITY         12U
@@ -158,6 +170,22 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
 
+/* Inference logger thread state machine. */
+typedef enum {
+	INFER_LOG_STATE_INIT_DIR = 0,   /* Create /inference directory if needed. */
+	INFER_LOG_STATE_CHECK_DATE,     /* Open/roll over to today's log file. */
+	INFER_LOG_STATE_NO_RTC,         /* DS3231 absent — blink red, retry. */
+	INFER_LOG_STATE_LOGGING,        /* Steady state: wait for value, append row. */
+} InferLogState_t;
+
+static TX_THREAD inference_log_thread;
+static ULONG inference_log_thread_stack[INFERENCE_LOG_THREAD_STACK_SIZE_BYTES
+		/ sizeof(ULONG)];
+static bool inference_log_thread_created = false;
+static TX_QUEUE inference_log_queue;
+/* TX_QUEUE stores ULONG words; we pass the float bits as a ULONG. */
+static ULONG inference_log_queue_storage[INFERENCE_LOG_QUEUE_DEPTH];
+
 /* Dedicated ThreadX object and stack for camera connection diagnostics. */
 static TX_THREAD camera_init_thread;
 static ULONG camera_init_thread_stack[CAMERA_INIT_THREAD_STACK_SIZE_BYTES
@@ -242,6 +270,7 @@ static void DebugUartMutex_Lock(void);
 static void DebugUartMutex_Unlock(void);
 static VOID CameraHeartbeatThread_Entry(ULONG thread_input);
 static VOID CameraAIThread_Entry(ULONG thread_input);
+static VOID InferenceLogThread_Entry(ULONG thread_input);
 
 /**
  * @brief ThreadX entry point used to run camera bring-up diagnostics.
@@ -419,7 +448,8 @@ UINT App_ThreadX_Start(void) {
 	BSP_LED_Off(LED_BLUE);
 	BSP_LED_Off(LED_GREEN);
 	if (camera_init_thread_created && camera_isp_thread_created
-			&& camera_heartbeat_thread_created && camera_ai_thread_created) {
+			&& camera_heartbeat_thread_created && camera_ai_thread_created
+			&& inference_log_thread_created) {
 		DebugConsole_Printf(
 				"[CAMERA][THREAD] Start skipped: camera threads already created.\r\n");
 		return TX_SUCCESS;
@@ -560,6 +590,37 @@ UINT App_ThreadX_Start(void) {
 		DebugConsole_Printf(
 				"[CAMERA][THREAD] Camera init thread created and started.\r\n");
 	}
+
+	if (!inference_log_thread_created) {
+		const UINT queue_status = tx_queue_create(&inference_log_queue,
+				"inference_log_queue",
+				TX_1_ULONG,
+				inference_log_queue_storage,
+				sizeof(inference_log_queue_storage));
+		if (queue_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[INFER_LOG] Failed to create inference log queue, status=%lu\r\n",
+					(unsigned long) queue_status);
+			return queue_status;
+		}
+
+		const UINT log_create_status = tx_thread_create(&inference_log_thread,
+				"inference_log", InferenceLogThread_Entry, 0U,
+				inference_log_thread_stack, sizeof(inference_log_thread_stack),
+				INFERENCE_LOG_THREAD_PRIORITY, INFERENCE_LOG_THREAD_PRIORITY,
+				TX_NO_TIME_SLICE, TX_AUTO_START);
+		if (log_create_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[INFER_LOG] Failed to create inference log thread, status=%lu\r\n",
+					(unsigned long) log_create_status);
+			return log_create_status;
+		}
+
+		inference_log_thread_created = true;
+		DebugConsole_Printf(
+				"[INFER_LOG] Inference log thread created and started.\r\n");
+	}
+
 	return TX_SUCCESS;
 }
 /* USER CODE END App_ThreadX_Start */
@@ -614,23 +675,22 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 		 * completed and the freeze moved into the capture path. */
 		BSP_LED_Off(LED_BLUE);
 		DebugConsole_Printf(
-				"[CAMERA][THREAD] Entering first image capture/save attempt...\r\n");
-		if (CameraPlatform_CaptureAndStoreSingleFrame()) {
-		DebugConsole_Printf(
-				"[CAMERA][THREAD] Captured and stored first image successfully.\r\n");
-	} else {
-		DebugConsole_Printf(
-				"[CAMERA][THREAD] First image capture/save attempt failed.\r\n");
+				"[CAMERA][THREAD] Entering capture/inference loop (period=60s)...\r\n");
+		while (1) {
+			if (CameraPlatform_CaptureAndStoreSingleFrame()) {
+				DebugConsole_Printf(
+						"[CAMERA][THREAD] Capture and inference completed successfully.\r\n");
+			} else {
+				DebugConsole_Printf(
+						"[CAMERA][THREAD] Capture/inference attempt failed.\r\n");
+			}
+			DelayMilliseconds_ThreadX(60000U);
 		}
 	} else {
 		DebugConsole_Printf(
 				"[CAMERA][THREAD] Camera probe failed or is not configured yet.\r\n");
 	}
 
-	/* Keep the diagnostics thread alive so the stack/object remain valid forever. */
-	while (1) {
-		DelayMilliseconds_ThreadX(1000U);
-	}
 }
 
 /**
@@ -709,6 +769,280 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 				(size_t) frame_length)) {
 			DebugConsole_Printf(
 					"[AI] One-shot dry-run inference failed; continuing.\r\n");
+		} else {
+			float result = 0.0f;
+			if (inference_log_thread_created
+					&& App_AI_GetLastInferenceResult(&result)) {
+				union { float f; ULONG u; } bits = { .f = result };
+				(void) tx_queue_send(&inference_log_queue, &bits.u, TX_NO_WAIT);
+			}
+		}
+	}
+}
+
+/**
+ * @brief Inference value logger thread.
+ *
+ * State machine:
+ *   INIT_DIR   - Ensure /inference directory exists on SD card.
+ *   CHECK_DATE - Build today's filename; open/create the CSV log file.
+ *   NO_RTC     - DS3231 unreachable; blink red LED and retry.
+ *   LOGGING    - Wait for a new inference value on the queue, append a CSV row.
+ *
+ * Each row: "YYYY-MM-DD HH:MM:SS,<value>\n"
+ * File rolls over daily: inference/YYYY-MM-DD.csv
+ */
+static VOID InferenceLogThread_Entry(ULONG thread_input) {
+	(void) thread_input;
+
+	InferLogState_t state = INFER_LOG_STATE_INIT_DIR;
+	char today_date[12] = { 0 };   /* "YYYY-MM-DD\0" */
+	char log_file_name[INFERENCE_LOG_FILE_NAME_LENGTH] = { 0 };
+	FX_MEDIA *media = NULL;
+
+	DebugConsole_Printf("[INFER_LOG] Thread running.\r\n");
+
+	while (1) {
+		switch (state) {
+
+		/* ------------------------------------------------------------------ */
+		case INFER_LOG_STATE_INIT_DIR: {
+			/* Wait until FileX media is ready. */
+			if (!AppFileX_IsMediaReady()) {
+				DelayMilliseconds_ThreadX(500U);
+				break;
+			}
+
+			media = AppFileX_GetMediaHandle();
+
+			/* Create /inference directory (ignore FX_ALREADY_CREATED). */
+			UINT fx_status = AppFileX_AcquireMediaLock();
+			if (fx_status != TX_SUCCESS) {
+				DelayMilliseconds_ThreadX(500U);
+				break;
+			}
+
+			fx_status = fx_directory_create(media,
+					INFERENCE_LOG_DIRECTORY_NAME);
+			AppFileX_ReleaseMediaLock();
+
+			if ((fx_status == FX_SUCCESS)
+					|| (fx_status == FX_ALREADY_CREATED)) {
+				DebugConsole_Printf(
+						"[INFER_LOG] /inference directory ready.\r\n");
+				state = INFER_LOG_STATE_CHECK_DATE;
+			} else {
+				DebugConsole_Printf(
+						"[INFER_LOG] Failed to create /inference dir, status=%lu. Retrying.\r\n",
+						(unsigned long) fx_status);
+				DelayMilliseconds_ThreadX(2000U);
+			}
+			break;
+		}
+
+		/* ------------------------------------------------------------------ */
+		case INFER_LOG_STATE_CHECK_DATE: {
+			/* Read today's date from DS3231 to determine the log filename. */
+			char rtc_timestamp[32] = { 0 };
+			const bool rtc_ok = App_Clock_GetCaptureTimestamp(rtc_timestamp,
+					sizeof(rtc_timestamp));
+
+			if (!rtc_ok) {
+				DebugConsole_Printf(
+						"[INFER_LOG] RTC not available; entering NO_RTC state.\r\n");
+				state = INFER_LOG_STATE_NO_RTC;
+				break;
+			}
+
+			/* rtc_timestamp is "YYYY-MM-DD_HH-MM-SS"; extract date portion. */
+			char new_date[12] = { 0 };
+			/* Copy first 10 chars: YYYY-MM-DD */
+			(void) memcpy(new_date, rtc_timestamp, 10U);
+			new_date[10] = '\0';
+			/* Replace underscores back to dashes (App_Clock sanitizes spaces/colons
+			 * only; the date part has no space so it comes through as-is). */
+
+			if (strcmp(new_date, today_date) != 0) {
+				/* New day (or first run): build the new filename. */
+				(void) memcpy(today_date, new_date, sizeof(today_date));
+				int written = snprintf(log_file_name, sizeof(log_file_name),
+						"%s/%s.csv", INFERENCE_LOG_DIRECTORY_NAME, today_date);
+				if ((written <= 0)
+						|| ((size_t) written >= sizeof(log_file_name))) {
+					DebugConsole_Printf(
+							"[INFER_LOG] Log filename overflow; retrying.\r\n");
+					DelayMilliseconds_ThreadX(5000U);
+					break;
+				}
+
+				/* Ensure the file exists (create header row if brand new). */
+				UINT lock_status = AppFileX_AcquireMediaLock();
+				if (lock_status == TX_SUCCESS) {
+					FX_FILE log_file = { 0 };
+					UINT open_status = fx_file_open(media, &log_file,
+							log_file_name, FX_OPEN_FOR_WRITE);
+					if (open_status == FX_NOT_FOUND) {
+						/* Create and write CSV header. */
+						(void) fx_file_create(media, log_file_name);
+						open_status = fx_file_open(media, &log_file,
+								log_file_name, FX_OPEN_FOR_WRITE);
+						if (open_status == FX_SUCCESS) {
+							const char *header = "datetime,value_degC\n";
+							(void) fx_file_write(&log_file, (VOID*) header,
+									(ULONG) strlen(header));
+						}
+					}
+					if (open_status == FX_SUCCESS) {
+						(void) fx_file_close(&log_file);
+					}
+					(void) fx_media_flush(media);
+					AppFileX_ReleaseMediaLock();
+				}
+
+				DebugConsole_Printf(
+						"[INFER_LOG] Logging to %s.\r\n", log_file_name);
+			}
+
+			state = INFER_LOG_STATE_LOGGING;
+			break;
+		}
+
+		/* ------------------------------------------------------------------ */
+		case INFER_LOG_STATE_NO_RTC: {
+			/* Blink red LED to signal RTC fault. */
+			DebugConsole_Printf(
+					"[INFER_LOG] ERROR: DS3231 RTC not detected. Cannot timestamp log entries.\r\n");
+			DebugLed_BlinkRedBlocking(INFERENCE_LOG_NO_RTC_BLINK_ON_MS,
+					INFERENCE_LOG_NO_RTC_BLINK_OFF_MS, 5U);
+
+			/* Retry RTC after a short delay. */
+			DelayMilliseconds_ThreadX(INFERENCE_LOG_NO_RTC_RETRY_DELAY_MS);
+
+			char rtc_timestamp[32] = { 0 };
+			if (App_Clock_GetCaptureTimestamp(rtc_timestamp,
+					sizeof(rtc_timestamp))) {
+				DebugConsole_Printf(
+						"[INFER_LOG] RTC recovered; resuming logging.\r\n");
+				state = INFER_LOG_STATE_CHECK_DATE;
+			}
+			break;
+		}
+
+		/* ------------------------------------------------------------------ */
+		case INFER_LOG_STATE_LOGGING: {
+			ULONG value_bits = 0U;
+			/* Wait for next inference result (1-minute timeout to roll over daily). */
+			const ULONG wait_ticks = CameraPlatform_MillisecondsToTicks(
+					65000U);
+			const UINT q_status = tx_queue_receive(&inference_log_queue,
+					&value_bits, wait_ticks);
+
+			if (q_status == TX_NO_INSTANCE) {
+				/* Timeout — recheck date for daily rollover. */
+				state = INFER_LOG_STATE_CHECK_DATE;
+				break;
+			}
+
+			if (q_status != TX_SUCCESS) {
+				break;
+			}
+
+			/* Decode float from ULONG bits. */
+			union { float f; ULONG u; } bits = { .u = value_bits };
+			const float inference_value = bits.f;
+
+			/* Get current timestamp. */
+			char rtc_timestamp[32] = { 0 };
+			const bool rtc_ok = App_Clock_GetCaptureTimestamp(rtc_timestamp,
+					sizeof(rtc_timestamp));
+
+			if (!rtc_ok) {
+				DebugConsole_Printf(
+						"[INFER_LOG] RTC lost during logging; entering NO_RTC state.\r\n");
+				state = INFER_LOG_STATE_NO_RTC;
+				break;
+			}
+
+			/* Reconstruct human-readable datetime: rtc_timestamp is
+			 * "YYYY-MM-DD_HH-MM-SS"; convert _ → space, - in time → : */
+			char datetime_str[24] = { 0 };
+			{
+				const char *src = rtc_timestamp;
+				char *dst = datetime_str;
+				uint32_t i = 0U;
+				while ((i < (sizeof(datetime_str) - 1U))
+						&& (src[i] != '\0')) {
+					char ch = src[i];
+					if (ch == '_') {
+						ch = ' ';
+					} else if ((i > 10U) && (ch == '-')) {
+						ch = ':';
+					}
+					*dst++ = ch;
+					i++;
+				}
+				*dst = '\0';
+			}
+
+			/* Recheck date for daily rollover. */
+			char new_date[12] = { 0 };
+			(void) memcpy(new_date, rtc_timestamp, 10U);
+			new_date[10] = '\0';
+			if (strcmp(new_date, today_date) != 0) {
+				state = INFER_LOG_STATE_CHECK_DATE;
+				/* Re-queue the value so it gets written to the new file. */
+				(void) tx_queue_send(&inference_log_queue, &value_bits,
+						TX_NO_WAIT);
+				break;
+			}
+
+			/* Format CSV row: "YYYY-MM-DD HH:MM:SS,<value>\n"
+			 * Use integer + one decimal to avoid full float formatting. */
+			char row[INFERENCE_LOG_ROW_MAX_LENGTH] = { 0 };
+			int int_part = (int) inference_value;
+			int frac_part = (int) ((inference_value - (float) int_part) * 10.0f);
+			if (frac_part < 0) {
+				frac_part = -frac_part;
+			}
+			int written = snprintf(row, sizeof(row), "%s,%d.%d\n",
+					datetime_str, int_part, frac_part);
+			if ((written <= 0)
+					|| ((size_t) written >= sizeof(row))) {
+				DebugConsole_Printf(
+						"[INFER_LOG] Row format overflow; skipping.\r\n");
+				break;
+			}
+
+			/* Append row to the log file. */
+			UINT lock_status = AppFileX_AcquireMediaLock();
+			if (lock_status != TX_SUCCESS) {
+				DebugConsole_Printf(
+						"[INFER_LOG] Could not acquire media lock; dropping row.\r\n");
+				break;
+			}
+
+			UINT fx_status = FX_SUCCESS;
+			FX_FILE log_file = { 0 };
+			fx_status = fx_file_open(media, &log_file, log_file_name,
+					FX_OPEN_FOR_WRITE);
+			if (fx_status == FX_SUCCESS) {
+				(void) fx_file_relative_seek(&log_file, 0U, FX_SEEK_END);
+				(void) fx_file_write(&log_file, (VOID*) row, (ULONG) written);
+				(void) fx_file_close(&log_file);
+				(void) fx_media_flush(media);
+				DebugConsole_Printf("[INFER_LOG] Logged: %.*s", written, row);
+			} else {
+				DebugConsole_Printf(
+						"[INFER_LOG] Failed to open log file, status=%lu.\r\n",
+						(unsigned long) fx_status);
+			}
+			AppFileX_ReleaseMediaLock();
+			break;
+		}
+
+		default:
+			state = INFER_LOG_STATE_INIT_DIR;
+			break;
 		}
 	}
 }
@@ -2725,9 +3059,19 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] DCMIPP reported capture error code 0x%08lX.\r\n",
 				(unsigned long) camera_capture_error_code);
+		if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
+			(void) CMW_CAMERA_Suspend(CAMERA_CAPTURE_PIPE);
+			camera_stream_started = false;
+		}
+		(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp, CAMERA_CAPTURE_PIPE,
+		DCMIPP_VIRTUAL_CHANNEL0);
 		return false;
 	}
 
+	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
+		(void) CMW_CAMERA_Suspend(CAMERA_CAPTURE_PIPE);
+		camera_stream_started = false;
+	}
 	(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp, CAMERA_CAPTURE_PIPE,
 	DCMIPP_VIRTUAL_CHANNEL0);
 

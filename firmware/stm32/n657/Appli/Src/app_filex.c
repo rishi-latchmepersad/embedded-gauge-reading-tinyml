@@ -953,6 +953,7 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 				path, (unsigned long) data_length);
 	}
 
+	(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
 	AppFileX_UnlockMedia();
 
 	if (fx_status == FX_SUCCESS) {
