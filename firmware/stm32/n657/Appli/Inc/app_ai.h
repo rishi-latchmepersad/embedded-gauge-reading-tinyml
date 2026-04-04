@@ -43,6 +43,15 @@ bool App_AI_Model_Init(void);
 bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		size_t frame_size);
 
+/**
+ * @brief Retrieve the most recent inference scalar result.
+ *
+ * @param[out] value_out Receives the last dequantized inference value.
+ * @retval true when a valid result has been produced since boot.
+ * @retval false when no inference has completed yet or value_out is NULL.
+ */
+bool App_AI_GetLastInferenceResult(float *value_out);
+
 #ifdef __cplusplus
 }
 #endif

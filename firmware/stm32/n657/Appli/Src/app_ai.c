@@ -67,6 +67,8 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
 static bool app_ai_runtime_initialized = false;
+static volatile float app_ai_last_inference_value = 0.0f;
+static volatile bool app_ai_last_inference_valid = false;
 static bool app_ai_npu_hw_initialized = false;
 static bool app_ai_xspi2_initialized = false;
 __attribute__((section(".xspi2_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
@@ -1197,6 +1199,8 @@ static void AppAI_LogInferenceResult(
 			(unsigned long) output_bits.u,
 			(int) dequant_zero_point);
 	AppAI_LogFloatApprox("[AI] Inference output value: ", output_bits.f);
+	app_ai_last_inference_value = output_bits.f;
+	app_ai_last_inference_valid = true;
 
 	if (scale_bytes != NULL) {
 		DebugConsole_Printf("[AI] Dequant scale bytes @%p = %02x %02x %02x %02x\r\n",
@@ -1266,6 +1270,17 @@ static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
 		input_ptr[dest_index + 2U] = gray;
 	}
 
+	return true;
+}
+
+bool App_AI_GetLastInferenceResult(float *value_out) {
+	if (value_out == NULL) {
+		return false;
+	}
+	if (!app_ai_last_inference_valid) {
+		return false;
+	}
+	*value_out = app_ai_last_inference_value;
 	return true;
 }
 
