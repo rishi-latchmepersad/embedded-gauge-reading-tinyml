@@ -34,6 +34,7 @@ from embedded_gauge_reading_tinyml.presets import (
     DEFAULT_MOBILENET_WARMUP_EPOCHS,
     DEFAULT_MODEL_FAMILY,
     DEFAULT_SEED,
+    DEFAULT_EDGE_FOCUS_STRENGTH,
 )
 
 
@@ -124,6 +125,12 @@ def parse_args() -> argparse.Namespace:
         help="Repeat count for each hard-case row when fine-tuning.",
     )
     parser.add_argument(
+        "--edge-focus-strength",
+        type=float,
+        default=DEFAULT_EDGE_FOCUS_STRENGTH,
+        help="Additional weight placed on extreme gauge values (0 disables).",
+    )
+    parser.add_argument(
         "--init-model",
         type=Path,
         default=None,
@@ -187,6 +194,7 @@ def main() -> None:
         device=args.device,
         gpu_memory_growth=not args.no_gpu_memory_growth,
         mixed_precision=args.mixed_precision,
+        edge_focus_strength=args.edge_focus_strength,
     )
 
     print(

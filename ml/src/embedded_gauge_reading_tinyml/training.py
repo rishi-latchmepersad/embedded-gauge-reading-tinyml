@@ -42,6 +42,7 @@ from embedded_gauge_reading_tinyml.presets import (
     DEFAULT_MODEL_FAMILY,
     DEFAULT_SEED,
     DEFAULT_STRICT_LABELS,
+    DEFAULT_EDGE_FOCUS_STRENGTH,
     DEFAULT_TEST_FRACTION,
     DEFAULT_VAL_FRACTION,
 )
@@ -83,6 +84,7 @@ class TrainConfig:
     device: Literal["auto", "cpu", "gpu"] = DEFAULT_LIBRARY_DEVICE
     gpu_memory_growth: bool = DEFAULT_GPU_MEMORY_GROWTH
     mixed_precision: bool = DEFAULT_MIXED_PRECISION
+    edge_focus_strength: float = DEFAULT_EDGE_FOCUS_STRENGTH
     model_family: Literal[
         "compact",
         "mobilenet_v2",
@@ -110,6 +112,7 @@ class TrainingExample:
     value: float
     crop_box_xyxy: tuple[float, float, float, float]
     needle_unit_xy: tuple[float, float]
+    value_norm: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -275,6 +278,9 @@ def _build_training_examples(
         crop_box: tuple[float, float, float, float] = _compute_crop_box(
             sample, crop_pad_ratio
         )
+        value_norm = 0.0
+        if spec.max_value > spec.min_value:
+            value_norm = (value - spec.min_value) / (spec.max_value - spec.min_value)
         dx: float = sample.tip.x - sample.center.x
         dy: float = sample.tip.y - sample.center.y
         length: float = math.hypot(dx, dy)
@@ -288,6 +294,7 @@ def _build_training_examples(
                 value=value,
                 crop_box_xyxy=crop_box,
                 needle_unit_xy=needle_unit_xy,
+                value_norm=value_norm,
             )
         )
 
@@ -299,6 +306,7 @@ def _load_hard_case_examples(
     *,
     image_height: int,
     image_width: int,
+    value_range: tuple[float, float] = (0.0, 1.0),
 ) -> list[TrainingExample]:
     """Load extra board captures that should be upweighted during fine-tuning."""
     if not manifest_path.exists():
@@ -319,10 +327,16 @@ def _load_hard_case_examples(
             raw_path = Path(row["image_path"])
             image_path = raw_path if raw_path.is_absolute() else (REPO_ROOT / raw_path)
             value = float(row["value"])
+            min_value, max_value = value_range
+            span = max_value - min_value
+            value_norm = 0.0
+            if span > 0:
+                value_norm = min(max((value - min_value) / span, 0.0), 1.0)
             examples.append(
                 TrainingExample(
                     image_path=str(image_path),
                     value=value,
+                    value_norm=value_norm,
                     crop_box_xyxy=(0.0, 0.0, float(image_width), float(image_height)),
                     needle_unit_xy=(1.0, 0.0),
                 )
@@ -437,6 +451,21 @@ def _load_crop_and_preprocess_image(
     return image, target
 
 
+def _load_crop_with_weight(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+    weight: tf.Tensor,
+) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Load/crop one image and attach the requested sample weight."""
+    image, target = _load_crop_and_preprocess_image(
+        image_path, value, crop_box_xyxy, image_height, image_width
+    )
+    return image, target, weight
+
+
 def _augment_image(image: tf.Tensor) -> tf.Tensor:
     """Apply light photometric augmentation that preserves gauge geometry."""
     image_shape: tf.Tensor = tf.shape(image)
@@ -486,35 +515,72 @@ def _build_tf_dataset(
         raise ValueError(f"Unsupported target_kind '{target_kind}'.")
     boxes: np.ndarray = np.array([e.crop_box_xyxy for e in examples], dtype=np.float32)
 
-    dataset: tf.data.Dataset = tf.data.Dataset.from_tensor_slices((paths, targets, boxes))
-
-    if training:
+    if training and target_kind == "value":
+        weights: np.ndarray = _compute_edge_weights(
+            examples, config.edge_focus_strength
+        )
+        dataset: tf.data.Dataset = tf.data.Dataset.from_tensor_slices(
+            (paths, targets, boxes, weights)
+        )
         dataset = dataset.shuffle(
             buffer_size=max(len(examples), 1),
             seed=config.seed,
             reshuffle_each_iteration=True,
         )
-
-    dataset = dataset.map(
-        lambda p, y, b: _load_crop_and_preprocess_image(
-            p,
-            y,
-            b,
-            config.image_height,
-            config.image_width,
-        ),
-        num_parallel_calls=tf.data.AUTOTUNE,
-    )
-
-    if training and config.augment_training:
         dataset = dataset.map(
-            lambda img, y: (_augment_image(img), y),
+            lambda p, y, b, w: _load_crop_with_weight(
+                p,
+                y,
+                b,
+                config.image_height,
+                config.image_width,
+                w,
+            ),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+        if config.augment_training:
+            dataset = dataset.map(
+                lambda img, y, w: (_augment_image(img), y, w),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+    else:
+        dataset = tf.data.Dataset.from_tensor_slices((paths, targets, boxes))
+        dataset = dataset.map(
+            lambda p, y, b: _load_crop_and_preprocess_image(
+                p,
+                y,
+                b,
+                config.image_height,
+                config.image_width,
+            ),
             num_parallel_calls=tf.data.AUTOTUNE,
         )
 
     dataset = dataset.batch(config.batch_size)
     dataset = dataset.prefetch(tf.data.AUTOTUNE)
     return dataset
+
+
+def _edge_weight(value_norm: float, strength: float) -> float:
+    """Return a weight that concentrates loss on the dial edges."""
+    if strength <= 0.0:
+        return 1.0
+    distance = abs(value_norm - 0.5) * 2.0
+    return 1.0 + strength * distance
+
+
+def _compute_edge_weights(
+    examples: list[TrainingExample],
+    strength: float,
+) -> np.ndarray:
+    """Map normalized scalar labels into sample weights that emphasize extremes."""
+    if strength <= 0.0:
+        return np.ones(len(examples), dtype=np.float32)
+    weights = np.array(
+        [_edge_weight(example.value_norm, strength) for example in examples],
+        dtype=np.float32,
+    )
+    return weights
 
 
 def _compute_mean_baseline_mae(
@@ -727,6 +793,7 @@ def train(config: TrainConfig) -> TrainingResult:
             hard_case_manifest_path,
             image_height=config.image_height,
             image_width=config.image_width,
+            value_range=(spec.min_value, spec.max_value),
         )
         hard_case_repeat: int = max(config.hard_case_repeat, 0)
         if hard_case_repeat > 0 and hard_case_examples:

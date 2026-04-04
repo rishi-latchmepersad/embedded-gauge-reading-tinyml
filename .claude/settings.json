@@ -16,7 +16,25 @@
       "Bash(head -20 grep -n \"IPC1R\\\\|IPC2R\\\\|IPC3R\\\\|IPPLUG\\\\|IPPlug\\\\|ip_plug\" \"d:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_dcmipp.c\")",
       "Bash(grep -r \"0x00002080\\\\|bit.*7\\\\|bit.*13\" d:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657 --include=*.c --include=*.h)",
       "Bash(grep -n \"DCMIPP_.*SYNCERR\\\\|P0.*ERR.*Pos\\\\|DCMIPP.*P0.*Pos.*[0-9]$\" d:Projectsembedded-gauge-reading-tinymlfirmwarestm32n657DriversCMSISDeviceSTSTM32N6xxIncludestm32n657xx.h)",
-      "Bash(find d:/Projects/embedded-gauge-reading-tinyml/third_party_refs -name *.c)"
+      "Bash(find d:/Projects/embedded-gauge-reading-tinyml/third_party_refs -name *.c)",
+      "Bash(ls d:/Projects/embedded-gauge-reading-tinyml/captured_images/capture_p1*.*)",
+      "Bash(ls -lt d:/Projects/embedded-gauge-reading-tinyml/captured_images/*.yuv422)",
+      "Read(//mnt/d/Projects/embedded-gauge-reading-tinyml/**)",
+      "Bash(wsl -d Ubuntu-24.04 -e sh -c 'for f in \\\\:*)",
+      "Bash(wsl -d Ubuntu-24.04 -e sh -c 'cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml && python3 scripts/calibrate_scalar_model.py \\\\:*)",
+      "Bash(wsl -d Ubuntu-24.04 -e sh -c 'cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml && poetry run python scripts/calibrate_scalar_model.py \\\\:*)",
+      "Bash(wsl -d Ubuntu-24.04 -e sh -c \"which python3; python3 --version; ls ~/.local/bin/ 2>/dev/null | head -10; ls /home/*/.local/bin/ 2>/dev/null | head -10\")",
+      "Bash(wsl -d Ubuntu-24.04 -e sh -c 'PATH=\"$HOME/.local/bin:$PATH\" && cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml && poetry run python scripts/calibrate_scalar_model.py \\\\:*)",
+      "Bash(wsl -d Ubuntu-24.04 -e sh -c \"cat /tmp/cal_spline_v2.log 2>/dev/null || true\")",
+      "Bash(wsl --shutdown)",
+      "Bash(wsl -d Ubuntu-24.04 -e sh -c \"echo 'WSL ready'\")",
+      "Bash(wsl -d Ubuntu-24.04 -e sh -c 'export PATH=\"$HOME/.local/bin:$PATH\" && cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml && poetry run python scripts/calibrate_scalar_model.py \\\\:*)",
+      "Bash(wsl -d Ubuntu-24.04 -e sh -c 'export PATH=\"$HOME/.local/bin:$PATH\" && cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml && poetry run python scripts/calibrate_scalar_model.py --model artifacts/training/scalar_full_finetune_from_best/model.keras --manifest data/hard_cases.csv --mode spline --spline-knot-mode interior --output-dir artifacts/training/scalar_full_finetune_from_best_spline_v2 2>&1')",
+      "Bash(wsl -d Ubuntu-24.04 -e sh -c \"nvidia-smi 2>&1 | head -5\")",
+      "Bash(wsl -d Ubuntu-24.04 -e sh -c \"nvidia-smi\")",
+      "Bash(wsl -d Ubuntu-24.04 -e sh -c 'export PATH=\"$HOME/.local/bin:$PATH\" && cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml && poetry run python -c \"import tensorflow as tf; import keras; print\\('\\\\''TF:'\\\\'', tf.__version__\\); print\\('\\\\''Keras:'\\\\'', keras.__version__\\)\"')",
+      "Bash(wsl -d Ubuntu-24.04 -e sh -c \"ls /mnt/d/Projects/embedded-gauge-reading-tinyml/ml/artifacts/training/scalar_full_finetune_from_best_spline_v2/ 2>&1 && cat /mnt/d/Projects/embedded-gauge-reading-tinyml/ml/artifacts/training/scalar_full_finetune_from_best_spline_v2/metrics.json 2>&1\")",
+      "Bash(wsl -d Ubuntu-24.04 -e sh -c \"echo ready\")"
     ]
   }
 }

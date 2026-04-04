@@ -43,6 +43,9 @@ from embedded_gauge_reading_tinyml.training import (  # noqa: E402
     _split_examples,
     _validate_split_config,
 )
+from embedded_gauge_reading_tinyml.presets import (  # noqa: E402
+    DEFAULT_EDGE_FOCUS_STRENGTH,
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -69,6 +72,12 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=4,
         help="Repeat count for each hard-case row.",
+    )
+    parser.add_argument(
+        "--edge-focus-strength",
+        type=float,
+        default=DEFAULT_EDGE_FOCUS_STRENGTH,
+        help="Additional weight placed on extreme gauge values (0 disables).",
     )
     parser.add_argument(
         "--no-freeze-backbone",
@@ -119,12 +128,14 @@ def _load_hard_case_training_examples(
     image_height: int,
     image_width: int,
     repeat: int,
+    value_range: tuple[float, float] = (0.0, 1.0),
 ) -> list[TrainingExample]:
     """Load and upweight extra hard board captures for head-only fine-tuning."""
     hard_cases: list[TrainingExample] = _load_hard_case_examples(
         manifest_path,
         image_height=image_height,
         image_width=image_width,
+        value_range=value_range,
     )
     repeated_cases: list[TrainingExample] = hard_cases * max(repeat, 0)
     print(
@@ -209,6 +220,7 @@ def main() -> None:
         device=args.device,
         hard_case_manifest=str(args.hard_case_manifest),
         hard_case_repeat=args.hard_case_repeat,
+        edge_focus_strength=args.edge_focus_strength,
         model_family="mobilenet_v2",
         mobilenet_pretrained=True,
         mobilenet_backbone_trainable=True,
@@ -224,9 +236,15 @@ def main() -> None:
         flush=True,
     )
 
+    print("[FT] Validating training config...", flush=True)
     _validate_split_config(config)
+    print("[FT] Config validated.", flush=True)
+    print("[FT] Configuring TensorFlow runtime...", flush=True)
     _configure_training_runtime(config)
+    print("[FT] TensorFlow runtime configured.", flush=True)
+    print("[FT] Logging runtime state...", flush=True)
     _log_runtime_state(config)
+    print("[FT] Runtime state logged.", flush=True)
 
     keras.utils.set_random_seed(config.seed)
     np.random.seed(config.seed)
@@ -264,6 +282,7 @@ def main() -> None:
             image_height=config.image_height,
             image_width=config.image_width,
             repeat=config.hard_case_repeat,
+            value_range=(spec.min_value, spec.max_value),
         )
         split = DatasetSplit(
             train_examples=split.train_examples + hard_case_examples,
@@ -311,6 +330,7 @@ def main() -> None:
             Path(config.hard_case_manifest),
             image_height=config.image_height,
             image_width=config.image_width,
+            value_range=(spec.min_value, spec.max_value),
         )
         hard_case_predictions = _predict_hard_cases(
             model,
