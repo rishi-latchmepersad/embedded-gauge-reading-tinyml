@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include <stdio.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -31,6 +32,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define FSBL_LED_ONLY_SMOKE_TEST 0
 
 /* USER CODE END PD */
 
@@ -47,6 +50,8 @@ I2C_HandleTypeDef hi2c2;
 
 UART_HandleTypeDef hlpuart1;
 
+XSPI_HandleTypeDef hxspi2;
+
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -56,12 +61,302 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_LPUART1_UART_Init(void);
 static void MX_I2C2_Init(void);
+static void MX_XSPI2_Init(void);
+static void FSBL_BlinkLED(Led_TypeDef led, uint32_t n, uint32_t period_ms);
+static void FSBL_LogAppImageState(void);
+static void FSBL_TryBootApplication(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/* Application image in external flash (after the 0x400-byte STM2 header) */
+#define FSBL_APP_FLASH_BASE   (0x70100400UL)  /* raw binary in xSPI2 flash */
+#define FSBL_APP_RAM_BASE     (0x34000400UL)  /* AXISRAM1 — matches app linker ROM origin */
+#define FSBL_APP_MAX_SIZE     (0x80000UL)     /* 512 KB copy limit (safe upper bound) */
+
+/* Init XSPI2 and put the MX25UM51245G into OctoSPI STR memory-mapped mode.
+ *
+ * Sequence (mirrors the ST Template_FSBL_LRUN / BSP component approach):
+ *   1. Init XSPI2 in 1-line SPI mode (chip power-on default)
+ *   2. Configure XSPIM port 2
+ *   3. Send WriteEnable (SPI, 1-line)
+ *   4. Send WriteCfg2Register addr=0 val=0x01 (SOPI=1) to enter OctoSPI STR
+ *   5. Reconfigure XSPI2 HAL handle for 8-line STR mode (no re-init needed,
+ *      just reconfigure the command width via TCR/DCR registers, done implicitly
+ *      by the command structs below)
+ *   6. Set READ_CFG command (8-line, 16-bit instruction 0xEC13, 6 dummy cycles)
+ *   7. Set WRITE_CFG command (dummy — we are read-only for boot)
+ *   8. Enter memory-mapped mode
+ */
+static void MX_XSPI2_Init(void)
+{
+  XSPIM_CfgTypeDef         sXspiManagerCfg = {0};
+  XSPI_MemoryMappedTypeDef sMemMappedCfg   = {0};
+  XSPI_RegularCmdTypeDef   sCommand        = {0};
+  uint8_t                  reg             = 0x01U; /* SOPI bit */
+
+  /* ---- Step 1: Init XSPI2 (1-line SPI mode, 50 MHz) ---- */
+  hxspi2.Instance                    = XSPI2;
+  hxspi2.Init.FifoThresholdByte      = 4;
+  hxspi2.Init.MemoryMode             = HAL_XSPI_SINGLE_MEM;
+  hxspi2.Init.MemoryType             = HAL_XSPI_MEMTYPE_MACRONIX;
+  hxspi2.Init.MemorySize             = HAL_XSPI_SIZE_512MB;
+  hxspi2.Init.ChipSelectHighTimeCycle= 2;
+  hxspi2.Init.FreeRunningClock       = HAL_XSPI_FREERUNCLK_DISABLE;
+  hxspi2.Init.ClockMode              = HAL_XSPI_CLOCK_MODE_0;
+  hxspi2.Init.WrapSize               = HAL_XSPI_WRAP_NOT_SUPPORTED;
+  hxspi2.Init.ClockPrescaler         = 0;
+  hxspi2.Init.SampleShifting         = HAL_XSPI_SAMPLE_SHIFT_NONE;
+  hxspi2.Init.DelayHoldQuarterCycle  = HAL_XSPI_DHQC_ENABLE;
+  hxspi2.Init.ChipSelectBoundary     = HAL_XSPI_BONDARYOF_NONE;
+  hxspi2.Init.MaxTran                = 0;
+  hxspi2.Init.Refresh                = 0;
+  hxspi2.Init.MemorySelect           = HAL_XSPI_CSSEL_NCS1;
+
+  FSBL_BlinkLED(LED_GREEN, 1, 200);
+  if (HAL_XSPI_Init(&hxspi2) != HAL_OK)
+  {
+    printf("[FSBL] XSPI2 HAL_XSPI_Init failed\r\n");
+    Error_Handler();
+  }
+  printf("[FSBL] XSPI2 HAL_XSPI_Init OK\r\n");
+
+  /* ---- Step 2: Configure XSPIM port 2 for XSPI2 ---- */
+  sXspiManagerCfg.nCSOverride = HAL_XSPI_CSSEL_OVR_NCS1;
+  sXspiManagerCfg.IOPort      = HAL_XSPIM_IOPORT_2;
+  sXspiManagerCfg.Req2AckTime = 1;
+  if (HAL_XSPIM_Config(&hxspi2, &sXspiManagerCfg, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK)
+  {
+    printf("[FSBL] XSPI2 HAL_XSPIM_Config failed\r\n");
+    Error_Handler();
+  }
+  printf("[FSBL] XSPI2 HAL_XSPIM_Config OK\r\n");
+  FSBL_BlinkLED(LED_GREEN, 2, 200);
+
+  /* ---- Step 3: WriteEnable over 1-line SPI ---- */
+  sCommand.OperationType     = HAL_XSPI_OPTYPE_COMMON_CFG;
+  sCommand.IOSelect          = HAL_XSPI_SELECT_IO_7_0;
+  sCommand.Instruction       = 0x06U;              /* WREN */
+  sCommand.InstructionMode   = HAL_XSPI_INSTRUCTION_1_LINE;
+  sCommand.InstructionWidth  = HAL_XSPI_INSTRUCTION_8_BITS;
+  sCommand.InstructionDTRMode= HAL_XSPI_INSTRUCTION_DTR_DISABLE;
+  sCommand.AddressMode       = HAL_XSPI_ADDRESS_NONE;
+  sCommand.AlternateBytesMode= HAL_XSPI_ALT_BYTES_NONE;
+  sCommand.DataMode          = HAL_XSPI_DATA_NONE;
+  sCommand.DummyCycles       = 0;
+  sCommand.DQSMode           = HAL_XSPI_DQS_DISABLE;
+  if (HAL_XSPI_Command(&hxspi2, &sCommand, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK)
+  {
+    printf("[FSBL] XSPI2 WriteEnable failed\r\n");
+    Error_Handler();
+  }
+  printf("[FSBL] WriteEnable OK\r\n");
+
+  /* ---- Step 4: Write CR2 register addr=0, value=0x01 (SOPI) over 1-line SPI ---- */
+  sCommand.Instruction  = 0x72U;              /* WRCR2 */
+  sCommand.AddressMode  = HAL_XSPI_ADDRESS_1_LINE;
+  sCommand.AddressWidth = HAL_XSPI_ADDRESS_32_BITS;
+  sCommand.AddressDTRMode = HAL_XSPI_ADDRESS_DTR_DISABLE;
+  sCommand.Address      = 0x00000000U;
+  sCommand.DataMode     = HAL_XSPI_DATA_1_LINE;
+  sCommand.DataDTRMode  = HAL_XSPI_DATA_DTR_DISABLE;
+  sCommand.DataLength   = 1;
+  if (HAL_XSPI_Command(&hxspi2, &sCommand, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK)
+  {
+    printf("[FSBL] XSPI2 WriteCR2 cmd failed\r\n");
+    Error_Handler();
+  }
+  if (HAL_XSPI_Transmit(&hxspi2, &reg, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK)
+  {
+    printf("[FSBL] XSPI2 WriteCR2 transmit failed\r\n");
+    Error_Handler();
+  }
+  /* Small delay for the OPI mode switch to take effect */
+  HAL_Delay(1);
+  printf("[FSBL] SOPI enabled on MX25UM51245G\r\n");
+  FSBL_BlinkLED(LED_GREEN, 3, 200);
+
+  /* ---- Step 5+6: Set READ_CFG for memory-mapped mode (8-line STR OctoSPI) ----
+   * Command: 0xEC13 (16-bit), 8 data lines, 4-byte address, 6 dummy cycles.
+   * The BSP component uses DUMMY_CYCLES_READ_OCTAL = 6. */
+  sCommand.OperationType     = HAL_XSPI_OPTYPE_READ_CFG;
+  sCommand.Instruction       = 0xEC13U;           /* OCTA_READ_CMD */
+  sCommand.InstructionMode   = HAL_XSPI_INSTRUCTION_8_LINES;
+  sCommand.InstructionWidth  = HAL_XSPI_INSTRUCTION_16_BITS;
+  sCommand.InstructionDTRMode= HAL_XSPI_INSTRUCTION_DTR_DISABLE;
+  sCommand.AddressMode       = HAL_XSPI_ADDRESS_8_LINES;
+  sCommand.AddressWidth      = HAL_XSPI_ADDRESS_32_BITS;
+  sCommand.AddressDTRMode    = HAL_XSPI_ADDRESS_DTR_DISABLE;
+  sCommand.Address           = 0;
+  sCommand.AlternateBytesMode= HAL_XSPI_ALT_BYTES_NONE;
+  sCommand.DataMode          = HAL_XSPI_DATA_8_LINES;
+  sCommand.DataDTRMode       = HAL_XSPI_DATA_DTR_DISABLE;
+  sCommand.DummyCycles       = 20U;               /* chip default (CR2 reg3 = 0x00 = 20 cycles) */
+  sCommand.DQSMode           = HAL_XSPI_DQS_DISABLE;
+  sCommand.DataLength        = 0;                 /* not used for config */
+  if (HAL_XSPI_Command(&hxspi2, &sCommand, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK)
+  {
+    printf("[FSBL] XSPI2 READ_CFG command failed\r\n");
+    Error_Handler();
+  }
+  printf("[FSBL] READ_CFG OK\r\n");
+
+  /* ---- Step 7: WRITE_CFG (dummy — read-only boot) ---- */
+  sCommand.OperationType = HAL_XSPI_OPTYPE_WRITE_CFG;
+  sCommand.Instruction   = 0x12EDU;           /* OCTA_PAGE_PROG_CMD */
+  sCommand.DummyCycles   = 0;
+  if (HAL_XSPI_Command(&hxspi2, &sCommand, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK)
+  {
+    printf("[FSBL] XSPI2 WRITE_CFG command failed\r\n");
+    Error_Handler();
+  }
+  printf("[FSBL] WRITE_CFG OK\r\n");
+
+  /* ---- Step 8: Enter memory-mapped mode ---- */
+  sMemMappedCfg.TimeOutActivation = HAL_XSPI_TIMEOUT_COUNTER_DISABLE;
+  if (HAL_XSPI_MemoryMapped(&hxspi2, &sMemMappedCfg) != HAL_OK)
+  {
+    printf("[FSBL] XSPI2 HAL_XSPI_MemoryMapped failed\r\n");
+    Error_Handler();
+  }
+  printf("[FSBL] XSPI2 memory-mapped mode OK — flash visible at 0x70000000\r\n");
+  FSBL_BlinkLED(LED_GREEN, 4, 200);
+}
+
+/* Route printf to LPUART1. */
+int __io_putchar(int ch)
+{
+  HAL_UART_Transmit(&hlpuart1, (uint8_t *)&ch, 1, 10);
+  return ch;
+}
+
+/* Blink a LED N times with on/off period ms, then leave it off. */
+static void FSBL_BlinkLED(Led_TypeDef led, uint32_t n, uint32_t period_ms)
+{
+  BSP_LED_Init(led);
+  for (uint32_t i = 0; i < n; i++)
+  {
+    BSP_LED_On(led);
+    HAL_Delay(period_ms);
+    BSP_LED_Off(led);
+    HAL_Delay(period_ms);
+  }
+}
+
+/* Print one short line so we can tell how far the FSBL got. */
+static void FSBL_LogStage(const char *stage)
+{
+  printf("[FSBL] %s\r\n", stage);
+}
+
+/* Dump the app image header words and vector table from flash. */
+static void FSBL_LogAppImageState(void)
+{
+  const uint32_t *const hdr  = (const uint32_t *)(FSBL_APP_FLASH_BASE - 0x400U); /* STM2 header */
+  const uint32_t *const vecs = (const uint32_t *)FSBL_APP_FLASH_BASE;
+
+  printf("[FSBL] STM2 header  @0x%08lX: %08lX %08lX %08lX %08lX\r\n",
+         (unsigned long)(FSBL_APP_FLASH_BASE - 0x400U),
+         (unsigned long)hdr[0], (unsigned long)hdr[1],
+         (unsigned long)hdr[2], (unsigned long)hdr[3]);
+
+  printf("[FSBL] App vectors  @0x%08lX: SP=%08lX  Reset=%08lX\r\n",
+         (unsigned long)FSBL_APP_FLASH_BASE,
+         (unsigned long)vecs[0], (unsigned long)vecs[1]);
+}
+
+/* Copy app from xSPI2 flash to AXISRAM1, then jump to it. */
+static void FSBL_TryBootApplication(void)
+{
+  const uint32_t *const flash_vecs = (const uint32_t *)FSBL_APP_FLASH_BASE;
+  const uint32_t app_sp    = flash_vecs[0];
+  const uint32_t app_reset = flash_vecs[1];
+
+  printf("[FSBL] app_sp=0x%08lX  app_reset=0x%08lX\r\n",
+         (unsigned long)app_sp, (unsigned long)app_reset);
+
+  /* Blink the top nibble of SP so we can tell what we read without UART.
+   * 0x34xxxxxx -> 3 slow green blinks then 4 slow green blinks.
+   * 0x00000000 -> 0 blinks (just a pause). 0xFFFFFFFF -> 15+15. */
+  {
+    uint8_t hi = (app_sp >> 28) & 0xF;
+    uint8_t lo = (app_sp >> 24) & 0xF;
+    FSBL_BlinkLED(LED_GREEN, hi ? hi : 1, 300);
+    HAL_Delay(500);
+    FSBL_BlinkLED(LED_GREEN, lo ? lo : 1, 300);
+    HAL_Delay(500);
+  }
+
+  /* Sanity-check the vector table in flash */
+  if ((app_sp == 0x00000000UL) || (app_sp == 0xFFFFFFFFUL))
+  {
+    printf("[FSBL] ERROR: SP invalid.\r\n");
+    FSBL_BlinkLED(LED_RED, 10, 50);  /* fast red: bad SP */
+    return;
+  }
+  if ((app_reset == 0x00000000UL) || (app_reset == 0xFFFFFFFFUL) ||
+      ((app_reset & 0x1UL) == 0UL))
+  {
+    printf("[FSBL] ERROR: Reset vector invalid (not Thumb or erased).\r\n");
+    FSBL_BlinkLED(LED_RED, 10, 50);  /* fast red: bad reset vector */
+    return;
+  }
+
+  /* Vectors look sane — signal we are about to copy */
+  FSBL_BlinkLED(LED_GREEN, 3, 150);  /* 3x green: starting LRUN copy */
+  printf("[FSBL] Copying %lu bytes from flash 0x%08lX to RAM 0x%08lX...\r\n",
+         (unsigned long)FSBL_APP_MAX_SIZE,
+         (unsigned long)FSBL_APP_FLASH_BASE,
+         (unsigned long)FSBL_APP_RAM_BASE);
+
+  const uint32_t *src = (const uint32_t *)FSBL_APP_FLASH_BASE;
+  uint32_t       *dst = (uint32_t *)FSBL_APP_RAM_BASE;
+  for (uint32_t i = 0; i < FSBL_APP_MAX_SIZE / 4U; i++)
+  {
+    dst[i] = src[i];
+  }
+
+  printf("[FSBL] Copy done. Flushing caches.\r\n");
+  SCB_CleanInvalidateDCache();
+  SCB_InvalidateICache();
+
+  /* Verify: first two words in RAM should match flash */
+  const uint32_t *ram_vecs = (const uint32_t *)FSBL_APP_RAM_BASE;
+  printf("[FSBL] RAM verify   @0x%08lX: SP=%08lX  Reset=%08lX\r\n",
+         (unsigned long)FSBL_APP_RAM_BASE,
+         (unsigned long)ram_vecs[0], (unsigned long)ram_vecs[1]);
+
+  if (ram_vecs[0] != app_sp || ram_vecs[1] != app_reset)
+  {
+    printf("[FSBL] ERROR: RAM verify mismatch — copy failed!\r\n");
+    FSBL_BlinkLED(LED_RED, 20, 50);  /* fast red: copy verify failed */
+    return;
+  }
+
+  FSBL_BlinkLED(LED_GREEN, 1, 500);  /* 1x long green: jumping now */
+  printf("[FSBL] Jumping to app: SP=0x%08lX  Reset=0x%08lX\r\n",
+         (unsigned long)app_sp, (unsigned long)app_reset);
+
+  /* Disable SysTick before handing off — the FSBL's SysTick keeps running
+   * after the jump and can fire before the app's .data/.bss are initialised. */
+  SysTick->CTRL = 0;
+
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  SCB->VTOR = FSBL_APP_RAM_BASE;
+  __set_MSP(app_sp);
+  __set_MSPLIM(0);
+  __set_PRIMASK(primask);   /* restore interrupt state for the app */
+
+  ((void (*)(void))app_reset)();
+
+  /* Should never reach here */
+  printf("[FSBL] ERROR: App returned to FSBL!\r\n");
+  FSBL_BlinkLED(LED_RED, 30, 100);
+}
 
 /* USER CODE END 0 */
 
@@ -71,7 +366,6 @@ static void MX_I2C2_Init(void);
   */
 int main(void)
 {
-
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
@@ -93,22 +387,41 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_LPUART1_UART_Init();
-  MX_I2C2_Init();
-  /* USER CODE BEGIN 2 */
 
-  /* USER CODE END 2 */
-
-  /* We should never get here as control is now taken by the scheduler */
-
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
+#if FSBL_LED_ONLY_SMOKE_TEST
+  /* Minimal smoke test: prove flash boot chain executes at all. */
+  BSP_LED_Init(LED_RED);
+  FSBL_LogStage("LED smoke test — red blink 250ms");
   while (1)
   {
-    /* USER CODE END WHILE */
-
-    /* USER CODE BEGIN 3 */
+    BSP_LED_Toggle(LED_RED);
+    HAL_Delay(250U);
   }
-  /* USER CODE END 3 */
+#else
+  FSBL_LogStage("=== FSBL started ===");
+
+  /* 2x blue blink = FSBL alive, GPIO + UART init OK */
+  FSBL_BlinkLED(LED_BLUE, 2, 200);
+  FSBL_LogStage("GPIO + UART init OK");
+
+  /* Re-initialise XSPI2: SPI→OPI enable sequence + memory-mapped mode.
+   * SystemInit resets XSPI2/XSPIM (as per ST reference template), so we must
+   * send the OPI-enable sequence over 1-line SPI before entering 8-line mode. */
+  MX_XSPI2_Init();
+  FSBL_LogStage("xSPI2 OctoSPI STR memory-mapped mode OK");
+
+  FSBL_LogAppImageState();
+  FSBL_TryBootApplication();
+
+  /* If we get here the handoff failed — fast red blink forever */
+  FSBL_LogStage("ERROR: handoff failed, stuck in FSBL error loop");
+  BSP_LED_Init(LED_RED);
+  while (1)
+  {
+    BSP_LED_Toggle(LED_RED);
+    HAL_Delay(100U);
+  }
+#endif
 }
 /* USER CODE BEGIN CLK 1 */
 /* USER CODE END CLK 1 */
@@ -423,9 +736,14 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
-  __disable_irq();
+  printf("[FSBL] Error_Handler entered!\r\n");
+  BSP_LED_Init(LED_RED);
+  /* Alternate red on/off so it's visible even without UART */
   while (1)
   {
+    BSP_LED_Toggle(LED_RED);
+    /* Busy-wait ~200ms without HAL_Delay (SysTick may be broken) */
+    for (volatile uint32_t i = 0; i < 2000000UL; i++) { __NOP(); }
   }
   /* USER CODE END Error_Handler_Debug */
 }

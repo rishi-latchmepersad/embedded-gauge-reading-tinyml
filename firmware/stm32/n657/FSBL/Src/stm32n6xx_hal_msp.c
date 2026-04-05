@@ -237,4 +237,54 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
 
 /* USER CODE BEGIN 1 */
 
+/**
+  * @brief XSPI2 MSP Initialization — clocks, GPIO, and memory-mapped mode.
+  *        Mirrors the ST Template_FSBL_LRUN reference implementation.
+  *        Uses 50 MHz (PLL1/24) unconditionally since VDDIO3_HSLV is not burned.
+  */
+void HAL_XSPI_MspInit(XSPI_HandleTypeDef *hxspi)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
+
+  if (hxspi->Instance == XSPI2)
+  {
+    /* XSPI2 clock: IC3 from PLL1 at 50 MHz (1200 / 24) — safe for 3.3V IO */
+    PeriphClkInitStruct.PeriphClockSelection                = RCC_PERIPHCLK_XSPI2;
+    PeriphClkInitStruct.Xspi2ClockSelection                 = RCC_XSPI2CLKSOURCE_IC3;
+    PeriphClkInitStruct.ICSelection[RCC_IC3].ClockSelection = RCC_ICCLKSOURCE_PLL1;
+    PeriphClkInitStruct.ICSelection[RCC_IC3].ClockDivider   = 24;
+    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    __HAL_RCC_XSPIM_CLK_ENABLE();
+    __HAL_RCC_XSPI2_CLK_ENABLE();
+    __HAL_RCC_GPION_CLK_ENABLE();
+
+    /* XSPIM_P2 pins: PN0-PN11 */
+    GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3
+                        | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_8
+                        | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11;
+    GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull      = GPIO_NOPULL;
+    GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF9_XSPIM_P2;
+    HAL_GPIO_Init(GPION, &GPIO_InitStruct);
+  }
+}
+
+void HAL_XSPI_MspDeInit(XSPI_HandleTypeDef *hxspi)
+{
+  if (hxspi->Instance == XSPI2)
+  {
+    __HAL_RCC_XSPIM_CLK_DISABLE();
+    __HAL_RCC_XSPI2_CLK_DISABLE();
+    HAL_GPIO_DeInit(GPION, GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3
+                         | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_8
+                         | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11);
+  }
+}
+
 /* USER CODE END 1 */
