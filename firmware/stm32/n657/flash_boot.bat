@@ -1,0 +1,128 @@
+@echo off
+REM ============================================================
+REM  flash_boot.bat  --  Sign and flash STM32N657 for boot-from-flash
+REM
+REM  Usage: flash_boot.bat
+REM  Prerequisites:
+REM    - Board in the NUCLEO dev/programming mode described by the board
+REM      manual. Do not rely on the older JP3 wording in this file.
+REM    - ST-Link connected via USB
+REM    - STM32CubeProgrammer N6 installed
+REM
+REM  After flashing: set flash-boot mode (BOOT0=0, BOOT1=0) and power-cycle
+REM  the board.
+REM ============================================================
+
+set "CUBE=C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin"
+set "SIGN=%CUBE%\STM32_SigningTool_CLI.exe"
+set "PROG=%CUBE%\STM32_Programmer_CLI.exe"
+set "ELDR=%CUBE%\ExternalLoader\MX25UM51245G_STM32N6570-NUCLEO.stldr"
+
+set SCRIPT_DIR=%~dp0
+set "FSBL_BIN=%SCRIPT_DIR%FSBL\Debug\n657_FSBL.bin"
+set "FSBL_TRUSTED=%SCRIPT_DIR%FSBL\Debug\FSBL_trusted.bin"
+set "MODEL_RAW=%SCRIPT_DIR%..\..\..\st_ai_output\atonbuf.xSPI2.raw"
+set "MODEL_BIN=%TEMP%\atonbuf.xSPI2.flash.bin"
+set "APP_BIN=%SCRIPT_DIR%Appli\Debug\n657_Appli.bin"
+set "APP_SIGN=%SCRIPT_DIR%Appli\Debug\n657_Appli_sign_new.bin"
+set "FLASH_MODEL=0"
+set "FLASH_APP=1"
+
+if not exist "%SIGN%" (
+    echo ERROR: Signing tool not found: "%SIGN%"
+    exit /b 1
+)
+if not exist "%PROG%" (
+    echo ERROR: Programmer CLI not found: "%PROG%"
+    exit /b 1
+)
+if not exist "%ELDR%" (
+    echo ERROR: External loader not found: "%ELDR%"
+    exit /b 1
+)
+if not exist "%FSBL_BIN%" (
+    echo ERROR: FSBL binary not found: "%FSBL_BIN%"
+    exit /b 1
+)
+if "%FLASH_APP%"=="1" if not exist "%APP_BIN%" (
+    echo ERROR: Application binary not found: "%APP_BIN%"
+    exit /b 1
+)
+
+echo.
+echo === Step 2: Sign FSBL binary ===
+"%SIGN%" -bin "%FSBL_BIN%" -nk -of 0x80000000 -t fsbl -hv 2.3 -o "%FSBL_TRUSTED%" -dump "%FSBL_TRUSTED%" -align
+if errorlevel 1 (
+    echo ERROR: FSBL signing failed.
+    exit /b 1
+)
+echo Trusted FSBL: %FSBL_TRUSTED%
+
+echo.
+echo === Step 3: Flash FSBL at 0x70000000 ===
+"%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%FSBL_TRUSTED%" 0x70000000
+if errorlevel 1 (
+    echo ERROR: FSBL flash failed.
+    exit /b 1
+)
+
+echo.
+if "%FLASH_MODEL%"=="1" (
+    if not exist "%MODEL_RAW%" (
+        echo ERROR: Model image not found: "%MODEL_RAW%"
+        exit /b 1
+    )
+    echo === Step 2a: Prepare model image for CubeProgrammer ===
+    copy /b "%MODEL_RAW%" "%MODEL_BIN%" >nul
+    if errorlevel 1 (
+        echo ERROR: Failed to stage model image as "%MODEL_BIN%"
+        exit /b 1
+    )
+    echo Staged model image: %MODEL_BIN%
+    echo NOTE: The raw xSPI2 blob is runtime provisioning data, not the ST boot-flow network_data.hex.
+    echo NOTE: Flashing it at 0x70000000 will overlap the signed app region, so the boot-chain test leaves it off by default.
+
+    echo.
+    echo === Step 4: Flash model image at 0x70000000 ===
+    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%MODEL_BIN%" 0x70000000
+    if errorlevel 1 (
+        echo ERROR: Model flash failed.
+        exit /b 1
+    )
+) else (
+    echo === Step 4: Skipping model image flash for boot-chain test ===
+    echo Set FLASH_MODEL=1 only if you are intentionally testing raw xSPI2 provisioning.
+    echo For the LED smoke test, the board should use just the FSBL and signed app.
+)
+
+if "%FLASH_APP%"=="1" (
+    echo.
+    echo === Step 5: Sign application binary ===
+    "%SIGN%" -bin "%APP_BIN%" -nk -of 0x80000000 -t ssbl -hv 2.3 -o "%APP_SIGN%" -align
+    if errorlevel 1 (
+        echo ERROR: Signing failed.
+        exit /b 1
+    )
+    echo Signed binary: %APP_SIGN%
+
+    echo.
+    echo === Step 6: Flash signed application at 0x70100000 ===
+    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%APP_SIGN%" 0x70100000
+    if errorlevel 1 (
+        echo ERROR: Application flash failed.
+        exit /b 1
+    )
+) else (
+    echo.
+    echo === Step 5: Skipping signed application flash for smoke test ===
+    echo Set FLASH_APP=1 if you want to add the app back after the LED boot test passes.
+)
+
+echo.
+echo === Done! ===
+echo Now set flash-boot mode (BOOT0=0, BOOT1=0) and power-cycle the board.
+echo.
+
+if "%FLASH_MODEL%"=="1" (
+    del /q "%MODEL_BIN%" >nul 2>&1
+)

@@ -248,7 +248,9 @@ void SystemInit(void)
   (void) RCC->APB4ENR2;
   RCC->APB4ENR2 &= ~(0x00000010UL);
 
-  /* XSPI2 & XSPIM reset                                  */
+  /* XSPI2 & XSPIM reset — matches the ST reference template (Template_FSBL_LRUN).
+   * The FSBL re-initialises XSPI2 and sends the OPI-enable sequence to the
+   * MX25UM51245G via SPI before entering memory-mapped mode. */
   RCC->AHB5RSTSR = RCC_AHB5RSTSR_XSPIMRSTS | RCC_AHB5RSTSR_XSPI2RSTS;
   RCC->AHB5RSTCR = RCC_AHB5RSTCR_XSPIMRSTC | RCC_AHB5RSTCR_XSPI2RSTC;
 

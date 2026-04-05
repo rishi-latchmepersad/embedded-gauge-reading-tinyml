@@ -39,6 +39,8 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+#define APP_LED_ONLY_SMOKE_TEST 0
+
 #define DS3231_I2C_ADDRESS_7BIT     0x68U
 #define DS3231_I2C_ADDRESS_HAL      (DS3231_I2C_ADDRESS_7BIT << 1U)
 #define DS3231_I2C_PROBE_TRIALS     3U
@@ -95,6 +97,12 @@ extern uint32_t __enoncacheable;
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+int __io_putchar(int ch)
+{
+  HAL_UART_Transmit(&hlpuart1, (uint8_t *)&ch, 1, 10);
+  return ch;
+}
 
 /**
  * @brief Configure the application clock tree for camera capture.
@@ -528,12 +536,22 @@ int main(void)
 
   /* MCU Configuration--------------------------------------------------------*/
   HAL_Init();
-  App_SystemClock_Config();
 
-  /* Temporary LED-only smoke test.
-   * Keep the old init path disabled while we confirm the board can execute
-   * the simplest possible runtime code. */
-#if 0
+#if APP_LED_ONLY_SMOKE_TEST
+  MX_GPIO_Init();
+  MX_LPUART1_UART_Init();
+  printf("[APP] HAL_Init OK\r\n");
+  App_SystemClock_Config();
+  printf("[APP] App_SystemClock_Config OK\r\n");
+  BSP_LED_Init(LED_RED);
+  printf("[APP] Entering smoke-test blink loop\r\n");
+  while (1)
+  {
+    BSP_LED_Toggle(LED_RED);
+    HAL_Delay(100U);
+  }
+  return 0;
+#else
   /* USER CODE BEGIN Init */
   App_SystemClock_Config();
   Setup_Mpu();
@@ -612,44 +630,6 @@ int main(void)
 	}
   /* USER CODE END 3 */
 #endif
-
-  MX_GPIO_Init();
-  MX_LPUART1_UART_Init();
-
-  DebugConsole_Configuration_t debug_console_configuration = { 0 };
-  debug_console_configuration.uart_handle_pointer = &hlpuart1;
-  debug_console_configuration.uart_transmit_timeout_milliseconds = 100U;
-  debug_console_configuration.lock_callback = NULL;
-  debug_console_configuration.unlock_callback = NULL;
-  (void) DebugConsole_Init(&debug_console_configuration);
-  DebugConsole_Printf("[BOOT] UART banner test is alive.\r\n");
-  DebugConsole_Printf("[BOOT] LPUART1 init ok.\r\n");
-
-  DebugConsole_Printf("[BOOT] Initializing I2C2...\r\n");
-  MX_I2C2_Init();
-  DebugConsole_Printf("[BOOT] I2C2 init ok.\r\n");
-
-  DebugConsole_Printf("[BOOT] Initializing I2C1 for DS3231...\r\n");
-  MX_I2C1_Init();
-  DebugConsole_Printf("[BOOT] I2C1 init ok.\r\n");
-  DS3231_LogI2c1LineState();
-  DS3231_ScanI2C1Bus();
-  DS3231_LogBootTime();
-
-  DebugConsole_Printf("[BOOT] Initializing SPI5 for SD card...\r\n");
-  MX_SPI5_Init();
-  DebugConsole_Printf("[BOOT] SPI5 init ok.\r\n");
-
-  DebugConsole_Printf("[BOOT] Starting ThreadX/FileX handoff...\r\n");
-  MX_ThreadX_Init();
-
-  BSP_LED_Init(LED_RED);
-
-  while (1)
-  {
-    BSP_LED_Toggle(LED_RED);
-    HAL_Delay(500U);
-  }
 }
 
 /**
