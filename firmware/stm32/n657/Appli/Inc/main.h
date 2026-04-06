@@ -42,6 +42,7 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "ds3231_clock.h"
 
 /* USER CODE END Includes */
 
@@ -74,7 +75,6 @@ typedef funcptr funcptr_NS;
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-bool App_Clock_GetCaptureTimestamp(char *buffer, uint32_t buffer_length);
 
 /* USER CODE END EFP */
 

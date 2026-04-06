@@ -41,13 +41,6 @@
 
 #define APP_LED_ONLY_SMOKE_TEST 0
 
-#define DS3231_I2C_ADDRESS_7BIT     0x68U
-#define DS3231_I2C_ADDRESS_HAL      (DS3231_I2C_ADDRESS_7BIT << 1U)
-#define DS3231_I2C_PROBE_TRIALS     3U
-#define DS3231_I2C_PROBE_TIMEOUT_MS  50U
-#define DS3231_READ_RETRY_ATTEMPTS   5U
-#define DS3231_READ_RETRY_DELAY_MS   10U
-
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -84,13 +77,6 @@ static void SystemIsolation_Config(void);
 static void App_SystemClock_Config(void);
 static void App_CameraKernelClock_Config(void);
 static void Setup_Mpu(void);
-static void DS3231_LogI2c1LineState(void);
-static void DS3231_ScanI2C1Bus(void);
-static bool DS3231_ReadDateTime(char *buffer, size_t buffer_length);
-static void DS3231_SetBuildTime(void);
-static void DS3231_LogBootTime(void);
-static char g_ds3231_last_timestamp[32];
-static bool g_ds3231_last_timestamp_valid = false;
 extern uint32_t __snoncacheable;
 extern uint32_t __enoncacheable;
 
@@ -270,6 +256,7 @@ static void Setup_Mpu(void)
    * each DMA, so zero-init here is not required. */
 }
 
+#if 0 /* DS3231 implementation moved to ds3231_clock.c */
 /**
   * @brief Convert a packed BCD byte into binary.
   * @param value Packed BCD value from the DS3231.
@@ -458,13 +445,12 @@ static bool DS3231_ReadDateTimeWithRetry(char *buffer, size_t buffer_length)
   return false;
 }
 
+#if DS3231_ENABLE_BUILD_TIME_SEED
 /**
  * @brief Write the firmware build timestamp to the DS3231 registers.
  *
- * Called once on boot when the RTC reads back year 2000 (power-on default),
- * indicating the backup battery was flat or the module is freshly powered.
- * Uses __DATE__ ("Mmm DD YYYY") and __TIME__ ("HH:MM:SS") so the time is
- * baked in at compile time — good enough to get a sane log filename.
+ * Enabled only when we intentionally want to refresh a blank RTC from the
+ * compile-time clock.
  */
 static void DS3231_SetBuildTime(void)
 {
@@ -518,26 +504,29 @@ static void DS3231_SetBuildTime(void)
     DebugConsole_Printf("[RTC] DS3231 set-time write failed (status=%d).\r\n", (int)status);
   }
 }
+#endif
 
 /**
   * @brief Print the DS3231 time once during boot so we can confirm the module.
   *        If the year reads back as 2000 (power-on default / dead battery),
-  *        seed the RTC with the firmware build timestamp first.
+  *        report it and only seed it when the build-time toggle is enabled.
   */
 static void DS3231_LogBootTime(void)
 {
   char rtc_text[32] = {0};
 
+#if DS3231_ENABLE_BUILD_TIME_SEED
+  DebugConsole_Printf("[RTC] DS3231 build-time seed enabled; writing compile-time timestamp now.\r\n");
+  DS3231_SetBuildTime();
+#endif
+
   if (DS3231_ReadDateTimeWithRetry(rtc_text, sizeof(rtc_text)))
   {
-    /* Year 2000 means the RTC lost power and reset to its default. Seed it
-     * with the build timestamp so filenames are at least roughly correct. */
+    /* If the RTC still reports year 2000 after an update attempt, it likely
+     * means the chip was not writable or the I2C transaction failed. */
     if (strncmp(rtc_text, "2000-", 5U) == 0)
     {
-      DebugConsole_Printf("[RTC] DS3231 year=2000 (power-on default); seeding with build time.\r\n");
-      DS3231_SetBuildTime();
-      /* Re-read so g_ds3231_last_timestamp reflects the written time. */
-      (void) DS3231_ReadDateTimeWithRetry(rtc_text, sizeof(rtc_text));
+      DebugConsole_Printf("[RTC] DS3231 year=2000 (power-on default); build-time seed is disabled.\r\n");
     }
 
     (void) snprintf(g_ds3231_last_timestamp, sizeof(g_ds3231_last_timestamp),
@@ -604,6 +593,7 @@ bool App_Clock_GetCaptureTimestamp(char *buffer, uint32_t buffer_length)
   buffer[dest_index] = '\0';
   return (rtc_text[source_index] == '\0');
 }
+#endif /* DS3231 implementation moved to ds3231_clock.c */
 
 /* USER CODE END 0 */
 
