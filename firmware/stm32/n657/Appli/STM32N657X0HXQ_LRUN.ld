@@ -46,7 +46,10 @@ MEMORY
 {
   ROM    (xrw)    : ORIGIN = 0x34000400,   LENGTH = 511K
   RAM    (xrw)    : ORIGIN = 0x34080000,   LENGTH = 1536K
-  EXTRAM (rw)     : ORIGIN = 0x70000000,   LENGTH = 64M
+  /* Model blob starts after the FSBL (0x70000000, ~1MB) and the signed app
+   * (0x70100000, ~1MB). 0x70200000 is the first free region and matches the
+   * FLASH_MODEL address in flash_boot.bat. */
+  EXTRAM (rw)     : ORIGIN = 0x70200000,   LENGTH = 62M
   /* Non-secure alias A/B test — DCMIPP with MSEC=1 writes to 0x24xxxxxx.
    * Placed at top of AXISRAM1 non-secure alias, away from code/data. */
   RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 128K

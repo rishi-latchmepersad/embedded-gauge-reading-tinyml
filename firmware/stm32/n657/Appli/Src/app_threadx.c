@@ -49,7 +49,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define INFERENCE_LOG_THREAD_STACK_SIZE_BYTES  4096U
+#define INFERENCE_LOG_THREAD_STACK_SIZE_BYTES  8192U
 #define INFERENCE_LOG_THREAD_PRIORITY          14U
 #define INFERENCE_LOG_DIRECTORY_NAME           "inference"
 #define INFERENCE_LOG_FILE_NAME_LENGTH         32U
@@ -250,12 +250,39 @@ static volatile uint32_t camera_capture_counter_status = (uint32_t) HAL_ERROR;
 static uint32_t camera_capture_active_buffer_index = 0U;
 static uint8_t *camera_capture_result_buffer = NULL;
 static uint8_t camera_capture_buffers[CAMERA_CAPTURE_BUFFER_COUNT][CAMERA_CAPTURE_BUFFER_SIZE_BYTES] __attribute__((section(".noncacheable"), aligned(__SCB_DCACHE_LINE_SIZE)));
+/* Keep a private AI snapshot so the camera DMA can keep running without
+ * racing the preprocessing path on the shared live capture buffer. */
+static uint8_t camera_ai_frame_snapshot[CAMERA_CAPTURE_BUFFER_SIZE_BYTES]
+		__attribute__((aligned(__SCB_DCACHE_LINE_SIZE)));
 /* Keep a separate scratch line so the CPU write proof does not contaminate
  * the live capture buffer before DMA arms. */
 static uint32_t camera_capture_write_probe_words[2U];
 /* Histogram bins for the RAW10 level summary. Keeping this static avoids
  * allocating a large analysis buffer on the camera thread stack. */
 static uint32_t camera_capture_raw_level_histogram[1024U];
+
+/* Format a float with one decimal place without relying on `%f` support in
+ * newlib-nano, which is often trimmed out in embedded Debug builds. */
+static void AppThreadX_FormatFloatTenths(char *dst, size_t dst_len,
+		const char *prefix, float value) {
+	if ((dst == NULL) || (dst_len == 0U) || (prefix == NULL)) {
+		return;
+	}
+
+	bool negative = (value < 0.0f);
+	const float magnitude = negative ? -value : value;
+	long whole = (long) magnitude;
+	float fraction = magnitude - (float) whole;
+
+	unsigned tenths = (unsigned) (fraction * 10.0f + 0.5f);
+	if (tenths >= 10U) {
+		tenths = 0U;
+		whole += 1L;
+	}
+
+	(void) snprintf(dst, dst_len, "%s%s%ld.%01u\r\n", prefix,
+			negative ? "-" : "", whole, tenths);
+}
 
 /* Reuse the CubeMX-generated camera control I2C instance from main.c. */
 extern DCMIPP_HandleTypeDef hdcmipp;
@@ -653,14 +680,12 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 
 	/* Use the blue LED as the camera-thread marker; the green LED is owned by
 	 * the heartbeat thread so it can keep pulsing independently. */
-	DebugConsole_Printf(
-			"[CAMERA][THREAD] Initializing camera diagnostics thread...\r\n");
+	(void) DebugConsole_WriteString("[CAMERA] thread entry\r\n");
 
 	/* Delay a little to let other startup logs complete before camera probing. */
 	DelayMilliseconds_ThreadX(CAMERA_INIT_STARTUP_DELAY_MS);
 
-	DebugConsole_Printf(
-			"[CAMERA][THREAD] Starting B-CAMS-IMX MIPI connection attempt...\r\n");
+	(void) DebugConsole_WriteString("[CAMERA] probe start\r\n");
 
 	if (Camera_ProbeBCamsImx()) {
 		DebugConsole_Printf(
@@ -742,7 +767,7 @@ static VOID CameraHeartbeatThread_Entry(ULONG thread_input) {
 static VOID CameraAIThread_Entry(ULONG thread_input) {
 	(void) thread_input;
 
-	DebugConsole_Printf("[AI] Worker thread running.\r\n");
+	(void) DebugConsole_WriteString("[AI] worker alive\r\n");
 
 	while (1) {
 		const UINT request_status = tx_semaphore_get(&camera_ai_request_semaphore,
@@ -759,6 +784,11 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 		camera_ai_request_frame_ptr = NULL;
 		camera_ai_request_frame_length = 0U;
 
+		DebugConsole_Printf(
+				"[AI] Worker dequeued frame: ptr=%p length=%lu semaphore_status=%u\r\n",
+				(void *) frame_ptr, (unsigned long) frame_length,
+				(unsigned int) request_status);
+
 		if ((frame_ptr == NULL) || (frame_length == 0U)) {
 			DebugConsole_Printf(
 					"[AI] Worker woke without a queued frame; ignoring.\r\n");
@@ -771,10 +801,17 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 					"[AI] One-shot dry-run inference failed; continuing.\r\n");
 		} else {
 			float result = 0.0f;
-			if (inference_log_thread_created
-					&& App_AI_GetLastInferenceResult(&result)) {
+			if (App_AI_GetLastInferenceResult(&result)) {
 				union { float f; ULONG u; } bits = { .f = result };
-				(void) tx_queue_send(&inference_log_queue, &bits.u, TX_NO_WAIT);
+				char inference_line[48] = { 0 };
+
+				AppThreadX_FormatFloatTenths(inference_line,
+						sizeof(inference_line),
+						"[AI] Inference value: ", result);
+				(void) DebugConsole_WriteString(inference_line);
+				if (inference_log_thread_created) {
+					(void) tx_queue_send(&inference_log_queue, &bits.u, TX_NO_WAIT);
+				}
 			}
 		}
 	}
@@ -800,7 +837,7 @@ static VOID InferenceLogThread_Entry(ULONG thread_input) {
 	char log_file_name[INFERENCE_LOG_FILE_NAME_LENGTH] = { 0 };
 	FX_MEDIA *media = NULL;
 
-	DebugConsole_Printf("[INFER_LOG] Thread running.\r\n");
+	(void) DebugConsole_WriteString("[INFER_LOG] thread alive\r\n");
 
 	while (1) {
 		switch (state) {
@@ -950,6 +987,12 @@ static VOID InferenceLogThread_Entry(ULONG thread_input) {
 			/* Decode float from ULONG bits. */
 			union { float f; ULONG u; } bits = { .u = value_bits };
 			const float inference_value = bits.f;
+			char inference_line[48] = { 0 };
+
+			AppThreadX_FormatFloatTenths(inference_line,
+					sizeof(inference_line),
+					"[INFER_LOG] Inference value: ", inference_value);
+			(void) DebugConsole_WriteString(inference_line);
 
 			/* Get current timestamp. */
 			char rtc_timestamp[32] = { 0 };
@@ -1086,6 +1129,7 @@ static bool Camera_ProbeBCamsImx(void) {
 	bool stage_ok = true;
 
 	DebugConsole_Printf("[CAMERA][PROBE] Probing camera stack...\r\n");
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: reset\r\n");
 	const UINT probe_status = CameraPlatform_ProbeBCamsImx();
 	if (probe_status == TX_SUCCESS) {
 		DebugConsole_Printf("[CAMERA][PROBE] Sensor probe OK.\r\n");
@@ -1116,6 +1160,7 @@ UINT CameraPlatform_ProbeBCamsImx(void) {
 	CameraPlatform_ResetImx335Module();
 
 	/* Probe the camera control address to confirm the sensor bus is alive. */
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: i2c-ack\r\n");
 	probe_status = HAL_I2C_IsDeviceReady(&hi2c2,
 	BCAMS_IMX_I2C_ADDRESS_HAL,
 	BCAMS_IMX_I2C_PROBE_TRIALS,
@@ -1127,6 +1172,7 @@ UINT CameraPlatform_ProbeBCamsImx(void) {
 				(unsigned int) BCAMS_IMX_I2C_ADDRESS_7BIT);
 
 		/* Read the same chip-ID register used by ST's IMX335 middleware. */
+		(void) DebugConsole_WriteString("[CAMERA][PROBE] step: chip-id\r\n");
 		probe_status = CameraPlatform_ReadImx335ChipId(&chip_id);
 		if (probe_status != HAL_OK) {
 			DebugConsole_Printf(
@@ -1145,6 +1191,7 @@ UINT CameraPlatform_ProbeBCamsImx(void) {
 			return TX_NOT_AVAILABLE;
 		}
 
+		(void) DebugConsole_WriteString("[CAMERA][PROBE] step: sensor-init\r\n");
 		if (!CameraPlatform_InitializeImx335Sensor()) {
 			DebugConsole_Printf(
 					"[CAMERA][PROBE]   - IMX335 init sequence failed.\r\n");
@@ -1190,10 +1237,12 @@ static HAL_StatusTypeDef CameraPlatform_ReadImx335ChipId(uint8_t *chip_id) {
  */
 static void CameraPlatform_ResetImx335Module(void) {
 	/* Keep the module powered so the board can provide DVDD and CAM_CLK. */
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: power-on\r\n");
 	HAL_GPIO_WritePin(CAM1_GPIO_Port, CAM1_Pin, GPIO_PIN_SET);
 	DelayMilliseconds_ThreadX(BCAMS_IMX_POWER_SETTLE_DELAY_MS);
 
 	/* Pulse the sensor reset line exactly as the vendor middleware does. */
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: reset-pulse\r\n");
 	HAL_GPIO_WritePin(CAM_NRST_GPIO_Port, CAM_NRST_Pin, GPIO_PIN_RESET);
 	DelayMilliseconds_ThreadX(BCAMS_IMX_RESET_ASSERT_DELAY_MS);
 	HAL_GPIO_WritePin(CAM_NRST_GPIO_Port, CAM_NRST_Pin, GPIO_PIN_SET);
@@ -1544,6 +1593,14 @@ static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
 		image_ptr = camera_capture_result_buffer;
 	}
 
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] Frame ready for save: ptr=%p length=%lu pipeline=%s\r\n",
+			(void *) image_ptr, (unsigned long) image_length,
+			camera_capture_use_cmw_pipeline ? "processed" : "raw");
+
+	CameraPlatform_LogCaptureBufferPreview("ready-to-save", image_ptr,
+			(uint32_t) image_length);
+
 	if (!CameraPlatform_BuildCaptureFileName(capture_file_name,
 			sizeof(capture_file_name), file_extension)) {
 		DebugConsole_Printf(
@@ -1603,9 +1660,44 @@ static bool CameraPlatform_RequestDryInference(const uint8_t *frame_ptr,
 		return false;
 	}
 
-	camera_ai_request_frame_ptr = frame_ptr;
+	if ((frame_ptr == NULL) || (frame_length == 0U)) {
+		DebugConsole_Printf(
+				"[AI] Dry-run request dropped; empty frame ptr=%p len=%lu.\r\n",
+				(const void *) frame_ptr, (unsigned long) frame_length);
+		return false;
+	}
+
+	if (frame_length > CAMERA_CAPTURE_BUFFER_SIZE_BYTES) {
+		DebugConsole_Printf(
+				"[AI] Dry-run request dropped; frame too large len=%lu max=%lu.\r\n",
+				(unsigned long) frame_length,
+				(unsigned long) CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
+		return false;
+	}
+
+	(void) memcpy(camera_ai_frame_snapshot, frame_ptr, (size_t) frame_length);
+	DebugConsole_Printf(
+			"[AI] Dry-run snapshot copied: src=%p dst=%p len=%lu first8=[%02X %02X %02X %02X %02X %02X %02X %02X]\r\n",
+			(const void *) frame_ptr, (void *) camera_ai_frame_snapshot,
+			(unsigned long) frame_length, camera_ai_frame_snapshot[0],
+			camera_ai_frame_snapshot[1], camera_ai_frame_snapshot[2],
+			camera_ai_frame_snapshot[3], camera_ai_frame_snapshot[4],
+			camera_ai_frame_snapshot[5], camera_ai_frame_snapshot[6],
+			camera_ai_frame_snapshot[7]);
+
+	DebugConsole_Printf(
+			"[AI] Queueing dry-run request: ptr=%p length=%lu\r\n",
+			(void *) camera_ai_frame_snapshot, (unsigned long) frame_length);
+
+	camera_ai_request_frame_ptr = camera_ai_frame_snapshot;
 	camera_ai_request_frame_length = frame_length;
-	return (tx_semaphore_put(&camera_ai_request_semaphore) == TX_SUCCESS);
+	if (tx_semaphore_put(&camera_ai_request_semaphore) != TX_SUCCESS) {
+		DebugConsole_Printf(
+				"[AI] Failed to signal dry-run request semaphore.\r\n");
+		return false;
+	}
+
+	return true;
 }
 
 /**
@@ -2142,6 +2234,10 @@ static void CameraPlatform_RefreshCaptureBufferFromDma(uint32_t captured_bytes) 
 			|| (invalidate_bytes > CAMERA_CAPTURE_BUFFER_SIZE_BYTES)) {
 		invalidate_bytes = CAMERA_CAPTURE_BUFFER_SIZE_BYTES;
 	}
+
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] Invalidate capture buffer cache: ptr=%p bytes=%lu\r\n",
+			(void *) camera_capture_result_buffer, (unsigned long) invalidate_bytes);
 
 	SCB_InvalidateDCache_by_Addr((void*) camera_capture_result_buffer,
 			(int32_t) invalidate_bytes);
@@ -2980,6 +3076,16 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 						completed_buffer_ptr,
 						CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
 				camera_capture_result_buffer = completed_buffer_ptr;
+				CameraPlatform_LogCaptureBufferSummary(camera_capture_byte_count);
+				DebugConsole_Printf(
+						"[CAMERA][CAPTURE] Completed frame handed off: idx=%lu ptr=%p bytes=%lu nonzero=%lu snapshot_armed=%u pipe_state=%lu.\r\n",
+						(unsigned long) completed_buffer_index,
+						(void *) completed_buffer_ptr,
+						(unsigned long) camera_capture_byte_count,
+						(unsigned long) completed_nonzero_bytes,
+						camera_capture_snapshot_armed ? 1U : 0U,
+						(unsigned long) HAL_DCMIPP_PIPE_GetState(capture_dcmipp,
+						CAMERA_CAPTURE_PIPE));
 
 				if (camera_capture_use_cmw_pipeline) {
 					const uint32_t next_buffer_index = (completed_buffer_index
@@ -3319,6 +3425,7 @@ static bool CameraPlatform_InitializeImx335Sensor(void) {
 	CMW_Advanced_Config_t camera_advanced_config = { 0 };
 	int32_t cmw_status = CMW_ERROR_NONE;
 
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: mw-defaults\r\n");
 	camera_advanced_config.selected_sensor = CMW_IMX335_Sensor;
 	cmw_status = CMW_CAMERA_SetDefaultSensorValues(&camera_advanced_config);
 	if (cmw_status != CMW_ERROR_NONE) {
@@ -3333,6 +3440,7 @@ static bool CameraPlatform_InitializeImx335Sensor(void) {
 	camera_init.fps = IMX335_CAPTURE_FRAMERATE_FPS;
 	camera_init.mirror_flip = CMW_MIRRORFLIP_NONE;
 
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: mw-init\r\n");
 	cmw_status = CMW_CAMERA_Init(&camera_init, &camera_advanced_config);
 	if (cmw_status != CMW_ERROR_NONE) {
 		DebugConsole_Printf(
@@ -3343,6 +3451,7 @@ static bool CameraPlatform_InitializeImx335Sensor(void) {
 
 	CameraPlatform_LogCsiDphySettle();
 
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: mw-test-pattern\r\n");
 	cmw_status = CMW_CAMERA_SetTestPattern(IMX335_TEST_PATTERN_MODE);
 	if (cmw_status != CMW_ERROR_NONE) {
 		DebugConsole_Printf(
@@ -3360,6 +3469,7 @@ static bool CameraPlatform_InitializeImx335Sensor(void) {
 	if (!CameraPlatform_SeedImx335ExposureGain()) {
 		return false;
 	}
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: seed-done\r\n");
 
 #if CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC
 	camera_capture_use_cmw_pipeline = false;
@@ -3367,14 +3477,17 @@ static bool CameraPlatform_InitializeImx335Sensor(void) {
 #else
 	camera_capture_use_cmw_pipeline = true;
 	/* Let the ISP/AEC loop settle quickly on the first processed frame. */
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: ae-start\r\n");
 	if (!CameraPlatform_EnableImx335AutoExposure()) {
 		return false;
 	}
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: ae-done\r\n");
 	DebugConsole_Printf("[CAMERA][PROBE] Using CMW/ISP capture path.\r\n");
 #endif
 
 	camera_cmw_initialized = true;
 	camera_stream_started = false;
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: sensor-ready\r\n");
 
 	return true;
 }
@@ -3435,6 +3548,7 @@ static bool CameraPlatform_SeedImx335ExposureGain(void) {
 	int32_t seed_gain_mdb = 0;
 	int32_t cmw_status = CMW_ERROR_NONE;
 
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: seed-start\r\n");
 	cmw_status = CMW_CAMERA_GetSensorInfo(&sensor_info);
 	if (cmw_status != CMW_ERROR_NONE) {
 		DebugConsole_Printf(
@@ -3493,6 +3607,7 @@ static bool CameraPlatform_SeedImx335ExposureGain(void) {
 static bool CameraPlatform_EnableImx335AutoExposure(void) {
 	uint8_t aec_enabled = 0U;
 
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: ae-call\r\n");
 	if (ISP_SetAECState(&camera_sensor.hIsp, 1U) != ISP_OK) {
 		DebugConsole_Printf(
 				"[CAMERA][PROBE]   - Failed to enable IMX335 ISP auto exposure.\r\n");

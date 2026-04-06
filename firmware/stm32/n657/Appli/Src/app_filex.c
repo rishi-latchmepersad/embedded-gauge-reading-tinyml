@@ -35,6 +35,19 @@
 #include "debug_led.h"
 #include "threadx_utils.h"
 #include "sd_debug_log_service.h"
+
+/*
+ * FileX logging is useful, but the Debug image is already close to the ROM
+ * ceiling. Keep the file service behavior intact and suppress these console
+ * format strings unless someone opts back in locally.
+ */
+#ifndef APP_FILEX_ENABLE_VERBOSE_CONSOLE_LOGS
+#define APP_FILEX_ENABLE_VERBOSE_CONSOLE_LOGS 0
+#endif
+#if !APP_FILEX_ENABLE_VERBOSE_CONSOLE_LOGS
+#undef DebugConsole_Printf
+#define DebugConsole_Printf(...) ((void) 0)
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -216,13 +229,14 @@ UINT MX_FileX_Init(VOID *memory_ptr)
  * @param thread_input: ULONG user argument used by the thread entry
  * @retval none
 */
- void fx_app_thread_entry(ULONG thread_input)
+void fx_app_thread_entry(ULONG thread_input)
  {
 
 /* USER CODE BEGIN fx_app_thread_entry 0*/
 	DebugLed_BlinkBlueBlocking(100, 100, 1);
 	DebugLed_BlinkGreenBlocking(100, 100, 1);
 	DebugLed_BlinkRedBlocking(100, 100, 1);
+	(void) DebugConsole_WriteString("[FILEX] thread alive\r\n");
 /* USER CODE END fx_app_thread_entry 0*/
 
 /* USER CODE BEGIN fx_app_thread_entry 1*/

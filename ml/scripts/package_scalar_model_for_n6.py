@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -114,6 +115,14 @@ def _parse_args() -> argparse.Namespace:
         default="balanced",
         help="Global optimization objective for model generation.",
     )
+    parser.add_argument(
+        "--all-buffers-info",
+        action="store_true",
+        help=(
+            "Emit the full buffer-info table in the generated package. "
+            "Leave off for smaller debug builds."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -169,6 +178,26 @@ def _find_generated_xspi2_raw_file(*search_dirs: Path, model_name: str) -> Path:
     )
 
 
+def _write_reloc_profile_without_all_buffers_info(source: Path, destination: Path) -> Path:
+    """Create a local reloc profile that omits the debug-heavy buffer flag."""
+    text = source.read_text(encoding="utf-8", errors="ignore")
+
+    def _strip_flag(match: re.Match[str]) -> str:
+        options = match.group(2)
+        cleaned_options = " ".join(
+            token for token in options.split() if token != "--all-buffers-info"
+        )
+        return f'{match.group(1)}{cleaned_options}{match.group(3)}'
+
+    rewritten = re.sub(
+        r'("options"\s*:\s*")(.*?)(")',
+        _strip_flag,
+        text,
+    )
+    destination.write_text(rewritten, encoding="utf-8")
+    return destination
+
+
 def main() -> None:
     """Run the generation and relocatable packaging flow."""
     args = _parse_args()
@@ -202,15 +231,24 @@ def main() -> None:
     args.workspace_dir.mkdir(parents=True, exist_ok=True)
     args.stai_output_dir.mkdir(parents=True, exist_ok=True)
 
+    # The copied reloc profile still expects its memory-pool file in a sibling
+    # `mpools/` directory, so stage that layout alongside the rewritten JSON.
+    output_mpools_dir = args.output_dir / "mpools"
+    output_mpools_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(mpool_path, output_mpools_dir / mpool_path.name)
+
     # The relocatable driver resolves the ST Edge AI core from this env var.
     os.environ["STEDGEAI_CORE_DIR"] = _to_windows_path(args.pack_root)
     windows_model = _to_windows_path(args.model)
     windows_workspace = _to_windows_path(args.workspace_dir)
     windows_output = _to_windows_path(args.stai_output_dir)
     windows_mpool = _to_windows_path(mpool_path)
-    windows_neural_art = _to_windows_path(
+    reloc_profile_source = (
         args.pack_root / "scripts" / "N6_reloc" / "test" / "neural_art_reloc.json"
     )
+    reloc_profile_path = args.output_dir / "neural_art_reloc_no_dbg.json"
+    _write_reloc_profile_without_all_buffers_info(reloc_profile_source, reloc_profile_path)
+    windows_neural_art = _to_windows_path(reloc_profile_path)
 
     generate_cmd: list[str] = [
         str(stedgeai_exe),
@@ -246,6 +284,10 @@ def main() -> None:
         "--relocatable",
         "--no-report",
     ]
+    if args.all_buffers_info:
+        # The full buffer table is useful for deep inspection, but it bloats
+        # the generated package enough to push the Debug firmware over ROM.
+        generate_cmd.append("--all-buffers-info")
 
     print("[RELOC] Generating Neural-ART C sources...", flush=True)
     _run_command(generate_cmd, cwd=REPO_ROOT)
@@ -270,6 +312,7 @@ def main() -> None:
         "-n",
         args.name,
         "--no-clean",
+        "--no-dbg-info",
     ]
 
     print("[RELOC] Building relocatable binary...", flush=True)

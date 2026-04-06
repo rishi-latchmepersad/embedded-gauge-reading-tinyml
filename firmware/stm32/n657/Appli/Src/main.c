@@ -87,6 +87,7 @@ static void Setup_Mpu(void);
 static void DS3231_LogI2c1LineState(void);
 static void DS3231_ScanI2C1Bus(void);
 static bool DS3231_ReadDateTime(char *buffer, size_t buffer_length);
+static void DS3231_SetBuildTime(void);
 static void DS3231_LogBootTime(void);
 static char g_ds3231_last_timestamp[32];
 static bool g_ds3231_last_timestamp_valid = false;
@@ -396,6 +397,16 @@ static bool DS3231_ReadDateTime(char *buffer, size_t buffer_length)
     return false;
   }
 
+  /* Clear any sticky error state before each attempt.  A previous NACK or
+   * bus timeout leaves the HAL state machine in HAL_I2C_STATE_ERROR, which
+   * causes every subsequent call to return HAL_BUSY even after the device is
+   * physically reconnected.  Only clear the error/state fields — do NOT touch
+   * XferISR, which the HAL sets itself at the start of each transfer and the
+   * I2C interrupt handler calls mid-transfer. */
+  hi2c1.ErrorCode     = HAL_I2C_ERROR_NONE;
+  hi2c1.State         = HAL_I2C_STATE_READY;
+  hi2c1.PreviousState = 0U;
+
   status = HAL_I2C_IsDeviceReady(&hi2c1, DS3231_I2C_ADDRESS_HAL,
                                  DS3231_I2C_PROBE_TRIALS,
                                  DS3231_I2C_PROBE_TIMEOUT_MS);
@@ -448,7 +459,70 @@ static bool DS3231_ReadDateTimeWithRetry(char *buffer, size_t buffer_length)
 }
 
 /**
+ * @brief Write the firmware build timestamp to the DS3231 registers.
+ *
+ * Called once on boot when the RTC reads back year 2000 (power-on default),
+ * indicating the backup battery was flat or the module is freshly powered.
+ * Uses __DATE__ ("Mmm DD YYYY") and __TIME__ ("HH:MM:SS") so the time is
+ * baked in at compile time — good enough to get a sane log filename.
+ */
+static void DS3231_SetBuildTime(void)
+{
+  /* Parse __DATE__: "Mmm DD YYYY" */
+  static const char * const months = "JanFebMarAprMayJunJulAugSepOctNovDec";
+  char mon_str[4] = { __DATE__[0], __DATE__[1], __DATE__[2], '\0' };
+  uint8_t month = 1U;
+  for (uint8_t m = 0U; m < 12U; m++)
+  {
+    if (strncmp(mon_str, &months[m * 3U], 3U) == 0)
+    {
+      month = (uint8_t)(m + 1U);
+      break;
+    }
+  }
+  /* Day: __DATE__[4..5], space-padded for single digits */
+  uint8_t day  = (uint8_t)((__DATE__[4] == ' ' ? 0U : (uint8_t)(__DATE__[4] - '0')) * 10U
+                            + (uint8_t)(__DATE__[5] - '0'));
+  uint8_t year = (uint8_t)(((uint8_t)(__DATE__[9]  - '0')) * 10U
+                            + (uint8_t)(__DATE__[10] - '0')); /* last 2 digits of year */
+
+  /* Parse __TIME__: "HH:MM:SS" */
+  uint8_t hour = (uint8_t)(((uint8_t)(__TIME__[0] - '0')) * 10U + (uint8_t)(__TIME__[1] - '0'));
+  uint8_t min  = (uint8_t)(((uint8_t)(__TIME__[3] - '0')) * 10U + (uint8_t)(__TIME__[4] - '0'));
+  uint8_t sec  = (uint8_t)(((uint8_t)(__TIME__[6] - '0')) * 10U + (uint8_t)(__TIME__[7] - '0'));
+
+  /* DS3231 registers 0x00-0x06: sec, min, hour, dow, date, month, year (all BCD) */
+#define TO_BCD(v)  ((uint8_t)((((v) / 10U) << 4U) | ((v) % 10U)))
+  uint8_t regs[8] = {
+    0x00U,        /* register address */
+    TO_BCD(sec),
+    TO_BCD(min),
+    TO_BCD(hour),
+    0x01U,        /* day-of-week: not tracked, set to 1 */
+    TO_BCD(day),
+    TO_BCD(month),
+    TO_BCD(year),
+  };
+#undef TO_BCD
+
+  HAL_StatusTypeDef status = HAL_I2C_Master_Transmit(
+      &hi2c1, DS3231_I2C_ADDRESS_HAL, regs, sizeof(regs), 100U);
+  if (status == HAL_OK)
+  {
+    DebugConsole_Printf("[RTC] Set DS3231 to build time: 20%02u-%02u-%02u %02u:%02u:%02u\r\n",
+                        (unsigned int)year, (unsigned int)month, (unsigned int)day,
+                        (unsigned int)hour, (unsigned int)min, (unsigned int)sec);
+  }
+  else
+  {
+    DebugConsole_Printf("[RTC] DS3231 set-time write failed (status=%d).\r\n", (int)status);
+  }
+}
+
+/**
   * @brief Print the DS3231 time once during boot so we can confirm the module.
+  *        If the year reads back as 2000 (power-on default / dead battery),
+  *        seed the RTC with the firmware build timestamp first.
   */
 static void DS3231_LogBootTime(void)
 {
@@ -456,6 +530,16 @@ static void DS3231_LogBootTime(void)
 
   if (DS3231_ReadDateTimeWithRetry(rtc_text, sizeof(rtc_text)))
   {
+    /* Year 2000 means the RTC lost power and reset to its default. Seed it
+     * with the build timestamp so filenames are at least roughly correct. */
+    if (strncmp(rtc_text, "2000-", 5U) == 0)
+    {
+      DebugConsole_Printf("[RTC] DS3231 year=2000 (power-on default); seeding with build time.\r\n");
+      DS3231_SetBuildTime();
+      /* Re-read so g_ds3231_last_timestamp reflects the written time. */
+      (void) DS3231_ReadDateTimeWithRetry(rtc_text, sizeof(rtc_text));
+    }
+
     (void) snprintf(g_ds3231_last_timestamp, sizeof(g_ds3231_last_timestamp),
                     "%s", rtc_text);
     g_ds3231_last_timestamp_valid = true;
@@ -568,6 +652,24 @@ int main(void)
   MX_SPI5_Init();
   MX_DCMIPP_Init();
   App_CameraKernelClock_Config();
+  /* The FSBL drives PWR_EN (PD10) LOW to initialise it as an output. If the
+   * DS3231 or its I2C pull-up resistors are on that power rail it will be
+   * unpowered when we arrive here from the FSBL boot path. Assert the pin HIGH
+   * and wait for the DS3231 to complete its power-on sequence (t_VCC_SDA ≤ 1ms
+   * per datasheet, 10ms to be safe) before initialising I2C1. */
+  {
+    GPIO_InitTypeDef pwr_gpio = {0};
+    pwr_gpio.Pin   = GPIO_PIN_10;
+    pwr_gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+    pwr_gpio.Pull  = GPIO_NOPULL;
+    pwr_gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    __HAL_RCC_GPIOD_CLK_ENABLE();
+    HAL_GPIO_Init(GPIOD, &pwr_gpio);
+    HAL_GPIO_WritePin(GPIOD, GPIO_PIN_10, GPIO_PIN_SET);
+    HAL_Delay(10U);
+  }
+
+  MX_I2C1_Init();
   MX_I2C2_Init();
 
   /* Bring up the console before the isolation setup so we can see exactly
@@ -579,6 +681,8 @@ int main(void)
   debug_console_configuration.unlock_callback = NULL;
   (void) DebugConsole_Init(&debug_console_configuration);
   DebugConsole_Printf("[BOOT] UART console initialized.\r\n");
+  DS3231_LogI2c1LineState();
+  DS3231_ScanI2C1Bus();
 
   DebugConsole_Printf("[BOOT] Entering SystemIsolation_Config().\r\n");
   SystemIsolation_Config();
@@ -591,6 +695,8 @@ int main(void)
       .delay_milliseconds_callback = DelayMilliseconds_ThreadX };
 
   (void) DebugLed_Initialize(&debug_led_configuration);
+
+  DS3231_LogBootTime();
   /* USER CODE END 2 */
 
   /* Initialize leds */

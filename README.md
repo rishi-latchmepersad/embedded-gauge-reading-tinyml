@@ -46,45 +46,61 @@ For the latest updates, check the project timeline at: https://github.com/users/
 The ML work is WSL-first and documented in [ml/README.md](ml/README.md).
 Use that path for the classical baseline, CNN training, and future export/evaluation runs.
 
-## STM32 N657 Flashing
+## Flashing the STM32N657 (boot from external flash)
 
-The N657 application target is built in `firmware/stm32/n657/Appli/Debug/n657_Appli.elf`.
-CubeIDE's Debug launch uses ST-LINK over SWD with the `MX25UM51245G_STM32N6570-NUCLEO.stldr` external loader.
-For this board, CubeProgrammer's normal SWD connect mode worked reliably from the command line.
-If you just want a visible LED smoke test, the FSBL build already contains a blink loop and runs from RAM.
+The board boots from xSPI2 external flash via a two-stage process: ROM → FSBL → Application.
+Both images must be signed with the ST signing tool before flashing.
 
-To flash from the command line on Windows, run:
+### Prerequisites
 
-```powershell
-.\scripts\flash_n657.ps1
+- **STM32CubeProgrammer v2.21+** installed at the default path
+- **STM32CubeIDE** to build both projects
+- ST-Link connected via USB
+
+### Jumper positions
+
+There are two BOOT jumpers on the NUCLEO-N657X0-Q board. "Down" means the jumper is in the lower position (closer to the bottom edge of the board).
+
+| Mode                            | BOOT0 | BOOT1  | When to use                                                           |
+|---------------------------------|-------|--------|-----------------------------------------------------------------------|
+| **Flash boot** (run from flash) | down  | down   | Normal operation — board loads firmware from xSPI2 flash              |
+| **Dev / programming**           | down  | **up** | Flashing new firmware — move BOOT1 up before running the flash script |
+
+> The BOOT pins are sampled only at power-on, so any jumper change requires a full power-cycle (not just a reset).
+
+### Build
+
+1. Open `firmware/stm32/n657/FSBL/` in STM32CubeIDE → Build → produces `FSBL/Debug/n657_FSBL.bin`
+2. Open `firmware/stm32/n657/Appli/` in STM32CubeIDE → Build → produces `Appli/Debug/n657_Appli.bin`
+
+### Flash new firmware
+
+1. Move the **BOOT1 jumper up** (dev / programming mode) and power-cycle the board
+2. From `firmware/stm32/n657/` with ST-Link connected, run:
+
+   ```bat
+   flash_boot.bat
+   ```
+
+   `FLASH_APP=1` is set by default — signs and flashes both the FSBL and the application.
+   Set `FLASH_MODEL=1` to also flash the neural network model blob.
+
+3. Move the **BOOT1 jumper back down** (both BOOT0 and BOOT1 down = flash boot mode)
+4. Press the **reset button** — the board will now boot from the freshly flashed firmware
+
+### Expected serial output (LPUART1, 115200 8N1, TX=PE5)
+
+```
+[FSBL] === FSBL started ===
+...
+[FSBL] Jumping to app: SP=0x34200000  Reset=0x3403xxxx
+[BOOT] UART console initialized.
+...
+[AR] Calling App_ThreadX_Start().
 ```
 
-For the RAM-resident FSBL blink demo:
+### How it works
 
-```powershell
-.\scripts\run_fsbl_blink.ps1
-```
-
-For the one-command combined smoke test:
-
-```powershell
-.\scripts\run_n657_boot_chain.ps1
-```
-
-If you want the raw ST command, the script is wrapping the same CubeProgrammer flow:
-
-```powershell
-& "C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe" `
-  -c port=SWD ap=1 mode=NORMAL `
-  -el "C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\ExternalLoader\MX25UM51245G_STM32N6570-NUCLEO.stldr" `
-  -d "firmware\stm32\n657\Appli\Debug\n657_Appli.elf" -v -rst
-```
-
-And for the FSBL blink demo:
-
-```powershell
-& "C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe" `
-  -c port=SWD mode=NORMAL `
-  -d "firmware\stm32\n657\FSBL\Debug\n657_FSBL.elf" `
-  -g 0x34180400
-```
+The STM32N657 ROM bootloader reads the signed FSBL from `0x70000000` in xSPI2 flash and executes it.
+The FSBL initialises the MX25UM51245G flash chip into OctoSPI mode, copies the signed application
+from `0x70100400` in flash to `0x34000400` in AXISRAM1, then jumps to it (LRUN — load and run).

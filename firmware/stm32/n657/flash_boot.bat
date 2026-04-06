@@ -25,7 +25,7 @@ set "MODEL_RAW=%SCRIPT_DIR%..\..\..\st_ai_output\atonbuf.xSPI2.raw"
 set "MODEL_BIN=%TEMP%\atonbuf.xSPI2.flash.bin"
 set "APP_BIN=%SCRIPT_DIR%Appli\Debug\n657_Appli.bin"
 set "APP_SIGN=%SCRIPT_DIR%Appli\Debug\n657_Appli_sign_new.bin"
-set "FLASH_MODEL=0"
+set "FLASH_MODEL=1"
 set "FLASH_APP=1"
 
 if not exist "%SIGN%" (
@@ -72,27 +72,20 @@ if "%FLASH_MODEL%"=="1" (
         echo ERROR: Model image not found: "%MODEL_RAW%"
         exit /b 1
     )
-    echo === Step 2a: Prepare model image for CubeProgrammer ===
+    echo === Step 4: Flash model image at 0x70200000 ===
     copy /b "%MODEL_RAW%" "%MODEL_BIN%" >nul
     if errorlevel 1 (
         echo ERROR: Failed to stage model image as "%MODEL_BIN%"
         exit /b 1
     )
-    echo Staged model image: %MODEL_BIN%
-    echo NOTE: The raw xSPI2 blob is runtime provisioning data, not the ST boot-flow network_data.hex.
-    echo NOTE: Flashing it at 0x70000000 will overlap the signed app region, so the boot-chain test leaves it off by default.
-
-    echo.
-    echo === Step 4: Flash model image at 0x70000000 ===
-    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%MODEL_BIN%" 0x70000000
+    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%MODEL_BIN%" 0x70200000
     if errorlevel 1 (
         echo ERROR: Model flash failed.
         exit /b 1
     )
+    echo Model image flashed at 0x70200000.
 ) else (
-    echo === Step 4: Skipping model image flash for boot-chain test ===
-    echo Set FLASH_MODEL=1 only if you are intentionally testing raw xSPI2 provisioning.
-    echo For the LED smoke test, the board should use just the FSBL and signed app.
+    echo === Step 4: Skipping model image flash (FLASH_MODEL not set) ===
 )
 
 if "%FLASH_APP%"=="1" (

@@ -26,6 +26,20 @@
 #include "stm32n6xx_nucleo_xspi.h"
 #include "npu_cache.h"
 #include "stm32n6xx_hal.h"
+
+/*
+ * The AI bring-up path is very verbose in Debug builds and the format strings
+ * alone can overflow the internal ROM region. Keep the model execution path
+ * intact, but compile the per-step console chatter out unless a developer
+ * explicitly re-enables it for a size-debugging session.
+ */
+#ifndef APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
+#define APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS 0
+#endif
+#if !APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
+#undef DebugConsole_Printf
+#define DebugConsole_Printf(...) ((void) 0)
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -44,16 +58,35 @@
 #define APP_AI_MODEL_INPUT_FLOAT_COUNT \
 		(APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS \
 				* 3U)
+/* Bright-object detector threshold used to find the gauge face before
+ * cropping and resizing the tensor. 80 was a better fit than 60 on captured
+ * frames because 60 was too loose and pulled in most of the background. */
+#define APP_AI_GAUGE_BRIGHT_THRESHOLD      80U
+/* Ignore a thin border while estimating the bright bbox so edge glare does not
+ * drag the crop to x=0 or y=0. */
+#define APP_AI_GAUGE_CROP_BORDER_PIXELS    16U
+/* Feed the model a stable grayscale tensor from Y luma only.
+ * The RGB reconstruction path was collapsing to a green-only tensor on board,
+ * which is a worse mismatch than replicated luminance for this gauge task. */
+#define APP_AI_YUV422_INPUT_LUMA_ONLY      1U
+/* Dataset-wide mean dial crop from the CVAT boxes used during training. */
+#define APP_AI_TRAINING_CROP_X_MIN_RATIO   0.1027f
+#define APP_AI_TRAINING_CROP_Y_MIN_RATIO   0.2573f
+#define APP_AI_TRAINING_CROP_X_MAX_RATIO   0.7987f
+#define APP_AI_TRAINING_CROP_Y_MAX_RATIO   0.8071f
 #define APP_AI_MODEL_INPUT_FLOAT_BYTES \
 		(APP_AI_MODEL_INPUT_FLOAT_COUNT * sizeof(float))
 #define APP_AI_MODEL_OUTPUT_FLOAT_BYTES   sizeof(float)
 #define APP_AI_XSPI2_MODEL_IMAGE_PATH     "atonbuf.xSPI2.raw"
-#define APP_AI_XSPI2_MODEL_IMAGE_SIZE     3218865UL
 #define APP_AI_XSPI2_PROGRAM_CHUNK_BYTES   4096U
 #define APP_AI_XSPI2_ERASE_BLOCK_BYTES     (64U * 1024U)
 #define APP_AI_XSPI2_PROBE_BYTES           16U
-#define APP_AI_XSPI2_SCALE_OFFSET          3218160UL
-#define APP_AI_XSPI2_ZERO_POINT_OFFSET     3218864UL
+/* Model blob sits after the FSBL (0x70000000) and signed app (0x70100000).
+ * Must match FLASH_MODEL address in flash_boot.bat and EXTRAM origin in the
+ * linker script. The chip offset is the model base minus the xSPI2 window base. */
+#define APP_AI_XSPI2_MODEL_BASE_ADDR      0x70200000UL
+#define APP_AI_XSPI2_CHIP_BASE_ADDR       0x70000000UL
+#define APP_AI_XSPI2_MODEL_CHIP_OFFSET    (APP_AI_XSPI2_MODEL_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
 /* FileX can take a while to recover from card init retries or media errors.
  * Give the loader a longer window so we do not give up just before the stack
  * settles. */
@@ -76,20 +109,23 @@ uint8_t _mem_pool_xSPI2_mobilenetv2_scalar_hardcase_warmstart_int8[32U] = {
 	0U,
 };
 static uint8_t app_ai_xspi2_program_buffer[APP_AI_XSPI2_PROGRAM_CHUNK_BYTES];
+/* Start/tail signatures for the current atonbuf.xSPI2.raw.
+ * Update these when a new model is exported by running:
+ *   python3 -c "
+ *     d=open('st_ai_output/atonbuf.xSPI2.raw','rb').read()
+ *     print('start:', bytes(d[:16]).hex())
+ *     print('tail: ', bytes(d[-16:]).hex())" */
 static const uint8_t app_ai_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0xEFU, 0x1BU, 0x2BU, 0xE0U, 0xD7U, 0xE6U, 0xECU, 0x06U,
-	0x04U, 0xFFU, 0x34U, 0xECU, 0x1AU, 0xDDU, 0x14U, 0x05U,
-};
-static const uint8_t app_ai_xspi2_signature_scale[4] = {
-	0xF9U, 0x1EU, 0x8DU, 0x3EU,
-};
-static const uint8_t app_ai_xspi2_signature_zero_point[1] = {
-	0xD8U,
+	0xF4U, 0x11U, 0x27U, 0xE6U, 0xE1U, 0xF0U, 0xEFU, 0x00U,
+	0x09U, 0x02U, 0x39U, 0xEBU, 0x0FU, 0xE1U, 0x0EU, 0xFFU,
 };
 static const uint8_t app_ai_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
-	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0xD8U,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0xDAU,
 };
+/* Size of the model image last programmed to xSPI2. Set during provisioning,
+ * used by the verify functions for the tail probe offset. */
+static ULONG app_ai_xspi2_programmed_size = 0UL;
 
 /* Declare the generated NN instance locally so the dry-run helper can run the
  * AtoNN runtime on the exact network produced by Cube.AI. */
@@ -114,6 +150,32 @@ static void AppAI_LogFrameSignature(const uint8_t *frame_bytes,
 		size_t frame_size);
 static void AppAI_LogInputSignature(const float *input_buffer,
 		size_t input_float_count);
+static void AppAI_LogInputTensorWindow(const float *input_buffer,
+		size_t input_float_count);
+static void AppAI_LogTensorRowSamples(const char *label,
+		const float *input_buffer, size_t tensor_width, size_t row_y,
+		size_t x_min, size_t x_max);
+static void AppAI_LogSourcePatch(const char *label, const uint8_t *frame_bytes,
+		size_t frame_width_pixels, size_t center_x, size_t center_y,
+		size_t radius_pixels);
+static void AppAI_LogTensorPatch(const char *label, const float *input_buffer,
+		size_t tensor_width, size_t center_x, size_t center_y,
+		size_t radius_pixels);
+static void AppAI_LogSourceCropWindow(const uint8_t *frame_bytes,
+		size_t frame_size, size_t frame_width_pixels, size_t frame_height_pixels,
+		size_t crop_x_min, size_t crop_y_min, size_t crop_width,
+		size_t crop_height);
+static void AppAI_LogInt8BufferSignature(const char *label,
+		const int8_t *buffer_ptr, size_t buffer_len_bytes);
+static void AppAI_LogRawBufferSignature(const char *label,
+		const uint8_t *buffer_ptr, size_t buffer_len_bytes);
+static const char *AppAI_BufferTypeName(const LL_Buffer_InfoTypeDef *buffer_info);
+static void AppAI_LogBufferInfoAndSignature(const char *label,
+		const LL_Buffer_InfoTypeDef *buffer_info);
+static bool AppAI_EstimateGaugeCropBoxFromYuv422(const uint8_t *frame_bytes,
+		size_t frame_size, size_t frame_width_pixels, size_t frame_height_pixels,
+		size_t *crop_x_min, size_t *crop_y_min, size_t *crop_width,
+		size_t *crop_height);
 static bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr);
 static void AppAI_LogXspi2FlashPrefix(void);
 static void AppAI_LogXspi2MappedScaleBytes(void);
@@ -133,6 +195,17 @@ static bool AppAI_WaitForFileXMediaReady(uint32_t timeout_ms);
 static bool AppAI_RuntimeInitStepwise(void);
 static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
 		size_t frame_size, float *input_buffer, size_t input_float_count);
+static float AppAI_ClampNormalizedFloat(float value);
+static uint8_t AppAI_ReadYuv422Luma(const uint8_t *frame_bytes,
+		size_t frame_width_pixels, size_t source_x, size_t source_y);
+static void AppAI_ReadYuv422Quartet(const uint8_t *frame_bytes,
+		size_t frame_width_pixels, size_t source_x, size_t source_y,
+		uint8_t *quad_out);
+static float AppAI_ReadNormalizedGrayFromYuv422Pixel(const uint8_t *frame_bytes,
+		size_t frame_width_pixels, size_t source_x, size_t source_y);
+static void AppAI_ReadRgbFromYuv422Pixel(const uint8_t *frame_bytes,
+		size_t frame_width_pixels, size_t source_x, size_t source_y,
+		float *r_out, float *g_out, float *b_out);
 int mcu_cache_clean_range(uint32_t start_addr, uint32_t end_addr) {
 	return AppAI_ApplyCacheRange(start_addr, end_addr, true, false);
 }
@@ -177,6 +250,11 @@ static bool AppAI_EnsureXspi2MemoryReady(void) {
 		return true;
 	}
 
+	/* If a prior verify attempt left the flash in memory-mapped mode, erase and
+	 * write commands will fail.  Take it back to indirect mode first. DeInit
+	 * handles this cleanly regardless of the current BSP context state. */
+	(void) BSP_XSPI_NOR_DeInit(0U);
+
 	periph_clk.PeriphClockSelection = RCC_PERIPHCLK_XSPI2;
 	periph_clk.Xspi2ClockSelection = RCC_XSPI2CLKSOURCE_HCLK;
 	if (HAL_RCCEx_PeriphCLKConfig(&periph_clk) != HAL_OK) {
@@ -184,11 +262,11 @@ static bool AppAI_EnsureXspi2MemoryReady(void) {
 	}
 
 	flash.InterfaceMode = BSP_XSPI_NOR_OPI_MODE;
-	/* Keep the initial bring-up and provisioning path in STR. We can switch the
-	 * flash to DTR after the model blob has been programmed. */
 	flash.TransferRate = BSP_XSPI_NOR_STR_TRANSFER;
 	bsp_status = BSP_XSPI_NOR_Init(0U, &flash);
 	if (bsp_status != BSP_ERROR_NONE) {
+		DebugConsole_Printf("[AI] BSP_XSPI_NOR_Init for provisioning failed: %ld\r\n",
+				(long) bsp_status);
 		return false;
 	}
 
@@ -226,7 +304,8 @@ static bool AppAI_Xspi2ReadFlashProbe(const uint32_t flash_offset,
 		return false;
 	}
 
-	if (BSP_XSPI_NOR_Read(0U, flash_bytes, flash_offset,
+	if (BSP_XSPI_NOR_Read(0U, flash_bytes,
+			APP_AI_XSPI2_MODEL_CHIP_OFFSET + flash_offset,
 			(uint32_t) expected_length) != BSP_ERROR_NONE) {
 		return false;
 	}
@@ -236,7 +315,7 @@ static bool AppAI_Xspi2ReadFlashProbe(const uint32_t flash_offset,
 
 static bool AppAI_Xspi2ReadMappedProbe(const uint32_t flash_offset,
 		const uint8_t *expected_bytes, const size_t expected_length) {
-	const uint8_t *const flash_ptr = (const uint8_t *) (0x70000000UL
+	const uint8_t *const flash_ptr = (const uint8_t *) (APP_AI_XSPI2_MODEL_BASE_ADDR
 			+ flash_offset);
 
 	if ((expected_bytes == NULL) || (expected_length == 0U)
@@ -303,8 +382,8 @@ static void AppAI_LogFrameSignature(const uint8_t *frame_bytes,
 /**
  * @brief Print a compact signature for the preprocessed model input tensor.
  *
- * This tells us whether the captured scene is still distinct after the YUV422
- * to grayscale preprocessing step.
+ * This tells us whether the captured scene is still distinct after the
+ * YUV422-to-RGB preprocessing and dial ROI crop.
  */
 static void AppAI_LogInputSignature(const float *input_buffer,
 		size_t input_float_count) {
@@ -352,6 +431,688 @@ static void AppAI_LogInputSignature(const float *input_buffer,
 			(unsigned long) first_words[2], (unsigned long) first_words[3]);
 }
 
+/**
+ * @brief Print a small diagnostic window from the center of the input tensor.
+ *
+ * The top-left bytes can be padding or background, so this summary looks at the
+ * tensor region where the dial should live after cropping and resizing.
+ */
+static void AppAI_LogInputTensorWindow(const float *input_buffer,
+		size_t input_float_count) {
+	const size_t tensor_width = (size_t) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+	const size_t tensor_height = (size_t) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+	const size_t center_x = tensor_width / 2U;
+	const size_t center_y = tensor_height / 2U;
+	const size_t window_radius = 8U;
+	const size_t x_min = (center_x > window_radius) ? (center_x - window_radius)
+			: 0U;
+	const size_t y_min = (center_y > window_radius) ? (center_y - window_radius)
+			: 0U;
+	const size_t x_max = ((center_x + window_radius) < tensor_width) ?
+			(center_x + window_radius) : tensor_width;
+	const size_t y_max = ((center_y + window_radius) < tensor_height) ?
+			(center_y + window_radius) : tensor_height;
+	float sum_r = 0.0f;
+	float sum_g = 0.0f;
+	float sum_b = 0.0f;
+	float min_r = 1.0f;
+	float min_g = 1.0f;
+	float min_b = 1.0f;
+	float max_r = 0.0f;
+	float max_g = 0.0f;
+	float max_b = 0.0f;
+	float center_r = 0.0f;
+	float center_g = 0.0f;
+	float center_b = 0.0f;
+	unsigned long center_r_milli = 0U;
+	unsigned long center_g_milli = 0U;
+	unsigned long center_b_milli = 0U;
+	unsigned long mean_r_milli = 0U;
+	unsigned long mean_g_milli = 0U;
+	unsigned long mean_b_milli = 0U;
+	unsigned long min_r_milli = 0U;
+	unsigned long min_g_milli = 0U;
+	unsigned long min_b_milli = 0U;
+	unsigned long max_r_milli = 0U;
+	unsigned long max_g_milli = 0U;
+	unsigned long max_b_milli = 0U;
+	size_t sample_count = 0U;
+
+	if ((input_buffer == NULL) || (input_float_count < APP_AI_MODEL_INPUT_FLOAT_COUNT)) {
+		return;
+	}
+
+	for (size_t y = y_min; y < y_max; y++) {
+		for (size_t x = x_min; x < x_max; x++) {
+			const size_t pixel_index = (y * tensor_width) + x;
+			const size_t base = pixel_index * 3U;
+			const float r = input_buffer[base + 0U];
+			const float g = input_buffer[base + 1U];
+			const float b = input_buffer[base + 2U];
+
+			if (r < min_r) {
+				min_r = r;
+			}
+			if (g < min_g) {
+				min_g = g;
+			}
+			if (b < min_b) {
+				min_b = b;
+			}
+			if (r > max_r) {
+				max_r = r;
+			}
+			if (g > max_g) {
+				max_g = g;
+			}
+			if (b > max_b) {
+				max_b = b;
+			}
+
+			sum_r += r;
+			sum_g += g;
+			sum_b += b;
+			sample_count++;
+		}
+	}
+
+	{
+		const size_t center_base = ((center_y * tensor_width) + center_x) * 3U;
+		center_r = input_buffer[center_base + 0U];
+		center_g = input_buffer[center_base + 1U];
+		center_b = input_buffer[center_base + 2U];
+	}
+
+	if (sample_count == 0U) {
+		return;
+	}
+
+	center_r_milli = (unsigned long) ((center_r * 1000.0f) + 0.5f);
+	center_g_milli = (unsigned long) ((center_g * 1000.0f) + 0.5f);
+	center_b_milli = (unsigned long) ((center_b * 1000.0f) + 0.5f);
+	mean_r_milli = (unsigned long) ((sum_r / (float) sample_count) * 1000.0f
+			+ 0.5f);
+	mean_g_milli = (unsigned long) ((sum_g / (float) sample_count) * 1000.0f
+			+ 0.5f);
+	mean_b_milli = (unsigned long) ((sum_b / (float) sample_count) * 1000.0f
+			+ 0.5f);
+	min_r_milli = (unsigned long) (min_r * 1000.0f + 0.5f);
+	min_g_milli = (unsigned long) (min_g * 1000.0f + 0.5f);
+	min_b_milli = (unsigned long) (min_b * 1000.0f + 0.5f);
+	max_r_milli = (unsigned long) (max_r * 1000.0f + 0.5f);
+	max_g_milli = (unsigned long) (max_g * 1000.0f + 0.5f);
+	max_b_milli = (unsigned long) (max_b * 1000.0f + 0.5f);
+
+	DebugConsole_Printf(
+			"[AI] Tensor center window: x=[%lu,%lu) y=[%lu,%lu) center_milli=[%lu %lu %lu] mean_milli=[%lu %lu %lu] min_milli=[%lu %lu %lu] max_milli=[%lu %lu %lu]\r\n",
+			(unsigned long) x_min, (unsigned long) x_max, (unsigned long) y_min,
+			(unsigned long) y_max, center_r_milli, center_g_milli,
+			center_b_milli, mean_r_milli, mean_g_milli, mean_b_milli,
+			min_r_milli, min_g_milli, min_b_milli, max_r_milli, max_g_milli,
+			max_b_milli);
+
+	AppAI_LogTensorRowSamples("top", input_buffer, tensor_width,
+			y_min + ((y_max - y_min) / 4U), x_min, x_max);
+	AppAI_LogTensorRowSamples("mid", input_buffer, tensor_width, center_y,
+			x_min, x_max);
+	AppAI_LogTensorRowSamples("bottom", input_buffer, tensor_width,
+			y_min + (((y_max - y_min) * 3U) / 4U), x_min, x_max);
+}
+
+/**
+ * @brief Print a few evenly spaced samples from one tensor row.
+ *
+ * This makes it easier to see whether the row contains dial markings, the
+ * needle, or only flat background after the crop/resample step.
+ */
+static void AppAI_LogTensorRowSamples(const char *label,
+		const float *input_buffer, size_t tensor_width, size_t row_y,
+		size_t x_min, size_t x_max) {
+	const size_t sample_count = 5U;
+	size_t positions[5U] = { 0U };
+
+	if ((label == NULL) || (input_buffer == NULL) || (tensor_width == 0U)
+			|| (x_max <= x_min)) {
+		return;
+	}
+
+	{
+		const size_t span = (x_max > x_min) ? (x_max - x_min - 1U) : 0U;
+		positions[0U] = x_min;
+		positions[1U] = x_min + (span / 4U);
+		positions[2U] = x_min + (span / 2U);
+		positions[3U] = x_min + ((span * 3U) / 4U);
+		positions[4U] = (x_max > 0U) ? (x_max - 1U) : 0U;
+	}
+
+	DebugConsole_Printf("[AI] Row %s y=%lu:",
+			label, (unsigned long) row_y);
+	for (size_t index = 0U; index < sample_count; index++) {
+		const size_t pixel_index = (row_y * tensor_width) + positions[index];
+		const size_t base = pixel_index * 3U;
+		const unsigned long r_milli =
+				(unsigned long) (input_buffer[base + 0U] * 1000.0f + 0.5f);
+		const unsigned long g_milli =
+				(unsigned long) (input_buffer[base + 1U] * 1000.0f + 0.5f);
+		const unsigned long b_milli =
+				(unsigned long) (input_buffer[base + 2U] * 1000.0f + 0.5f);
+
+		DebugConsole_Printf(" x=%lu rgb=[%lu %lu %lu]",
+				(unsigned long) positions[index], r_milli, g_milli, b_milli);
+	}
+	DebugConsole_Printf("\r\n");
+}
+
+/**
+ * @brief Print a compact luma patch from the source YUV422 frame.
+ */
+static void AppAI_LogSourcePatch(const char *label, const uint8_t *frame_bytes,
+		size_t frame_width_pixels, size_t center_x, size_t center_y,
+		size_t radius_pixels) {
+	const size_t x_min = (center_x > radius_pixels) ? (center_x - radius_pixels)
+			: 0U;
+	const size_t y_min = (center_y > radius_pixels) ? (center_y - radius_pixels)
+			: 0U;
+	const size_t x_max = ((center_x + radius_pixels)
+			< APP_AI_CAPTURE_FRAME_WIDTH_PIXELS) ? (center_x + radius_pixels)
+			: (APP_AI_CAPTURE_FRAME_WIDTH_PIXELS - 1U);
+	const size_t y_max = ((center_y + radius_pixels)
+			< APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS) ? (center_y + radius_pixels)
+			: (APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS - 1U);
+
+	if ((label == NULL) || (frame_bytes == NULL) || (frame_width_pixels == 0U)) {
+		return;
+	}
+
+	DebugConsole_Printf(
+			"[AI] %s source patch center=(%lu,%lu) x=[%lu,%lu] y=[%lu,%lu]\r\n",
+			label, (unsigned long) center_x, (unsigned long) center_y,
+			(unsigned long) x_min, (unsigned long) x_max,
+			(unsigned long) y_min, (unsigned long) y_max);
+
+	for (size_t y = y_min; y <= y_max; ++y) {
+		DebugConsole_Printf("[AI] %s y=%lu:", label, (unsigned long) y);
+		for (size_t x = x_min; x <= x_max; ++x) {
+			const uint8_t luma = AppAI_ReadYuv422Luma(frame_bytes,
+					frame_width_pixels, x, y);
+			const unsigned long luma_milli =
+					(unsigned long) ((luma * 1000U) / 255U);
+
+			DebugConsole_Printf(" x=%lu=%lu", (unsigned long) x, luma_milli);
+		}
+		DebugConsole_Printf("\r\n");
+	}
+}
+
+/**
+ * @brief Print a compact tensor patch from the preprocessed input buffer.
+ */
+static void AppAI_LogTensorPatch(const char *label, const float *input_buffer,
+		size_t tensor_width, size_t center_x, size_t center_y,
+		size_t radius_pixels) {
+	const size_t x_min = (center_x > radius_pixels) ? (center_x - radius_pixels)
+			: 0U;
+	const size_t y_min = (center_y > radius_pixels) ? (center_y - radius_pixels)
+			: 0U;
+	const size_t x_max = ((center_x + radius_pixels) < tensor_width) ?
+			(center_x + radius_pixels) : (tensor_width - 1U);
+	const size_t y_max = ((center_y + radius_pixels)
+			< APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS) ? (center_y + radius_pixels)
+			: (APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS - 1U);
+
+	if ((label == NULL) || (input_buffer == NULL) || (tensor_width == 0U)) {
+		return;
+	}
+
+	DebugConsole_Printf(
+			"[AI] %s tensor patch center=(%lu,%lu) x=[%lu,%lu] y=[%lu,%lu]\r\n",
+			label, (unsigned long) center_x, (unsigned long) center_y,
+			(unsigned long) x_min, (unsigned long) x_max,
+			(unsigned long) y_min, (unsigned long) y_max);
+
+	for (size_t y = y_min; y <= y_max; ++y) {
+		DebugConsole_Printf("[AI] %s y=%lu:", label, (unsigned long) y);
+		for (size_t x = x_min; x <= x_max; ++x) {
+			const size_t pixel_index = (y * tensor_width) + x;
+			const size_t base = pixel_index * 3U;
+			const unsigned long r_milli =
+					(unsigned long) (input_buffer[base + 0U] * 1000.0f + 0.5f);
+			const unsigned long g_milli =
+					(unsigned long) (input_buffer[base + 1U] * 1000.0f + 0.5f);
+			const unsigned long b_milli =
+					(unsigned long) (input_buffer[base + 2U] * 1000.0f + 0.5f);
+
+			DebugConsole_Printf(" x=%lu=[%lu %lu %lu]",
+					(unsigned long) x, r_milli, g_milli, b_milli);
+		}
+		DebugConsole_Printf("\r\n");
+	}
+}
+
+/**
+ * @brief Print the source-crop luma that is being fed into resize/pad.
+ *
+ * This is the lowest-level image diagnostic in the pipeline. If these values
+ * are already near zero, the problem is before tensor fill. If they are healthy
+ * but the tensor is still zero, then the resize/write path is wrong.
+ */
+static void AppAI_LogSourceCropWindow(const uint8_t *frame_bytes,
+		size_t frame_size, size_t frame_width_pixels, size_t frame_height_pixels,
+		size_t crop_x_min, size_t crop_y_min, size_t crop_width,
+		size_t crop_height) {
+	const size_t center_x = crop_x_min + (crop_width / 2U);
+	const size_t center_y = crop_y_min + (crop_height / 2U);
+	const size_t window_radius = 8U;
+	const size_t x_min = (center_x > window_radius) ? (center_x - window_radius)
+			: crop_x_min;
+	const size_t y_min = (center_y > window_radius) ? (center_y - window_radius)
+			: crop_y_min;
+	const size_t x_max = ((center_x + window_radius) < (crop_x_min + crop_width)) ?
+			(center_x + window_radius) : (crop_x_min + crop_width);
+	const size_t y_max = ((center_y + window_radius) < (crop_y_min + crop_height)) ?
+			(center_y + window_radius) : (crop_y_min + crop_height);
+	uint64_t sum_luma = 0U;
+	uint8_t min_luma = 0xFFU;
+	uint8_t max_luma = 0U;
+	uint8_t center_luma = 0U;
+	unsigned long center_luma_milli = 0U;
+	unsigned long mean_luma_milli = 0U;
+	unsigned long min_luma_milli = 0U;
+	unsigned long max_luma_milli = 0U;
+	size_t sample_count = 0U;
+
+	if ((frame_bytes == NULL) || (frame_size < (frame_width_pixels
+			* frame_height_pixels * 2U))) {
+		return;
+	}
+
+	for (size_t y = y_min; y < y_max; ++y) {
+		for (size_t x = x_min; x < x_max; ++x) {
+			const uint8_t luma = AppAI_ReadYuv422Luma(frame_bytes,
+					frame_width_pixels, x, y);
+
+			if (luma < min_luma) {
+				min_luma = luma;
+			}
+			if (luma > max_luma) {
+				max_luma = luma;
+			}
+			sum_luma += (uint64_t) luma;
+			sample_count++;
+		}
+	}
+
+	center_luma = AppAI_ReadYuv422Luma(frame_bytes, frame_width_pixels,
+			center_x, center_y);
+
+	if (sample_count == 0U) {
+		return;
+	}
+
+	center_luma_milli = (unsigned long) ((center_luma * 1000U) / 255U);
+	mean_luma_milli = (unsigned long) (((sum_luma / sample_count) * 1000U)
+			/ 255U);
+	min_luma_milli = (unsigned long) ((min_luma * 1000U) / 255U);
+	max_luma_milli = (unsigned long) ((max_luma * 1000U) / 255U);
+
+	DebugConsole_Printf(
+			"[AI] Source crop window: x=[%lu,%lu) y=[%lu,%lu) center_luma_milli=[%lu] mean_luma_milli=[%lu] min_luma_milli=[%lu] max_luma_milli=[%lu]\r\n",
+			(unsigned long) x_min, (unsigned long) x_max, (unsigned long) y_min,
+			(unsigned long) y_max, center_luma_milli, mean_luma_milli,
+			min_luma_milli, max_luma_milli);
+
+	AppAI_LogSourcePatch("Source crop center", frame_bytes, frame_width_pixels,
+			center_x, center_y, 2U);
+
+	for (size_t index = 0U; index < 3U; ++index) {
+		const char *label = (index == 0U) ? "src_top"
+				: (index == 1U) ? "src_mid" : "src_bottom";
+		const size_t row_y = (index == 0U) ? (y_min + ((y_max - y_min) / 4U))
+				: (index == 1U) ? center_y
+				: (y_min + (((y_max - y_min) * 3U) / 4U));
+		const size_t sample_span = (x_max > x_min) ? (x_max - x_min - 1U) : 0U;
+		const size_t sample_x0 = x_min;
+		const size_t sample_x1 = x_min + (sample_span / 4U);
+		const size_t sample_x2 = x_min + (sample_span / 2U);
+		const size_t sample_x3 = x_min + ((sample_span * 3U) / 4U);
+		const size_t sample_x4 = (x_max > 0U) ? (x_max - 1U) : 0U;
+		const size_t sample_xs[5U] = {
+			sample_x0, sample_x1, sample_x2, sample_x3, sample_x4
+		};
+
+		DebugConsole_Printf("[AI] %s y=%lu:", label, (unsigned long) row_y);
+		for (size_t sample_index = 0U; sample_index < 5U; ++sample_index) {
+			const uint8_t luma = AppAI_ReadYuv422Luma(frame_bytes,
+					frame_width_pixels, sample_xs[sample_index], row_y);
+			const unsigned long luma_milli =
+					(unsigned long) ((luma * 1000U) / 255U);
+
+			DebugConsole_Printf(" x=%lu y=%lu",
+					(unsigned long) sample_xs[sample_index], luma_milli);
+		}
+		DebugConsole_Printf("\r\n");
+	}
+}
+
+/**
+ * @brief Print a compact signature for an int8 tensor or activation buffer.
+ *
+ * This is useful for the model boundary because it tells us whether the
+ * quantized activations are changing even when the final dequantized output is
+ * still neutral.
+ */
+static void AppAI_LogInt8BufferSignature(const char *label,
+		const int8_t *buffer_ptr, size_t buffer_len_bytes) {
+	uint8_t first_bytes[16U] = { 0U };
+	int8_t min_value = 127;
+	int8_t max_value = -128;
+	uint32_t nonzero_count = 0U;
+	uint32_t hash = 2166136261UL;
+	size_t preview_count = 0U;
+
+	if ((label == NULL) || (buffer_ptr == NULL) || (buffer_len_bytes == 0U)) {
+		DebugConsole_Printf(
+				"[AI] %s int8 signature skipped: empty buffer.\r\n",
+				(label != NULL) ? label : "(unnamed)");
+		return;
+	}
+
+	preview_count = (buffer_len_bytes < sizeof(first_bytes)) ? buffer_len_bytes
+			: sizeof(first_bytes);
+
+	for (size_t index = 0U; index < buffer_len_bytes; ++index) {
+		const uint8_t raw_byte = (uint8_t) buffer_ptr[index];
+
+		hash ^= raw_byte;
+		hash *= 16777619UL;
+
+		if (buffer_ptr[index] < min_value) {
+			min_value = buffer_ptr[index];
+		}
+		if (buffer_ptr[index] > max_value) {
+			max_value = buffer_ptr[index];
+		}
+		if (buffer_ptr[index] != 0) {
+			nonzero_count++;
+		}
+		if (index < preview_count) {
+			first_bytes[index] = raw_byte;
+		}
+	}
+
+	DebugConsole_Printf(
+			"[AI] %s int8 signature: bytes=%lu hash=0x%08lX nonzero=%lu min=%d max=%d first16=[%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X]\r\n",
+			label, (unsigned long) buffer_len_bytes, (unsigned long) hash,
+			(unsigned long) nonzero_count, (int) min_value, (int) max_value,
+			(unsigned int) first_bytes[0], (unsigned int) first_bytes[1],
+			(unsigned int) first_bytes[2], (unsigned int) first_bytes[3],
+			(unsigned int) first_bytes[4], (unsigned int) first_bytes[5],
+			(unsigned int) first_bytes[6], (unsigned int) first_bytes[7],
+			(unsigned int) first_bytes[8], (unsigned int) first_bytes[9],
+			(unsigned int) first_bytes[10], (unsigned int) first_bytes[11],
+			(unsigned int) first_bytes[12], (unsigned int) first_bytes[13],
+			(unsigned int) first_bytes[14], (unsigned int) first_bytes[15]);
+}
+
+/**
+ * @brief Print a compact signature for any buffer by raw bytes.
+ *
+ * This avoids guessing the tensor type when we just want to know whether the
+ * runtime wrote anything other than zero into a model activation.
+ */
+static void AppAI_LogRawBufferSignature(const char *label,
+		const uint8_t *buffer_ptr, size_t buffer_len_bytes) {
+	uint8_t first_bytes[16U] = { 0U };
+	uint8_t min_value = 255U;
+	uint8_t max_value = 0U;
+	uint32_t nonzero_count = 0U;
+	uint32_t hash = 2166136261UL;
+	size_t preview_count = 0U;
+
+	if ((label == NULL) || (buffer_ptr == NULL) || (buffer_len_bytes == 0U)) {
+		DebugConsole_Printf(
+				"[AI] %s raw signature skipped: empty buffer.\r\n",
+				(label != NULL) ? label : "(unnamed)");
+		return;
+	}
+
+	preview_count = (buffer_len_bytes < sizeof(first_bytes)) ? buffer_len_bytes
+			: sizeof(first_bytes);
+
+	for (size_t index = 0U; index < buffer_len_bytes; ++index) {
+		const uint8_t value = buffer_ptr[index];
+
+		hash ^= value;
+		hash *= 16777619UL;
+
+		if (value < min_value) {
+			min_value = value;
+		}
+		if (value > max_value) {
+			max_value = value;
+		}
+		if (value != 0U) {
+			nonzero_count++;
+		}
+		if (index < preview_count) {
+			first_bytes[index] = value;
+		}
+	}
+
+	DebugConsole_Printf(
+			"[AI] %s raw signature: bytes=%lu hash=0x%08lX nonzero=%lu min=%u max=%u first16=[%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X]\r\n",
+			label, (unsigned long) buffer_len_bytes, (unsigned long) hash,
+			(unsigned long) nonzero_count, (unsigned int) min_value,
+			(unsigned int) max_value, (unsigned int) first_bytes[0],
+			(unsigned int) first_bytes[1], (unsigned int) first_bytes[2],
+			(unsigned int) first_bytes[3], (unsigned int) first_bytes[4],
+			(unsigned int) first_bytes[5], (unsigned int) first_bytes[6],
+			(unsigned int) first_bytes[7], (unsigned int) first_bytes[8],
+			(unsigned int) first_bytes[9], (unsigned int) first_bytes[10],
+			(unsigned int) first_bytes[11], (unsigned int) first_bytes[12],
+			(unsigned int) first_bytes[13], (unsigned int) first_bytes[14],
+			(unsigned int) first_bytes[15]);
+}
+
+static const char *AppAI_BufferTypeName(const LL_Buffer_InfoTypeDef *buffer_info) {
+	if (buffer_info == NULL) {
+		return "(null)";
+	}
+
+	switch (buffer_info->type) {
+	case DataType_FLOAT:
+		return "FLOAT";
+	case DataType_INT8:
+		return "INT8";
+	case DataType_UINT8:
+		return "UINT8";
+	case DataType_INT16:
+		return "INT16";
+	default:
+		return "OTHER";
+	}
+}
+
+static void AppAI_LogBufferInfoAndSignature(const char *label,
+		const LL_Buffer_InfoTypeDef *buffer_info) {
+	const void *buffer_addr = NULL;
+	size_t buffer_len = 0U;
+	float scale_value = 0.0f;
+	int16_t offset_value = 0;
+	const void *scale_addr = NULL;
+	const void *offset_addr = NULL;
+
+	if ((label == NULL) || (buffer_info == NULL)) {
+		DebugConsole_Printf("[AI] %s buffer info unavailable.\r\n",
+				(label != NULL) ? label : "(unnamed)");
+		return;
+	}
+
+	buffer_addr = LL_Buffer_addr_start(buffer_info);
+	buffer_len = (size_t) LL_Buffer_len(buffer_info);
+	scale_addr = buffer_info->scale;
+	offset_addr = buffer_info->offset;
+
+	DebugConsole_Printf(
+			"[AI] %s info: name=%s addr=%p len=%lu type=%s nbits=%u ndims=%u Qm=%u Qn=%u Qunsigned=%u epoch=%u batch=%u shape=[%lu,%lu,%lu,%lu]\r\n",
+			label,
+			(buffer_info->name != NULL) ? buffer_info->name : "(unnamed)",
+			buffer_addr, (unsigned long) buffer_len,
+			AppAI_BufferTypeName(buffer_info), (unsigned int) buffer_info->nbits,
+			(unsigned int) buffer_info->ndims, (unsigned int) buffer_info->Qm,
+			(unsigned int) buffer_info->Qn, (unsigned int) buffer_info->Qunsigned,
+			(unsigned int) buffer_info->epoch, (unsigned int) buffer_info->batch,
+			(unsigned long) ((buffer_info->shape != NULL) && (buffer_info->ndims > 0U) ? buffer_info->shape[0] : 0U),
+			(unsigned long) ((buffer_info->shape != NULL) && (buffer_info->ndims > 1U) ? buffer_info->shape[1] : 0U),
+			(unsigned long) ((buffer_info->shape != NULL) && (buffer_info->ndims > 2U) ? buffer_info->shape[2] : 0U),
+			(unsigned long) ((buffer_info->shape != NULL) && (buffer_info->ndims > 3U) ? buffer_info->shape[3] : 0U));
+
+	if ((scale_addr != NULL) && (offset_addr != NULL)) {
+		(void) memcpy(&scale_value, scale_addr, sizeof(scale_value));
+		offset_value = *(const int16_t *) offset_addr;
+
+		DebugConsole_Printf("[AI] %s qparams: ", label);
+		AppAI_LogFloatApprox("scale=", scale_value);
+		DebugConsole_Printf(" offset=%d\r\n", (int) offset_value);
+	}
+
+	if (buffer_addr != NULL) {
+		AppAI_LogRawBufferSignature(label, (const uint8_t *) buffer_addr,
+				buffer_len);
+	}
+}
+
+/**
+ * @brief Estimate a gauge crop from bright pixels in the Y channel.
+ *
+ * The dial face is usually the brightest contiguous object in these captures,
+ * so a simple luma threshold is enough to steer the crop toward the useful
+ * region before we resize to the model input tensor.
+ */
+static bool AppAI_EstimateGaugeCropBoxFromYuv422(const uint8_t *frame_bytes,
+		size_t frame_size, size_t frame_width_pixels, size_t frame_height_pixels,
+		size_t *crop_x_min, size_t *crop_y_min, size_t *crop_width,
+		size_t *crop_height) {
+	const size_t frame_stride_bytes = frame_width_pixels * 2U;
+	const size_t min_crop_width = frame_width_pixels / 4U;
+	const size_t min_crop_height = frame_height_pixels / 4U;
+	const size_t training_crop_width = (size_t) (((float) frame_width_pixels
+			* (APP_AI_TRAINING_CROP_X_MAX_RATIO
+			- APP_AI_TRAINING_CROP_X_MIN_RATIO)) + 0.5f);
+	const size_t training_crop_height = (size_t) (((float) frame_height_pixels
+			* (APP_AI_TRAINING_CROP_Y_MAX_RATIO
+			- APP_AI_TRAINING_CROP_Y_MIN_RATIO)) + 0.5f);
+	size_t bright_x_min = frame_width_pixels;
+	size_t bright_y_min = frame_height_pixels;
+	size_t bright_x_max = 0U;
+	size_t bright_y_max = 0U;
+	size_t bright_count = 0U;
+	uint64_t bright_sum_x = 0U;
+	uint64_t bright_sum_y = 0U;
+	size_t bbox_width = 0U;
+	size_t bbox_height = 0U;
+	size_t bright_center_x = 0U;
+	size_t bright_center_y = 0U;
+	size_t left = 0U;
+	size_t top = 0U;
+	size_t right = 0U;
+	size_t bottom = 0U;
+
+	if ((frame_bytes == NULL) || (crop_x_min == NULL) || (crop_y_min == NULL)
+			|| (crop_width == NULL) || (crop_height == NULL)) {
+		return false;
+	}
+
+	if (frame_size < (frame_stride_bytes * frame_height_pixels)) {
+		return false;
+	}
+
+	for (size_t y = APP_AI_GAUGE_CROP_BORDER_PIXELS;
+			y < (frame_height_pixels - APP_AI_GAUGE_CROP_BORDER_PIXELS); ++y) {
+		const size_t row_offset = y * frame_stride_bytes;
+
+		for (size_t x = APP_AI_GAUGE_CROP_BORDER_PIXELS;
+				x < (frame_width_pixels - APP_AI_GAUGE_CROP_BORDER_PIXELS); ++x) {
+			const size_t pair_offset = row_offset + ((x & ~1U) * 2U);
+			const size_t y_offset = pair_offset + (((x & 1U) != 0U) ? 2U : 0U);
+			const uint8_t luma = frame_bytes[y_offset];
+
+			if (luma < APP_AI_GAUGE_BRIGHT_THRESHOLD) {
+				continue;
+			}
+
+			bright_count++;
+			bright_sum_x += (uint64_t) x;
+			bright_sum_y += (uint64_t) y;
+
+			if (x < bright_x_min) {
+				bright_x_min = x;
+			}
+			if (y < bright_y_min) {
+				bright_y_min = y;
+			}
+			if (x > bright_x_max) {
+				bright_x_max = x;
+			}
+			if (y > bright_y_max) {
+				bright_y_max = y;
+			}
+		}
+	}
+
+	if (bright_count == 0U) {
+		return false;
+	}
+
+	bright_center_x = (size_t) (bright_sum_x / (uint64_t) bright_count);
+	bright_center_y = (size_t) (bright_sum_y / (uint64_t) bright_count);
+	bbox_width = (bright_x_max - bright_x_min) + 1U;
+	bbox_height = (bright_y_max - bright_y_min) + 1U;
+	if ((bbox_width == 0U) || (bbox_height == 0U)) {
+		return false;
+	}
+
+	/* Anchor a fixed training-sized crop on the bright-region centroid instead
+	 * of using the full bright bbox, which was pulling in too much background. */
+	if (training_crop_width == 0U) {
+		return false;
+	}
+	if (training_crop_height == 0U) {
+		return false;
+	}
+
+	left = (bright_center_x > (training_crop_width / 2U)) ?
+			(bright_center_x - (training_crop_width / 2U)) : 0U;
+	top = (bright_center_y > (training_crop_height / 2U)) ?
+			(bright_center_y - (training_crop_height / 2U)) : 0U;
+	right = left + training_crop_width;
+	bottom = top + training_crop_height;
+	if (right > frame_width_pixels) {
+		right = frame_width_pixels;
+		left = (right > training_crop_width) ? (right - training_crop_width) : 0U;
+	}
+	if (bottom > frame_height_pixels) {
+		bottom = frame_height_pixels;
+		top = (bottom > training_crop_height) ? (bottom - training_crop_height)
+				: 0U;
+	}
+
+	if ((right <= left) || (bottom <= top)) {
+		return false;
+	}
+
+	*crop_x_min = left;
+	*crop_y_min = top;
+	*crop_width = right - left;
+	*crop_height = bottom - top;
+
+	if ((*crop_width < min_crop_width) || (*crop_height < min_crop_height)) {
+		return false;
+	}
+
+	return true;
+}
+
 static bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr) {
 	uint8_t source_bytes[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
 	ULONG bytes_read = 0U;
@@ -391,24 +1152,11 @@ static bool AppAI_Xspi2ModelImageMatchesFlash(void) {
 		return false;
 	}
 
-	if (!AppAI_Xspi2ReadFlashProbe(APP_AI_XSPI2_SCALE_OFFSET,
-			app_ai_xspi2_signature_scale,
-			sizeof(app_ai_xspi2_signature_scale))) {
-		DebugConsole_Printf("[AI] xSPI2 verify failed at scale signature.\r\n");
-		return false;
-	}
-
-	if (!AppAI_Xspi2ReadFlashProbe(APP_AI_XSPI2_ZERO_POINT_OFFSET,
-			app_ai_xspi2_signature_zero_point,
-			sizeof(app_ai_xspi2_signature_zero_point))) {
-		DebugConsole_Printf("[AI] xSPI2 verify failed at zero-point byte.\r\n");
-		return false;
-	}
-
-	if (!AppAI_Xspi2ReadFlashProbe(
-			APP_AI_XSPI2_MODEL_IMAGE_SIZE - APP_AI_XSPI2_PROBE_BYTES,
-			app_ai_xspi2_signature_tail,
-			sizeof(app_ai_xspi2_signature_tail))) {
+	if ((app_ai_xspi2_programmed_size >= APP_AI_XSPI2_PROBE_BYTES)
+			&& !AppAI_Xspi2ReadFlashProbe(
+					app_ai_xspi2_programmed_size - APP_AI_XSPI2_PROBE_BYTES,
+					app_ai_xspi2_signature_tail,
+					sizeof(app_ai_xspi2_signature_tail))) {
 		DebugConsole_Printf("[AI] xSPI2 verify failed at tail signature.\r\n");
 		return false;
 	}
@@ -424,26 +1172,11 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlash(void) {
 		return false;
 	}
 
-	if (!AppAI_Xspi2ReadMappedProbe(APP_AI_XSPI2_SCALE_OFFSET,
-			app_ai_xspi2_signature_scale,
-			sizeof(app_ai_xspi2_signature_scale))) {
-		DebugConsole_Printf(
-				"[AI] xSPI2 mapped verify failed at scale signature.\r\n");
-		return false;
-	}
-
-	if (!AppAI_Xspi2ReadMappedProbe(APP_AI_XSPI2_ZERO_POINT_OFFSET,
-			app_ai_xspi2_signature_zero_point,
-			sizeof(app_ai_xspi2_signature_zero_point))) {
-		DebugConsole_Printf(
-				"[AI] xSPI2 mapped verify failed at zero-point byte.\r\n");
-		return false;
-	}
-
-	if (!AppAI_Xspi2ReadMappedProbe(
-			APP_AI_XSPI2_MODEL_IMAGE_SIZE - APP_AI_XSPI2_PROBE_BYTES,
-			app_ai_xspi2_signature_tail,
-			sizeof(app_ai_xspi2_signature_tail))) {
+	if ((app_ai_xspi2_programmed_size >= APP_AI_XSPI2_PROBE_BYTES)
+			&& !AppAI_Xspi2ReadMappedProbe(
+					app_ai_xspi2_programmed_size - APP_AI_XSPI2_PROBE_BYTES,
+					app_ai_xspi2_signature_tail,
+					sizeof(app_ai_xspi2_signature_tail))) {
 		DebugConsole_Printf(
 				"[AI] xSPI2 mapped verify failed at tail signature.\r\n");
 		return false;
@@ -500,13 +1233,15 @@ static bool AppAI_ProgramXspi2ModelImageFromSd(void) {
 	}
 
 	file_size = model_file.fx_file_current_file_size;
-	if (file_size != APP_AI_XSPI2_MODEL_IMAGE_SIZE) {
+	if (file_size == 0U) {
 		(void) fx_file_close(&model_file);
 		(void) fx_directory_default_set(media_ptr, FX_NULL);
 		AppFileX_ReleaseMediaLock();
-		AppAI_LogXspi2LoadFailure("file size", FX_SUCCESS, BSP_ERROR_NONE);
+		AppAI_LogXspi2LoadFailure("file size (empty)", FX_SUCCESS, BSP_ERROR_NONE);
 		return false;
 	}
+	DebugConsole_Printf("[AI] Model file size: %lu bytes.\r\n",
+			(unsigned long) file_size);
 
 	fx_status = fx_file_seek(&model_file, 0U);
 	if (fx_status != FX_SUCCESS) {
@@ -528,7 +1263,8 @@ static bool AppAI_ProgramXspi2ModelImageFromSd(void) {
 
 	for (ULONG erase_addr = 0U; erase_addr < file_size;
 			erase_addr += APP_AI_XSPI2_ERASE_BLOCK_BYTES) {
-		bsp_status = BSP_XSPI_NOR_Erase_Block(0U, erase_addr,
+		bsp_status = BSP_XSPI_NOR_Erase_Block(0U,
+				APP_AI_XSPI2_MODEL_CHIP_OFFSET + erase_addr,
 				BSP_XSPI_NOR_ERASE_64K);
 		if (bsp_status != BSP_ERROR_NONE) {
 			(void) fx_file_close(&model_file);
@@ -567,7 +1303,8 @@ static bool AppAI_ProgramXspi2ModelImageFromSd(void) {
 		}
 
 		bsp_status = BSP_XSPI_NOR_Write(0U, app_ai_xspi2_program_buffer,
-				flash_offset, (uint32_t) chunk_size);
+				APP_AI_XSPI2_MODEL_CHIP_OFFSET + flash_offset,
+				(uint32_t) chunk_size);
 		if (bsp_status != BSP_ERROR_NONE) {
 			(void) fx_file_close(&model_file);
 			(void) fx_directory_default_set(media_ptr, FX_NULL);
@@ -585,6 +1322,8 @@ static bool AppAI_ProgramXspi2ModelImageFromSd(void) {
 	(void) fx_file_close(&model_file);
 	(void) fx_directory_default_set(media_ptr, FX_NULL);
 	AppFileX_ReleaseMediaLock();
+
+	app_ai_xspi2_programmed_size = file_size;
 
 	if (!AppAI_ReconfigureXspi2ForRuntime()) {
 		AppAI_LogXspi2LoadFailure("runtime reconfigure", FX_SUCCESS,
@@ -738,16 +1477,19 @@ static void AppAI_LogXspi2FlashPrefix(void) {
 }
 
 static void AppAI_LogXspi2MappedScaleBytes(void) {
-	const uint8_t *const scale_ptr = (const uint8_t *) (0x70000000UL
-			+ APP_AI_XSPI2_SCALE_OFFSET);
+	if (app_ai_xspi2_programmed_size < 4U) {
+		return;
+	}
+	const uint8_t *const tail_ptr = (const uint8_t *) (APP_AI_XSPI2_MODEL_BASE_ADDR
+			+ app_ai_xspi2_programmed_size - 4U);
 
-	(void) mcu_cache_invalidate_range((uint32_t) (uintptr_t) scale_ptr,
-			(uint32_t) ((uintptr_t) scale_ptr + 4U));
+	(void) mcu_cache_invalidate_range((uint32_t) (uintptr_t) tail_ptr,
+			(uint32_t) ((uintptr_t) tail_ptr + 4U));
 
 	DebugConsole_Printf(
-			"[AI] xSPI2 mapped scale bytes @%p = %02X %02X %02X %02X\r\n",
-			(const void *) scale_ptr, scale_ptr[0], scale_ptr[1], scale_ptr[2],
-			scale_ptr[3]);
+			"[AI] xSPI2 mapped tail bytes @%p = %02X %02X %02X %02X\r\n",
+			(const void *) tail_ptr, tail_ptr[0], tail_ptr[1], tail_ptr[2],
+			tail_ptr[3]);
 }
 
 static void AppAI_LogXspi2IndirectAndMappedPrefix(void) {
@@ -773,9 +1515,9 @@ static void AppAI_LogXspi2IndirectAndMappedPrefix(void) {
 		return;
 	}
 
-	(void) mcu_cache_invalidate_range(0x70000000UL,
-			0x70000000UL + APP_AI_XSPI2_PROBE_BYTES);
-	(void) memcpy(mapped_bytes, (const void *) 0x70000000UL,
+	(void) mcu_cache_invalidate_range(APP_AI_XSPI2_MODEL_BASE_ADDR,
+			APP_AI_XSPI2_MODEL_BASE_ADDR + APP_AI_XSPI2_PROBE_BYTES);
+	(void) memcpy(mapped_bytes, (const void *) APP_AI_XSPI2_MODEL_BASE_ADDR,
 			APP_AI_XSPI2_PROBE_BYTES);
 	AppAI_LogXspi2PrefixBytes("xSPI2 mapped prefix:", mapped_bytes);
 }
@@ -1047,31 +1789,60 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		return false;
 	}
 
+	DebugConsole_Printf(
+			"[AI] RunDryInference start: frame_ptr=%p frame_size=%lu input=%s addr=%p len=%lu output=%s addr=%p len=%lu\r\n",
+			(const void *) frame_bytes, (unsigned long) frame_size,
+			(input_info->name != NULL) ? input_info->name : "(unnamed)",
+			(void *) input_ptr, (unsigned long) input_len_bytes,
+			(output_info->name != NULL) ? output_info->name : "(unnamed)",
+			(void *) LL_Buffer_addr_start(output_info),
+			(unsigned long) LL_Buffer_len(output_info));
+	DebugConsole_Printf(
+			"[AI] Model I/O dims: input_floats=%lu expected=%lu output_floats=%lu\r\n",
+			(unsigned long) input_float_count,
+			(unsigned long) APP_AI_MODEL_INPUT_FLOAT_COUNT,
+			(unsigned long) (LL_Buffer_len(output_info) / sizeof(float)));
+
 	if (!AppAI_PreprocessYuv422FrameToFloatInput(frame_bytes, frame_size,
 			input_ptr, input_float_count)) {
 		return false;
 	}
 
+	DebugConsole_Printf("[AI] Preprocess completed; logging tensor signatures.\r\n");
 	AppAI_LogFrameSignature(frame_bytes, frame_size);
 	AppAI_LogInputSignature(input_ptr, input_float_count);
+	AppAI_LogInputTensorWindow(input_ptr, input_float_count);
+	AppAI_LogTensorPatch("Tensor center", input_ptr,
+			(size_t) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
+			(size_t) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS / 2U,
+			(size_t) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS / 2U, 2U);
 
 	/* Make sure the NPU sees the freshly prepared float input. */
+	DebugConsole_Printf(
+			"[AI] Cache clean input range: start=%p end=%p bytes=%lu\r\n",
+			(void *) input_ptr,
+			(void *) ((uintptr_t) input_ptr + input_len_bytes),
+			(unsigned long) input_len_bytes);
 	(void) mcu_cache_clean_range((uint32_t) (uintptr_t) input_ptr,
 			(uint32_t) ((uintptr_t) input_ptr + input_len_bytes));
-
-	AppAI_LogXspi2MappedScaleBytes();
+	DebugConsole_Printf("[AI] Cache clean complete.\r\n");
 
 	LL_ATON_RT_Reset_Network(&NN_Instance_mobilenetv2_scalar_hardcase_warmstart_int8);
+	DebugConsole_Printf("[AI] Network reset complete; entering epoch loop.\r\n");
 
 	for (uint32_t epoch_step = 0U;; ++epoch_step) {
 		
 
 		const LL_ATON_RT_RetValues_t run_status = LL_ATON_RT_RunEpochBlock(
 				&NN_Instance_mobilenetv2_scalar_hardcase_warmstart_int8);
+		DebugConsole_Printf("[AI] Epoch step %lu status=%d\r\n",
+				(unsigned long) epoch_step, (int) run_status);
 
 		
 
 		if (run_status == LL_ATON_RT_DONE) {
+			DebugConsole_Printf("[AI] Epoch loop complete after %lu steps.\r\n",
+					(unsigned long) (epoch_step + 1U));
 			break;
 		}
 
@@ -1093,8 +1864,14 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	}
 
 	/* Read the scalar output back after the runtime finishes. */
+	DebugConsole_Printf(
+			"[AI] Cache invalidate output range: start=%p end=%p bytes=%lu\r\n",
+			(const void *) output_ptr,
+			(const void *) ((uintptr_t) output_ptr + output_len_bytes),
+			(unsigned long) output_len_bytes);
 	(void) mcu_cache_invalidate_range((uint32_t) (uintptr_t) output_ptr,
 			(uint32_t) ((uintptr_t) output_ptr + output_len_bytes));
+	DebugConsole_Printf("[AI] Cache invalidate complete; reading output tensor.\r\n");
 
 	AppAI_LogInferenceResult(output_info);
 
@@ -1148,30 +1925,50 @@ static const LL_Buffer_InfoTypeDef *AppAI_FindBufferInfoByName(
 static void AppAI_LogInferenceResult(
 		const LL_Buffer_InfoTypeDef *output_buffer_info) {
 	const LL_Buffer_InfoTypeDef *internal_buffers = NULL;
+	const LL_Buffer_InfoTypeDef *quantize_output_info = NULL;
+	const LL_Buffer_InfoTypeDef *sub_output_info = NULL;
+	const LL_Buffer_InfoTypeDef *conv1_output_info = NULL;
 	const LL_Buffer_InfoTypeDef *raw_output_info = NULL;
 	const LL_Buffer_InfoTypeDef *scale_info = NULL;
 	const LL_Buffer_InfoTypeDef *zero_point_info = NULL;
-	const uint8_t *scale_bytes = NULL;
 	union {
 		float f;
 		uint32_t u;
 	} output_bits = {
 		.f = 0.0f
 	};
+	float output_value = 0.0f;
+	float head_scale = 1.0f;
+	float output_dequant_scale = 1.0f;
+	float head_dequant_value = 0.0f;
 	int8_t raw_output_value = 0;
-	int8_t dequant_zero_point = 0;
+	int8_t head_zero_point = 0;
+	int8_t output_zero_point = 0;
 
 	if (output_buffer_info == NULL) {
 		DebugConsole_Printf("[AI] Inference failed: no output buffer.\r\n");
 		return;
 	}
 
+	DebugConsole_Printf(
+			"[AI] Output buffer meta: name=%s addr=%p len=%lu\r\n",
+			(output_buffer_info->name != NULL) ? output_buffer_info->name : "(unnamed)",
+			LL_Buffer_addr_start(output_buffer_info),
+			(unsigned long) LL_Buffer_len(output_buffer_info));
+
 	(void) memcpy(&output_bits.u, LL_Buffer_addr_start(output_buffer_info),
 			sizeof(output_bits.u));
+	output_value = output_bits.f;
 
 	internal_buffers =
 			LL_ATON_Internal_Buffers_Info(
 					&NN_Instance_mobilenetv2_scalar_hardcase_warmstart_int8);
+	quantize_output_info = AppAI_FindBufferInfoByName(internal_buffers,
+			"Quantize_5_out_0");
+	sub_output_info = AppAI_FindBufferInfoByName(internal_buffers,
+			"Sub_13_out_0");
+	conv1_output_info = AppAI_FindBufferInfoByName(internal_buffers,
+			"Conv2D_19_zero_off_out_22");
 	raw_output_info = AppAI_FindBufferInfoByName(internal_buffers,
 			"Gemm_259_out_0");
 	scale_info = AppAI_FindBufferInfoByName(internal_buffers,
@@ -1179,37 +1976,67 @@ static void AppAI_LogInferenceResult(
 	zero_point_info = AppAI_FindBufferInfoByName(internal_buffers,
 			"Dequantize_261_x_zero_point");
 
+	AppAI_LogBufferInfoAndSignature("Quantize_5_out_0",
+			quantize_output_info);
+	AppAI_LogBufferInfoAndSignature("Sub_13_out_0", sub_output_info);
+	AppAI_LogBufferInfoAndSignature("Conv2D_19_zero_off_out_22",
+			conv1_output_info);
+	AppAI_LogBufferInfoAndSignature("Gemm_259_out_0", raw_output_info);
+	AppAI_LogBufferInfoAndSignature("Dequantize_261_out_0", output_buffer_info);
+
 	if ((raw_output_info != NULL) && (LL_Buffer_addr_start(raw_output_info) != NULL)) {
 		raw_output_value = *(const int8_t *) LL_Buffer_addr_start(raw_output_info);
 	}
 
+	DebugConsole_Printf(
+			"[AI] Raw tensor meta: name=%s addr=%p len=%lu\r\n",
+			(raw_output_info != NULL) ? raw_output_info->name : "(missing)",
+			(raw_output_info != NULL) ? (void *) LL_Buffer_addr_start(raw_output_info) : NULL,
+			(raw_output_info != NULL) ? (unsigned long) LL_Buffer_len(raw_output_info) : 0UL);
+
 	if ((scale_info != NULL) && (LL_Buffer_addr_start(scale_info) != NULL)) {
-		scale_bytes = (const uint8_t *) LL_Buffer_addr_start(scale_info);
+		(void) memcpy(&output_dequant_scale, LL_Buffer_addr_start(scale_info),
+				sizeof(output_dequant_scale));
 	}
 
 	if ((zero_point_info != NULL)
 			&& (LL_Buffer_addr_start(zero_point_info) != NULL)) {
-		dequant_zero_point = *(const int8_t *) LL_Buffer_addr_start(
+		output_zero_point = *(const int8_t *) LL_Buffer_addr_start(
 				zero_point_info);
 	}
 
-	DebugConsole_Printf(
-			"[AI] Inference OK; raw=%d output_bits=0x%08lx zp=%d\r\n",
-			(int) raw_output_value,
-			(unsigned long) output_bits.u,
-			(int) dequant_zero_point);
-	AppAI_LogFloatApprox("[AI] Inference output value: ", output_bits.f);
-	app_ai_last_inference_value = output_bits.f;
-	app_ai_last_inference_valid = true;
+	if (raw_output_info != NULL) {
+		const void *raw_output_addr = LL_Buffer_addr_start(raw_output_info);
 
-	if (scale_bytes != NULL) {
-		DebugConsole_Printf("[AI] Dequant scale bytes @%p = %02x %02x %02x %02x\r\n",
-				(const void *) scale_bytes,
-				(unsigned int) scale_bytes[0],
-				(unsigned int) scale_bytes[1],
-				(unsigned int) scale_bytes[2],
-				(unsigned int) scale_bytes[3]);
+		if (raw_output_addr != NULL) {
+			raw_output_value = *(const int8_t *) raw_output_addr;
+			if ((raw_output_info->scale != NULL)
+					&& (raw_output_info->offset != NULL)) {
+				(void) memcpy(&head_scale, raw_output_info->scale,
+						sizeof(head_scale));
+				head_zero_point = *(const int16_t *) raw_output_info->offset;
+			}
+			head_dequant_value = ((float) raw_output_value
+					- (float) head_zero_point) * head_scale;
+		}
 	}
+
+	/* Log both the final float output and the raw int8 tensor so we can spot
+	 * quantization mismatches without changing the model result path. */
+	DebugConsole_Printf(
+			"[AI] raw=%d head_zp=%d output_bits=0x%08lx output_zp=%d\r\n",
+			(int) raw_output_value,
+			(int) head_zero_point,
+			(unsigned long) output_bits.u,
+			(int) output_zero_point);
+	AppAI_LogFloatApprox("[AI] head_scale: ", head_scale);
+	AppAI_LogFloatApprox("[AI] head_dequant: ", head_dequant_value);
+	AppAI_LogFloatApprox("[AI] output_scale: ", output_dequant_scale);
+	AppAI_LogFloatApprox("[AI] output_zero_point: ", (float) output_zero_point);
+	AppAI_LogFloatApprox("[AI] Inference output value: ", output_value);
+
+	app_ai_last_inference_value = output_value;
+	app_ai_last_inference_valid = true;
 }
 
 static int AppAI_ApplyCacheRange(uint32_t start_addr, uint32_t end_addr,
@@ -1242,6 +2069,14 @@ static int AppAI_ApplyCacheRange(uint32_t start_addr, uint32_t end_addr,
 
 static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
 		size_t frame_size, float *input_ptr, size_t input_float_count) {
+	const size_t source_width = (size_t) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+	const size_t source_height = (size_t) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+	size_t crop_x_min = 0U;
+	size_t crop_y_min = 0U;
+	size_t crop_width = source_width;
+	size_t crop_height = source_height;
+	bool crop_found = false;
+
 	if ((frame_bytes == NULL) || (input_ptr == NULL)) {
 		
 		return false;
@@ -1253,24 +2088,541 @@ static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
 		return false;
 	}
 
-	/* Convert each 2-byte YUV422 sample pair into a grayscale RGB triplet.
-	 * This keeps the first dry-run simple while still exercising the real model
-	 * runtime on the captured frame contents. */
-	for (size_t pixel_index = 0U;
-			pixel_index < (size_t) (APP_AI_CAPTURE_FRAME_WIDTH_PIXELS
-					* APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS); pixel_index++) {
-		const size_t source_index = pixel_index * 2U;
-		const float gray = ((float) frame_bytes[source_index]
-				+ (float) frame_bytes[source_index + 1U]) * 0.5f
-				/ 255.0f;
-		const size_t dest_index = pixel_index * 3U;
+	DebugConsole_Printf(
+			"[AI] Preprocess begin: frame_ptr=%p frame_size=%lu input_ptr=%p input_floats=%lu source=%lux%lu\r\n",
+			(const void *) frame_bytes, (unsigned long) frame_size,
+			(void *) input_ptr, (unsigned long) input_float_count,
+			(unsigned long) source_width, (unsigned long) source_height);
 
-		input_ptr[dest_index + 0U] = gray;
-		input_ptr[dest_index + 1U] = gray;
-		input_ptr[dest_index + 2U] = gray;
+	/* DCMIPP_PIXEL_PACKER_FORMAT_YUV422_1 emits packed YUYV samples:
+	 *   byte 0 = Y0, byte 1 = U, byte 2 = Y1, byte 3 = V, ...
+	 * We estimate the gauge position from the bright dial face, crop around
+	 * that box, and then resize with padding to match the model input. */
+	crop_found = AppAI_EstimateGaugeCropBoxFromYuv422(frame_bytes, frame_size,
+			source_width, source_height, &crop_x_min, &crop_y_min, &crop_width,
+			&crop_height);
+	if (!crop_found) {
+		crop_x_min = (size_t) ((float) source_width
+				* APP_AI_TRAINING_CROP_X_MIN_RATIO);
+		crop_y_min = (size_t) ((float) source_height
+				* APP_AI_TRAINING_CROP_Y_MIN_RATIO);
+		crop_width = (size_t) ((float) source_width
+				* (APP_AI_TRAINING_CROP_X_MAX_RATIO
+				- APP_AI_TRAINING_CROP_X_MIN_RATIO));
+		crop_height = (size_t) ((float) source_height
+				* (APP_AI_TRAINING_CROP_Y_MAX_RATIO
+				- APP_AI_TRAINING_CROP_Y_MIN_RATIO));
+		if (crop_width == 0U) {
+			crop_width = 1U;
+		}
+		if (crop_height == 0U) {
+			crop_height = 1U;
+		}
+	}
+
+	DebugConsole_Printf(
+			"[AI] Crop %s: x=%lu y=%lu w=%lu h=%lu\r\n",
+			crop_found ? "adaptive" : "fallback",
+			(unsigned long) crop_x_min, (unsigned long) crop_y_min,
+			(unsigned long) crop_width, (unsigned long) crop_height);
+	DebugConsole_Printf(
+			"[AI] Preprocess geometry: scale from crop to tensor will be computed after padding. crop_x_max=%lu crop_y_max=%lu\r\n",
+			(unsigned long) ((crop_x_min + crop_width) - 1U),
+			(unsigned long) ((crop_y_min + crop_height) - 1U));
+
+	AppAI_LogSourceCropWindow(frame_bytes, frame_size, source_width,
+			source_height, crop_x_min, crop_y_min, crop_width, crop_height);
+
+	(void) memset(input_ptr, 0, input_float_count * sizeof(float));
+
+	{
+		const size_t output_width = (size_t) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+		const size_t output_height = (size_t) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+		const float width_scale = (float) output_width / (float) crop_width;
+		const float height_scale = (float) output_height / (float) crop_height;
+		const float scale = (width_scale < height_scale) ? width_scale
+				: height_scale;
+		const size_t scaled_width = (size_t) ((float) crop_width * scale + 0.5f);
+		const size_t scaled_height = (size_t) ((float) crop_height * scale + 0.5f);
+		const size_t pad_x = (output_width > scaled_width) ?
+				((output_width - scaled_width) / 2U) : 0U;
+		const size_t pad_y = (output_height > scaled_height) ?
+				((output_height - scaled_height) / 2U) : 0U;
+		const size_t crop_x_max_index = (crop_width > 0U) ? (crop_width - 1U) : 0U;
+		const size_t crop_y_max_index = (crop_height > 0U) ? (crop_height - 1U) : 0U;
+		const size_t probe_x = (pad_x + (scaled_width / 2U) < output_width) ?
+				(pad_x + (scaled_width / 2U)) : (output_width - 1U);
+		const size_t probe_top_y = (pad_y + (scaled_height / 4U) < output_height) ?
+				(pad_y + (scaled_height / 4U)) : (output_height - 1U);
+		const size_t probe_mid_y = (pad_y + (scaled_height / 2U) < output_height) ?
+				(pad_y + (scaled_height / 2U)) : (output_height - 1U);
+		const size_t probe_bottom_y = (pad_y + ((scaled_height * 3U) / 4U) <
+				output_height) ? (pad_y + ((scaled_height * 3U) / 4U))
+				: (output_height - 1U);
+		size_t nonzero_write_count = 0U;
+
+		DebugConsole_Printf(
+				"[AI] Resize plan: output=%lux%lu scale=%lu.%03lu scaled=%lux%lu pad=(%lu,%lu) crop_max=(%lu,%lu) probes=(%lu,%lu,%lu)\r\n",
+				(unsigned long) output_width, (unsigned long) output_height,
+				(unsigned long) (scale),
+				(unsigned long) ((scale - (float) ((unsigned long) scale)) * 1000.0f),
+				(unsigned long) scaled_width, (unsigned long) scaled_height,
+				(unsigned long) pad_x, (unsigned long) pad_y,
+				(unsigned long) crop_x_max_index, (unsigned long) crop_y_max_index,
+				(unsigned long) probe_top_y, (unsigned long) probe_mid_y,
+				(unsigned long) probe_bottom_y);
+
+		for (size_t out_y = 0U; out_y < output_height; out_y++) {
+			if ((out_y < pad_y) || (out_y >= (pad_y + scaled_height))) {
+				continue;
+			}
+
+			const float crop_y_f = ((float) (out_y - pad_y)) / scale;
+			size_t crop_y0 = (size_t) crop_y_f;
+			size_t crop_y1 = (crop_y0 < crop_y_max_index) ? (crop_y0 + 1U)
+					: crop_y_max_index;
+			float crop_y_frac = crop_y_f - (float) crop_y0;
+
+			if (crop_y0 >= crop_y_max_index) {
+				crop_y0 = crop_y_max_index;
+				crop_y1 = crop_y_max_index;
+				crop_y_frac = 0.0f;
+			}
+
+			for (size_t out_x = 0U; out_x < output_width; out_x++) {
+				const size_t dest_pixel_index = (out_y * output_width) + out_x;
+				float crop_x_frac = 0.0f;
+				float crop_x_f = 0.0f;
+				size_t crop_x0 = 0U;
+				size_t crop_x1 = 0U;
+				float r00 = 0.0f;
+				float g00 = 0.0f;
+				float b00 = 0.0f;
+				float r10 = 0.0f;
+				float g10 = 0.0f;
+				float b10 = 0.0f;
+				float r01 = 0.0f;
+				float g01 = 0.0f;
+				float b01 = 0.0f;
+				float r11 = 0.0f;
+				float g11 = 0.0f;
+				float b11 = 0.0f;
+				float top_r = 0.0f;
+				float top_g = 0.0f;
+				float top_b = 0.0f;
+				float bottom_r = 0.0f;
+				float bottom_g = 0.0f;
+				float bottom_b = 0.0f;
+				float out_r = 0.0f;
+				float out_g = 0.0f;
+				float out_b = 0.0f;
+
+				if ((out_x < pad_x) || (out_x >= (pad_x + scaled_width))) {
+					continue;
+				}
+
+				crop_x_f = ((float) (out_x - pad_x)) / scale;
+				crop_x0 = (size_t) crop_x_f;
+				crop_x1 = (crop_x0 < crop_x_max_index) ? (crop_x0 + 1U)
+						: crop_x_max_index;
+				crop_x_frac = crop_x_f - (float) crop_x0;
+
+				if (crop_x0 >= crop_x_max_index) {
+					crop_x0 = crop_x_max_index;
+					crop_x1 = crop_x_max_index;
+					crop_x_frac = 0.0f;
+				}
+
+				AppAI_ReadRgbFromYuv422Pixel(frame_bytes, source_width,
+						crop_x_min + crop_x0, crop_y_min + crop_y0, &r00, &g00,
+						&b00);
+				AppAI_ReadRgbFromYuv422Pixel(frame_bytes, source_width,
+						crop_x_min + crop_x1, crop_y_min + crop_y0, &r10, &g10,
+						&b10);
+				AppAI_ReadRgbFromYuv422Pixel(frame_bytes, source_width,
+						crop_x_min + crop_x0, crop_y_min + crop_y1, &r01, &g01,
+						&b01);
+				AppAI_ReadRgbFromYuv422Pixel(frame_bytes, source_width,
+						crop_x_min + crop_x1, crop_y_min + crop_y1, &r11, &g11,
+						&b11);
+
+				top_r = r00 + ((r10 - r00) * crop_x_frac);
+				top_g = g00 + ((g10 - g00) * crop_x_frac);
+				top_b = b00 + ((b10 - b00) * crop_x_frac);
+				bottom_r = r01 + ((r11 - r01) * crop_x_frac);
+				bottom_g = g01 + ((g11 - g01) * crop_x_frac);
+				bottom_b = b01 + ((b11 - b01) * crop_x_frac);
+				out_r = top_r + ((bottom_r - top_r) * crop_y_frac);
+				out_g = top_g + ((bottom_g - top_g) * crop_y_frac);
+				out_b = top_b + ((bottom_b - top_b) * crop_y_frac);
+
+				input_ptr[dest_pixel_index * 3U + 0U] =
+						AppAI_ClampNormalizedFloat(out_r);
+				input_ptr[dest_pixel_index * 3U + 1U] =
+						AppAI_ClampNormalizedFloat(out_g);
+				input_ptr[dest_pixel_index * 3U + 2U] =
+						AppAI_ClampNormalizedFloat(out_b);
+
+				if ((out_r > 0.0f) || (out_g > 0.0f) || (out_b > 0.0f)) {
+					nonzero_write_count++;
+				}
+
+				/* Sample a few pixels at write time so we can tell whether the
+				 * preprocessing math is producing values or whether the tensor is
+				 * being cleared somewhere else after the write. */
+				if ((out_x == probe_x) && (out_y == probe_top_y)) {
+					const size_t dest_base = dest_pixel_index * 3U;
+					const uint8_t src_luma00 = AppAI_ReadYuv422Luma(frame_bytes,
+							source_width, crop_x_min + crop_x0, crop_y_min + crop_y0);
+					const uint8_t src_luma10 = AppAI_ReadYuv422Luma(frame_bytes,
+							source_width, crop_x_min + crop_x1, crop_y_min + crop_y0);
+					const uint8_t src_luma01 = AppAI_ReadYuv422Luma(frame_bytes,
+							source_width, crop_x_min + crop_x0, crop_y_min + crop_y1);
+					const uint8_t src_luma11 = AppAI_ReadYuv422Luma(frame_bytes,
+							source_width, crop_x_min + crop_x1, crop_y_min + crop_y1);
+					const unsigned long calc_r_milli =
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_r)
+									* 1000.0f) + 0.5f);
+					const unsigned long calc_g_milli =
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_g)
+									* 1000.0f) + 0.5f);
+					const unsigned long calc_b_milli =
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_b)
+									* 1000.0f) + 0.5f);
+					const unsigned long stored_r_milli =
+							(unsigned long) ((input_ptr[dest_base + 0U] * 1000.0f)
+									+ 0.5f);
+					const unsigned long stored_g_milli =
+							(unsigned long) ((input_ptr[dest_base + 1U] * 1000.0f)
+									+ 0.5f);
+					const unsigned long stored_b_milli =
+							(unsigned long) ((input_ptr[dest_base + 2U] * 1000.0f)
+									+ 0.5f);
+
+					DebugConsole_Printf(
+							"[AI] Write probe top: out=(%lu,%lu) crop0=(%lu,%lu) crop1=(%lu,%lu) frac=[%lu %lu] src_luma=[%u %u %u %u] r00g00b00=[%lu %lu %lu] r10g10b10=[%lu %lu %lu] r01g01b01=[%lu %lu %lu] r11g11b11=[%lu %lu %lu] top=[%lu %lu %lu] bottom=[%lu %lu %lu] out=[%lu %lu %lu] calc=[%lu %lu %lu] stored_milli=[%lu %lu %lu]\r\n",
+							(unsigned long) out_x, (unsigned long) out_y,
+							(unsigned long) (crop_x_min + crop_x0),
+							(unsigned long) (crop_y_min + crop_y0),
+							(unsigned long) (crop_x_min + crop_x1),
+							(unsigned long) (crop_y_min + crop_y1),
+							(unsigned long) ((crop_x_frac * 1000.0f) + 0.5f),
+							(unsigned long) ((crop_y_frac * 1000.0f) + 0.5f),
+							(unsigned int) src_luma00, (unsigned int) src_luma10,
+							(unsigned int) src_luma01, (unsigned int) src_luma11,
+							(unsigned long) ((AppAI_ClampNormalizedFloat(r00) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(g00) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(b00) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(r10) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(g10) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(b10) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(r01) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(g01) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(b01) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(r11) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(g11) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(b11) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(top_r) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(top_g) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(top_b) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_r) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_g) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_b) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_r) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_g) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_b) * 1000.0f) + 0.5f),
+							calc_r_milli, calc_g_milli, calc_b_milli,
+							stored_r_milli, stored_g_milli, stored_b_milli);
+				}
+
+				if ((out_x == probe_x) && (out_y == probe_mid_y)) {
+					const size_t dest_base = dest_pixel_index * 3U;
+					const uint8_t src_luma00 = AppAI_ReadYuv422Luma(frame_bytes,
+							source_width, crop_x_min + crop_x0, crop_y_min + crop_y0);
+					const uint8_t src_luma10 = AppAI_ReadYuv422Luma(frame_bytes,
+							source_width, crop_x_min + crop_x1, crop_y_min + crop_y0);
+					const uint8_t src_luma01 = AppAI_ReadYuv422Luma(frame_bytes,
+							source_width, crop_x_min + crop_x0, crop_y_min + crop_y1);
+					const uint8_t src_luma11 = AppAI_ReadYuv422Luma(frame_bytes,
+							source_width, crop_x_min + crop_x1, crop_y_min + crop_y1);
+					const unsigned long calc_r_milli =
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_r)
+									* 1000.0f) + 0.5f);
+					const unsigned long calc_g_milli =
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_g)
+									* 1000.0f) + 0.5f);
+					const unsigned long calc_b_milli =
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_b)
+									* 1000.0f) + 0.5f);
+					const unsigned long stored_r_milli =
+							(unsigned long) ((input_ptr[dest_base + 0U] * 1000.0f)
+									+ 0.5f);
+					const unsigned long stored_g_milli =
+							(unsigned long) ((input_ptr[dest_base + 1U] * 1000.0f)
+									+ 0.5f);
+					const unsigned long stored_b_milli =
+							(unsigned long) ((input_ptr[dest_base + 2U] * 1000.0f)
+									+ 0.5f);
+
+					DebugConsole_Printf(
+							"[AI] Write probe mid: out=(%lu,%lu) crop0=(%lu,%lu) crop1=(%lu,%lu) frac=[%lu %lu] src_luma=[%u %u %u %u] r00g00b00=[%lu %lu %lu] r10g10b10=[%lu %lu %lu] r01g01b01=[%lu %lu %lu] r11g11b11=[%lu %lu %lu] top=[%lu %lu %lu] bottom=[%lu %lu %lu] out=[%lu %lu %lu] calc=[%lu %lu %lu] stored_milli=[%lu %lu %lu]\r\n",
+							(unsigned long) out_x, (unsigned long) out_y,
+							(unsigned long) (crop_x_min + crop_x0),
+							(unsigned long) (crop_y_min + crop_y0),
+							(unsigned long) (crop_x_min + crop_x1),
+							(unsigned long) (crop_y_min + crop_y1),
+							(unsigned long) ((crop_x_frac * 1000.0f) + 0.5f),
+							(unsigned long) ((crop_y_frac * 1000.0f) + 0.5f),
+							(unsigned int) src_luma00, (unsigned int) src_luma10,
+							(unsigned int) src_luma01, (unsigned int) src_luma11,
+							(unsigned long) ((AppAI_ClampNormalizedFloat(r00) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(g00) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(b00) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(r10) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(g10) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(b10) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(r01) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(g01) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(b01) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(r11) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(g11) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(b11) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(top_r) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(top_g) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(top_b) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_r) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_g) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_b) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_r) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_g) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_b) * 1000.0f) + 0.5f),
+							calc_r_milli, calc_g_milli, calc_b_milli,
+							stored_r_milli, stored_g_milli, stored_b_milli);
+
+					{
+						uint8_t quad00[4U] = { 0U };
+						uint8_t quad10[4U] = { 0U };
+						uint8_t quad01[4U] = { 0U };
+						uint8_t quad11[4U] = { 0U };
+
+						AppAI_ReadYuv422Quartet(frame_bytes, source_width,
+								crop_x_min + crop_x0, crop_y_min + crop_y0, quad00);
+						AppAI_ReadYuv422Quartet(frame_bytes, source_width,
+								crop_x_min + crop_x1, crop_y_min + crop_y0, quad10);
+						AppAI_ReadYuv422Quartet(frame_bytes, source_width,
+								crop_x_min + crop_x0, crop_y_min + crop_y1, quad01);
+						AppAI_ReadYuv422Quartet(frame_bytes, source_width,
+								crop_x_min + crop_x1, crop_y_min + crop_y1, quad11);
+
+						DebugConsole_Printf(
+								"[AI] Probe mid raw quartets: q00=[%u %u %u %u] q10=[%u %u %u %u] q01=[%u %u %u %u] q11=[%u %u %u %u]\r\n",
+								(unsigned int) quad00[0], (unsigned int) quad00[1],
+								(unsigned int) quad00[2], (unsigned int) quad00[3],
+								(unsigned int) quad10[0], (unsigned int) quad10[1],
+								(unsigned int) quad10[2], (unsigned int) quad10[3],
+								(unsigned int) quad01[0], (unsigned int) quad01[1],
+								(unsigned int) quad01[2], (unsigned int) quad01[3],
+								(unsigned int) quad11[0], (unsigned int) quad11[1],
+								(unsigned int) quad11[2], (unsigned int) quad11[3]);
+					}
+
+					AppAI_LogSourcePatch("Probe mid source", frame_bytes,
+							source_width, crop_x_min + crop_x0,
+							crop_y_min + crop_y0, 2U);
+					AppAI_LogTensorPatch("Probe mid tensor", input_ptr,
+							output_width, out_x, out_y, 2U);
+				}
+
+				if ((out_x == probe_x) && (out_y == probe_bottom_y)) {
+					const size_t dest_base = dest_pixel_index * 3U;
+					const uint8_t src_luma00 = AppAI_ReadYuv422Luma(frame_bytes,
+							source_width, crop_x_min + crop_x0, crop_y_min + crop_y0);
+					const uint8_t src_luma10 = AppAI_ReadYuv422Luma(frame_bytes,
+							source_width, crop_x_min + crop_x1, crop_y_min + crop_y0);
+					const uint8_t src_luma01 = AppAI_ReadYuv422Luma(frame_bytes,
+							source_width, crop_x_min + crop_x0, crop_y_min + crop_y1);
+					const uint8_t src_luma11 = AppAI_ReadYuv422Luma(frame_bytes,
+							source_width, crop_x_min + crop_x1, crop_y_min + crop_y1);
+					const unsigned long calc_r_milli =
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_r)
+									* 1000.0f) + 0.5f);
+					const unsigned long calc_g_milli =
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_g)
+									* 1000.0f) + 0.5f);
+					const unsigned long calc_b_milli =
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_b)
+									* 1000.0f) + 0.5f);
+					const unsigned long stored_r_milli =
+							(unsigned long) ((input_ptr[dest_base + 0U] * 1000.0f)
+									+ 0.5f);
+					const unsigned long stored_g_milli =
+							(unsigned long) ((input_ptr[dest_base + 1U] * 1000.0f)
+									+ 0.5f);
+					const unsigned long stored_b_milli =
+							(unsigned long) ((input_ptr[dest_base + 2U] * 1000.0f)
+									+ 0.5f);
+
+					DebugConsole_Printf(
+							"[AI] Write probe bottom: out=(%lu,%lu) crop0=(%lu,%lu) crop1=(%lu,%lu) frac=[%lu %lu] src_luma=[%u %u %u %u] r00g00b00=[%lu %lu %lu] r10g10b10=[%lu %lu %lu] r01g01b01=[%lu %lu %lu] r11g11b11=[%lu %lu %lu] top=[%lu %lu %lu] bottom=[%lu %lu %lu] out=[%lu %lu %lu] calc=[%lu %lu %lu] stored_milli=[%lu %lu %lu]\r\n",
+							(unsigned long) out_x, (unsigned long) out_y,
+							(unsigned long) (crop_x_min + crop_x0),
+							(unsigned long) (crop_y_min + crop_y0),
+							(unsigned long) (crop_x_min + crop_x1),
+							(unsigned long) (crop_y_min + crop_y1),
+							(unsigned long) ((crop_x_frac * 1000.0f) + 0.5f),
+							(unsigned long) ((crop_y_frac * 1000.0f) + 0.5f),
+							(unsigned int) src_luma00, (unsigned int) src_luma10,
+							(unsigned int) src_luma01, (unsigned int) src_luma11,
+							(unsigned long) ((AppAI_ClampNormalizedFloat(r00) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(g00) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(b00) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(r10) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(g10) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(b10) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(r01) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(g01) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(b01) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(r11) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(g11) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(b11) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(top_r) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(top_g) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(top_b) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_r) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_g) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_b) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_r) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_g) * 1000.0f) + 0.5f),
+							(unsigned long) ((AppAI_ClampNormalizedFloat(out_b) * 1000.0f) + 0.5f),
+							calc_r_milli, calc_g_milli, calc_b_milli,
+							stored_r_milli, stored_g_milli, stored_b_milli);
+				}
+			}
+		}
+
+		DebugConsole_Printf(
+				"[AI] Preprocess write summary: nonzero_pixels=%lu\r\n",
+				(unsigned long) nonzero_write_count);
+
+		{
+			const size_t tensor_center_index =
+					(((APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS / 2U)
+							* APP_AI_CAPTURE_FRAME_WIDTH_PIXELS)
+							+ (APP_AI_CAPTURE_FRAME_WIDTH_PIXELS / 2U)) * 3U;
+			const size_t tensor_q1_index =
+					(((APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS / 4U)
+							* APP_AI_CAPTURE_FRAME_WIDTH_PIXELS)
+							+ (APP_AI_CAPTURE_FRAME_WIDTH_PIXELS / 4U)) * 3U;
+			const size_t tensor_q3_index =
+					((((APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * 3U) / 4U)
+							* APP_AI_CAPTURE_FRAME_WIDTH_PIXELS)
+							+ ((APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * 3U) / 4U)) * 3U;
+			DebugConsole_Printf(
+					"[AI] Preprocess post-write probes: center=[%lu %lu %lu] q1=[%lu %lu %lu] q3=[%lu %lu %lu] base=[%lu %lu %lu %lu %lu %lu %lu %lu]\r\n",
+					(unsigned long) ((input_ptr[tensor_center_index + 0U] * 1000.0f) + 0.5f),
+					(unsigned long) ((input_ptr[tensor_center_index + 1U] * 1000.0f) + 0.5f),
+					(unsigned long) ((input_ptr[tensor_center_index + 2U] * 1000.0f) + 0.5f),
+					(unsigned long) ((input_ptr[tensor_q1_index + 0U] * 1000.0f) + 0.5f),
+					(unsigned long) ((input_ptr[tensor_q1_index + 1U] * 1000.0f) + 0.5f),
+					(unsigned long) ((input_ptr[tensor_q1_index + 2U] * 1000.0f) + 0.5f),
+					(unsigned long) ((input_ptr[tensor_q3_index + 0U] * 1000.0f) + 0.5f),
+					(unsigned long) ((input_ptr[tensor_q3_index + 1U] * 1000.0f) + 0.5f),
+					(unsigned long) ((input_ptr[tensor_q3_index + 2U] * 1000.0f) + 0.5f),
+					(unsigned long) ((input_ptr[0U] * 1000.0f) + 0.5f),
+					(unsigned long) ((input_ptr[1U] * 1000.0f) + 0.5f),
+					(unsigned long) ((input_ptr[2U] * 1000.0f) + 0.5f),
+					(unsigned long) ((input_ptr[3U] * 1000.0f) + 0.5f),
+					(unsigned long) ((input_ptr[4U] * 1000.0f) + 0.5f),
+					(unsigned long) ((input_ptr[5U] * 1000.0f) + 0.5f),
+					(unsigned long) ((input_ptr[6U] * 1000.0f) + 0.5f),
+					(unsigned long) ((input_ptr[7U] * 1000.0f) + 0.5f));
+		}
 	}
 
 	return true;
+}
+
+static float AppAI_ClampNormalizedFloat(float value) {
+	if (value < 0.0f) {
+		return 0.0f;
+	}
+
+	if (value > 1.0f) {
+		return 1.0f;
+	}
+
+	return value;
+}
+
+static uint8_t AppAI_ReadYuv422Luma(const uint8_t *frame_bytes,
+		size_t frame_width_pixels, size_t source_x, size_t source_y) {
+	const size_t pair_x = source_x & ~1U;
+	const size_t source_index = ((source_y * frame_width_pixels) + pair_x) * 2U;
+	const bool is_second_pixel = ((source_x & 1U) != 0U);
+
+	if (frame_bytes == NULL) {
+		return 0U;
+	}
+
+	return frame_bytes[source_index + (is_second_pixel ? 2U : 0U)];
+}
+
+static void AppAI_ReadYuv422Quartet(const uint8_t *frame_bytes,
+		size_t frame_width_pixels, size_t source_x, size_t source_y,
+		uint8_t *quad_out) {
+	const size_t pair_x = source_x & ~1U;
+	const size_t source_index = ((source_y * frame_width_pixels) + pair_x) * 2U;
+
+	if ((frame_bytes == NULL) || (quad_out == NULL)) {
+		return;
+	}
+
+	quad_out[0] = frame_bytes[source_index + 0U];
+	quad_out[1] = frame_bytes[source_index + 1U];
+	quad_out[2] = frame_bytes[source_index + 2U];
+	quad_out[3] = frame_bytes[source_index + 3U];
+}
+
+static float AppAI_ReadNormalizedGrayFromYuv422Pixel(const uint8_t *frame_bytes,
+		size_t frame_width_pixels, size_t source_x, size_t source_y) {
+	const uint8_t luma = AppAI_ReadYuv422Luma(frame_bytes, frame_width_pixels,
+			source_x, source_y);
+	const float normalized = ((float) luma) / 255.0f;
+
+	return AppAI_ClampNormalizedFloat(normalized);
+}
+
+static void AppAI_ReadRgbFromYuv422Pixel(const uint8_t *frame_bytes,
+		size_t frame_width_pixels, size_t source_x, size_t source_y,
+		float *r_out, float *g_out, float *b_out) {
+#if APP_AI_YUV422_INPUT_LUMA_ONLY
+	const float gray = AppAI_ReadNormalizedGrayFromYuv422Pixel(frame_bytes,
+			frame_width_pixels, source_x, source_y);
+	const float r = gray;
+	const float g = gray;
+	const float b = gray;
+#else
+	const size_t pair_x = source_x & ~1U;
+	const size_t source_index = ((source_y * frame_width_pixels) + pair_x) * 2U;
+	const bool is_second_pixel = ((source_x & 1U) != 0U);
+	const float y = ((float) frame_bytes[source_index + (is_second_pixel ? 2U : 0U)]
+			- 16.0f) * 1.1643836f;
+	const float u = (float) frame_bytes[source_index + 1U] - 128.0f;
+	const float v = (float) frame_bytes[source_index + 3U] - 128.0f;
+	const float r = (y + (1.5960268f * v)) / 255.0f;
+	const float g = (y - (0.3917623f * u) - (0.8129677f * v)) / 255.0f;
+	const float b = (y + (2.0172322f * u)) / 255.0f;
+#endif
+
+	if (r_out != NULL) {
+		*r_out = AppAI_ClampNormalizedFloat(r);
+	}
+	if (g_out != NULL) {
+		*g_out = AppAI_ClampNormalizedFloat(g);
+	}
+	if (b_out != NULL) {
+		*b_out = AppAI_ClampNormalizedFloat(b);
+	}
 }
 
 bool App_AI_GetLastInferenceResult(float *value_out) {
