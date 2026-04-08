@@ -8,6 +8,9 @@
 extern "C" {
 #endif
 
+#include "tx_api.h"
+#include <stdint.h>
+
 /**
  * @brief  Delay execution of the current ThreadX thread by a given number of milliseconds.
  * @param  delay_time_milliseconds The requested delay duration in milliseconds.
@@ -20,6 +23,34 @@ extern "C" {
  * @notes Use this instead of HAL_Delay() inside ThreadX threads to avoid dependence on HAL tick.
  */
 void DelayMilliseconds_ThreadX(const uint32_t delay_time_milliseconds);
+
+/**
+ * @brief  Lock a ThreadX mutex without blocking.
+ * @param  mutex_ptr Pointer to the mutex to acquire.
+ * @return None.
+ * @notes This is intentionally best-effort so debug logging can avoid deadlock.
+ */
+void ThreadxUtils_LockMutex(TX_MUTEX *mutex_ptr);
+
+/**
+ * @brief  Release a ThreadX mutex.
+ * @param  mutex_ptr Pointer to the mutex to release.
+ * @return None.
+ */
+void ThreadxUtils_UnlockMutex(TX_MUTEX *mutex_ptr);
+
+/**
+ * @brief  Provide the current HAL tick count in milliseconds.
+ * @return Current system tick in milliseconds.
+ */
+int32_t ThreadxUtils_GetTickMs(void);
+
+/**
+ * @brief  Convert milliseconds to ThreadX ticks, rounding up.
+ * @param  timeout_ms Timeout in milliseconds.
+ * @return Equivalent timeout in scheduler ticks.
+ */
+ULONG ThreadxUtils_MillisecondsToTicks(uint32_t timeout_ms);
 
 /**
  * @brief  Print basic usage statistics for a ThreadX byte pool.

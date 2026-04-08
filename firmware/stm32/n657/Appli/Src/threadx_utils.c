@@ -7,7 +7,9 @@
 
 #include "tx_api.h"
 #include <stdint.h>
+#include "main.h"
 #include "debug_console.h"
+#include "threadx_utils.h"
 
 /**
  * @brief  Delay execution of the current ThreadX thread by a given number of milliseconds.
@@ -32,6 +34,57 @@ void DelayMilliseconds_ThreadX(const uint32_t delay_time_milliseconds) {
 	}
 
 	(void) tx_thread_sleep((ULONG) delay_ticks);
+}
+
+/**
+ * @brief  Lock a ThreadX mutex without blocking the caller.
+ * @param  mutex_ptr Pointer to the mutex to acquire.
+ * @return None.
+ */
+void ThreadxUtils_LockMutex(TX_MUTEX *mutex_ptr) {
+	if (mutex_ptr == TX_NULL) {
+		return;
+	}
+
+	/* TX_NO_WAIT keeps debug helpers from stalling the application. */
+	(void) tx_mutex_get(mutex_ptr, TX_NO_WAIT);
+}
+
+/**
+ * @brief  Release a ThreadX mutex.
+ * @param  mutex_ptr Pointer to the mutex to release.
+ * @return None.
+ */
+void ThreadxUtils_UnlockMutex(TX_MUTEX *mutex_ptr) {
+	if (mutex_ptr == TX_NULL) {
+		return;
+	}
+
+	(void) tx_mutex_put(mutex_ptr);
+}
+
+/**
+ * @brief  Provide the current HAL tick count in milliseconds.
+ * @return Current system tick in milliseconds.
+ */
+int32_t ThreadxUtils_GetTickMs(void) {
+	return (int32_t) HAL_GetTick();
+}
+
+/**
+ * @brief  Convert milliseconds to ThreadX ticks, rounding up.
+ * @param  timeout_ms Timeout in milliseconds.
+ * @return Equivalent timeout in scheduler ticks.
+ */
+ULONG ThreadxUtils_MillisecondsToTicks(uint32_t timeout_ms) {
+	uint32_t ticks = (timeout_ms * (uint32_t) TX_TIMER_TICKS_PER_SECOND + 999U)
+			/ 1000U;
+
+	if ((timeout_ms > 0U) && (ticks == 0U)) {
+		ticks = 1U;
+	}
+
+	return (ULONG) ticks;
 }
 
 /**

@@ -28,7 +28,11 @@
 #include <stdio.h>
 #include <string.h>
 #include "app_camera_diagnostics.h"
+#include "app_camera_config.h"
 #include "app_camera_buffers.h"
+#include "app_inference_log_config.h"
+#include "app_inference_log_utils.h"
+#include "app_threadx_config.h"
 #include "app_memory_budget.h"
 #include "app_filex.h"
 #include "app_ai.h"
@@ -52,22 +56,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define INFERENCE_LOG_THREAD_PRIORITY          14U
-#define INFERENCE_LOG_DIRECTORY_NAME           "inference"
-#define INFERENCE_LOG_FILE_NAME_LENGTH         32U
-#define INFERENCE_LOG_ROW_MAX_LENGTH           48U
-#define INFERENCE_LOG_NO_RTC_BLINK_ON_MS       200U
-#define INFERENCE_LOG_NO_RTC_BLINK_OFF_MS      200U
-#define INFERENCE_LOG_NO_RTC_RETRY_DELAY_MS    2000U
-
-#define CAMERA_INIT_THREAD_PRIORITY         12U
-#define CAMERA_ISP_THREAD_PRIORITY          11U
-#define CAMERA_HEARTBEAT_THREAD_PRIORITY    10U
-#define CAMERA_AI_THREAD_PRIORITY            13U
-#define CAMERA_HEARTBEAT_PERIOD_MS          5000U
-#define CAMERA_HEARTBEAT_PULSE_MS           1000U
-#define CAMERA_HEARTBEAT_LED_GPIO_PORT      GPIOG
-#define CAMERA_HEARTBEAT_LED_PIN            GPIO_PIN_0
+#if 0
 #define CAMERA_INIT_STARTUP_DELAY_MS        200U
 #define BCAMS_IMX_I2C_ADDRESS_7BIT          0x1AU
 #define BCAMS_IMX_I2C_ADDRESS_HAL           (BCAMS_IMX_I2C_ADDRESS_7BIT << 1U)
@@ -142,6 +131,7 @@
  * raw diagnostic; it is indistinguishable from a broken DMA path. */
 #if CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC && (IMX335_TEST_PATTERN_MODE == 1)
 #error "IMX335_TEST_PATTERN_MODE=1 produces all-zero pixels in raw diag mode. Use mode 10 (color bars)."
+#endif
 #endif
 /* USER CODE END PD */
 
@@ -229,29 +219,6 @@ volatile uint32_t camera_capture_dcmipp_irq_count = 0U;
 static volatile uint32_t camera_capture_reported_byte_count = 0U;
 static volatile uint32_t camera_capture_counter_status = (uint32_t) HAL_ERROR;
 
-/* Format a float with one decimal place without relying on `%f` support in
- * newlib-nano, which is often trimmed out in embedded Debug builds. */
-static void AppThreadX_FormatFloatTenths(char *dst, size_t dst_len,
-		const char *prefix, float value) {
-	if ((dst == NULL) || (dst_len == 0U) || (prefix == NULL)) {
-		return;
-	}
-
-	bool negative = (value < 0.0f);
-	const float magnitude = negative ? -value : value;
-	long whole = (long) magnitude;
-	float fraction = magnitude - (float) whole;
-
-	unsigned tenths = (unsigned) (fraction * 10.0f + 0.5f);
-	if (tenths >= 10U) {
-		tenths = 0U;
-		whole += 1L;
-	}
-
-	(void) snprintf(dst, dst_len, "%s%s%ld.%01u\r\n", prefix,
-			negative ? "-" : "", whole, tenths);
-}
-
 /* Reuse the CubeMX-generated camera control I2C instance from main.c. */
 extern DCMIPP_HandleTypeDef hdcmipp;
 extern I2C_HandleTypeDef hi2c2;
@@ -261,8 +228,6 @@ extern I2C_HandleTypeDef hi2c2;
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
 
-static void DebugUartMutex_Lock(void);
-static void DebugUartMutex_Unlock(void);
 static VOID CameraHeartbeatThread_Entry(ULONG thread_input);
 static VOID CameraAIThread_Entry(ULONG thread_input);
 static VOID InferenceLogThread_Entry(ULONG thread_input);
@@ -314,8 +279,6 @@ static bool CameraPlatform_RequestDryInference(const uint8_t *frame_ptr,
 		ULONG frame_length);
 static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr);
 static void CameraPlatform_LogCaptureBufferSummary(uint32_t captured_bytes);
-static void CameraPlatform_LogCsiFaultSnapshot(const char *reason,
-		uint32_t data_lane, DCMIPP_HandleTypeDef *capture_dcmipp);
 static void CameraPlatform_LogCaptureState(const char *reason);
 static bool CameraPlatform_ConfigureCsiLineByteProbe(void);
 static bool CameraPlatform_PrepareDcmippSnapshot(void);
@@ -340,15 +303,11 @@ void HAL_DCMIPP_CSI_EndOfFrameEventCallback(DCMIPP_HandleTypeDef *hdcmipp,
 		uint32_t VirtualChannel);
 
 /**
- * @brief Adapter from HAL tick API to the ST IMX335 driver callback type.
+ * @brief Adapter from the HAL tick API to the ST IMX335 driver callback type.
  * @retval Current HAL tick in milliseconds.
  */
 static int32_t CameraPlatform_GetTickMs(void);
 
-/**
- * @brief Local I2C init hook matching the IMX335 vendor driver callback type.
- * @retval IMX335_OK-style status code.
- */
 static int32_t CameraPlatform_I2cInit(void);
 
 /**
@@ -393,10 +352,10 @@ __attribute__((weak))        UINT CameraPlatform_ProbeBCamsImx(void);
 
 static void DebugUartMutex_Lock(void) {
 	/* TX_NO_WAIT: never block Ã¢â‚¬â€ a missed lock means garbled output, not deadlock. */
-	(void) tx_mutex_get(&debug_uart_mutex, TX_NO_WAIT);
+	ThreadxUtils_LockMutex(&debug_uart_mutex);
 }
 static void DebugUartMutex_Unlock(void) {
-	(void) tx_mutex_put(&debug_uart_mutex);
+	ThreadxUtils_UnlockMutex(&debug_uart_mutex);
 }
 
 /**
@@ -759,7 +718,7 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 				union { float f; ULONG u; } bits = { .f = result };
 				char inference_line[48] = { 0 };
 
-				AppThreadX_FormatFloatTenths(inference_line,
+				AppInferenceLog_FormatFloatTenths(inference_line,
 						sizeof(inference_line),
 						"[AI] Inference value: ", result);
 				(void) DebugConsole_WriteString(inference_line);
@@ -943,7 +902,7 @@ static VOID InferenceLogThread_Entry(ULONG thread_input) {
 			const float inference_value = bits.f;
 			char inference_line[48] = { 0 };
 
-			AppThreadX_FormatFloatTenths(inference_line,
+			AppInferenceLog_FormatFloatTenths(inference_line,
 					sizeof(inference_line),
 					"[INFER_LOG] Inference value: ", inference_value);
 			(void) DebugConsole_WriteString(inference_line);
@@ -1793,6 +1752,7 @@ static void CameraPlatform_LogDcmippClocking(void) {
 	}
 }
 
+#if 0
 /**
  * @brief Dump a dense CSI fault snapshot whenever a lane error occurs.
  * @param reason Short note describing what triggered the dump.
@@ -1932,6 +1892,7 @@ static void CameraPlatform_LogCsiFaultSnapshot(const char *reason,
 	AppCameraDiagnostics_LogCsiLineByteCounters(reason,
 			camera_capture_csi_linebyte_event_count);
 }
+#endif
 
 
 /**
@@ -2912,7 +2873,7 @@ static void CameraPlatform_ReapplyImx335TestPattern(void) {
  * @retval Current system tick in milliseconds.
  */
 static int32_t CameraPlatform_GetTickMs(void) {
-	return (int32_t) HAL_GetTick();
+	return ThreadxUtils_GetTickMs();
 }
 
 /**
@@ -2921,14 +2882,7 @@ static int32_t CameraPlatform_GetTickMs(void) {
  * @retval Equivalent timeout in scheduler ticks.
  */
 static ULONG CameraPlatform_MillisecondsToTicks(uint32_t timeout_ms) {
-	uint32_t ticks = 0U;
-
-	ticks = (timeout_ms * (uint32_t) TX_TIMER_TICKS_PER_SECOND + 999U) / 1000U;
-	if ((timeout_ms > 0U) && (ticks == 0U)) {
-		ticks = 1U;
-	}
-
-	return (ULONG) ticks;
+	return ThreadxUtils_MillisecondsToTicks(timeout_ms);
 }
 
 
