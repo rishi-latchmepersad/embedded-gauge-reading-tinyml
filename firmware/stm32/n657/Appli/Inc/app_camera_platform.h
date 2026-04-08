@@ -27,6 +27,17 @@ int32_t CameraPlatform_GetTickMs(void);
 ULONG CameraPlatform_MillisecondsToTicks(uint32_t timeout_ms);
 bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr);
 void CameraPlatform_LogCaptureState(const char *reason);
+bool CameraPlatform_SeedImx335ExposureGain(void);
+bool CameraPlatform_EnableImx335AutoExposure(void);
+void CameraPlatform_ReapplyImx335TestPattern(void);
+bool CameraPlatform_StartImx335Stream(void);
+bool CameraPlatform_PrepareDcmippSnapshot(void);
+bool CameraPlatform_StartDcmippSnapshot(void);
+bool CameraPlatform_ConfigureCsiLineByteProbe(void);
+int32_t CameraPlatform_I2cReadReg(uint16_t dev_addr, uint16_t reg,
+		uint8_t *pdata, uint16_t length);
+int32_t CameraPlatform_I2cWriteReg(uint16_t dev_addr, uint16_t reg,
+		uint8_t *pdata, uint16_t length);
 
 #ifdef __cplusplus
 }

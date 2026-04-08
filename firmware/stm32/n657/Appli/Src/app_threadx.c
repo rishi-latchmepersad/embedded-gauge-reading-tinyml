@@ -158,7 +158,7 @@ static TX_THREAD camera_heartbeat_thread;
 static ULONG camera_heartbeat_thread_stack[CAMERA_HEARTBEAT_THREAD_STACK_SIZE_BYTES
 		/ sizeof(ULONG)];
 static bool camera_heartbeat_thread_created = false;
-static CMW_IMX335_t camera_sensor;
+CMW_IMX335_t camera_sensor;
 static CMW_Sensor_if_t camera_sensor_driver;
 static CMW_IMX335_config_t camera_sensor_config;
 static IMX335_Object_t camera_raw_sensor;
@@ -168,32 +168,32 @@ bool camera_cmw_initialized = false;
 /* Keep the middleware path active so the ISP/AEC pipeline can produce optical
  * frames instead of the raw sensor dump. */
 bool camera_capture_use_cmw_pipeline = false;
-static TX_SEMAPHORE camera_capture_done_semaphore;
-static TX_SEMAPHORE camera_capture_isp_semaphore;
+TX_SEMAPHORE camera_capture_done_semaphore;
+TX_SEMAPHORE camera_capture_isp_semaphore;
 static TX_MUTEX debug_uart_mutex;
 static bool camera_heartbeat_gpio_initialized = false;
 static bool camera_capture_sync_created = false;
 bool camera_stream_started = false;
-static volatile bool camera_capture_failed = false;
-static volatile uint32_t camera_capture_error_code = 0U;
-static volatile uint32_t camera_capture_byte_count = 0U;
-static volatile bool camera_capture_sof_seen = false;
-static volatile bool camera_capture_eof_seen = false;
-static volatile bool camera_capture_frame_done = false;
-static volatile bool camera_capture_snapshot_armed = false;
-static volatile uint32_t camera_capture_frame_event_count = 0U;
-static volatile uint32_t camera_capture_line_error_count = 0U;
-static volatile uint32_t camera_capture_line_error_mask = 0U;
-static volatile uint32_t camera_capture_csi_linebyte_event_count = 0U;
-static volatile bool camera_capture_csi_linebyte_event_logged = false;
-static volatile uint32_t camera_capture_vsync_event_count = 0U;
+volatile bool camera_capture_failed = false;
+volatile uint32_t camera_capture_error_code = 0U;
+volatile uint32_t camera_capture_byte_count = 0U;
+volatile bool camera_capture_sof_seen = false;
+volatile bool camera_capture_eof_seen = false;
+volatile bool camera_capture_frame_done = false;
+volatile bool camera_capture_snapshot_armed = false;
+volatile uint32_t camera_capture_frame_event_count = 0U;
+volatile uint32_t camera_capture_line_error_count = 0U;
+volatile uint32_t camera_capture_line_error_mask = 0U;
+volatile uint32_t camera_capture_csi_linebyte_event_count = 0U;
+volatile bool camera_capture_csi_linebyte_event_logged = false;
+volatile uint32_t camera_capture_vsync_event_count = 0U;
 volatile uint32_t camera_capture_isp_run_count = 0U;
 /* Count raw IRQ entry points so we can tell whether the interrupt chain is
  * alive even when the higher-level callbacks stay silent. */
 volatile uint32_t camera_capture_csi_irq_count = 0U;
 volatile uint32_t camera_capture_dcmipp_irq_count = 0U;
-static volatile uint32_t camera_capture_reported_byte_count = 0U;
-static volatile uint32_t camera_capture_counter_status = (uint32_t) HAL_ERROR;
+volatile uint32_t camera_capture_reported_byte_count = 0U;
+volatile uint32_t camera_capture_counter_status = (uint32_t) HAL_ERROR;
 
 /* Reuse the CubeMX-generated camera control I2C instance from main.c. */
 extern DCMIPP_HandleTypeDef hdcmipp;
@@ -220,22 +220,22 @@ UINT CameraPlatform_ProbeBCamsImx(void);
  * @retval true when the driver object is ready for sensor commands.
  */
 static bool CameraPlatform_InitializeImx335Sensor(void);
-static bool CameraPlatform_SeedImx335ExposureGain(void);
-static bool CameraPlatform_EnableImx335AutoExposure(void);
-static void CameraPlatform_ReapplyImx335TestPattern(void);
-static bool CameraPlatform_StartImx335Stream(void);
+bool CameraPlatform_SeedImx335ExposureGain(void);
+bool CameraPlatform_EnableImx335AutoExposure(void);
+void CameraPlatform_ReapplyImx335TestPattern(void);
+bool CameraPlatform_StartImx335Stream(void);
 static void CameraPlatform_LogCaptureBufferSummary(uint32_t captured_bytes) {
 	AppCameraDiagnostics_LogCaptureBufferSummary(
 			(const uint8_t*) camera_capture_result_buffer, captured_bytes,
 			camera_capture_use_cmw_pipeline);
 }
 
-static bool CameraPlatform_PrepareDcmippSnapshot(void);
-static bool CameraPlatform_StartDcmippSnapshot(void);
-static bool CameraPlatform_ConfigureCsiLineByteProbe(void);
-static int32_t CameraPlatform_I2cReadReg(uint16_t dev_addr, uint16_t reg,
+bool CameraPlatform_PrepareDcmippSnapshot(void);
+bool CameraPlatform_StartDcmippSnapshot(void);
+bool CameraPlatform_ConfigureCsiLineByteProbe(void);
+int32_t CameraPlatform_I2cReadReg(uint16_t dev_addr, uint16_t reg,
 		uint8_t *pdata, uint16_t length);
-static int32_t CameraPlatform_I2cWriteReg(uint16_t dev_addr, uint16_t reg,
+int32_t CameraPlatform_I2cWriteReg(uint16_t dev_addr, uint16_t reg,
 		uint8_t *pdata, uint16_t length);
 
 /**
@@ -1356,7 +1356,7 @@ bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
  * @brief Attempt to arm a single capture on VC0.
  * @retval true when HAL accepted the snapshot start request.
  */
-static bool CameraPlatform_StartDcmippSnapshot(void) {
+bool CameraPlatform_StartDcmippSnapshot(void) {
 	DCMIPP_HandleTypeDef *capture_dcmipp =
 			CameraPlatform_GetCaptureDcmippHandle();
 	uint8_t mode_select = IMX335_MODE_STANDBY;
@@ -1431,7 +1431,7 @@ static bool CameraPlatform_StartDcmippSnapshot(void) {
  * @brief Start IMX335 streaming for the current capture mode.
  * @retval true when the sensor enters streaming mode.
  */
-static bool CameraPlatform_StartImx335Stream(void) {
+bool CameraPlatform_StartImx335Stream(void) {
 	uint8_t mode_select = IMX335_MODE_STANDBY;
 	uint8_t streaming_value = IMX335_MODE_STREAMING;
 
@@ -1489,7 +1489,7 @@ static bool CameraPlatform_StartImx335Stream(void) {
  * @brief Configure the capture pipe using ST's camera middleware crop/downsize helpers.
  * @retval true when the output path is ready for a 224x224 YUV422 frame.
  */
-static bool CameraPlatform_PrepareDcmippSnapshot(void) {
+bool CameraPlatform_PrepareDcmippSnapshot(void) {
 	DCMIPP_HandleTypeDef *capture_dcmipp =
 			CameraPlatform_GetCaptureDcmippHandle();
 
@@ -1707,7 +1707,7 @@ static bool CameraPlatform_InitializeImx335Sensor(void) {
  * @brief Arm a CSI line/byte counter on VC0 so we can confirm line progress.
  * @retval true when the counter was programmed successfully.
  */
-static bool CameraPlatform_ConfigureCsiLineByteProbe(void) {
+bool CameraPlatform_ConfigureCsiLineByteProbe(void) {
 	DCMIPP_HandleTypeDef *capture_dcmipp =
 			CameraPlatform_GetCaptureDcmippHandle();
 	DCMIPP_CSI_LineByteCounterConfTypeDef linebyte_config = { 0 };
@@ -1753,7 +1753,7 @@ static bool CameraPlatform_ConfigureCsiLineByteProbe(void) {
  * on bright scenes.
  * @retval true when the middleware accepted the seed settings.
  */
-static bool CameraPlatform_SeedImx335ExposureGain(void) {
+bool CameraPlatform_SeedImx335ExposureGain(void) {
 	ISP_SensorInfoTypeDef sensor_info = { 0 };
 	uint32_t seed_exposure_us = 0U;
 	int32_t seed_gain_mdb = 0;
@@ -1815,7 +1815,7 @@ static bool CameraPlatform_SeedImx335ExposureGain(void) {
  * setter, so the ISP AEC state is the control point for auto exposure here.
  * @retval true when the ISP accepted the AEC enable request.
  */
-static bool CameraPlatform_EnableImx335AutoExposure(void) {
+bool CameraPlatform_EnableImx335AutoExposure(void) {
 	uint8_t aec_enabled = 0U;
 
 	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: ae-call\r\n");
@@ -1844,7 +1844,7 @@ static bool CameraPlatform_EnableImx335AutoExposure(void) {
  * is already live, so we re-write the configured pattern as a low-risk
  * diagnostic nudge after start-up.
  */
-static void CameraPlatform_ReapplyImx335TestPattern(void) {
+void CameraPlatform_ReapplyImx335TestPattern(void) {
 #if IMX335_TEST_PATTERN_MODE >= 0
 	int32_t cmw_status = CMW_CAMERA_SetTestPattern(
 	IMX335_TEST_PATTERN_MODE);
@@ -1890,7 +1890,7 @@ static int32_t CameraPlatform_I2cDeInit(void) {
  * @brief Read a 16-bit IMX335 register using the existing HAL I2C2 handle.
  * @retval IMX335_OK on success, IMX335_ERROR otherwise.
  */
-static int32_t CameraPlatform_I2cReadReg(uint16_t dev_addr, uint16_t reg,
+int32_t CameraPlatform_I2cReadReg(uint16_t dev_addr, uint16_t reg,
 		uint8_t *pdata, uint16_t length) {
 	const HAL_StatusTypeDef status = HAL_I2C_Mem_Read(&hi2c2, dev_addr, reg,
 	I2C_MEMADD_SIZE_16BIT, pdata, length, 100U);
@@ -1901,7 +1901,7 @@ static int32_t CameraPlatform_I2cReadReg(uint16_t dev_addr, uint16_t reg,
  * @brief Write a 16-bit IMX335 register using the existing HAL I2C2 handle.
  * @retval IMX335_OK on success, IMX335_ERROR otherwise.
  */
-static int32_t CameraPlatform_I2cWriteReg(uint16_t dev_addr, uint16_t reg,
+int32_t CameraPlatform_I2cWriteReg(uint16_t dev_addr, uint16_t reg,
 		uint8_t *pdata, uint16_t length) {
 	const HAL_StatusTypeDef status = HAL_I2C_Mem_Write(&hi2c2, dev_addr, reg,
 	I2C_MEMADD_SIZE_16BIT, pdata, length, 100U);

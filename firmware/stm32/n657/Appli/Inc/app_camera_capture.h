@@ -11,6 +11,7 @@
 #define __APP_CAMERA_CAPTURE_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -21,6 +22,10 @@ bool AppCameraCapture_RunImx335Background(void);
 
 /* Capture a frame, save it to storage, and queue dry-run inference if needed. */
 bool AppCameraCapture_CaptureAndStoreSingleFrame(void);
+
+/* Internal capture helpers now owned by the capture module. */
+bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr);
+void AppCameraCapture_LogCaptureState(const char *reason);
 
 #ifdef __cplusplus
 }

@@ -130,6 +130,7 @@ Already split out:
 ### `app_camera_capture.*`
 
 - High-level camera capture flow.
+- Capture-state snapshots and frame-acquisition helpers now live here.
 - Frame save / SD handoff.
 - Dry-run inference queueing after a successful processed capture.
 - This module now owns the capture/save orchestration that used to live in `app_threadx.c`.
