@@ -17,6 +17,7 @@
 - We will use STM32 Cube IDE extension for development of the C code.
 - We will use STM32 Cube MX for development of the C BSP packages etc.
 - Favor `src/` layout conventions and Poetry tooling.
+- Write any important details for yourself in /docs/ai-memory.md
 
 ## Commands
 - Use `poetry` for env management and scripts.

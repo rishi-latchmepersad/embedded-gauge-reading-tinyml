@@ -20,6 +20,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "app_filex.h"
+#include "app_storage.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -656,7 +657,7 @@ static void AppFileX_StateMachine_Step(
 		}
 
 		g_filex_media_ready = true;
-		App_ThreadX_NotifyStorageReady();
+		AppStorage_NotifyMediaReady();
 		DebugConsole_Printf(
 				"Verified /%s directory on SD card.\r\n",
 				CAPTURED_IMAGES_DIRECTORY_NAME);

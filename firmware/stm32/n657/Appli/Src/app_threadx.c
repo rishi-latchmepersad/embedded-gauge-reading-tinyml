@@ -30,6 +30,8 @@
 #include "app_camera_diagnostics.h"
 #include "app_camera_config.h"
 #include "app_camera_buffers.h"
+#include "app_camera_platform.h"
+#include "app_storage.h"
 #include "app_inference_log_config.h"
 #include "app_inference_log_utils.h"
 #include "app_threadx_config.h"
@@ -189,11 +191,9 @@ static bool camera_capture_use_cmw_pipeline = false;
 static TX_SEMAPHORE camera_capture_done_semaphore;
 static TX_SEMAPHORE camera_capture_isp_semaphore;
 static TX_SEMAPHORE camera_ai_request_semaphore;
-static TX_EVENT_FLAGS_GROUP camera_storage_ready_flags;
 static TX_MUTEX debug_uart_mutex;
 static bool camera_heartbeat_gpio_initialized = false;
 static bool camera_capture_sync_created = false;
-static bool camera_storage_ready_sync_created = false;
 static bool camera_ai_sync_created = false;
 static bool camera_stream_started = false;
 static volatile const uint8_t *camera_ai_request_frame_ptr = NULL;
@@ -246,17 +246,6 @@ static VOID CameraIspThread_Entry(ULONG thread_input);
 static bool Camera_ProbeBCamsImx(void);
 
 /**
- * @brief Read the IMX335 chip ID register over the camera control bus.
- * @param[out] chip_id Receives the 8-bit IMX335 identification value.
- * @retval HAL status from the I2C register read.
- */
-static HAL_StatusTypeDef CameraPlatform_ReadImx335ChipId(uint8_t *chip_id);
-static void CameraPlatform_ResetImx335Module(void);
-static void CameraPlatform_CmwEnablePin(int value);
-static void CameraPlatform_CmwShutdownPin(int value);
-static void CameraPlatform_CmwDelay(uint32_t delay_ms);
-
-/**
  * @brief Register bus callbacks with the ST IMX335 driver object.
  * @retval true when the driver object is ready for sensor commands.
  */
@@ -271,9 +260,6 @@ static bool CameraPlatform_SeedImx335ExposureGain(void);
 static bool CameraPlatform_EnableImx335AutoExposure(void);
 static void CameraPlatform_ReapplyImx335TestPattern(void);
 static bool CameraPlatform_StartImx335Stream(void);
-static bool CameraPlatform_WaitForStorageReady(uint32_t timeout_ms);
-static bool CameraPlatform_BuildCaptureFileName(CHAR *file_name_ptr,
-		ULONG file_name_length, const CHAR *file_extension_ptr);
 static bool CameraPlatform_CaptureAndStoreSingleFrame(void);
 static bool CameraPlatform_RequestDryInference(const uint8_t *frame_ptr,
 		ULONG frame_length);
@@ -285,8 +271,6 @@ static bool CameraPlatform_PrepareDcmippSnapshot(void);
 static bool CameraPlatform_StartDcmippSnapshot(void);
 static bool CameraPlatform_RunImx335Background(void);
 
-static ULONG CameraPlatform_MillisecondsToTicks(uint32_t timeout_ms);
-static DCMIPP_HandleTypeDef* CameraPlatform_GetCaptureDcmippHandle(void);
 int CMW_CAMERA_PIPE_VsyncEventCallback(uint32_t pipe);
 int CMW_CAMERA_PIPE_FrameEventCallback(uint32_t pipe);
 void CMW_CAMERA_PIPE_ErrorCallback(uint32_t pipe);
@@ -301,12 +285,6 @@ void HAL_DCMIPP_CSI_StartOfFrameEventCallback(DCMIPP_HandleTypeDef *hdcmipp,
 		uint32_t VirtualChannel);
 void HAL_DCMIPP_CSI_EndOfFrameEventCallback(DCMIPP_HandleTypeDef *hdcmipp,
 		uint32_t VirtualChannel);
-
-/**
- * @brief Adapter from the HAL tick API to the ST IMX335 driver callback type.
- * @retval Current HAL tick in milliseconds.
- */
-static int32_t CameraPlatform_GetTickMs(void);
 
 static int32_t CameraPlatform_I2cInit(void);
 
@@ -423,17 +401,13 @@ UINT App_ThreadX_Start(void) {
 		camera_capture_sync_created = true;
 	}
 
-	if (!camera_storage_ready_sync_created) {
-		const UINT ready_flags_status = tx_event_flags_create(
-				&camera_storage_ready_flags, "camera_storage_ready");
-		if (ready_flags_status != TX_SUCCESS) {
-			DebugConsole_Printf(
-					"[CAMERA][THREAD] Failed to create storage-ready event flags, status=%lu\r\n",
-					(unsigned long) ready_flags_status);
-			return ready_flags_status;
+	{
+		const UINT storage_init_status = AppStorage_Init();
+		if (storage_init_status != TX_SUCCESS) {
+		DebugConsole_Printf(
+				"[CAMERA][THREAD] Failed to create storage-ready event flags.\r\n");
+		return storage_init_status;
 		}
-
-		camera_storage_ready_sync_created = true;
 	}
 
 	if (!camera_ai_sync_created) {
@@ -1125,73 +1099,6 @@ UINT CameraPlatform_ProbeBCamsImx(void) {
 }
 
 /**
- * @brief Read the official IMX335 chip-ID register.
- * @param[out] chip_id Receives the register contents on success.
- * @retval HAL status of the I2C memory read transaction.
- */
-static HAL_StatusTypeDef CameraPlatform_ReadImx335ChipId(uint8_t *chip_id) {
-	if (chip_id == NULL) {
-		return HAL_ERROR;
-	}
-
-	return HAL_I2C_Mem_Read(&hi2c2,
-	BCAMS_IMX_I2C_ADDRESS_HAL,
-	IMX335_CHIP_ID_REG,
-	I2C_MEMADD_SIZE_16BIT, chip_id, 1U,
-	BCAMS_IMX_I2C_PROBE_TIMEOUT_MS);
-}
-
-/**
- * @brief Apply the MB1854 enable/reset sequence used by ST's camera middleware.
- *
- * The IMX335 board expects module power and the 24 MHz camera clock to be
- * enabled before the reset pin is pulsed low then high. Mirroring ST's own
- * sequence here keeps the standalone app aligned with the reference BSP.
- */
-static void CameraPlatform_ResetImx335Module(void) {
-	/* Keep the module powered so the board can provide DVDD and CAM_CLK. */
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: power-on\r\n");
-	HAL_GPIO_WritePin(CAM1_GPIO_Port, CAM1_Pin, GPIO_PIN_SET);
-	DelayMilliseconds_ThreadX(BCAMS_IMX_POWER_SETTLE_DELAY_MS);
-
-	/* Pulse the sensor reset line exactly as the vendor middleware does. */
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: reset-pulse\r\n");
-	HAL_GPIO_WritePin(CAM_NRST_GPIO_Port, CAM_NRST_Pin, GPIO_PIN_RESET);
-	DelayMilliseconds_ThreadX(BCAMS_IMX_RESET_ASSERT_DELAY_MS);
-	HAL_GPIO_WritePin(CAM_NRST_GPIO_Port, CAM_NRST_Pin, GPIO_PIN_SET);
-	DelayMilliseconds_ThreadX(BCAMS_IMX_RESET_RELEASE_DELAY_MS);
-
-	DebugConsole_Printf(
-			"[CAMERA][PROBE]   - Applied IMX335 reset pulse after module enable.\r\n");
-}
-
-/**
- * @brief Drive the camera module enable pin in the form expected by ST's middleware.
- * @param value Non-zero to enable the module, zero to disable it.
- */
-static void CameraPlatform_CmwEnablePin(int value) {
-	HAL_GPIO_WritePin(CAM1_GPIO_Port, CAM1_Pin,
-			(value != 0) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-}
-
-/**
- * @brief Drive the camera reset pin in the form expected by ST's middleware.
- * @param value Non-zero to release reset, zero to assert reset.
- */
-static void CameraPlatform_CmwShutdownPin(int value) {
-	HAL_GPIO_WritePin(CAM_NRST_GPIO_Port, CAM_NRST_Pin,
-			(value != 0) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-}
-
-/**
- * @brief Delay helper used by ST's camera middleware from the ThreadX camera thread.
- * @param delay_ms Delay duration in milliseconds.
- */
-static void CameraPlatform_CmwDelay(uint32_t delay_ms) {
-	DelayMilliseconds_ThreadX(delay_ms);
-}
-
-/**
  * @brief Prepare ST's IMX335 middleware bridge with the project's I2C and ISP hooks.
  * @retval true when the middleware probe succeeded and exposed the sensor callbacks.
  */
@@ -1358,21 +1265,6 @@ static bool CameraPlatform_RunImx335Background(void) {
 }
 
 /**
- * @brief Return the active DCMIPP handle used by the current capture path.
- * @retval Pointer to the middleware-owned DCMIPP handle when available, else the
- *         CubeMX-generated application handle.
- */
-static DCMIPP_HandleTypeDef* CameraPlatform_GetCaptureDcmippHandle(void) {
-	DCMIPP_HandleTypeDef *cmw_handle = CMW_CAMERA_GetDCMIPPHandle();
-
-	if ((cmw_handle != NULL) && (cmw_handle->Instance != NULL)) {
-		return cmw_handle;
-	}
-
-	return &hdcmipp;
-}
-
-/**
  * @brief Clock hook used by ST's camera middleware before HAL_DCMIPP_Init().
  * @param hdcmipp Unused DCMIPP handle supplied by the middleware.
  * @retval HAL status from the peripheral clock configuration.
@@ -1394,82 +1286,8 @@ HAL_StatusTypeDef MX_DCMIPP_ClockConfig(DCMIPP_HandleTypeDef *hdcmipp) {
 	return HAL_RCCEx_PeriphCLKConfig(&periph_clk_init);
 }
 
-/**
- * @brief Wait for FileX to finish mounting the SD card and creating the image directory.
- * @param timeout_ms Maximum time to wait before giving up.
- * @retval true when storage is ready for image writes.
- */
-static bool CameraPlatform_WaitForStorageReady(uint32_t timeout_ms) {
-	const ULONG deadline_tick = tx_time_get()
-			+ CameraPlatform_MillisecondsToTicks(timeout_ms);
-	ULONG actual_flags = 0U;
-
-	while (!AppFileX_IsMediaReady()) {
-		if (tx_time_get() >= deadline_tick) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] Timed out waiting for FileX media readiness.\r\n");
-			return false;
-		}
-
-		if (camera_storage_ready_sync_created) {
-			const UINT flag_status = tx_event_flags_get(
-					&camera_storage_ready_flags,
-					CAMERA_STORAGE_READY_EVENT_FLAG, TX_OR_CLEAR, &actual_flags,
-					CameraPlatform_MillisecondsToTicks(50U));
-			if ((flag_status == TX_SUCCESS)
-					&& ((actual_flags & CAMERA_STORAGE_READY_EVENT_FLAG) != 0U)) {
-				break;
-			}
-		} else {
-			DelayMilliseconds_ThreadX(50U);
-		}
-	}
-
-	return true;
-}
-
 void App_ThreadX_NotifyStorageReady(void) {
-	if (!camera_storage_ready_sync_created) {
-		return;
-	}
-
-	(void) tx_event_flags_set(&camera_storage_ready_flags,
-			CAMERA_STORAGE_READY_EVENT_FLAG, TX_OR);
-}
-
-/**
- * @brief Build a capture filename from the DS3231 time if available.
- *
- * We prefer timestamped names so saved images are easy to correlate with the
- * RTC and the boot log. If the RTC cannot be read, we fall back to the legacy
- * numbered naming helper.
- */
-static bool CameraPlatform_BuildCaptureFileName(CHAR *file_name_ptr,
-		ULONG file_name_length, const CHAR *file_extension_ptr) {
-	CHAR rtc_stamp[32] = { 0 };
-	int written = 0;
-	const bool rtc_ready = App_Clock_GetCaptureTimestamp(rtc_stamp,
-			sizeof(rtc_stamp));
-
-	if ((file_name_ptr == NULL) || (file_name_length == 0U)
-			|| (file_extension_ptr == NULL) || (file_extension_ptr[0] == '\0')) {
-		return false;
-	}
-
-	if (rtc_ready) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Using RTC timestamp %s for capture name.\r\n",
-				rtc_stamp);
-		written = snprintf(file_name_ptr, (size_t) file_name_length,
-				"capture_%s.%s", rtc_stamp, file_extension_ptr);
-		return (written > 0)
-				&& ((ULONG) written < file_name_length);
-	}
-
-	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] RTC timestamp unavailable; using numbered fallback.\r\n");
-	return (AppFileX_GetNextCapturedImageName(file_name_ptr, file_name_length,
-			file_extension_ptr) == FX_SUCCESS);
+	AppStorage_NotifyMediaReady();
 }
 
 /**
@@ -1484,7 +1302,7 @@ static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
 	ULONG image_length = captured_bytes;
 	const CHAR *file_extension = camera_capture_use_cmw_pipeline ? "yuv422"
 			: "raw16";
-	if (!CameraPlatform_WaitForStorageReady(CAMERA_STORAGE_WAIT_TIMEOUT_MS)) {
+	if (!AppStorage_WaitForMediaReady(CAMERA_STORAGE_WAIT_TIMEOUT_MS)) {
 		return false;
 	}
 
@@ -1514,7 +1332,7 @@ static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
 	AppCameraDiagnostics_LogCaptureBufferPreview("ready-to-save", image_ptr,
 			(uint32_t) image_length);
 
-	if (!CameraPlatform_BuildCaptureFileName(capture_file_name,
+	if (!AppStorage_BuildCaptureFileName(capture_file_name,
 			sizeof(capture_file_name), file_extension)) {
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] Failed to build capture filename.\r\n");
@@ -2867,24 +2685,6 @@ static void CameraPlatform_ReapplyImx335TestPattern(void) {
 	}
 #endif
 }
-
-/**
- * @brief Provide the current HAL tick count to the vendor IMX335 driver.
- * @retval Current system tick in milliseconds.
- */
-static int32_t CameraPlatform_GetTickMs(void) {
-	return ThreadxUtils_GetTickMs();
-}
-
-/**
- * @brief Convert milliseconds to ThreadX ticks, rounding up to ensure waits do not underflow.
- * @param timeout_ms Timeout in milliseconds.
- * @retval Equivalent timeout in scheduler ticks.
- */
-static ULONG CameraPlatform_MillisecondsToTicks(uint32_t timeout_ms) {
-	return ThreadxUtils_MillisecondsToTicks(timeout_ms);
-}
-
 
 /**
  * @brief Validate that the shared CubeMX I2C2 instance is ready for sensor use.
