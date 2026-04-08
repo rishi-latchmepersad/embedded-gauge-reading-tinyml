@@ -19,6 +19,7 @@ Already split out:
 - `app_camera_buffers.*`
 - `app_camera_platform.*`
 - `app_storage.*`
+- `app_inference_runtime.*`
 - `app_camera_diagnostics.*`
 - `app_memory_budget.h`
 - `app_camera_config.h`
@@ -197,7 +198,7 @@ Done when:
 
 - Camera capture can be read without digging through thread startup code.
 
-### 8. `app_ai_runtime.*` future module
+### 8. `app_inference_runtime.*`
 
 Role:
 
@@ -258,7 +259,7 @@ When we continue, the safest order is:
 1. Finish trimming any remaining generic helpers from `app_threadx.c`.
 2. Move camera bring-up helpers into `app_camera_platform.*`.
 3. Move the capture loop into `app_camera_capture.*`.
-4. Move inference invocation into `app_ai_runtime.*`.
+4. Move inference invocation into `app_inference_runtime.*`.
 5. Split storage/logging policy if it still grows.
 6. Revisit memory budgets and linker layout once the code is cleaner.
 

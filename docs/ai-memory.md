@@ -38,6 +38,7 @@ Already split out:
 - `app_camera_buffers.*`
 - `app_camera_platform.*`
 - `app_storage.*`
+- `app_inference_runtime.*`
 - `app_camera_diagnostics.*`
 - `app_memory_budget.h`
 - `app_camera_config.h`
@@ -113,6 +114,14 @@ Already split out:
 - The event flag group and sync state live inside `app_storage.c`
 - RTC-backed capture filename generation with FileX fallback
 
+### `app_inference_runtime.*`
+
+- AI worker thread
+- Inference request queueing
+- Inference log thread
+- One-shot dry-run frame handling
+- The AI/runtime boundary should stay behind this module
+
 ### `app_camera_diagnostics.*`
 
 - Camera debug dumps, state snapshots, and capture diagnostics.
@@ -145,6 +154,7 @@ Already split out:
 
 - Keep peeling `app_threadx.c` into smaller modules.
 - Turn `main.c` and `app_threadx.c` into coordinators.
+- Keep AI request/logging plumbing in `app_inference_runtime.*`.
 - Split camera bring-up, capture, AI runtime, and storage into separate modules when they grow.
 - Keep each refactor slice small enough to build and board-test on its own.
 

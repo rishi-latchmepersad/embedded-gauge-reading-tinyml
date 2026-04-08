@@ -31,9 +31,8 @@
 #include "app_camera_config.h"
 #include "app_camera_buffers.h"
 #include "app_camera_platform.h"
+#include "app_inference_runtime.h"
 #include "app_storage.h"
-#include "app_inference_log_config.h"
-#include "app_inference_log_utils.h"
 #include "app_threadx_config.h"
 #include "app_memory_budget.h"
 #include "app_filex.h"
@@ -145,22 +144,6 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
 
-/* Inference logger thread state machine. */
-typedef enum {
-	INFER_LOG_STATE_INIT_DIR = 0,   /* Create /inference directory if needed. */
-	INFER_LOG_STATE_CHECK_DATE,     /* Open/roll over to today's log file. */
-	INFER_LOG_STATE_NO_RTC,         /* DS3231 absent Ã¢â‚¬â€ blink red, retry. */
-	INFER_LOG_STATE_LOGGING,        /* Steady state: wait for value, append row. */
-} InferLogState_t;
-
-static TX_THREAD inference_log_thread;
-static ULONG inference_log_thread_stack[INFERENCE_LOG_THREAD_STACK_SIZE_BYTES
-		/ sizeof(ULONG)];
-static bool inference_log_thread_created = false;
-static TX_QUEUE inference_log_queue;
-/* TX_QUEUE stores ULONG words; we pass the float bits as a ULONG. */
-static ULONG inference_log_queue_storage[INFERENCE_LOG_QUEUE_DEPTH];
-
 /* Dedicated ThreadX object and stack for camera connection diagnostics. */
 static TX_THREAD camera_init_thread;
 static ULONG camera_init_thread_stack[CAMERA_INIT_THREAD_STACK_SIZE_BYTES
@@ -174,10 +157,6 @@ static TX_THREAD camera_heartbeat_thread;
 static ULONG camera_heartbeat_thread_stack[CAMERA_HEARTBEAT_THREAD_STACK_SIZE_BYTES
 		/ sizeof(ULONG)];
 static bool camera_heartbeat_thread_created = false;
-static TX_THREAD camera_ai_thread;
-static ULONG camera_ai_thread_stack[CAMERA_AI_THREAD_STACK_SIZE_BYTES
-		/ sizeof(ULONG)];
-static bool camera_ai_thread_created = false;
 static CMW_IMX335_t camera_sensor;
 static CMW_Sensor_if_t camera_sensor_driver;
 static CMW_IMX335_config_t camera_sensor_config;
@@ -190,14 +169,10 @@ static bool camera_cmw_initialized = false;
 static bool camera_capture_use_cmw_pipeline = false;
 static TX_SEMAPHORE camera_capture_done_semaphore;
 static TX_SEMAPHORE camera_capture_isp_semaphore;
-static TX_SEMAPHORE camera_ai_request_semaphore;
 static TX_MUTEX debug_uart_mutex;
 static bool camera_heartbeat_gpio_initialized = false;
 static bool camera_capture_sync_created = false;
-static bool camera_ai_sync_created = false;
 static bool camera_stream_started = false;
-static volatile const uint8_t *camera_ai_request_frame_ptr = NULL;
-static volatile ULONG camera_ai_request_frame_length = 0U;
 static volatile bool camera_capture_failed = false;
 static volatile uint32_t camera_capture_error_code = 0U;
 static volatile uint32_t camera_capture_byte_count = 0U;
@@ -229,8 +204,6 @@ extern I2C_HandleTypeDef hi2c2;
 /* USER CODE BEGIN PFP */
 
 static VOID CameraHeartbeatThread_Entry(ULONG thread_input);
-static VOID CameraAIThread_Entry(ULONG thread_input);
-static VOID InferenceLogThread_Entry(ULONG thread_input);
 
 /**
  * @brief ThreadX entry point used to run camera bring-up diagnostics.
@@ -239,1203 +212,33 @@ static VOID InferenceLogThread_Entry(ULONG thread_input);
 static VOID CameraInitThread_Entry(ULONG thread_input);
 static VOID CameraIspThread_Entry(ULONG thread_input);
 
-/**
- * @brief Print a staged diagnostic sequence for B-CAMS-IMX camera bring-up.
- * @return true when a camera probe callback reports success, false otherwise.
- */
-static bool Camera_ProbeBCamsImx(void);
+static bool CameraPlatform_CaptureAndStoreSingleFrame(void);
+static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr);
+UINT CameraPlatform_ProbeBCamsImx(void);
 
 /**
  * @brief Register bus callbacks with the ST IMX335 driver object.
  * @retval true when the driver object is ready for sensor commands.
- */
-static bool CameraPlatform_InitImx335Driver(void);
-
-/**
- * @brief Run the vendor IMX335 sensor initialization sequence without streaming.
- * @retval true when the sensor accepted the default frequency and init tables.
  */
 static bool CameraPlatform_InitializeImx335Sensor(void);
 static bool CameraPlatform_SeedImx335ExposureGain(void);
 static bool CameraPlatform_EnableImx335AutoExposure(void);
 static void CameraPlatform_ReapplyImx335TestPattern(void);
 static bool CameraPlatform_StartImx335Stream(void);
-static bool CameraPlatform_CaptureAndStoreSingleFrame(void);
-static bool CameraPlatform_RequestDryInference(const uint8_t *frame_ptr,
-		ULONG frame_length);
-static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr);
-static void CameraPlatform_LogCaptureBufferSummary(uint32_t captured_bytes);
-static void CameraPlatform_LogCaptureState(const char *reason);
-static bool CameraPlatform_ConfigureCsiLineByteProbe(void);
-static bool CameraPlatform_PrepareDcmippSnapshot(void);
-static bool CameraPlatform_StartDcmippSnapshot(void);
 static bool CameraPlatform_RunImx335Background(void);
-
-int CMW_CAMERA_PIPE_VsyncEventCallback(uint32_t pipe);
-int CMW_CAMERA_PIPE_FrameEventCallback(uint32_t pipe);
-void CMW_CAMERA_PIPE_ErrorCallback(uint32_t pipe);
-void HAL_DCMIPP_ErrorCallback(DCMIPP_HandleTypeDef *hdcmipp);
-void HAL_DCMIPP_CSI_ClockChangerFifoFullEventCallback(
-		DCMIPP_HandleTypeDef *hdcmipp);
-void HAL_DCMIPP_CSI_LineErrorCallback(DCMIPP_HandleTypeDef *hdcmipp,
-		uint32_t DataLane);
-void HAL_DCMIPP_CSI_ShortPacketDetectionEventCallback(
-		DCMIPP_HandleTypeDef *hdcmipp);
-void HAL_DCMIPP_CSI_StartOfFrameEventCallback(DCMIPP_HandleTypeDef *hdcmipp,
-		uint32_t VirtualChannel);
-void HAL_DCMIPP_CSI_EndOfFrameEventCallback(DCMIPP_HandleTypeDef *hdcmipp,
-		uint32_t VirtualChannel);
-
-static int32_t CameraPlatform_I2cInit(void);
-
-/**
- * @brief Local I2C deinit hook matching the IMX335 vendor driver callback type.
- * @retval IMX335_OK-style status code.
- */
-static int32_t CameraPlatform_I2cDeInit(void);
-
-/**
- * @brief Read a 16-bit IMX335 register over I2C2.
- * @retval IMX335_OK on success, IMX335_ERROR on failure.
- */
-static int32_t CameraPlatform_I2cReadReg(uint16_t dev_addr, uint16_t reg,
-		uint8_t *pdata, uint16_t length);
-
-/**
- * @brief Write a 16-bit IMX335 register over I2C2.
- * @retval IMX335_OK on success, IMX335_ERROR on failure.
- */
-static int32_t CameraPlatform_I2cWriteReg(uint16_t dev_addr, uint16_t reg,
-		uint8_t *pdata, uint16_t length);
-static ISP_StatusTypeDef CameraPlatform_IspSetSensorGain(
-		uint32_t camera_instance, int32_t gain);
-static ISP_StatusTypeDef CameraPlatform_IspGetSensorGain(
-		uint32_t camera_instance, int32_t *gain);
-static ISP_StatusTypeDef CameraPlatform_IspSetSensorExposure(
-		uint32_t camera_instance, int32_t exposure);
-static ISP_StatusTypeDef CameraPlatform_IspGetSensorExposure(
-		uint32_t camera_instance, int32_t *exposure);
-static ISP_StatusTypeDef CameraPlatform_IspGetSensorInfo(
-		uint32_t camera_instance, ISP_SensorInfoTypeDef *info);
-static ISP_StatusTypeDef CameraPlatform_IspSetSensorTestPattern(
-		uint32_t camera_instance, int32_t mode);
-
-/**
- * @brief Weak probe hook for board-specific camera/driver integration.
- * @return TX_SUCCESS on successful camera detection, an error code otherwise.
- */
-__attribute__((weak))        UINT CameraPlatform_ProbeBCamsImx(void);
-
-/* USER CODE END PFP */
-
-static void DebugUartMutex_Lock(void) {
-	/* TX_NO_WAIT: never block Ã¢â‚¬â€ a missed lock means garbled output, not deadlock. */
-	ThreadxUtils_LockMutex(&debug_uart_mutex);
-}
-static void DebugUartMutex_Unlock(void) {
-	ThreadxUtils_UnlockMutex(&debug_uart_mutex);
-}
-
-/**
- * @brief  Application ThreadX Initialization.
- * @param memory_ptr: memory pointer
- * @retval int
- */
-UINT App_ThreadX_Init(VOID *memory_ptr) {
-	UINT ret = TX_SUCCESS;
-	/* USER CODE BEGIN App_ThreadX_MEM_POOL */
-
-	/* USER CODE END App_ThreadX_MEM_POOL */
-	/* USER CODE BEGIN App_ThreadX_Init */
-	(void) memory_ptr;
-
-	/* Defer thread creation until App_ThreadX_Start() so startup ordering is explicit. */
-	DebugConsole_Printf(
-			"[CAMERA][THREAD] ThreadX app init complete. Waiting to start camera thread...\r\n");
-	/* USER CODE END App_ThreadX_Init */
-
-	return ret;
-}
-
-/* USER CODE BEGIN App_ThreadX_Start */
-UINT App_ThreadX_Start(void) {
-	/* Keep this function idempotent to protect against accidental double-start. */
-	/* Leave the heartbeat LED under the dedicated thread so it reflects liveness
-	 * instead of startup state. */
-	BSP_LED_On(LED_RED);
-	BSP_LED_Off(LED_BLUE);
-	BSP_LED_Off(LED_GREEN);
-	if (camera_init_thread_created && camera_isp_thread_created
-			&& camera_heartbeat_thread_created && camera_ai_thread_created
-			&& inference_log_thread_created) {
-		DebugConsole_Printf(
-				"[CAMERA][THREAD] Start skipped: camera threads already created.\r\n");
-		return TX_SUCCESS;
-	}
-
-	if (!camera_capture_sync_created) {
-		UINT semaphore_status = tx_semaphore_create(
-				&camera_capture_done_semaphore, "camera_capture_done", 0U);
-		if (semaphore_status != TX_SUCCESS) {
-			DebugConsole_Printf(
-					"[CAMERA][THREAD] Failed to create capture semaphore, status=%lu\r\n",
-					(unsigned long) semaphore_status);
-			return semaphore_status;
-		}
-
-		semaphore_status = tx_semaphore_create(&camera_capture_isp_semaphore,
-				"camera_capture_isp", 0U);
-		if (semaphore_status != TX_SUCCESS) {
-			DebugConsole_Printf(
-					"[CAMERA][THREAD] Failed to create ISP semaphore, status=%lu\r\n",
-					(unsigned long) semaphore_status);
-			return semaphore_status;
-		}
-
-		/* No UART mutex Ã¢â‚¬â€ concurrent prints may interleave but won't deadlock.
-		 * The UART HAL transmit is not re-entrant; a mutex with TX_WAIT_FOREVER
-		 * deadlocks when the holder's HAL_UART_Transmit itself blocks, and
-		 * TX_NO_WAIT corrupts the UART state when two threads collide mid-frame. */
-		(void) tx_mutex_create(&debug_uart_mutex, "debug_uart", TX_NO_INHERIT);
-
-		camera_capture_sync_created = true;
-	}
-
-	{
-		const UINT storage_init_status = AppStorage_Init();
-		if (storage_init_status != TX_SUCCESS) {
-		DebugConsole_Printf(
-				"[CAMERA][THREAD] Failed to create storage-ready event flags.\r\n");
-		return storage_init_status;
-		}
-	}
-
-	if (!camera_ai_sync_created) {
-		const UINT ai_request_status = tx_semaphore_create(
-				&camera_ai_request_semaphore, "camera_ai_request", 0U);
-		if (ai_request_status != TX_SUCCESS) {
-			DebugConsole_Printf(
-					"[CAMERA][THREAD] Failed to create AI request semaphore, status=%lu\r\n",
-					(unsigned long) ai_request_status);
-			return ai_request_status;
-		}
-
-		camera_ai_sync_created = true;
-	}
-
-	if (!camera_isp_thread_created) {
-		const UINT isp_create_status = tx_thread_create(&camera_isp_thread,
-				"camera_isp", CameraIspThread_Entry, 0U,
-				camera_isp_thread_stack, sizeof(camera_isp_thread_stack),
-				CAMERA_ISP_THREAD_PRIORITY, CAMERA_ISP_THREAD_PRIORITY,
-				TX_NO_TIME_SLICE, TX_AUTO_START);
-
-		if (isp_create_status != TX_SUCCESS) {
-			DebugConsole_Printf(
-					"[CAMERA][THREAD] Failed to create camera ISP thread, status=%lu\r\n",
-					(unsigned long) isp_create_status);
-			return isp_create_status;
-		}
-
-		camera_isp_thread_created = true;
-		DebugConsole_Printf(
-				"[CAMERA][THREAD] Camera ISP thread created and started.\r\n");
-	}
-
-	if (!camera_heartbeat_thread_created) {
-		const UINT heartbeat_create_status = tx_thread_create(
-				&camera_heartbeat_thread, "camera_heartbeat",
-				CameraHeartbeatThread_Entry, 0U,
-				camera_heartbeat_thread_stack,
-				sizeof(camera_heartbeat_thread_stack),
-				CAMERA_HEARTBEAT_THREAD_PRIORITY,
-				CAMERA_HEARTBEAT_THREAD_PRIORITY,
-				TX_NO_TIME_SLICE, TX_AUTO_START);
-
-		if (heartbeat_create_status != TX_SUCCESS) {
-			DebugConsole_Printf(
-					"[CAMERA][THREAD] Failed to create heartbeat thread, status=%lu\r\n",
-					(unsigned long) heartbeat_create_status);
-			return heartbeat_create_status;
-		}
-
-		camera_heartbeat_thread_created = true;
-		DebugConsole_Printf(
-				"[CAMERA][THREAD] Heartbeat thread created and started.\r\n");
-	}
-
-	if (!camera_ai_thread_created) {
-		const UINT ai_create_status = tx_thread_create(&camera_ai_thread,
-				"camera_ai", CameraAIThread_Entry, 0U,
-				camera_ai_thread_stack, sizeof(camera_ai_thread_stack),
-				CAMERA_AI_THREAD_PRIORITY, CAMERA_AI_THREAD_PRIORITY,
-				TX_NO_TIME_SLICE, TX_AUTO_START);
-
-		if (ai_create_status != TX_SUCCESS) {
-			DebugConsole_Printf(
-					"[CAMERA][THREAD] Failed to create camera AI thread, status=%lu\r\n",
-					(unsigned long) ai_create_status);
-			return ai_create_status;
-		}
-
-		camera_ai_thread_created = true;
-		DebugConsole_Printf(
-				"[CAMERA][THREAD] Camera AI thread created and started.\r\n");
-	}
-
-	if (!camera_init_thread_created) {
-		/* Create a dedicated thread so camera probing is isolated from other startup work. */
-		const UINT create_status = tx_thread_create(&camera_init_thread,
-				"camera_init", CameraInitThread_Entry, 0U,
-				camera_init_thread_stack, sizeof(camera_init_thread_stack),
-				CAMERA_INIT_THREAD_PRIORITY,
-				CAMERA_INIT_THREAD_PRIORITY,
-				TX_NO_TIME_SLICE,
-				TX_AUTO_START);
-
-		if (create_status != TX_SUCCESS) {
-			DebugConsole_Printf(
-					"[CAMERA][THREAD] Failed to create camera init thread, status=%lu\r\n",
-					(unsigned long) create_status);
-			return create_status;
-		}
-
-		camera_init_thread_created = true;
-		DebugConsole_Printf(
-				"[CAMERA][THREAD] Camera init thread created and started.\r\n");
-	}
-
-	if (!inference_log_thread_created) {
-		const UINT queue_status = tx_queue_create(&inference_log_queue,
-				"inference_log_queue",
-				TX_1_ULONG,
-				inference_log_queue_storage,
-				sizeof(inference_log_queue_storage));
-		if (queue_status != TX_SUCCESS) {
-			DebugConsole_Printf(
-					"[INFER_LOG] Failed to create inference log queue, status=%lu\r\n",
-					(unsigned long) queue_status);
-			return queue_status;
-		}
-
-		const UINT log_create_status = tx_thread_create(&inference_log_thread,
-				"inference_log", InferenceLogThread_Entry, 0U,
-				inference_log_thread_stack, sizeof(inference_log_thread_stack),
-				INFERENCE_LOG_THREAD_PRIORITY, INFERENCE_LOG_THREAD_PRIORITY,
-				TX_NO_TIME_SLICE, TX_AUTO_START);
-		if (log_create_status != TX_SUCCESS) {
-			DebugConsole_Printf(
-					"[INFER_LOG] Failed to create inference log thread, status=%lu\r\n",
-					(unsigned long) log_create_status);
-			return log_create_status;
-		}
-
-		inference_log_thread_created = true;
-		DebugConsole_Printf(
-				"[INFER_LOG] Inference log thread created and started.\r\n");
-	}
-
-	return TX_SUCCESS;
-}
-/* USER CODE END App_ThreadX_Start */
-
-/**
- * @brief  Function that implements the kernel's initialization.
- * @param  None
- * @retval None
- */
-void MX_ThreadX_Init(void) {
-	/* USER CODE BEGIN Before_Kernel_Start */
-
-	/* USER CODE END Before_Kernel_Start */
-
-	tx_kernel_enter();
-
-	/* USER CODE BEGIN Kernel_Start_Error */
-
-	/* USER CODE END Kernel_Start_Error */
-}
-
-/* USER CODE BEGIN 1 */
-
-/**
- * @brief ThreadX entry point used to run camera bring-up diagnostics.
- * @param thread_input Unused ThreadX input value.
- */
-static VOID CameraInitThread_Entry(ULONG thread_input) {
-	(void) thread_input;
-
-	/* Use the blue LED as the camera-thread marker; the green LED is owned by
-	 * the heartbeat thread so it can keep pulsing independently. */
-	(void) DebugConsole_WriteString("[CAMERA] thread entry\r\n");
-
-	/* Delay a little to let other startup logs complete before camera probing. */
-	DelayMilliseconds_ThreadX(CAMERA_INIT_STARTUP_DELAY_MS);
-
-	(void) DebugConsole_WriteString("[CAMERA] probe start\r\n");
-
-	if (Camera_ProbeBCamsImx()) {
-		DebugConsole_Printf(
-				"[CAMERA][THREAD] Camera probe completed successfully.\r\n");
-
-		if (!App_AI_Model_Init()) {
-			DebugConsole_Printf(
-					"[AI] Model runtime init failed; continuing without inference.\r\n");
-		}
-
-		/* Turn blue off right before capture so a stuck-on LED means the probe
-		 * completed and the freeze moved into the capture path. */
-		BSP_LED_Off(LED_BLUE);
-		DebugConsole_Printf(
-				"[CAMERA][THREAD] Entering capture/inference loop (period=60s)...\r\n");
-		while (1) {
-			if (CameraPlatform_CaptureAndStoreSingleFrame()) {
-				DebugConsole_Printf(
-						"[CAMERA][THREAD] Capture and inference completed successfully.\r\n");
-			} else {
-				DebugConsole_Printf(
-						"[CAMERA][THREAD] Capture/inference attempt failed.\r\n");
-			}
-			DelayMilliseconds_ThreadX(60000U);
-		}
-	} else {
-		DebugConsole_Printf(
-				"[CAMERA][THREAD] Camera probe failed or is not configured yet.\r\n");
-	}
-
-}
-
-/**
- * @brief Low-priority heartbeat thread that toggles the board's LED1
- * every 5 seconds.
- * @param thread_input Unused ThreadX input value.
- */
-static VOID CameraHeartbeatThread_Entry(ULONG thread_input) {
-	(void) thread_input;
-
-	if (!camera_heartbeat_gpio_initialized) {
-		GPIO_InitTypeDef gpio_init = { 0 };
-
-		/* Match the board's green LED pin: LED3 is PG0 on this board. */
-		__HAL_RCC_GPIOG_CLK_ENABLE();
-		HAL_GPIO_WritePin(CAMERA_HEARTBEAT_LED_GPIO_PORT,
-				CAMERA_HEARTBEAT_LED_PIN, GPIO_PIN_SET);
-
-		gpio_init.Pin = CAMERA_HEARTBEAT_LED_PIN;
-		gpio_init.Mode = GPIO_MODE_OUTPUT_PP;
-		gpio_init.Pull = GPIO_NOPULL;
-		gpio_init.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-		HAL_GPIO_Init(CAMERA_HEARTBEAT_LED_GPIO_PORT, &gpio_init);
-
-		camera_heartbeat_gpio_initialized = true;
-	}
-
-	HAL_GPIO_WritePin(CAMERA_HEARTBEAT_LED_GPIO_PORT,
-			CAMERA_HEARTBEAT_LED_PIN, GPIO_PIN_SET);
-	DebugConsole_Printf("[WATCHDOG] heartbeat thread running.\r\n");
-
-	while (1) {
-		DebugConsole_Printf("[WATCHDOG] pulse\r\n");
-		/* Toggle the green user LED directly. */
-		HAL_GPIO_TogglePin(CAMERA_HEARTBEAT_LED_GPIO_PORT,
-				CAMERA_HEARTBEAT_LED_PIN);
-		DelayMilliseconds_ThreadX(CAMERA_HEARTBEAT_PULSE_MS);
-		HAL_GPIO_TogglePin(CAMERA_HEARTBEAT_LED_GPIO_PORT,
-				CAMERA_HEARTBEAT_LED_PIN);
-		DelayMilliseconds_ThreadX(CAMERA_HEARTBEAT_PERIOD_MS
-				- CAMERA_HEARTBEAT_PULSE_MS);
-	}
-}
-
-/**
- * @brief Low-priority AI worker that runs one queued dry inference at a time.
- * @param thread_input Unused ThreadX input value.
- */
-static VOID CameraAIThread_Entry(ULONG thread_input) {
-	(void) thread_input;
-
-	(void) DebugConsole_WriteString("[AI] worker alive\r\n");
-
-	while (1) {
-		const UINT request_status = tx_semaphore_get(&camera_ai_request_semaphore,
-				TX_WAIT_FOREVER);
-		const uint8_t *frame_ptr = NULL;
-		ULONG frame_length = 0U;
-
-		if (request_status != TX_SUCCESS) {
-			continue;
-		}
-
-		frame_ptr = (const uint8_t *) camera_ai_request_frame_ptr;
-		frame_length = camera_ai_request_frame_length;
-		camera_ai_request_frame_ptr = NULL;
-		camera_ai_request_frame_length = 0U;
-
-		DebugConsole_Printf(
-				"[AI] Worker dequeued frame: ptr=%p length=%lu semaphore_status=%u\r\n",
-				(void *) frame_ptr, (unsigned long) frame_length,
-				(unsigned int) request_status);
-
-		if ((frame_ptr == NULL) || (frame_length == 0U)) {
-			DebugConsole_Printf(
-					"[AI] Worker woke without a queued frame; ignoring.\r\n");
-			continue;
-		}
-
-		if (!App_AI_RunDryInferenceFromYuv422(frame_ptr,
-				(size_t) frame_length)) {
-			DebugConsole_Printf(
-					"[AI] One-shot dry-run inference failed; continuing.\r\n");
-		} else {
-			float result = 0.0f;
-			if (App_AI_GetLastInferenceResult(&result)) {
-				union { float f; ULONG u; } bits = { .f = result };
-				char inference_line[48] = { 0 };
-
-				AppInferenceLog_FormatFloatTenths(inference_line,
-						sizeof(inference_line),
-						"[AI] Inference value: ", result);
-				(void) DebugConsole_WriteString(inference_line);
-				if (inference_log_thread_created) {
-					(void) tx_queue_send(&inference_log_queue, &bits.u, TX_NO_WAIT);
-				}
-			}
-		}
-	}
-}
-
-/**
- * @brief Inference value logger thread.
- *
- * State machine:
- *   INIT_DIR   - Ensure /inference directory exists on SD card.
- *   CHECK_DATE - Build today's filename; open/create the CSV log file.
- *   NO_RTC     - DS3231 unreachable; blink red LED and retry.
- *   LOGGING    - Wait for a new inference value on the queue, append a CSV row.
- *
- * Each row: "YYYY-MM-DD HH:MM:SS,<value>\n"
- * File rolls over daily: inference/YYYY-MM-DD.csv
- */
-static VOID InferenceLogThread_Entry(ULONG thread_input) {
-	(void) thread_input;
-
-	InferLogState_t state = INFER_LOG_STATE_INIT_DIR;
-	char today_date[12] = { 0 };   /* "YYYY-MM-DD\0" */
-	char log_file_name[INFERENCE_LOG_FILE_NAME_LENGTH] = { 0 };
-	FX_MEDIA *media = NULL;
-
-	(void) DebugConsole_WriteString("[INFER_LOG] thread alive\r\n");
-
-	while (1) {
-		switch (state) {
-
-		/* ------------------------------------------------------------------ */
-		case INFER_LOG_STATE_INIT_DIR: {
-			/* Wait until FileX media is ready. */
-			if (!AppFileX_IsMediaReady()) {
-				DelayMilliseconds_ThreadX(500U);
-				break;
-			}
-
-			media = AppFileX_GetMediaHandle();
-
-			/* Create /inference directory (ignore FX_ALREADY_CREATED). */
-			UINT fx_status = AppFileX_AcquireMediaLock();
-			if (fx_status != TX_SUCCESS) {
-				DelayMilliseconds_ThreadX(500U);
-				break;
-			}
-
-			fx_status = fx_directory_create(media,
-					INFERENCE_LOG_DIRECTORY_NAME);
-			AppFileX_ReleaseMediaLock();
-
-			if ((fx_status == FX_SUCCESS)
-					|| (fx_status == FX_ALREADY_CREATED)) {
-				DebugConsole_Printf(
-						"[INFER_LOG] /inference directory ready.\r\n");
-				state = INFER_LOG_STATE_CHECK_DATE;
-			} else {
-				DebugConsole_Printf(
-						"[INFER_LOG] Failed to create /inference dir, status=%lu. Retrying.\r\n",
-						(unsigned long) fx_status);
-				DelayMilliseconds_ThreadX(2000U);
-			}
-			break;
-		}
-
-		/* ------------------------------------------------------------------ */
-		case INFER_LOG_STATE_CHECK_DATE: {
-			/* Read today's date from DS3231 to determine the log filename. */
-			char rtc_timestamp[32] = { 0 };
-			const bool rtc_ok = App_Clock_GetCaptureTimestamp(rtc_timestamp,
-					sizeof(rtc_timestamp));
-
-			if (!rtc_ok) {
-				DebugConsole_Printf(
-						"[INFER_LOG] RTC not available; entering NO_RTC state.\r\n");
-				state = INFER_LOG_STATE_NO_RTC;
-				break;
-			}
-
-			/* rtc_timestamp is "YYYY-MM-DD_HH-MM-SS"; extract date portion. */
-			char new_date[12] = { 0 };
-			/* Copy first 10 chars: YYYY-MM-DD */
-			(void) memcpy(new_date, rtc_timestamp, 10U);
-			new_date[10] = '\0';
-			/* Replace underscores back to dashes (App_Clock sanitizes spaces/colons
-			 * only; the date part has no space so it comes through as-is). */
-
-			if (strcmp(new_date, today_date) != 0) {
-				/* New day (or first run): build the new filename. */
-				(void) memcpy(today_date, new_date, sizeof(today_date));
-				int written = snprintf(log_file_name, sizeof(log_file_name),
-						"%s/%s.csv", INFERENCE_LOG_DIRECTORY_NAME, today_date);
-				if ((written <= 0)
-						|| ((size_t) written >= sizeof(log_file_name))) {
-					DebugConsole_Printf(
-							"[INFER_LOG] Log filename overflow; retrying.\r\n");
-					DelayMilliseconds_ThreadX(5000U);
-					break;
-				}
-
-				/* Ensure the file exists (create header row if brand new). */
-				UINT lock_status = AppFileX_AcquireMediaLock();
-				if (lock_status == TX_SUCCESS) {
-					FX_FILE log_file = { 0 };
-					UINT open_status = fx_file_open(media, &log_file,
-							log_file_name, FX_OPEN_FOR_WRITE);
-					if (open_status == FX_NOT_FOUND) {
-						/* Create and write CSV header. */
-						(void) fx_file_create(media, log_file_name);
-						open_status = fx_file_open(media, &log_file,
-								log_file_name, FX_OPEN_FOR_WRITE);
-						if (open_status == FX_SUCCESS) {
-							const char *header = "datetime,value_degC\n";
-							(void) fx_file_write(&log_file, (VOID*) header,
-									(ULONG) strlen(header));
-						}
-					}
-					if (open_status == FX_SUCCESS) {
-						(void) fx_file_close(&log_file);
-					}
-					(void) fx_media_flush(media);
-					AppFileX_ReleaseMediaLock();
-				}
-
-				DebugConsole_Printf(
-						"[INFER_LOG] Logging to %s.\r\n", log_file_name);
-			}
-
-			state = INFER_LOG_STATE_LOGGING;
-			break;
-		}
-
-		/* ------------------------------------------------------------------ */
-		case INFER_LOG_STATE_NO_RTC: {
-			/* Blink red LED to signal RTC fault. */
-			DebugConsole_Printf(
-					"[INFER_LOG] ERROR: DS3231 RTC not detected. Cannot timestamp log entries.\r\n");
-			DebugLed_BlinkRedBlocking(INFERENCE_LOG_NO_RTC_BLINK_ON_MS,
-					INFERENCE_LOG_NO_RTC_BLINK_OFF_MS, 5U);
-
-			/* Retry RTC after a short delay. */
-			DelayMilliseconds_ThreadX(INFERENCE_LOG_NO_RTC_RETRY_DELAY_MS);
-
-			char rtc_timestamp[32] = { 0 };
-			if (App_Clock_GetCaptureTimestamp(rtc_timestamp,
-					sizeof(rtc_timestamp))) {
-				DebugConsole_Printf(
-						"[INFER_LOG] RTC recovered; resuming logging.\r\n");
-				state = INFER_LOG_STATE_CHECK_DATE;
-			}
-			break;
-		}
-
-		/* ------------------------------------------------------------------ */
-		case INFER_LOG_STATE_LOGGING: {
-			ULONG value_bits = 0U;
-			/* Wait for next inference result (1-minute timeout to roll over daily). */
-			const ULONG wait_ticks = CameraPlatform_MillisecondsToTicks(
-					65000U);
-			const UINT q_status = tx_queue_receive(&inference_log_queue,
-					&value_bits, wait_ticks);
-
-			if (q_status == TX_NO_INSTANCE) {
-				/* Timeout Ã¢â‚¬â€ recheck date for daily rollover. */
-				state = INFER_LOG_STATE_CHECK_DATE;
-				break;
-			}
-
-			if (q_status != TX_SUCCESS) {
-				break;
-			}
-
-			/* Decode float from ULONG bits. */
-			union { float f; ULONG u; } bits = { .u = value_bits };
-			const float inference_value = bits.f;
-			char inference_line[48] = { 0 };
-
-			AppInferenceLog_FormatFloatTenths(inference_line,
-					sizeof(inference_line),
-					"[INFER_LOG] Inference value: ", inference_value);
-			(void) DebugConsole_WriteString(inference_line);
-
-			/* Get current timestamp. */
-			char rtc_timestamp[32] = { 0 };
-			const bool rtc_ok = App_Clock_GetCaptureTimestamp(rtc_timestamp,
-					sizeof(rtc_timestamp));
-
-			if (!rtc_ok) {
-				DebugConsole_Printf(
-						"[INFER_LOG] RTC lost during logging; entering NO_RTC state.\r\n");
-				state = INFER_LOG_STATE_NO_RTC;
-				break;
-			}
-
-			/* Reconstruct human-readable datetime: rtc_timestamp is
-			 * "YYYY-MM-DD_HH-MM-SS"; convert _ Ã¢â€ â€™ space, - in time Ã¢â€ â€™ : */
-			char datetime_str[24] = { 0 };
-			{
-				const char *src = rtc_timestamp;
-				char *dst = datetime_str;
-				uint32_t i = 0U;
-				while ((i < (sizeof(datetime_str) - 1U))
-						&& (src[i] != '\0')) {
-					char ch = src[i];
-					if (ch == '_') {
-						ch = ' ';
-					} else if ((i > 10U) && (ch == '-')) {
-						ch = ':';
-					}
-					*dst++ = ch;
-					i++;
-				}
-				*dst = '\0';
-			}
-
-			/* Recheck date for daily rollover. */
-			char new_date[12] = { 0 };
-			(void) memcpy(new_date, rtc_timestamp, 10U);
-			new_date[10] = '\0';
-			if (strcmp(new_date, today_date) != 0) {
-				state = INFER_LOG_STATE_CHECK_DATE;
-				/* Re-queue the value so it gets written to the new file. */
-				(void) tx_queue_send(&inference_log_queue, &value_bits,
-						TX_NO_WAIT);
-				break;
-			}
-
-			/* Format CSV row: "YYYY-MM-DD HH:MM:SS,<value>\n"
-			 * Use integer + one decimal to avoid full float formatting. */
-			char row[INFERENCE_LOG_ROW_MAX_LENGTH] = { 0 };
-			int int_part = (int) inference_value;
-			int frac_part = (int) ((inference_value - (float) int_part) * 10.0f);
-			if (frac_part < 0) {
-				frac_part = -frac_part;
-			}
-			int written = snprintf(row, sizeof(row), "%s,%d.%d\n",
-					datetime_str, int_part, frac_part);
-			if ((written <= 0)
-					|| ((size_t) written >= sizeof(row))) {
-				DebugConsole_Printf(
-						"[INFER_LOG] Row format overflow; skipping.\r\n");
-				break;
-			}
-
-			/* Append row to the log file. */
-			UINT lock_status = AppFileX_AcquireMediaLock();
-			if (lock_status != TX_SUCCESS) {
-				DebugConsole_Printf(
-						"[INFER_LOG] Could not acquire media lock; dropping row.\r\n");
-				break;
-			}
-
-			UINT fx_status = FX_SUCCESS;
-			FX_FILE log_file = { 0 };
-			fx_status = fx_file_open(media, &log_file, log_file_name,
-					FX_OPEN_FOR_WRITE);
-			if (fx_status == FX_SUCCESS) {
-				(void) fx_file_relative_seek(&log_file, 0U, FX_SEEK_END);
-				(void) fx_file_write(&log_file, (VOID*) row, (ULONG) written);
-				(void) fx_file_close(&log_file);
-				(void) fx_media_flush(media);
-				DebugConsole_Printf("[INFER_LOG] Logged: %.*s", written, row);
-			} else {
-				DebugConsole_Printf(
-						"[INFER_LOG] Failed to open log file, status=%lu.\r\n",
-						(unsigned long) fx_status);
-			}
-			AppFileX_ReleaseMediaLock();
-			break;
-		}
-
-		default:
-			state = INFER_LOG_STATE_INIT_DIR;
-			break;
-		}
-	}
-}
-
-/**
- * @brief ThreadX entry point that services the camera middleware's ISP work.
- *
- * The reference x-cube-n6-camera-capture app keeps ISP/background processing
- * on a dedicated thread that wakes from VSYNC events. That separation makes
- * camera bring-up less timing-sensitive, so we mirror it here.
- * @param thread_input Unused ThreadX input value.
- */
-static VOID CameraIspThread_Entry(ULONG thread_input) {
-	(void) thread_input;
-
-	DebugConsole_Printf(
-			"[CAMERA][THREAD] Camera ISP service thread running.\r\n");
-
-	while (1) {
-		UINT semaphore_status = tx_semaphore_get(&camera_capture_isp_semaphore,
-				CameraPlatform_MillisecondsToTicks(20U));
-
-		/* Keep the ISP background process alive even if the first VSYNC is late.
-		 * ST's BSP notes that the background process should be called regularly. */
-		if ((semaphore_status == TX_SUCCESS)
-				|| (camera_stream_started && camera_cmw_initialized)) {
-			if (!CameraPlatform_RunImx335Background()) {
-				camera_capture_failed = true;
-				camera_capture_error_code = 0x49535052U; /* 'ISPR' */
-				(void) tx_semaphore_put(&camera_capture_done_semaphore);
-			}
-		}
-	}
-}
-
-/**
- * @brief Print a staged diagnostic sequence for B-CAMS-IMX camera bring-up.
- * @return true when a camera probe callback reports success, false otherwise.
- */
-static bool Camera_ProbeBCamsImx(void) {
-	bool stage_ok = true;
-
-	DebugConsole_Printf("[CAMERA][PROBE] Probing camera stack...\r\n");
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: reset\r\n");
-	const UINT probe_status = CameraPlatform_ProbeBCamsImx();
-	if (probe_status == TX_SUCCESS) {
-		DebugConsole_Printf("[CAMERA][PROBE] Sensor probe OK.\r\n");
-	} else {
-		DebugConsole_Printf(
-				"[CAMERA][PROBE] Sensor probe failed, status=%lu\r\n",
-				(unsigned long) probe_status);
-		stage_ok = false;
-	}
-
-	if (stage_ok) {
-		DebugConsole_Printf("[CAMERA][PROBE] Camera stack ready.\r\n");
-	} else {
-		DebugConsole_Printf("[CAMERA][PROBE] Camera stack not ready.\r\n");
-	}
-
-	return stage_ok;
-}
-
-/**
- * @brief Weak probe hook for board-specific camera/driver integration.
- * @return TX_NOT_AVAILABLE to indicate the probe is not wired yet.
- */
-UINT CameraPlatform_ProbeBCamsImx(void) {
-	HAL_StatusTypeDef probe_status = HAL_ERROR;
-	uint8_t chip_id = 0U;
-
-	CameraPlatform_ResetImx335Module();
-
-	/* Probe the camera control address to confirm the sensor bus is alive. */
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: i2c-ack\r\n");
-	probe_status = HAL_I2C_IsDeviceReady(&hi2c2,
-	BCAMS_IMX_I2C_ADDRESS_HAL,
-	BCAMS_IMX_I2C_PROBE_TRIALS,
-	BCAMS_IMX_I2C_PROBE_TIMEOUT_MS);
-
-	if (probe_status == HAL_OK) {
-		DebugConsole_Printf(
-				"[CAMERA][PROBE]   - Sensor ACKed on I2C2 at 7-bit address 0x%02X.\r\n",
-				(unsigned int) BCAMS_IMX_I2C_ADDRESS_7BIT);
-
-		/* Read the same chip-ID register used by ST's IMX335 middleware. */
-		(void) DebugConsole_WriteString("[CAMERA][PROBE] step: chip-id\r\n");
-		probe_status = CameraPlatform_ReadImx335ChipId(&chip_id);
-		if (probe_status != HAL_OK) {
-			DebugConsole_Printf(
-					"[CAMERA][PROBE]   - Failed to read IMX335 ID register 0x%04X.\r\n",
-					(unsigned int) IMX335_CHIP_ID_REG);
-			return TX_NOT_AVAILABLE;
-		}
-
-		DebugConsole_Printf(
-				"[CAMERA][PROBE]   - IMX335 ID register 0x%04X = 0x%02X.\r\n",
-				(unsigned int) IMX335_CHIP_ID_REG, (unsigned int) chip_id);
-		if (chip_id != IMX335_CHIP_ID_VALUE) {
-			DebugConsole_Printf(
-					"[CAMERA][PROBE]   - Unexpected chip ID, expected 0x%02X.\r\n",
-					(unsigned int) IMX335_CHIP_ID_VALUE);
-			return TX_NOT_AVAILABLE;
-		}
-
-		(void) DebugConsole_WriteString("[CAMERA][PROBE] step: sensor-init\r\n");
-		if (!CameraPlatform_InitializeImx335Sensor()) {
-			DebugConsole_Printf(
-					"[CAMERA][PROBE]   - IMX335 init sequence failed.\r\n");
-			return TX_NOT_AVAILABLE;
-		}
-
-		DebugConsole_Printf(
-				"[CAMERA][PROBE]   - IMX335 init sequence completed.\r\n");
-
-		return TX_SUCCESS;
-	}
-
-	DebugConsole_Printf(
-			"[CAMERA][PROBE]   - No ACK from sensor on I2C2 at 7-bit address 0x%02X.\r\n"
-					"[CAMERA][PROBE]   - Verify camera power, reset, and sensor/BSP driver integration.\r\n",
-			(unsigned int) BCAMS_IMX_I2C_ADDRESS_7BIT);
-	return TX_NOT_AVAILABLE;
-}
-
-/**
- * @brief Prepare ST's IMX335 middleware bridge with the project's I2C and ISP hooks.
- * @retval true when the middleware probe succeeded and exposed the sensor callbacks.
- */
-static bool __attribute__((unused)) CameraPlatform_InitImx335Driver(void) {
-	memset(&camera_sensor, 0, sizeof(camera_sensor));
-	memset(&camera_sensor_driver, 0, sizeof(camera_sensor_driver));
-	memset(&camera_sensor_config, 0, sizeof(camera_sensor_config));
-
-	camera_sensor.Address = BCAMS_IMX_I2C_ADDRESS_HAL;
-	camera_sensor.ClockInHz = IMX335_INCK_24MHZ;
-	camera_sensor.Init = CameraPlatform_I2cInit;
-	camera_sensor.DeInit = CameraPlatform_I2cDeInit;
-	camera_sensor.WriteReg = CameraPlatform_I2cWriteReg;
-	camera_sensor.ReadReg = CameraPlatform_I2cReadReg;
-	camera_sensor.GetTick = CameraPlatform_GetTickMs;
-	camera_sensor.Delay = CameraPlatform_CmwDelay;
-	camera_sensor.ShutdownPin = CameraPlatform_CmwShutdownPin;
-	camera_sensor.EnablePin = CameraPlatform_CmwEnablePin;
-	camera_sensor.hdcmipp = &hdcmipp;
-	camera_sensor.appliHelpers.SetSensorGain = CameraPlatform_IspSetSensorGain;
-	camera_sensor.appliHelpers.GetSensorGain = CameraPlatform_IspGetSensorGain;
-	camera_sensor.appliHelpers.SetSensorExposure =
-			CameraPlatform_IspSetSensorExposure;
-	camera_sensor.appliHelpers.GetSensorExposure =
-			CameraPlatform_IspGetSensorExposure;
-	camera_sensor.appliHelpers.GetSensorInfo = CameraPlatform_IspGetSensorInfo;
-	camera_sensor.appliHelpers.SetSensorTestPattern =
-			CameraPlatform_IspSetSensorTestPattern;
-
-	if (CMW_IMX335_Probe(&camera_sensor,
-			&camera_sensor_driver) != CMW_ERROR_NONE) {
-		DebugConsole_Printf(
-				"[CAMERA][PROBE]   - Failed to probe IMX335 through ST camera middleware.\r\n");
-		return false;
-	}
-
-	DebugConsole_Printf(
-			"[CAMERA][PROBE]   - Local IMX335 bridge prepared: driver_start=%u driver_run=%u ctx_write=%u ctx_read=%u.\r\n",
-			(camera_sensor_driver.Start != NULL) ? 1U : 0U,
-			(camera_sensor_driver.Run != NULL) ? 1U : 0U,
-			(camera_sensor.ctx_driver.Ctx.WriteReg != NULL) ? 1U : 0U,
-			(camera_sensor.ctx_driver.Ctx.ReadReg != NULL) ? 1U : 0U);
-
-	return true;
-}
-
-/**
- * @brief Start IMX335 streaming through ST's middleware so the ISP is enabled too.
- * @retval true when the sensor enters streaming mode.
- */
-static bool CameraPlatform_StartImx335Stream(void) {
-	uint8_t mode_select = IMX335_MODE_STANDBY;
-	int32_t raw_start_status = IMX335_OK;
-	bool started_via_cmw_wrapper = false;
-
-	if (camera_stream_started) {
-		return true;
-	}
-
-#if CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC
-	int32_t cmw_start_status = CMW_ERROR_NONE;
-
-	if (camera_sensor_driver.Start != NULL) {
-		cmw_start_status = camera_sensor_driver.Start(&camera_sensor);
-		if (cmw_start_status == CMW_ERROR_NONE) {
-			started_via_cmw_wrapper = true;
-			if (!CameraPlatform_EnableImx335AutoExposure()) {
-				DebugConsole_Printf(
-						"[CAMERA][CAPTURE] Warning: IMX335 auto exposure could not be confirmed after stream start.\r\n");
-			}
-		} else {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] CMW wrapper sensor start failed in raw diagnostic mode, status=%ld; falling back to raw driver.\r\n",
-					(long) cmw_start_status);
-		}
-	}
-#else
-	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
-		camera_stream_started = true;
-		/* The first processed frame often lands before AEC has climbed out of
-		 * the startup black level, so give the ISP a short head start here. */
-		DelayMilliseconds_ThreadX(CAMERA_FIRST_FRAME_WARMUP_DELAY_MS);
-		return true;
-	}
-#endif
-
-	if (!started_via_cmw_wrapper) {
-		/* camera_raw_sensor is only valid when CameraPlatform_InitImx335Driver()
-		 * has been called.  In the CMW-init path we skip that function to avoid
-		 * resetting the sensor, so fall back to a direct I2C write instead.
-		 * Per the IMX335 datasheet the correct streaming start sequence is:
-		 *   1. Write MODE_SELECT=0x00  (starts internal master clock oscillator)
-		 *   2. Wait >=19 ms            (oscillator stabilisation)
-		 *   3. Write XMSTA=0x00        (releases master start, begins pixel output)
-		 * Writing XMSTA before MODE_SELECT was the previous (wrong) order and
-		 * caused the sensor to output blank frames because the pixel array never
-		 * actually started clocking. */
-		uint8_t streaming_value = IMX335_MODE_STREAMING; /* 0x00 */
-		uint8_t xmsta_master_start_value = 0x00U;
-
-		if (CameraPlatform_I2cWriteReg(BCAMS_IMX_I2C_ADDRESS_HAL,
-		IMX335_REG_MODE_SELECT, &streaming_value, 1U) != IMX335_OK) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] Failed to write MODE_SELECT=0x00 to start IMX335 streaming.\r\n");
-			return false;
-		}
-		DelayMilliseconds_ThreadX(20U);
-
-		if (CameraPlatform_I2cWriteReg(BCAMS_IMX_I2C_ADDRESS_HAL,
-		IMX335_REG_XMSTA, &xmsta_master_start_value, 1U) != IMX335_OK) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] Warning: XMSTA write failed after MODE_SELECT.\r\n");
-		}
-		DelayMilliseconds_ThreadX(5U);
-
-		if (!CameraPlatform_SeedImx335ExposureGain()) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] Warning: failed to re-seed IMX335 exposure/gain after raw stream start.\r\n");
-		}
-
-		CameraPlatform_ReapplyImx335TestPattern();
-
-		raw_start_status = IMX335_OK;
-	}
-
-	if (!started_via_cmw_wrapper && (raw_start_status != IMX335_OK)) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Failed to start IMX335 streaming through vendor driver.\r\n");
-		return false;
-	}
-
-	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL,
-	IMX335_REG_MODE_SELECT, &mode_select, 1U) != IMX335_OK) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] IMX335 entered streaming, but mode-select readback failed.\r\n");
-	}
-
-	camera_stream_started = true;
-	return true;
-}
-
-/**
- * @brief Service ST's IMX335 middleware background process for ISP state updates.
- * @retval true when the background step succeeded or is not used by this driver.
- */
-static bool CameraPlatform_RunImx335Background(void) {
-	/* The ISP background loop is only needed for the processed image path.
-	 * Raw Pipe0 diagnostics bypass the ISP output path, so running AWB/AEC
-	 * updates there can trip middleware code that expects the YUV pipeline. */
-	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
-		camera_capture_isp_run_count++;
-
-		if (CMW_CAMERA_Run() != CMW_ERROR_NONE) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] CMW_CAMERA_Run() failed on ISP wake %lu.\r\n",
-					(unsigned long) camera_capture_isp_run_count);
-			return false;
-		}
-
-		return true;
-	}
-
-	return true;
-}
-
-/**
- * @brief Clock hook used by ST's camera middleware before HAL_DCMIPP_Init().
- * @param hdcmipp Unused DCMIPP handle supplied by the middleware.
- * @retval HAL status from the peripheral clock configuration.
- */
-HAL_StatusTypeDef MX_DCMIPP_ClockConfig(DCMIPP_HandleTypeDef *hdcmipp) {
-	RCC_PeriphCLKInitTypeDef periph_clk_init = { 0 };
-
-	UNUSED(hdcmipp);
-
-	periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_DCMIPP
-			| RCC_PERIPHCLK_CSI;
-	periph_clk_init.DcmippClockSelection = RCC_DCMIPPCLKSOURCE_IC17;
-	periph_clk_init.ICSelection[RCC_IC17].ClockSelection = RCC_ICCLKSOURCE_PLL1;
-	periph_clk_init.ICSelection[RCC_IC17].ClockDivider = 4;
-	periph_clk_init.ICSelection[RCC_IC18].ClockSelection = RCC_ICCLKSOURCE_PLL1;
-	/* Keep the camera kernel clock at 24 MHz so the IMX335 timing tables line up. */
-	periph_clk_init.ICSelection[RCC_IC18].ClockDivider = 50;
-
-	return HAL_RCCEx_PeriphCLKConfig(&periph_clk_init);
-}
-
-void App_ThreadX_NotifyStorageReady(void) {
-	AppStorage_NotifyMediaReady();
-}
-
-/**
- * @brief Capture a single frame and save it to the SD card.
- * @retval true when the frame reaches the SD card successfully.
- */
-static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
-	uint32_t captured_bytes = 0U;
-	UINT filex_status = FX_SUCCESS;
-	CHAR capture_file_name[CAMERA_CAPTURE_FILE_NAME_LENGTH] = { 0 };
-	uint8_t *image_ptr = NULL;
-	ULONG image_length = captured_bytes;
-	const CHAR *file_extension = camera_capture_use_cmw_pipeline ? "yuv422"
-			: "raw16";
-	if (!AppStorage_WaitForMediaReady(CAMERA_STORAGE_WAIT_TIMEOUT_MS)) {
-		return false;
-	}
-
-	if (!CameraPlatform_CaptureSingleFrame(&captured_bytes)) {
-		return false;
-	}
-
-	image_length = captured_bytes;
-
-	if (camera_capture_use_cmw_pipeline) {
-		image_ptr = camera_capture_result_buffer;
-		if (image_ptr == NULL) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] Capture buffer pointer is NULL after frame completion.\r\n");
-			return false;
-		}
-
-	} else {
-		image_ptr = camera_capture_result_buffer;
-	}
-
-	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] Frame ready for save: ptr=%p length=%lu pipeline=%s\r\n",
-			(void *) image_ptr, (unsigned long) image_length,
-			camera_capture_use_cmw_pipeline ? "processed" : "raw");
-
-	AppCameraDiagnostics_LogCaptureBufferPreview("ready-to-save", image_ptr,
-			(uint32_t) image_length);
-
-	if (!AppStorage_BuildCaptureFileName(capture_file_name,
-			sizeof(capture_file_name), file_extension)) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Failed to build capture filename.\r\n");
-		return false;
-	}
-
-	if (camera_capture_use_cmw_pipeline) {
-		CameraPlatform_LogCaptureState("processed-capture");
-		AppCameraDiagnostics_LogProcessedFrameDiagnostics("processed-capture",
-				image_ptr, (uint32_t) image_length);
-	}
-
-	DebugConsole_Printf(
-			camera_capture_use_cmw_pipeline ?
-					"[CAMERA][CAPTURE] Saving YUV422 capture to /captured_images/%s (%lu bytes)...\r\n"
-					: "[CAMERA][CAPTURE] Saving raw Pipe0 capture to /captured_images/%s (%lu bytes)...\r\n",
-			capture_file_name, (unsigned long) image_length);
-
-	filex_status = AppFileX_WriteCapturedImage(capture_file_name,
-			image_ptr, image_length);
-	if (filex_status != FX_SUCCESS) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Failed to write image to SD card, status=%lu.\r\n",
-				(unsigned long) filex_status);
-		return false;
-	}
-
-	DebugConsole_Printf(
-			camera_capture_use_cmw_pipeline ?
-					"[CAMERA][CAPTURE] Stored %lu-byte YUV422 image at /captured_images/%s.\r\n"
-					: "[CAMERA][CAPTURE] Stored %lu-byte raw Pipe0 frame at /captured_images/%s.\r\n",
-			(unsigned long) image_length, capture_file_name);
-
-	if (camera_capture_use_cmw_pipeline) {
-		if (!CameraPlatform_RequestDryInference((const uint8_t *) image_ptr,
-				(ULONG) image_length)) {
-			DebugConsole_Printf(
-					"[AI] Failed to queue one-shot dry-run inference.\r\n");
-		}
-	}
-
-	return true;
-}
-
-/**
- * @brief Queue a dry-run inference request for the dedicated AI worker thread.
- * @param frame_ptr Pointer to the captured frame bytes.
- * @param frame_length Length of the captured frame in bytes.
- * @retval true when the request was queued successfully.
- */
-static bool CameraPlatform_RequestDryInference(const uint8_t *frame_ptr,
-		ULONG frame_length) {
-	if (!camera_ai_sync_created) {
-		DebugConsole_Printf(
-				"[AI] Dry-run request dropped; AI queue not initialized.\r\n");
-		return false;
-	}
-
-	if ((frame_ptr == NULL) || (frame_length == 0U)) {
-		DebugConsole_Printf(
-				"[AI] Dry-run request dropped; empty frame ptr=%p len=%lu.\r\n",
-				(const void *) frame_ptr, (unsigned long) frame_length);
-		return false;
-	}
-
-	if (frame_length > CAMERA_CAPTURE_BUFFER_SIZE_BYTES) {
-		DebugConsole_Printf(
-				"[AI] Dry-run request dropped; frame too large len=%lu max=%lu.\r\n",
-				(unsigned long) frame_length,
-				(unsigned long) CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
-		return false;
-	}
-
-	(void) memcpy(camera_ai_frame_snapshot, frame_ptr, (size_t) frame_length);
-	DebugConsole_Printf(
-			"[AI] Dry-run snapshot copied: src=%p dst=%p len=%lu first8=[%02X %02X %02X %02X %02X %02X %02X %02X]\r\n",
-			(const void *) frame_ptr, (void *) camera_ai_frame_snapshot,
-			(unsigned long) frame_length, camera_ai_frame_snapshot[0],
-			camera_ai_frame_snapshot[1], camera_ai_frame_snapshot[2],
-			camera_ai_frame_snapshot[3], camera_ai_frame_snapshot[4],
-			camera_ai_frame_snapshot[5], camera_ai_frame_snapshot[6],
-			camera_ai_frame_snapshot[7]);
-
-	DebugConsole_Printf(
-			"[AI] Queueing dry-run request: ptr=%p length=%lu\r\n",
-			(void *) camera_ai_frame_snapshot, (unsigned long) frame_length);
-
-	camera_ai_request_frame_ptr = camera_ai_frame_snapshot;
-	camera_ai_request_frame_length = frame_length;
-	if (tx_semaphore_put(&camera_ai_request_semaphore) != TX_SUCCESS) {
-		DebugConsole_Printf(
-				"[AI] Failed to signal dry-run request semaphore.\r\n");
-		return false;
-	}
-
-	return true;
-}
-
 static void CameraPlatform_LogCaptureBufferSummary(uint32_t captured_bytes) {
 	AppCameraDiagnostics_LogCaptureBufferSummary(
 			(const uint8_t*) camera_capture_result_buffer, captured_bytes,
 			camera_capture_use_cmw_pipeline);
 }
+
+static bool CameraPlatform_PrepareDcmippSnapshot(void);
+static bool CameraPlatform_StartDcmippSnapshot(void);
+static bool CameraPlatform_ConfigureCsiLineByteProbe(void);
+static int32_t CameraPlatform_I2cReadReg(uint16_t dev_addr, uint16_t reg,
+		uint8_t *pdata, uint16_t length);
+static int32_t CameraPlatform_I2cWriteReg(uint16_t dev_addr, uint16_t reg,
+		uint8_t *pdata, uint16_t length);
 
 /**
  * @brief Log the active DCMIPP receiver clocking once per boot.
@@ -1714,6 +517,331 @@ static void CameraPlatform_LogCsiFaultSnapshot(const char *reason,
 
 
 /**
+ * @brief ThreadX app initialization hook.
+ * @param memory_ptr ThreadX memory pool pointer.
+ * @retval TX_SUCCESS on success.
+ */
+UINT App_ThreadX_Init(VOID *memory_ptr) {
+	UINT ret = TX_SUCCESS;
+
+	(void) memory_ptr;
+
+	/* Defer thread creation until App_ThreadX_Start() so startup ordering is explicit. */
+	DebugConsole_Printf(
+			"[CAMERA][THREAD] ThreadX app init complete. Waiting to start camera thread...\r\n");
+	return ret;
+}
+
+/**
+ * @brief ThreadX startup hook that creates the camera and runtime threads.
+ * @retval TX_SUCCESS on success.
+ */
+UINT App_ThreadX_Start(void) {
+	/* Keep this function idempotent to protect against accidental double-start. */
+	/* Leave the heartbeat LED under the dedicated thread so it reflects liveness
+	 * instead of startup state. */
+	BSP_LED_On(LED_RED);
+	BSP_LED_Off(LED_BLUE);
+	BSP_LED_Off(LED_GREEN);
+	if (camera_init_thread_created && camera_isp_thread_created
+			&& camera_heartbeat_thread_created) {
+		DebugConsole_Printf(
+				"[CAMERA][THREAD] Start skipped: camera threads already created.\r\n");
+		return TX_SUCCESS;
+	}
+
+	if (!camera_capture_sync_created) {
+		UINT semaphore_status = tx_semaphore_create(
+				&camera_capture_done_semaphore, "camera_capture_done", 0U);
+		if (semaphore_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[CAMERA][THREAD] Failed to create capture semaphore, status=%lu\r\n",
+					(unsigned long) semaphore_status);
+			return semaphore_status;
+		}
+
+		semaphore_status = tx_semaphore_create(&camera_capture_isp_semaphore,
+				"camera_capture_isp", 0U);
+		if (semaphore_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[CAMERA][THREAD] Failed to create ISP semaphore, status=%lu\r\n",
+					(unsigned long) semaphore_status);
+			return semaphore_status;
+		}
+
+		/* No UART mutex - concurrent prints may interleave but won't deadlock.
+		 * The UART HAL transmit is not re-entrant; a mutex with TX_WAIT_FOREVER
+		 * deadlocks when the holder's HAL_UART_Transmit itself blocks, and
+		 * TX_NO_WAIT corrupts the UART state when two threads collide mid-frame. */
+		(void) tx_mutex_create(&debug_uart_mutex, "debug_uart", TX_NO_INHERIT);
+
+		camera_capture_sync_created = true;
+	}
+
+	{
+		const UINT storage_init_status = AppStorage_Init();
+		if (storage_init_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[CAMERA][THREAD] Failed to create storage-ready event flags.\r\n");
+			return storage_init_status;
+		}
+	}
+
+	{
+		const UINT runtime_init_status = AppInferenceRuntime_Init();
+		if (runtime_init_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[AI] Failed to initialize inference runtime, status=%lu\r\n",
+					(unsigned long) runtime_init_status);
+			return runtime_init_status;
+		}
+	}
+
+	{
+		const UINT runtime_start_status = AppInferenceRuntime_Start();
+		if (runtime_start_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[AI] Failed to start inference runtime, status=%lu\r\n",
+					(unsigned long) runtime_start_status);
+			return runtime_start_status;
+		}
+	}
+
+	if (!camera_isp_thread_created) {
+		const UINT isp_create_status = tx_thread_create(&camera_isp_thread,
+				"camera_isp", CameraIspThread_Entry, 0U,
+				camera_isp_thread_stack, sizeof(camera_isp_thread_stack),
+				CAMERA_ISP_THREAD_PRIORITY, CAMERA_ISP_THREAD_PRIORITY,
+				TX_NO_TIME_SLICE, TX_AUTO_START);
+
+		if (isp_create_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[CAMERA][THREAD] Failed to create camera ISP thread, status=%lu\r\n",
+					(unsigned long) isp_create_status);
+			return isp_create_status;
+		}
+
+		camera_isp_thread_created = true;
+		DebugConsole_Printf(
+				"[CAMERA][THREAD] Camera ISP thread created and started.\r\n");
+	}
+
+	if (!camera_heartbeat_thread_created) {
+		const UINT heartbeat_create_status = tx_thread_create(
+				&camera_heartbeat_thread, "camera_heartbeat",
+				CameraHeartbeatThread_Entry, 0U,
+				camera_heartbeat_thread_stack,
+				sizeof(camera_heartbeat_thread_stack),
+				CAMERA_HEARTBEAT_THREAD_PRIORITY,
+				CAMERA_HEARTBEAT_THREAD_PRIORITY,
+				TX_NO_TIME_SLICE, TX_AUTO_START);
+
+		if (heartbeat_create_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[CAMERA][THREAD] Failed to create heartbeat thread, status=%lu\r\n",
+					(unsigned long) heartbeat_create_status);
+			return heartbeat_create_status;
+		}
+
+		camera_heartbeat_thread_created = true;
+		DebugConsole_Printf(
+				"[CAMERA][THREAD] Heartbeat thread created and started.\r\n");
+	}
+
+	if (!camera_init_thread_created) {
+		/* Create a dedicated thread so camera probing is isolated from other startup work. */
+		const UINT create_status = tx_thread_create(&camera_init_thread,
+				"camera_init", CameraInitThread_Entry, 0U,
+				camera_init_thread_stack, sizeof(camera_init_thread_stack),
+				CAMERA_INIT_THREAD_PRIORITY, CAMERA_INIT_THREAD_PRIORITY,
+				TX_NO_TIME_SLICE, TX_AUTO_START);
+
+		if (create_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[CAMERA][THREAD] Failed to create camera init thread, status=%lu\r\n",
+					(unsigned long) create_status);
+			return create_status;
+		}
+
+		camera_init_thread_created = true;
+		DebugConsole_Printf(
+				"[CAMERA][THREAD] Camera init thread created and started.\r\n");
+	}
+
+	return TX_SUCCESS;
+}
+
+/**
+ * @brief Notify the storage module that FileX media is ready.
+ */
+void App_ThreadX_NotifyStorageReady(void) {
+	AppStorage_NotifyMediaReady();
+}
+
+/**
+ * @brief Kernel initialization hook used by CubeMX.
+ */
+void MX_ThreadX_Init(void) {
+	/* USER CODE BEGIN Before_Kernel_Start */
+
+	/* USER CODE END Before_Kernel_Start */
+
+	tx_kernel_enter();
+
+	/* USER CODE BEGIN Kernel_Start_Error */
+
+	/* USER CODE END Kernel_Start_Error */
+}
+
+/**
+ * @brief Print a staged diagnostic sequence for B-CAMS-IMX camera bring-up.
+ * @return TX_SUCCESS when the sensor probe succeeds, TX_NOT_AVAILABLE otherwise.
+ */
+UINT CameraPlatform_ProbeBCamsImx(void) {
+	HAL_StatusTypeDef probe_status = HAL_ERROR;
+	uint8_t chip_id = 0U;
+
+	DebugConsole_Printf("[CAMERA][PROBE] Probing camera stack...\r\n");
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: reset\r\n");
+	CameraPlatform_ResetImx335Module();
+
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: i2c-ack\r\n");
+	probe_status = HAL_I2C_IsDeviceReady(&hi2c2, BCAMS_IMX_I2C_ADDRESS_HAL,
+			BCAMS_IMX_I2C_PROBE_TRIALS, BCAMS_IMX_I2C_PROBE_TIMEOUT_MS);
+	if (probe_status != HAL_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][PROBE]   - Sensor did not ACK on I2C2 at 7-bit address 0x%02X.\r\n",
+				(unsigned int) BCAMS_IMX_I2C_ADDRESS_7BIT);
+		return TX_NOT_AVAILABLE;
+	}
+
+	DebugConsole_Printf(
+			"[CAMERA][PROBE]   - Sensor ACKed on I2C2 at 7-bit address 0x%02X.\r\n",
+			(unsigned int) BCAMS_IMX_I2C_ADDRESS_7BIT);
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: chip-id\r\n");
+	if (CameraPlatform_ReadImx335ChipId(&chip_id) != HAL_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][PROBE]   - Failed to read IMX335 ID register.\r\n");
+		return TX_NOT_AVAILABLE;
+	}
+
+	DebugConsole_Printf(
+			"[CAMERA][PROBE]   - IMX335 ID register 0x3912 = 0x%02X.\r\n",
+			(unsigned int) chip_id);
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: sensor-init\r\n");
+	if (!CameraPlatform_InitializeImx335Sensor()) {
+		return TX_NOT_AVAILABLE;
+	}
+
+	DebugConsole_Printf("[CAMERA][PROBE] Sensor probe OK.\r\n");
+	DebugConsole_Printf("[CAMERA][PROBE] Camera stack ready.\r\n");
+	return TX_SUCCESS;
+}
+
+/**
+ * @brief ThreadX entry point used to run camera bring-up diagnostics.
+ * @param thread_input Unused ThreadX input value.
+ */
+static VOID CameraInitThread_Entry(ULONG thread_input) {
+	(void) thread_input;
+
+	(void) DebugConsole_WriteString("[CAMERA] thread entry\r\n");
+	DelayMilliseconds_ThreadX(CAMERA_INIT_STARTUP_DELAY_MS);
+	(void) DebugConsole_WriteString("[CAMERA] probe start\r\n");
+
+	if (CameraPlatform_ProbeBCamsImx() == TX_SUCCESS) {
+		DebugConsole_Printf(
+				"[CAMERA][THREAD] Camera probe completed successfully.\r\n");
+
+		if (!App_AI_Model_Init()) {
+			DebugConsole_Printf(
+					"[AI] Model runtime init failed; continuing without inference.\r\n");
+		}
+
+		BSP_LED_Off(LED_BLUE);
+		DebugConsole_Printf(
+				"[CAMERA][THREAD] Entering capture/inference loop (period=60s)...\r\n");
+		while (1) {
+			if (CameraPlatform_CaptureAndStoreSingleFrame()) {
+				DebugConsole_Printf(
+						"[CAMERA][THREAD] Capture and inference completed successfully.\r\n");
+			} else {
+				DebugConsole_Printf(
+						"[CAMERA][THREAD] Capture/inference attempt failed.\r\n");
+			}
+			DelayMilliseconds_ThreadX(60000U);
+		}
+	}
+
+	DebugConsole_Printf(
+			"[CAMERA][THREAD] Camera probe failed or is not configured yet.\r\n");
+}
+
+/**
+ * @brief Low-priority heartbeat thread that toggles the board LED.
+ * @param thread_input Unused ThreadX input value.
+ */
+static VOID CameraHeartbeatThread_Entry(ULONG thread_input) {
+	(void) thread_input;
+
+	if (!camera_heartbeat_gpio_initialized) {
+		GPIO_InitTypeDef gpio_init = { 0 };
+
+		__HAL_RCC_GPIOG_CLK_ENABLE();
+		HAL_GPIO_WritePin(CAMERA_HEARTBEAT_LED_GPIO_PORT,
+				CAMERA_HEARTBEAT_LED_PIN, GPIO_PIN_SET);
+
+		gpio_init.Pin = CAMERA_HEARTBEAT_LED_PIN;
+		gpio_init.Mode = GPIO_MODE_OUTPUT_PP;
+		gpio_init.Pull = GPIO_NOPULL;
+		gpio_init.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+		HAL_GPIO_Init(CAMERA_HEARTBEAT_LED_GPIO_PORT, &gpio_init);
+
+		camera_heartbeat_gpio_initialized = true;
+	}
+
+	HAL_GPIO_WritePin(CAMERA_HEARTBEAT_LED_GPIO_PORT,
+			CAMERA_HEARTBEAT_LED_PIN, GPIO_PIN_SET);
+	DebugConsole_Printf("[WATCHDOG] heartbeat thread running.\r\n");
+
+	while (1) {
+		DebugConsole_Printf("[WATCHDOG] pulse\r\n");
+		HAL_GPIO_TogglePin(CAMERA_HEARTBEAT_LED_GPIO_PORT,
+				CAMERA_HEARTBEAT_LED_PIN);
+		DelayMilliseconds_ThreadX(CAMERA_HEARTBEAT_PULSE_MS);
+		HAL_GPIO_TogglePin(CAMERA_HEARTBEAT_LED_GPIO_PORT,
+				CAMERA_HEARTBEAT_LED_PIN);
+		DelayMilliseconds_ThreadX(CAMERA_HEARTBEAT_PERIOD_MS
+				- CAMERA_HEARTBEAT_PULSE_MS);
+	}
+}
+
+/**
+ * @brief Low-priority camera ISP thread that keeps the middleware running.
+ * @param thread_input Unused ThreadX input value.
+ */
+static VOID CameraIspThread_Entry(ULONG thread_input) {
+	(void) thread_input;
+
+	DebugConsole_Printf(
+			"[CAMERA][THREAD] Camera ISP service thread running.\r\n");
+
+	while (1) {
+		UINT semaphore_status = tx_semaphore_get(&camera_capture_isp_semaphore,
+				CameraPlatform_MillisecondsToTicks(20U));
+
+		if ((semaphore_status == TX_SUCCESS)
+				|| (camera_stream_started && camera_cmw_initialized)) {
+			if (!CameraPlatform_RunImx335Background()) {
+				camera_capture_failed = true;
+				camera_capture_error_code = 0x49535052U; /* 'ISPR' */
+				(void) tx_semaphore_put(&camera_capture_done_semaphore);
+			}
+		}
+	}
+}
+
+/**
  * @brief Read back the CSI PFCR after the IMX335 middleware init path.
  * @note This is a read-only sanity check so we can confirm the HAL kept the
  *       expected lane-direction and frequency-range programming intact.
@@ -1901,6 +1029,88 @@ static void CameraPlatform_LogCaptureState(const char *reason) {
 			camera_capture_csi_linebyte_event_count;
 
 	AppCameraDiagnostics_LogCaptureState(&snapshot);
+}
+
+/**
+ * @brief Capture a single frame, save it to the SD card, and queue inference.
+ * @retval true when the frame reaches storage successfully.
+ */
+static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
+	uint32_t captured_bytes = 0U;
+	UINT filex_status = FX_SUCCESS;
+	CHAR capture_file_name[CAMERA_CAPTURE_FILE_NAME_LENGTH] = { 0 };
+	uint8_t *image_ptr = NULL;
+	ULONG image_length = captured_bytes;
+	const CHAR *file_extension = camera_capture_use_cmw_pipeline ? "yuv422"
+			: "raw16";
+
+	if (!AppStorage_WaitForMediaReady(CAMERA_STORAGE_WAIT_TIMEOUT_MS)) {
+		return false;
+	}
+
+	if (!CameraPlatform_CaptureSingleFrame(&captured_bytes)) {
+		return false;
+	}
+
+	image_length = captured_bytes;
+	image_ptr = camera_capture_result_buffer;
+	if (image_ptr == NULL) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Capture buffer pointer is NULL after frame completion.\r\n");
+		return false;
+	}
+
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] Frame ready for save: ptr=%p length=%lu pipeline=%s\r\n",
+			(void *) image_ptr, (unsigned long) image_length,
+			camera_capture_use_cmw_pipeline ? "processed" : "raw");
+
+	AppCameraDiagnostics_LogCaptureBufferPreview("ready-to-save", image_ptr,
+			(uint32_t) image_length);
+
+	if (!AppStorage_BuildCaptureFileName(capture_file_name,
+			sizeof(capture_file_name), file_extension)) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Failed to build capture filename.\r\n");
+		return false;
+	}
+
+	if (camera_capture_use_cmw_pipeline) {
+		CameraPlatform_LogCaptureState("processed-capture");
+		AppCameraDiagnostics_LogProcessedFrameDiagnostics("processed-capture",
+				image_ptr, (uint32_t) image_length);
+	}
+
+	DebugConsole_Printf(
+			camera_capture_use_cmw_pipeline ?
+					"[CAMERA][CAPTURE] Saving YUV422 capture to /captured_images/%s (%lu bytes)...\r\n"
+					: "[CAMERA][CAPTURE] Saving raw Pipe0 capture to /captured_images/%s (%lu bytes)...\r\n",
+			capture_file_name, (unsigned long) image_length);
+
+	filex_status = AppFileX_WriteCapturedImage(capture_file_name,
+			image_ptr, image_length);
+	if (filex_status != FX_SUCCESS) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Failed to write image to SD card, status=%lu.\r\n",
+				(unsigned long) filex_status);
+		return false;
+	}
+
+	DebugConsole_Printf(
+			camera_capture_use_cmw_pipeline ?
+					"[CAMERA][CAPTURE] Stored %lu-byte YUV422 image at /captured_images/%s.\r\n"
+					: "[CAMERA][CAPTURE] Stored %lu-byte raw Pipe0 frame at /captured_images/%s.\r\n",
+			(unsigned long) image_length, capture_file_name);
+
+	if (camera_capture_use_cmw_pipeline) {
+		if (!AppInferenceRuntime_RequestDryInference(
+					(const uint8_t *) image_ptr, (ULONG) image_length)) {
+			DebugConsole_Printf(
+					"[AI] Failed to queue one-shot dry-run inference.\r\n");
+		}
+	}
+
+	return true;
 }
 
 /**
@@ -2296,6 +1506,84 @@ static bool CameraPlatform_StartDcmippSnapshot(void) {
 	IMX335_REG_MODE_SELECT, &mode_select, 1U) != IMX335_OK) {
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] DCMIPP pipe started through HAL, but IMX335 mode-select readback failed.\r\n");
+	}
+
+	return true;
+}
+
+/**
+ * @brief Start IMX335 streaming for the current capture mode.
+ * @retval true when the sensor enters streaming mode.
+ */
+static bool CameraPlatform_StartImx335Stream(void) {
+	uint8_t mode_select = IMX335_MODE_STANDBY;
+	uint8_t streaming_value = IMX335_MODE_STREAMING;
+
+	if (camera_stream_started) {
+		return true;
+	}
+
+	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
+		camera_stream_started = true;
+		DelayMilliseconds_ThreadX(CAMERA_FIRST_FRAME_WARMUP_DELAY_MS);
+		return true;
+	}
+
+	if (CameraPlatform_I2cWriteReg(BCAMS_IMX_I2C_ADDRESS_HAL,
+			IMX335_REG_MODE_SELECT, &streaming_value, 1U) != IMX335_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Failed to write MODE_SELECT=0x00 to start IMX335 streaming.\r\n");
+		return false;
+	}
+	DelayMilliseconds_ThreadX(20U);
+
+	{
+		uint8_t xmsta_master_start_value = 0x00U;
+
+		if (CameraPlatform_I2cWriteReg(BCAMS_IMX_I2C_ADDRESS_HAL,
+		IMX335_REG_XMSTA, &xmsta_master_start_value, 1U) != IMX335_OK) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] Warning: XMSTA write failed after MODE_SELECT.\r\n");
+		}
+	}
+	DelayMilliseconds_ThreadX(5U);
+
+	if (!CameraPlatform_SeedImx335ExposureGain()) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Warning: failed to re-seed IMX335 exposure/gain after raw stream start.\r\n");
+	}
+
+	CameraPlatform_ReapplyImx335TestPattern();
+
+	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL,
+	IMX335_REG_MODE_SELECT, &mode_select, 1U) != IMX335_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] IMX335 entered streaming, but mode-select readback failed.\r\n");
+	}
+
+	camera_stream_started = true;
+	return true;
+}
+
+/**
+ * @brief Service ST's IMX335 middleware background process for ISP state updates.
+ * @retval true when the background step succeeded or is not used by this driver.
+ */
+static bool CameraPlatform_RunImx335Background(void) {
+	/* The ISP background loop is only needed for the processed image path.
+	 * Raw Pipe0 diagnostics bypass the ISP output path, so running AWB/AEC
+	 * updates there can trip middleware code that expects the YUV pipeline. */
+	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
+		camera_capture_isp_run_count++;
+
+		if (CMW_CAMERA_Run() != CMW_ERROR_NONE) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] CMW_CAMERA_Run() failed on ISP wake %lu.\r\n",
+					(unsigned long) camera_capture_isp_run_count);
+			return false;
+		}
+
+		return true;
 	}
 
 	return true;
