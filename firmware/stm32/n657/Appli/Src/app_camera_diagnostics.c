@@ -13,6 +13,7 @@
 
 #include "app_camera_buffers.h"
 #include "debug_console.h"
+#include "main.h"
 
 /* Read the low 10 bits from a padded raw sample. */
 static uint16_t AppCameraDiagnostics_ReadRaw10Level(uint16_t raw_word) {
@@ -340,4 +341,336 @@ void AppCameraDiagnostics_LogCaptureBufferSummary(const uint8_t *buffer_ptr,
 
 	AppCameraDiagnostics_LogCaptureBufferSummaryProcessed(buffer_ptr,
 			captured_bytes);
+}
+
+/**
+ * @brief Print a small byte/word preview of the current frame buffer.
+ *
+ * This keeps the preview logic isolated from the ThreadX capture flow so the
+ * thread file only owns orchestration.
+ * @param reason Human-readable reason that triggered the preview.
+ * @param buffer_ptr Buffer to inspect.
+ * @param length_bytes Number of bytes to preview.
+ */
+void AppCameraDiagnostics_LogCaptureBufferPreview(const char *reason,
+		const uint8_t *buffer_ptr, uint32_t length_bytes) {
+	const uint32_t preview_byte_count =
+			(length_bytes < 16U) ? length_bytes : 16U;
+	uint32_t preview_bytes[16U] = { 0U };
+	const uint32_t preview_word_count =
+			(length_bytes / sizeof(uint32_t) < 4U) ?
+					(length_bytes / sizeof(uint32_t)) : 4U;
+	uint32_t preview_words[4U] = { 0U };
+
+	if ((buffer_ptr == NULL) || (length_bytes == 0U)) {
+		return;
+	}
+
+	for (uint32_t index = 0U; index < preview_byte_count; index++) {
+		preview_bytes[index] = (uint32_t) buffer_ptr[index];
+	}
+
+	for (uint32_t index = 0U; index < preview_word_count; index++) {
+		const uint32_t byte_index = index * sizeof(uint32_t);
+		uint32_t word_value = 0U;
+
+		(void) memcpy(&word_value, &buffer_ptr[byte_index], sizeof(word_value));
+		preview_words[index] = word_value;
+	}
+
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] Raw preview (%s): bytes=[%02lX,%02lX,%02lX,%02lX,%02lX,%02lX,%02lX,%02lX,%02lX,%02lX,%02lX,%02lX,%02lX,%02lX,%02lX,%02lX] words=[0x%08lX,0x%08lX,0x%08lX,0x%08lX].\r\n",
+			(reason != NULL) ? reason : "capture",
+			(unsigned long) preview_bytes[0], (unsigned long) preview_bytes[1],
+			(unsigned long) preview_bytes[2], (unsigned long) preview_bytes[3],
+			(unsigned long) preview_bytes[4], (unsigned long) preview_bytes[5],
+			(unsigned long) preview_bytes[6], (unsigned long) preview_bytes[7],
+			(unsigned long) preview_bytes[8], (unsigned long) preview_bytes[9],
+			(unsigned long) preview_bytes[10],
+			(unsigned long) preview_bytes[11],
+			(unsigned long) preview_bytes[12],
+			(unsigned long) preview_bytes[13],
+			(unsigned long) preview_bytes[14],
+			(unsigned long) preview_bytes[15], (unsigned long) preview_words[0],
+			(unsigned long) preview_words[1], (unsigned long) preview_words[2],
+			(unsigned long) preview_words[3]);
+}
+
+/**
+ * @brief Log a compact diagnostic window from the processed YUV frame.
+ *
+ * This helps distinguish a truly dark frame from a frame that just needs the
+ * center ROI or exposure state to settle.
+ * @param reason Human-readable reason that triggered the diagnostics.
+ * @param buffer_ptr Processed YUV422 frame bytes.
+ * @param length_bytes Number of bytes available in the frame buffer.
+ */
+void AppCameraDiagnostics_LogProcessedFrameDiagnostics(const char *reason,
+		const uint8_t *buffer_ptr, uint32_t length_bytes) {
+	const uint32_t roi_size_pixels = 32U;
+	const uint32_t frame_width_pixels = CAMERA_CAPTURE_WIDTH_PIXELS;
+	const uint32_t frame_height_lines = CAMERA_CAPTURE_HEIGHT_PIXELS;
+	const uint32_t bytes_per_pixel = CAMERA_CAPTURE_BYTES_PER_PIXEL;
+	const uint32_t stride_bytes = frame_width_pixels * bytes_per_pixel;
+	uint32_t roi_start_x = 0U;
+	uint32_t roi_start_y = 0U;
+	uint32_t roi_min = 0xFFU;
+	uint32_t roi_max = 0U;
+	uint64_t roi_sum = 0U;
+	uint32_t roi_samples = 0U;
+	uint32_t center_line = 0U;
+	uint32_t center_preview[8U] = { 0U };
+
+	if ((buffer_ptr == NULL) || (length_bytes < stride_bytes)) {
+		return;
+	}
+
+	if ((frame_width_pixels < roi_size_pixels)
+			|| (frame_height_lines < roi_size_pixels)) {
+		return;
+	}
+
+	roi_start_x = (frame_width_pixels - roi_size_pixels) / 2U;
+	roi_start_y = (frame_height_lines - roi_size_pixels) / 2U;
+	center_line = roi_start_y + (roi_size_pixels / 2U);
+
+	for (uint32_t row = 0U; row < roi_size_pixels; row++) {
+		const uint32_t src_y = roi_start_y + row;
+		const uint32_t row_base = src_y * stride_bytes;
+
+		if ((row_base + ((roi_start_x + roi_size_pixels) * bytes_per_pixel))
+				> length_bytes) {
+			break;
+		}
+
+		for (uint32_t col = 0U; col < roi_size_pixels; col++) {
+			const uint32_t sample_index = row_base
+					+ ((roi_start_x + col) * bytes_per_pixel);
+			const uint8_t y_sample = buffer_ptr[sample_index];
+
+			if (y_sample < roi_min) {
+				roi_min = y_sample;
+			}
+			if (y_sample > roi_max) {
+				roi_max = y_sample;
+			}
+			roi_sum += y_sample;
+			roi_samples++;
+		}
+	}
+
+	for (uint32_t index = 0U; index < 8U; index++) {
+		const uint32_t sample_x = roi_start_x + index;
+		const uint32_t sample_index = (center_line * stride_bytes)
+				+ (sample_x * bytes_per_pixel);
+
+		if (sample_index < length_bytes) {
+			center_preview[index] = buffer_ptr[sample_index];
+		}
+	}
+
+	if (roi_samples == 0U) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Processed ROI stats skipped (%s): no valid samples.\r\n",
+				(reason != NULL) ? reason : "capture");
+		return;
+	}
+
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] Processed ROI stats (%s): roi=%lux%lu start=(%lu,%lu) y_min=%lu y_max=%lu y_mean=%lu.%02lu center8=[%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu].\r\n",
+			(reason != NULL) ? reason : "capture",
+			(unsigned long) roi_size_pixels, (unsigned long) roi_size_pixels,
+			(unsigned long) roi_start_x, (unsigned long) roi_start_y,
+			(unsigned long) roi_min, (unsigned long) roi_max,
+			(unsigned long) (roi_sum / roi_samples),
+			(unsigned long) (((roi_sum * 100U) / roi_samples) % 100U),
+			(unsigned long) center_preview[0], (unsigned long) center_preview[1],
+			(unsigned long) center_preview[2], (unsigned long) center_preview[3],
+			(unsigned long) center_preview[4], (unsigned long) center_preview[5],
+			(unsigned long) center_preview[6], (unsigned long) center_preview[7]);
+}
+
+/**
+ * @brief Dump the CSI line/byte counter configuration and current event count.
+ * @param reason Short note describing what triggered the dump.
+ * @param event_count Number of line/byte events observed so far.
+ */
+void AppCameraDiagnostics_LogCsiLineByteCounters(const char *reason,
+		uint32_t event_count) {
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] CSI line/byte counters (%s): events=%lu SR0=0x%08lX SR1=0x%08lX LB0CFGR=0x%08lX LB1CFGR=0x%08lX LB2CFGR=0x%08lX LB3CFGR=0x%08lX PRGITR=0x%08lX.\r\n",
+			(reason != NULL) ? reason : "capture",
+			(unsigned long) event_count, (unsigned long) CSI->SR0,
+			(unsigned long) CSI->SR1, (unsigned long) CSI->LB0CFGR,
+			(unsigned long) CSI->LB1CFGR, (unsigned long) CSI->LB2CFGR,
+			(unsigned long) CSI->LB3CFGR, (unsigned long) CSI->PRGITR);
+}
+
+/**
+ * @brief Dump the active DCMIPP pipe registers for capture bring-up.
+ * @param reason Short note describing what triggered the dump.
+ * @param capture_dcmipp Active DCMIPP handle, when available.
+ */
+void AppCameraDiagnostics_LogDcmippPipeRegisters(const char *reason,
+		DCMIPP_HandleTypeDef *capture_dcmipp) {
+	uint32_t dcmipp_irq_enabled = 0U;
+	uint32_t dcmipp_irq_pending = 0U;
+	uint32_t csi_irq_enabled = 0U;
+	uint32_t csi_irq_pending = 0U;
+
+	if ((capture_dcmipp == NULL) || (capture_dcmipp->Instance == NULL)) {
+		return;
+	}
+
+	dcmipp_irq_enabled = (NVIC_GetEnableIRQ(DCMIPP_IRQn) != 0) ? 1U : 0U;
+	dcmipp_irq_pending = (NVIC_GetPendingIRQ(DCMIPP_IRQn) != 0) ? 1U : 0U;
+	csi_irq_enabled = (NVIC_GetEnableIRQ(CSI_IRQn) != 0) ? 1U : 0U;
+	csi_irq_pending = (NVIC_GetPendingIRQ(CSI_IRQn) != 0) ? 1U : 0U;
+
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] DCMIPP pipe regs (%s): CMCR=0x%08lX CMSR1=0x%08lX CMSR2=0x%08lX P0FSCR=0x%08lX P0FCTCR=0x%08lX P0PPCR=0x%08lX P0PPM0AR1=0x%08lX P0DCCNTR=0x%08lX P0DCLMTR=0x%08lX P0SCSTR=0x%08lX P0SCSZR=0x%08lX P0CFSCR=0x%08lX P0CFCTCR=0x%08lX P1FSCR=0x%08lX P1FCTCR=0x%08lX P1PPCR=0x%08lX P1PPM0AR1=0x%08lX P1CFSCR=0x%08lX P1CFCTCR=0x%08lX.\r\n",
+			(reason != NULL) ? reason : "capture",
+			(unsigned long) capture_dcmipp->Instance->CMCR,
+			(unsigned long) capture_dcmipp->Instance->CMSR1,
+			(unsigned long) capture_dcmipp->Instance->CMSR2,
+			(unsigned long) capture_dcmipp->Instance->P0FSCR,
+			(unsigned long) capture_dcmipp->Instance->P0FCTCR,
+			(unsigned long) capture_dcmipp->Instance->P0PPCR,
+			(unsigned long) capture_dcmipp->Instance->P0PPM0AR1,
+			(unsigned long) capture_dcmipp->Instance->P0DCCNTR,
+			(unsigned long) capture_dcmipp->Instance->P0DCLMTR,
+			(unsigned long) capture_dcmipp->Instance->P0SCSTR,
+			(unsigned long) capture_dcmipp->Instance->P0SCSZR,
+			(unsigned long) capture_dcmipp->Instance->P0CFSCR,
+			(unsigned long) capture_dcmipp->Instance->P0CFCTCR,
+			(unsigned long) capture_dcmipp->Instance->P1FSCR,
+			(unsigned long) capture_dcmipp->Instance->P1FCTCR,
+			(unsigned long) capture_dcmipp->Instance->P1PPCR,
+			(unsigned long) capture_dcmipp->Instance->P1PPM0AR1,
+			(unsigned long) capture_dcmipp->Instance->P1CFSCR,
+			(unsigned long) capture_dcmipp->Instance->P1CFCTCR);
+	/* IPPlug AXI master FIFO partition - if DPREGSTART==DPREGEND the FIFO has
+	 * zero words and the DMA client cannot write anything to memory. */
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] DCMIPP IPPlug (%s): IPGR1=0x%08lX IPGR2=0x%08lX IPGR3=0x%08lX IPC1R1=0x%08lX IPC1R3=0x%08lX IPC2R1=0x%08lX IPC2R3=0x%08lX IPC3R1=0x%08lX IPC3R3=0x%08lX.\r\n",
+			(reason != NULL) ? reason : "capture",
+			(unsigned long) capture_dcmipp->Instance->IPGR1,
+			(unsigned long) capture_dcmipp->Instance->IPGR2,
+			(unsigned long) capture_dcmipp->Instance->IPGR3,
+			(unsigned long) capture_dcmipp->Instance->IPC1R1,
+			(unsigned long) capture_dcmipp->Instance->IPC1R3,
+			(unsigned long) capture_dcmipp->Instance->IPC2R1,
+			(unsigned long) capture_dcmipp->Instance->IPC2R3,
+			(unsigned long) capture_dcmipp->Instance->IPC3R1,
+			(unsigned long) capture_dcmipp->Instance->IPC3R3);
+	/* Shadow/current registers - reflect what was active during the last
+	 * captured frame. */
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] DCMIPP PIPE0 current-frame regs (%s): P0CPPCR=0x%08lX P0CPPM0AR1=0x%08lX P0CPPM0AR2=0x%08lX P0CSCSTR=0x%08lX P0CSCSZR=0x%08lX P0CFCTCR=0x%08lX.\r\n",
+			(reason != NULL) ? reason : "capture",
+			(unsigned long) capture_dcmipp->Instance->P0CPPCR,
+			(unsigned long) capture_dcmipp->Instance->P0CPPM0AR1,
+			(unsigned long) capture_dcmipp->Instance->P0CPPM0AR2,
+			(unsigned long) capture_dcmipp->Instance->P0CSCSTR,
+			(unsigned long) capture_dcmipp->Instance->P0CSCSZR,
+			(unsigned long) capture_dcmipp->Instance->P0CFCTCR);
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] DCMIPP interrupt state (%s): CMIER=0x%08lX CSI_IER0=0x%08lX CSI_IER1=0x%08lX NVIC(DCMIPP enabled=%lu pending=%lu, CSI enabled=%lu pending=%lu).\r\n",
+			(reason != NULL) ? reason : "capture",
+			(unsigned long) capture_dcmipp->Instance->CMIER,
+			(unsigned long) CSI->IER0, (unsigned long) CSI->IER1,
+			(unsigned long) dcmipp_irq_enabled,
+			(unsigned long) dcmipp_irq_pending,
+			(unsigned long) csi_irq_enabled, (unsigned long) csi_irq_pending);
+}
+
+/**
+ * @brief Dump the camera, ISP, and pipe state snapshot used during capture bring-up.
+ * @param snapshot Snapshot data collected by the camera thread.
+ */
+void AppCameraDiagnostics_LogCaptureState(
+		const AppCameraDiagnostics_CaptureState_t *snapshot) {
+	const char *reason = NULL;
+
+	if (snapshot == NULL) {
+		return;
+	}
+
+	reason = (snapshot->reason != NULL) ? snapshot->reason : "capture";
+
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] State snapshot (%s): armed=%u stream_started=%u use_cmw=%u cmw_init=%u frame_events=%lu vsync_events=%lu isp_runs=%lu csi_irqs=%lu dcmipp_irqs=%lu pipe=%lu mode=%lu pipe_state=%lu data_counter=%lu reported_bytes=%lu counter_status=%lu sof=%u eof=%u failed=%u err=0x%08lX line_errs=%lu mask=0x%08lX buffer_index=%lu.\r\n",
+			reason, snapshot->snapshot_armed ? 1U : 0U,
+			snapshot->stream_started ? 1U : 0U,
+			snapshot->use_cmw_pipeline ? 1U : 0U,
+			snapshot->cmw_initialized ? 1U : 0U,
+			(unsigned long) snapshot->frame_event_count,
+			(unsigned long) snapshot->vsync_event_count,
+			(unsigned long) snapshot->isp_run_count,
+			(unsigned long) snapshot->csi_irq_count,
+			(unsigned long) snapshot->dcmipp_irq_count,
+			(unsigned long) snapshot->capture_pipe,
+			(unsigned long) snapshot->pipe_mode,
+			(unsigned long) snapshot->pipe_state,
+			(unsigned long) snapshot->pipe_counter,
+			(unsigned long) snapshot->reported_byte_count,
+			(unsigned long) snapshot->counter_status,
+			snapshot->sof_seen ? 1U : 0U,
+			snapshot->eof_seen ? 1U : 0U, snapshot->failed ? 1U : 0U,
+			(unsigned long) snapshot->error_code,
+			(unsigned long) snapshot->line_error_count,
+			(unsigned long) snapshot->line_error_mask,
+			(unsigned long) snapshot->active_buffer_index);
+
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] Buffer addresses: buf0=0x%08lX buf1=0x%08lX result=0x%08lX pipe_mem=0x%08lX.\r\n",
+			(unsigned long) (uintptr_t) snapshot->buffer0,
+			(unsigned long) (uintptr_t) snapshot->buffer1,
+			(unsigned long) (uintptr_t) snapshot->result_buffer,
+			(unsigned long) snapshot->pipe_memory_address);
+
+	AppCameraDiagnostics_LogDcmippPipeRegisters(reason, snapshot->capture_dcmipp);
+	AppCameraDiagnostics_LogCsiLineByteCounters(reason,
+			snapshot->csi_linebyte_event_count);
+
+	if (snapshot->cmw_state_ok) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] CMW state: exposure_mode=%ld aec=%u exposure=%ld us gain=%ld mdB test_pattern=%ld sensor=%s %lux%lu gain=[%lu,%lu] again_max=%lu exposure=[%lu,%lu].\r\n",
+				(long) snapshot->cmw_exposure_mode,
+				(unsigned int) snapshot->cmw_aec_enabled,
+				(long) snapshot->cmw_exposure, (long) snapshot->cmw_gain,
+				(long) snapshot->cmw_test_pattern,
+				(snapshot->sensor_name != NULL) ? snapshot->sensor_name : "?",
+				(unsigned long) snapshot->sensor_width,
+				(unsigned long) snapshot->sensor_height,
+				(unsigned long) snapshot->sensor_gain_min,
+				(unsigned long) snapshot->sensor_gain_max,
+				(unsigned long) snapshot->sensor_again_max,
+				(unsigned long) snapshot->sensor_exposure_min,
+				(unsigned long) snapshot->sensor_exposure_max);
+	} else if (snapshot->cmw_initialized) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] CMW state readback failed while dumping camera state.\r\n");
+	}
+
+	if (snapshot->sensor_regs_ok) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] IMX335 lane-mode regs: 0x3050=0x%02X 0x319D=0x%02X 0x341C=0x%02X 0x341D=0x%02X 0x3A01=0x%02X.\r\n",
+				(unsigned int) snapshot->lane_mode_reg_3050,
+				(unsigned int) snapshot->lane_mode_reg_319d,
+				(unsigned int) snapshot->lane_mode_reg_341c,
+				(unsigned int) snapshot->lane_mode_reg_341d,
+				(unsigned int) snapshot->lane_mode_reg_3a01);
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] IMX335 registers: mode_select=0x%02X hold=0x%02X tpg=0x%02X gain_reg=0x%04X shutter=0x%06lX vmax=0x%08lX.\r\n",
+				(unsigned int) snapshot->mode_select,
+				(unsigned int) snapshot->hold_reg,
+				(unsigned int) snapshot->tpg_reg,
+				(unsigned int) snapshot->gain_reg,
+				(unsigned long) snapshot->shutter_reg,
+				(unsigned long) snapshot->vmax_reg);
+	} else {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] IMX335 register readback failed while dumping camera state.\r\n");
+	}
 }
