@@ -30,6 +30,7 @@
 #include "app_camera_diagnostics.h"
 #include "app_camera_config.h"
 #include "app_camera_buffers.h"
+#include "app_camera_capture.h"
 #include "app_camera_platform.h"
 #include "app_inference_runtime.h"
 #include "app_storage.h"
@@ -163,16 +164,16 @@ static CMW_IMX335_config_t camera_sensor_config;
 static IMX335_Object_t camera_raw_sensor;
 static int32_t camera_sensor_gain_cache = 0;
 static int32_t camera_sensor_exposure_cache = 0;
-static bool camera_cmw_initialized = false;
+bool camera_cmw_initialized = false;
 /* Keep the middleware path active so the ISP/AEC pipeline can produce optical
  * frames instead of the raw sensor dump. */
-static bool camera_capture_use_cmw_pipeline = false;
+bool camera_capture_use_cmw_pipeline = false;
 static TX_SEMAPHORE camera_capture_done_semaphore;
 static TX_SEMAPHORE camera_capture_isp_semaphore;
 static TX_MUTEX debug_uart_mutex;
 static bool camera_heartbeat_gpio_initialized = false;
 static bool camera_capture_sync_created = false;
-static bool camera_stream_started = false;
+bool camera_stream_started = false;
 static volatile bool camera_capture_failed = false;
 static volatile uint32_t camera_capture_error_code = 0U;
 static volatile uint32_t camera_capture_byte_count = 0U;
@@ -186,7 +187,7 @@ static volatile uint32_t camera_capture_line_error_mask = 0U;
 static volatile uint32_t camera_capture_csi_linebyte_event_count = 0U;
 static volatile bool camera_capture_csi_linebyte_event_logged = false;
 static volatile uint32_t camera_capture_vsync_event_count = 0U;
-static volatile uint32_t camera_capture_isp_run_count = 0U;
+volatile uint32_t camera_capture_isp_run_count = 0U;
 /* Count raw IRQ entry points so we can tell whether the interrupt chain is
  * alive even when the higher-level callbacks stay silent. */
 volatile uint32_t camera_capture_csi_irq_count = 0U;
@@ -212,8 +213,6 @@ static VOID CameraHeartbeatThread_Entry(ULONG thread_input);
 static VOID CameraInitThread_Entry(ULONG thread_input);
 static VOID CameraIspThread_Entry(ULONG thread_input);
 
-static bool CameraPlatform_CaptureAndStoreSingleFrame(void);
-static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr);
 UINT CameraPlatform_ProbeBCamsImx(void);
 
 /**
@@ -225,7 +224,6 @@ static bool CameraPlatform_SeedImx335ExposureGain(void);
 static bool CameraPlatform_EnableImx335AutoExposure(void);
 static void CameraPlatform_ReapplyImx335TestPattern(void);
 static bool CameraPlatform_StartImx335Stream(void);
-static bool CameraPlatform_RunImx335Background(void);
 static void CameraPlatform_LogCaptureBufferSummary(uint32_t captured_bytes) {
 	AppCameraDiagnostics_LogCaptureBufferSummary(
 			(const uint8_t*) camera_capture_result_buffer, captured_bytes,
@@ -762,7 +760,7 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 		DebugConsole_Printf(
 				"[CAMERA][THREAD] Entering capture/inference loop (period=60s)...\r\n");
 		while (1) {
-			if (CameraPlatform_CaptureAndStoreSingleFrame()) {
+			if (AppCameraCapture_CaptureAndStoreSingleFrame()) {
 				DebugConsole_Printf(
 						"[CAMERA][THREAD] Capture and inference completed successfully.\r\n");
 			} else {
@@ -832,7 +830,7 @@ static VOID CameraIspThread_Entry(ULONG thread_input) {
 
 		if ((semaphore_status == TX_SUCCESS)
 				|| (camera_stream_started && camera_cmw_initialized)) {
-			if (!CameraPlatform_RunImx335Background()) {
+			if (!AppCameraCapture_RunImx335Background()) {
 				camera_capture_failed = true;
 				camera_capture_error_code = 0x49535052U; /* 'ISPR' */
 				(void) tx_semaphore_put(&camera_capture_done_semaphore);
@@ -859,7 +857,7 @@ static void CameraPlatform_LogCsiDphySettle(void) {
  *        diagnostics.
  * @param reason Short note describing what triggered the dump.
  */
-static void CameraPlatform_LogCaptureState(const char *reason) {
+void CameraPlatform_LogCaptureState(const char *reason) {
 	DCMIPP_HandleTypeDef *capture_dcmipp =
 			CameraPlatform_GetCaptureDcmippHandle();
 	ISP_SensorInfoTypeDef sensor_info = { 0 };
@@ -1032,93 +1030,11 @@ static void CameraPlatform_LogCaptureState(const char *reason) {
 }
 
 /**
- * @brief Capture a single frame, save it to the SD card, and queue inference.
- * @retval true when the frame reaches storage successfully.
- */
-static bool CameraPlatform_CaptureAndStoreSingleFrame(void) {
-	uint32_t captured_bytes = 0U;
-	UINT filex_status = FX_SUCCESS;
-	CHAR capture_file_name[CAMERA_CAPTURE_FILE_NAME_LENGTH] = { 0 };
-	uint8_t *image_ptr = NULL;
-	ULONG image_length = captured_bytes;
-	const CHAR *file_extension = camera_capture_use_cmw_pipeline ? "yuv422"
-			: "raw16";
-
-	if (!AppStorage_WaitForMediaReady(CAMERA_STORAGE_WAIT_TIMEOUT_MS)) {
-		return false;
-	}
-
-	if (!CameraPlatform_CaptureSingleFrame(&captured_bytes)) {
-		return false;
-	}
-
-	image_length = captured_bytes;
-	image_ptr = camera_capture_result_buffer;
-	if (image_ptr == NULL) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Capture buffer pointer is NULL after frame completion.\r\n");
-		return false;
-	}
-
-	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] Frame ready for save: ptr=%p length=%lu pipeline=%s\r\n",
-			(void *) image_ptr, (unsigned long) image_length,
-			camera_capture_use_cmw_pipeline ? "processed" : "raw");
-
-	AppCameraDiagnostics_LogCaptureBufferPreview("ready-to-save", image_ptr,
-			(uint32_t) image_length);
-
-	if (!AppStorage_BuildCaptureFileName(capture_file_name,
-			sizeof(capture_file_name), file_extension)) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Failed to build capture filename.\r\n");
-		return false;
-	}
-
-	if (camera_capture_use_cmw_pipeline) {
-		CameraPlatform_LogCaptureState("processed-capture");
-		AppCameraDiagnostics_LogProcessedFrameDiagnostics("processed-capture",
-				image_ptr, (uint32_t) image_length);
-	}
-
-	DebugConsole_Printf(
-			camera_capture_use_cmw_pipeline ?
-					"[CAMERA][CAPTURE] Saving YUV422 capture to /captured_images/%s (%lu bytes)...\r\n"
-					: "[CAMERA][CAPTURE] Saving raw Pipe0 capture to /captured_images/%s (%lu bytes)...\r\n",
-			capture_file_name, (unsigned long) image_length);
-
-	filex_status = AppFileX_WriteCapturedImage(capture_file_name,
-			image_ptr, image_length);
-	if (filex_status != FX_SUCCESS) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Failed to write image to SD card, status=%lu.\r\n",
-				(unsigned long) filex_status);
-		return false;
-	}
-
-	DebugConsole_Printf(
-			camera_capture_use_cmw_pipeline ?
-					"[CAMERA][CAPTURE] Stored %lu-byte YUV422 image at /captured_images/%s.\r\n"
-					: "[CAMERA][CAPTURE] Stored %lu-byte raw Pipe0 frame at /captured_images/%s.\r\n",
-			(unsigned long) image_length, capture_file_name);
-
-	if (camera_capture_use_cmw_pipeline) {
-		if (!AppInferenceRuntime_RequestDryInference(
-					(const uint8_t *) image_ptr, (ULONG) image_length)) {
-			DebugConsole_Printf(
-					"[AI] Failed to queue one-shot dry-run inference.\r\n");
-		}
-	}
-
-	return true;
-}
-
-/**
  * @brief Configure the capture pipe for a 224x224 YUV422 capture sourced from RAW10 CSI input.
  * @param[out] captured_bytes_ptr Receives the final image byte count on success.
  * @retval true when a frame-complete interrupt arrives without a DCMIPP error.
  */
-static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
+bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	const ULONG wait_ticks = CameraPlatform_MillisecondsToTicks(
 	CAMERA_CAPTURE_TIMEOUT_MS);
 	const ULONG poll_ticks = CameraPlatform_MillisecondsToTicks(20U);
@@ -1569,26 +1485,6 @@ static bool CameraPlatform_StartImx335Stream(void) {
  * @brief Service ST's IMX335 middleware background process for ISP state updates.
  * @retval true when the background step succeeded or is not used by this driver.
  */
-static bool CameraPlatform_RunImx335Background(void) {
-	/* The ISP background loop is only needed for the processed image path.
-	 * Raw Pipe0 diagnostics bypass the ISP output path, so running AWB/AEC
-	 * updates there can trip middleware code that expects the YUV pipeline. */
-	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
-		camera_capture_isp_run_count++;
-
-		if (CMW_CAMERA_Run() != CMW_ERROR_NONE) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] CMW_CAMERA_Run() failed on ISP wake %lu.\r\n",
-					(unsigned long) camera_capture_isp_run_count);
-			return false;
-		}
-
-		return true;
-	}
-
-	return true;
-}
-
 /**
  * @brief Configure the capture pipe using ST's camera middleware crop/downsize helpers.
  * @retval true when the output path is ready for a 224x224 YUV422 frame.

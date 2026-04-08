@@ -12,6 +12,7 @@
 extern "C" {
 #endif
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "main.h"
 #include "tx_api.h"
@@ -24,6 +25,8 @@ void CameraPlatform_CmwDelay(uint32_t delay_ms);
 DCMIPP_HandleTypeDef *CameraPlatform_GetCaptureDcmippHandle(void);
 int32_t CameraPlatform_GetTickMs(void);
 ULONG CameraPlatform_MillisecondsToTicks(uint32_t timeout_ms);
+bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr);
+void CameraPlatform_LogCaptureState(const char *reason);
 
 #ifdef __cplusplus
 }

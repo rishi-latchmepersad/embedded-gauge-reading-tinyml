@@ -40,6 +40,7 @@ Already split out:
 - `app_storage.*`
 - `app_inference_runtime.*`
 - `app_camera_diagnostics.*`
+- `app_camera_capture.*`
 - `app_memory_budget.h`
 - `app_camera_config.h`
 - `app_threadx_config.h`
@@ -125,6 +126,13 @@ Already split out:
 ### `app_camera_diagnostics.*`
 
 - Camera debug dumps, state snapshots, and capture diagnostics.
+
+### `app_camera_capture.*`
+
+- High-level camera capture flow.
+- Frame save / SD handoff.
+- Dry-run inference queueing after a successful processed capture.
+- This module now owns the capture/save orchestration that used to live in `app_threadx.c`.
 
 ### `ds3231_clock.*`
 

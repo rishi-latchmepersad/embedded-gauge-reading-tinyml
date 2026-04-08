@@ -21,6 +21,7 @@ Already split out:
 - `app_storage.*`
 - `app_inference_runtime.*`
 - `app_camera_diagnostics.*`
+- `app_camera_capture.*`
 - `app_memory_budget.h`
 - `app_camera_config.h`
 - `app_threadx_config.h`
@@ -56,12 +57,12 @@ These should own the actual logic:
 - `ds3231_clock.*`
 - `app_camera_buffers.*`
 - `app_camera_diagnostics.*`
+- `app_camera_capture.*`
 - `threadx_utils.*`
 - `app_inference_log_utils.*`
-- future `app_camera_platform.*`
-- future `app_camera_capture.*`
+- `app_camera_platform.*`
 - future `app_ai_runtime.*`
-- future `app_storage.*`
+- `app_storage.*`
 
 ## Module-by-Module Plan
 
@@ -97,7 +98,7 @@ Next steps:
 
 1. Keep peeling utility helpers into shared modules.
 2. Move remaining camera bring-up helpers into a future `app_camera_platform.*`.
-3. Move capture flow helpers into a future `app_camera_capture.*`.
+3. Move any remaining capture flow helpers into `app_camera_capture.*`.
 4. Keep the file as the thread orchestration layer.
 
 Done when:
@@ -162,7 +163,7 @@ Done when:
 
 - `app_threadx.c` no longer owns camera diagnostic print logic.
 
-### 6. `app_camera_platform.*` future module
+### 6. `app_camera_platform.*`
 
 Role:
 
@@ -180,7 +181,7 @@ Done when:
 
 - `app_threadx.c` only asks for camera actions instead of implementing them.
 
-### 7. `app_camera_capture.*` future module
+### 7. `app_camera_capture.*`
 
 Role:
 
@@ -190,9 +191,9 @@ Role:
 
 Next steps:
 
-1. Move capture loop logic out of `app_threadx.c`.
+1. Keep the capture loop logic here.
 2. Keep the capture state machine separate from diagnostics.
-3. Let this module own the detailed capture flow.
+3. Let this module own the detailed capture flow and storage handoff.
 
 Done when:
 
@@ -216,7 +217,7 @@ Done when:
 
 - `app_threadx.c` only feeds frames into an AI API and receives a value back.
 
-### 9. `app_filex.c` and future `app_storage.*`
+### 9. `app_filex.c` and `app_storage.*`
 
 Role:
 
@@ -258,7 +259,7 @@ When we continue, the safest order is:
 
 1. Finish trimming any remaining generic helpers from `app_threadx.c`.
 2. Move camera bring-up helpers into `app_camera_platform.*`.
-3. Move the capture loop into `app_camera_capture.*`.
+3. Move the remaining capture helpers into `app_camera_capture.*`.
 4. Move inference invocation into `app_inference_runtime.*`.
 5. Split storage/logging policy if it still grows.
 6. Revisit memory budgets and linker layout once the code is cleaner.
