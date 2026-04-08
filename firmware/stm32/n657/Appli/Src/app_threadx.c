@@ -27,6 +27,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "app_camera_diagnostics.h"
+#include "app_camera_buffers.h"
+#include "app_memory_budget.h"
 #include "app_filex.h"
 #include "app_ai.h"
 #include "main.h"
@@ -49,7 +52,6 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define INFERENCE_LOG_THREAD_STACK_SIZE_BYTES  8192U
 #define INFERENCE_LOG_THREAD_PRIORITY          14U
 #define INFERENCE_LOG_DIRECTORY_NAME           "inference"
 #define INFERENCE_LOG_FILE_NAME_LENGTH         32U
@@ -57,15 +59,10 @@
 #define INFERENCE_LOG_NO_RTC_BLINK_ON_MS       200U
 #define INFERENCE_LOG_NO_RTC_BLINK_OFF_MS      200U
 #define INFERENCE_LOG_NO_RTC_RETRY_DELAY_MS    2000U
-#define INFERENCE_LOG_QUEUE_DEPTH              8U
 
-#define CAMERA_INIT_THREAD_STACK_SIZE_BYTES 8192U
 #define CAMERA_INIT_THREAD_PRIORITY         12U
-#define CAMERA_ISP_THREAD_STACK_SIZE_BYTES  4096U
 #define CAMERA_ISP_THREAD_PRIORITY          11U
-#define CAMERA_HEARTBEAT_THREAD_STACK_SIZE_BYTES 1024U
 #define CAMERA_HEARTBEAT_THREAD_PRIORITY    10U
-#define CAMERA_AI_THREAD_STACK_SIZE_BYTES    16384U
 #define CAMERA_AI_THREAD_PRIORITY            13U
 #define CAMERA_HEARTBEAT_PERIOD_MS          5000U
 #define CAMERA_HEARTBEAT_PULSE_MS           1000U
@@ -81,27 +78,13 @@
 #define BCAMS_IMX_RESET_RELEASE_DELAY_MS    10U
 #define IMX335_SENSOR_WIDTH_PIXELS          2592U
 #define IMX335_SENSOR_HEIGHT_LINES          1944U
-#define CAMERA_CAPTURE_WIDTH_PIXELS         224U
-#define CAMERA_CAPTURE_HEIGHT_PIXELS        224U
 /* Use the processed CMW/ISP path so AE/AWB and demosaicing can converge on a
  * usable live image. Set to 1 only if we need raw Pipe0 diagnostics. */
 #define CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC 0
-/* DCMIPP PIPE0 raw-dump mode stores RAW10 pixels in 16-bit sample words.
- * We treat the low 10 bits as the sample value and preserve the full word
- * when writing the raw capture file to disk. */
-#if CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC
-#define CAMERA_CAPTURE_BYTES_PER_PIXEL      2U  /* RAW10 → 16-bit padded pixel */
-#else
-#define CAMERA_CAPTURE_BYTES_PER_PIXEL      2U  /* YUV422 → 2 bytes per pixel */
-#endif
-/* Keep the standard 224x224 frame within the widened noncacheable window by
- * using a single capture buffer in the processed path too. */
-#define CAMERA_CAPTURE_BUFFER_COUNT         1U
 #define CAMERA_CAPTURE_TARGET_FRAME_COUNT   4U
 /* Capture crop is expressed directly in pixels/lines. */
 #define CAMERA_CAPTURE_CROP_HSTART_PIXELS   0U
 #define CAMERA_CAPTURE_CROP_VSTART_LINES    0U
-#define CAMERA_CAPTURE_BUFFER_SIZE_BYTES    (CAMERA_CAPTURE_WIDTH_PIXELS * CAMERA_CAPTURE_HEIGHT_PIXELS * CAMERA_CAPTURE_BYTES_PER_PIXEL)
 /* Arm one CSI line/byte counter on VC0 so we can tell whether the receiver
  * is observing line progress even when the captured payload stays all zeros. */
 #define CAMERA_CAPTURE_CSI_LB_PROBE_COUNTER      DCMIPP_CSI_COUNTER0
@@ -141,8 +124,8 @@
 #define IMX335_CHIP_ID_VALUE               0x00U
 /* IMX335 test-pattern selection.
  * -1 = disabled (live image), 0 = disabled (same as -1 in driver),
- *  1 = solid color (default color regs = 0x000 = black — all-zero pixels, NOT useful),
- * 10 = color bars (non-zero pixel values — use this to verify DMA path). */
+ *  1 = solid color (default color regs = 0x000 = black â€” all-zero pixels, NOT useful),
+ * 10 = color bars (non-zero pixel values â€” use this to verify DMA path). */
 /* Return to live optical input so the raw capture reflects the real gauge
  * scene instead of a synthetic test pattern. */
 #define IMX335_TEST_PATTERN_MODE           -1
@@ -174,7 +157,7 @@
 typedef enum {
 	INFER_LOG_STATE_INIT_DIR = 0,   /* Create /inference directory if needed. */
 	INFER_LOG_STATE_CHECK_DATE,     /* Open/roll over to today's log file. */
-	INFER_LOG_STATE_NO_RTC,         /* DS3231 absent — blink red, retry. */
+	INFER_LOG_STATE_NO_RTC,         /* DS3231 absent â€” blink red, retry. */
 	INFER_LOG_STATE_LOGGING,        /* Steady state: wait for value, append row. */
 } InferLogState_t;
 
@@ -247,19 +230,6 @@ volatile uint32_t camera_capture_csi_irq_count = 0U;
 volatile uint32_t camera_capture_dcmipp_irq_count = 0U;
 static volatile uint32_t camera_capture_reported_byte_count = 0U;
 static volatile uint32_t camera_capture_counter_status = (uint32_t) HAL_ERROR;
-static uint32_t camera_capture_active_buffer_index = 0U;
-static uint8_t *camera_capture_result_buffer = NULL;
-static uint8_t camera_capture_buffers[CAMERA_CAPTURE_BUFFER_COUNT][CAMERA_CAPTURE_BUFFER_SIZE_BYTES] __attribute__((section(".noncacheable"), aligned(__SCB_DCACHE_LINE_SIZE)));
-/* Keep a private AI snapshot so the camera DMA can keep running without
- * racing the preprocessing path on the shared live capture buffer. */
-static uint8_t camera_ai_frame_snapshot[CAMERA_CAPTURE_BUFFER_SIZE_BYTES]
-		__attribute__((aligned(__SCB_DCACHE_LINE_SIZE)));
-/* Keep a separate scratch line so the CPU write proof does not contaminate
- * the live capture buffer before DMA arms. */
-static uint32_t camera_capture_write_probe_words[2U];
-/* Histogram bins for the RAW10 level summary. Keeping this static avoids
- * allocating a large analysis buffer on the camera thread stack. */
-static uint32_t camera_capture_raw_level_histogram[1024U];
 
 /* Format a float with one decimal place without relying on `%f` support in
  * newlib-nano, which is often trimmed out in embedded Debug builds. */
@@ -354,7 +324,6 @@ static void CameraPlatform_PrepareCaptureBufferForDma(void);
 static void CameraPlatform_RefreshCaptureBufferFromDma(uint32_t captured_bytes);
 static uint32_t CameraPlatform_CountNonZeroBytes(const uint8_t *buffer_ptr,
 		uint32_t length_bytes);
-static uint16_t CameraPlatform_ReadRaw10Level(uint16_t raw_word);
 static void CameraPlatform_LogCsiStatus(const char *reason);
 static void CameraPlatform_LogCsiErrorRegisters(const char *reason);
 static void CameraPlatform_LogCsiLineByteCounters(const char *reason);
@@ -438,7 +407,7 @@ __attribute__((weak))        UINT CameraPlatform_ProbeBCamsImx(void);
 /* USER CODE END PFP */
 
 static void DebugUartMutex_Lock(void) {
-	/* TX_NO_WAIT: never block — a missed lock means garbled output, not deadlock. */
+	/* TX_NO_WAIT: never block â€” a missed lock means garbled output, not deadlock. */
 	(void) tx_mutex_get(&debug_uart_mutex, TX_NO_WAIT);
 }
 static void DebugUartMutex_Unlock(void) {
@@ -501,7 +470,7 @@ UINT App_ThreadX_Start(void) {
 			return semaphore_status;
 		}
 
-		/* No UART mutex — concurrent prints may interleave but won't deadlock.
+		/* No UART mutex â€” concurrent prints may interleave but won't deadlock.
 		 * The UART HAL transmit is not re-entrant; a mutex with TX_WAIT_FOREVER
 		 * deadlocks when the holder's HAL_UART_Transmit itself blocks, and
 		 * TX_NO_WAIT corrupts the UART state when two threads collide mid-frame. */
@@ -975,7 +944,7 @@ static VOID InferenceLogThread_Entry(ULONG thread_input) {
 					&value_bits, wait_ticks);
 
 			if (q_status == TX_NO_INSTANCE) {
-				/* Timeout — recheck date for daily rollover. */
+				/* Timeout â€” recheck date for daily rollover. */
 				state = INFER_LOG_STATE_CHECK_DATE;
 				break;
 			}
@@ -1007,7 +976,7 @@ static VOID InferenceLogThread_Entry(ULONG thread_input) {
 			}
 
 			/* Reconstruct human-readable datetime: rtc_timestamp is
-			 * "YYYY-MM-DD_HH-MM-SS"; convert _ → space, - in time → : */
+			 * "YYYY-MM-DD_HH-MM-SS"; convert _ â†’ space, - in time â†’ : */
 			char datetime_str[24] = { 0 };
 			{
 				const char *src = rtc_timestamp;
@@ -1700,353 +1669,12 @@ static bool CameraPlatform_RequestDryInference(const uint8_t *frame_ptr,
 	return true;
 }
 
-/**
- * @brief Extract the 10-bit RAW10 level from a raw-dump word.
- * @param raw_word 16-bit padded pixel captured from the raw pipe.
- * @retval The upper 10 bits, shifted down to a normal 0..1023 range.
- */
-static uint16_t CameraPlatform_ReadRaw10Level(uint16_t raw_word) {
-	return (uint16_t) (raw_word & 0x03FFU);
-}
-
-/**
- * @brief Report the two most common RAW10 sample levels in a live capture.
- *
- * Pipe0 raw data is not RGB yet, so this gives us a quick proxy for what the
- * scene is doing without pulling the SD card.
- * @param buffer_ptr Raw capture buffer to inspect.
- * @param length_bytes Number of valid bytes in the buffer.
- */
-static void CameraPlatform_LogRawDominantLevels(const uint8_t *buffer_ptr,
-		uint32_t length_bytes) {
-	const uint16_t *samples = (const uint16_t*) buffer_ptr;
-	const uint32_t sample_count = length_bytes / sizeof(uint16_t);
-	uint32_t sum_levels = 0U;
-	uint32_t bright_count = 0U;
-	uint32_t top1_level = 0U;
-	uint32_t top2_level = 0U;
-	uint32_t top1_count = 0U;
-	uint32_t top2_count = 0U;
-
-	if ((buffer_ptr == NULL) || (length_bytes < sizeof(uint16_t))
-			|| ((length_bytes % sizeof(uint16_t)) != 0U) || (sample_count == 0U)) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] RAW10 dominant-level summary skipped for empty buffer.\r\n");
-		return;
-	}
-
-	(void) memset(camera_capture_raw_level_histogram, 0,
-			sizeof(camera_capture_raw_level_histogram));
-
-	for (uint32_t sample_index = 0U; sample_index < sample_count;
-			sample_index++) {
-		const uint32_t level = CameraPlatform_ReadRaw10Level(samples[sample_index]);
-
-		camera_capture_raw_level_histogram[level]++;
-		sum_levels += level;
-		if (level >= 900U) {
-			bright_count++;
-		}
-	}
-
-	for (uint32_t level = 0U; level < 1024U; level++) {
-		const uint32_t count = camera_capture_raw_level_histogram[level];
-
-		if ((count > top1_count) || ((count == top1_count)
-				&& (level > top1_level))) {
-			top2_level = top1_level;
-			top2_count = top1_count;
-			top1_level = level;
-			top1_count = count;
-		} else if ((count > top2_count) || ((count == top2_count)
-				&& (level > top2_level))) {
-			top2_level = level;
-			top2_count = count;
-		}
-	}
-
-	const uint32_t mean_level = sum_levels / sample_count;
-	const uint32_t top1_pct = ((top1_count * 100U) + (sample_count / 2U))
-			/ sample_count;
-	const uint32_t top2_pct = ((top2_count * 100U) + (sample_count / 2U))
-			/ sample_count;
-	const uint32_t bright_pct = ((bright_count * 100U) + (sample_count / 2U))
-			/ sample_count;
-
-	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] RAW10 dominant levels (not RGB): mean=%lu top1=%03lu (%lu px, %lu%%) top2=%03lu (%lu px, %lu%%) bright>=900=%lu px (%lu%%).\r\n",
-			(unsigned long) mean_level, (unsigned long) top1_level,
-			(unsigned long) top1_count, (unsigned long) top1_pct,
-			(unsigned long) top2_level, (unsigned long) top2_count,
-			(unsigned long) top2_pct, (unsigned long) bright_count,
-			(unsigned long) bright_pct);
-}
-
-/**
- * @brief Summarize a raw Pipe0 buffer using padded 16-bit raw pixels.
- *
- * Pipe0 raw captures are padded 16-bit pixels, so halfword reporting matches
- * the actual buffer layout and keeps the summary aligned with the preview.
- * @param captured_bytes Number of valid bytes reported by DCMIPP.
- */
-static void CameraPlatform_LogCaptureBufferSummaryRaw(uint32_t captured_bytes) {
-	const uint32_t halfword_count = captured_bytes / sizeof(uint16_t);
-	const uint16_t *halfwords = (const uint16_t*) camera_capture_result_buffer;
-	uint16_t minimum_halfword = 0xFFFFU;
-	uint16_t maximum_halfword = 0U;
-	uint32_t nonzero_halfword_count = 0U;
-	uint32_t first_nonzero_index = halfword_count;
-	uint32_t last_nonzero_index = 0U;
-
-	if ((captured_bytes == 0U) || ((captured_bytes % sizeof(uint16_t)) != 0U)) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Raw buffer summary skipped for odd/empty byte count %lu.\r\n",
-				(unsigned long) captured_bytes);
-		return;
-	}
-
-	for (uint32_t halfword_index = 0U; halfword_index < halfword_count;
-			halfword_index++) {
-		const uint16_t halfword = halfwords[halfword_index];
-
-		if (halfword < minimum_halfword) {
-			minimum_halfword = halfword;
-		}
-
-		if (halfword > maximum_halfword) {
-			maximum_halfword = halfword;
-		}
-
-		if (halfword != 0U) {
-			nonzero_halfword_count++;
-			if (first_nonzero_index == halfword_count) {
-				first_nonzero_index = halfword_index;
-			}
-			last_nonzero_index = halfword_index;
-		}
-	}
-
-	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] Buffer summary (raw halfwords): samples=%lu nonzero=%lu min=0x%04X max=0x%04X first_nonzero=%lu last_nonzero=%lu.\r\n",
-			(unsigned long) halfword_count, (unsigned long) nonzero_halfword_count,
-			(unsigned int) minimum_halfword, (unsigned int) maximum_halfword,
-			(unsigned long) (
-					(first_nonzero_index == halfword_count) ? 0U : first_nonzero_index),
-			(unsigned long) last_nonzero_index);
-
-	CameraPlatform_LogRawDominantLevels(camera_capture_result_buffer,
-			captured_bytes);
-}
-
-/**
- * @brief Summarize the captured raw buffer so bring-up can distinguish real image
- *        data from all-zero/all-flat frames before writing to SD.
- * @param captured_bytes Number of valid bytes reported by DCMIPP.
- */
 static void CameraPlatform_LogCaptureBufferSummary(uint32_t captured_bytes) {
-	if (!camera_capture_use_cmw_pipeline) {
-		CameraPlatform_LogCaptureBufferSummaryRaw(captured_bytes);
-		return;
-	}
-
-	const uint32_t diagnostic_window_byte_count = 16U;
-	const uint32_t sample_count = captured_bytes / sizeof(uint16_t);
-	const uint8_t *bytes = (const uint8_t*) camera_capture_result_buffer;
-	const uint16_t *samples = (const uint16_t*) camera_capture_result_buffer;
-	const uint32_t diagnostic_window_sample_count = 8U;
-	uint16_t minimum_sample = 0xFFFFU;
-	uint16_t maximum_sample = 0U;
-	uint32_t nonzero_sample_count = 0U;
-	uint32_t first_nonzero_index = sample_count;
-	uint32_t last_nonzero_index = 0U;
-	uint32_t nonzero_byte_count = 0U;
-	uint32_t first_nonzero_byte_index = captured_bytes;
-	uint32_t last_nonzero_byte_index = 0U;
-
-	if ((captured_bytes == 0U) || ((captured_bytes % sizeof(uint16_t)) != 0U)) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Buffer summary skipped for odd/empty byte count %lu.\r\n",
-				(unsigned long) captured_bytes);
-		return;
-	}
-
-	for (uint32_t sample_index = 0U; sample_index < sample_count;
-			sample_index++) {
-		const uint16_t sample = samples[sample_index];
-
-		if (sample < minimum_sample) {
-			minimum_sample = sample;
-		}
-
-		if (sample > maximum_sample) {
-			maximum_sample = sample;
-		}
-
-		if (sample != 0U) {
-			nonzero_sample_count++;
-			if (first_nonzero_index == sample_count) {
-				first_nonzero_index = sample_index;
-			}
-			last_nonzero_index = sample_index;
-		}
-	}
-
-	for (uint32_t byte_index = 0U; byte_index < captured_bytes; byte_index++) {
-		if (bytes[byte_index] != 0U) {
-			nonzero_byte_count++;
-			if (first_nonzero_byte_index == captured_bytes) {
-				first_nonzero_byte_index = byte_index;
-			}
-			last_nonzero_byte_index = byte_index;
-		}
-	}
-
-	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] Buffer summary: samples=%lu nonzero=%lu min=%u max=%u first_nonzero=%lu last_nonzero=%lu nonzero_bytes=%lu first_nonzero_byte=%lu last_nonzero_byte=%lu first8=[%u,%u,%u,%u,%u,%u,%u,%u].\r\n",
-			(unsigned long) sample_count, (unsigned long) nonzero_sample_count,
-			(unsigned int) minimum_sample, (unsigned int) maximum_sample,
-			(unsigned long) (
-					(first_nonzero_index == sample_count) ?
-							0U : first_nonzero_index),
-			(unsigned long) last_nonzero_index,
-			(unsigned long) nonzero_byte_count,
-			(unsigned long) (
-					(first_nonzero_byte_index == captured_bytes) ?
-							0U : first_nonzero_byte_index),
-			(unsigned long) last_nonzero_byte_index, (unsigned int) samples[0],
-			(unsigned int) samples[1], (unsigned int) samples[2],
-			(unsigned int) samples[3], (unsigned int) samples[4],
-			(unsigned int) samples[5], (unsigned int) samples[6],
-			(unsigned int) samples[7]);
-
-	if (first_nonzero_index < sample_count) {
-		const uint32_t window_start =
-				(first_nonzero_index >= diagnostic_window_sample_count) ?
-						(first_nonzero_index - diagnostic_window_sample_count) :
-						0U;
-		const uint32_t window_end =
-				((first_nonzero_index + diagnostic_window_sample_count)
-						< sample_count) ?
-						(first_nonzero_index + diagnostic_window_sample_count) :
-						(sample_count - 1U);
-		const uint32_t sample0_index = window_start;
-		const uint32_t sample1_index =
-				(sample0_index < window_end) ?
-						(sample0_index + 1U) : window_end;
-		const uint32_t sample2_index =
-				(sample1_index < window_end) ?
-						(sample1_index + 1U) : window_end;
-		const uint32_t sample3_index =
-				(sample2_index < window_end) ?
-						(sample2_index + 1U) : window_end;
-		const uint32_t sample4_index =
-				(sample3_index < window_end) ?
-						(sample3_index + 1U) : window_end;
-		const uint32_t sample5_index =
-				(sample4_index < window_end) ?
-						(sample4_index + 1U) : window_end;
-		const uint32_t sample6_index =
-				(sample5_index < window_end) ?
-						(sample5_index + 1U) : window_end;
-		const uint32_t sample7_index =
-				(sample6_index < window_end) ?
-						(sample6_index + 1U) : window_end;
-		const uint32_t sample8_index =
-				(sample7_index < window_end) ?
-						(sample7_index + 1U) : window_end;
-		const uint32_t sample9_index =
-				(sample8_index < window_end) ?
-						(sample8_index + 1U) : window_end;
-		const uint32_t sample10_index =
-				(sample9_index < window_end) ?
-						(sample9_index + 1U) : window_end;
-		const uint32_t sample11_index =
-				(sample10_index < window_end) ?
-						(sample10_index + 1U) : window_end;
-		const uint32_t sample12_index =
-				(sample11_index < window_end) ?
-						(sample11_index + 1U) : window_end;
-		const uint32_t sample13_index =
-				(sample12_index < window_end) ?
-						(sample12_index + 1U) : window_end;
-		const uint32_t sample14_index =
-				(sample13_index < window_end) ?
-						(sample13_index + 1U) : window_end;
-		const uint32_t sample15_index =
-				(sample14_index < window_end) ?
-						(sample14_index + 1U) : window_end;
-
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Samples around first_nonzero=%lu: [%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u].\r\n",
-				(unsigned long) first_nonzero_index,
-				(unsigned int) samples[sample0_index],
-				(unsigned int) samples[sample1_index],
-				(unsigned int) samples[sample2_index],
-				(unsigned int) samples[sample3_index],
-				(unsigned int) samples[sample4_index],
-				(unsigned int) samples[sample5_index],
-				(unsigned int) samples[sample6_index],
-				(unsigned int) samples[sample7_index],
-				(unsigned int) samples[sample8_index],
-				(unsigned int) samples[sample9_index],
-				(unsigned int) samples[sample10_index],
-				(unsigned int) samples[sample11_index],
-				(unsigned int) samples[sample12_index],
-				(unsigned int) samples[sample13_index],
-				(unsigned int) samples[sample14_index],
-				(unsigned int) samples[sample15_index],
-				(unsigned int) samples[window_end]);
-	}
-
-	if (first_nonzero_byte_index < captured_bytes) {
-		const uint32_t byte_window_start =
-				(first_nonzero_byte_index >= diagnostic_window_byte_count) ?
-						(first_nonzero_byte_index - diagnostic_window_byte_count) :
-						0U;
-		const uint32_t byte_window_end =
-				((first_nonzero_byte_index + diagnostic_window_byte_count)
-						< captured_bytes) ?
-						(first_nonzero_byte_index + diagnostic_window_byte_count) :
-						(captured_bytes - 1U);
-		uint32_t byte_indices[17] = { 0U };
-
-		byte_indices[0] = byte_window_start;
-		for (uint32_t index = 1U; index < 17U; index++) {
-			byte_indices[index] =
-					(byte_indices[index - 1U] < byte_window_end) ?
-							(byte_indices[index - 1U] + 1U) : byte_window_end;
-		}
-
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Bytes around first_nonzero_byte=%lu: [%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u].\r\n",
-				(unsigned long) first_nonzero_byte_index,
-				(unsigned int) bytes[byte_indices[0]],
-				(unsigned int) bytes[byte_indices[1]],
-				(unsigned int) bytes[byte_indices[2]],
-				(unsigned int) bytes[byte_indices[3]],
-				(unsigned int) bytes[byte_indices[4]],
-				(unsigned int) bytes[byte_indices[5]],
-				(unsigned int) bytes[byte_indices[6]],
-				(unsigned int) bytes[byte_indices[7]],
-				(unsigned int) bytes[byte_indices[8]],
-				(unsigned int) bytes[byte_indices[9]],
-				(unsigned int) bytes[byte_indices[10]],
-				(unsigned int) bytes[byte_indices[11]],
-				(unsigned int) bytes[byte_indices[12]],
-				(unsigned int) bytes[byte_indices[13]],
-				(unsigned int) bytes[byte_indices[14]],
-				(unsigned int) bytes[byte_indices[15]],
-				(unsigned int) bytes[byte_indices[16]]);
-	}
+	AppCameraDiagnostics_LogCaptureBufferSummary(
+			(const uint8_t*) camera_capture_result_buffer, captured_bytes,
+			camera_capture_use_cmw_pipeline);
 }
 
-/**
- * @brief Prepare the capture buffers without seeding the live DMA region.
- *
- * The old sentinel write polluted the first cache line of the frame buffer.
- * We now prove CPU write access using a separate scratch line, then log the
- * capture buffers read-only so later DMA comparisons stay honest.
- */
 static void CameraPlatform_PrepareCaptureBufferForDma(void) {
 	uint32_t buffer_index;
 
@@ -2343,7 +1971,7 @@ static void CameraPlatform_LogDcmippClocking(void) {
 				(buf_end <= nc_end) ? "COVERED" : "OVERFLOW-NOT-COVERED");
 	}
 
-	/* Read RISAF2/RISAF3 and RIMC registers live — SystemIsolation_Config runs
+	/* Read RISAF2/RISAF3 and RIMC registers live â€” SystemIsolation_Config runs
 	 * before UART init so we can only verify them here.
 	 * Expected: RISAF2/3 CFGR=0x00000101 CIDCFGR=0x00020002
 	 *           RIMC_ATTRx[9] (DCMIPP): MCID=1 MSEC=1 MPRIV=1 -> 0x00000310
@@ -2643,7 +2271,7 @@ static void CameraPlatform_LogDcmippPipeRegisters(const char *reason) {
 			(unsigned long) capture_dcmipp->Instance->P1PPM0AR1,
 			(unsigned long) capture_dcmipp->Instance->P1CFSCR,
 			(unsigned long) capture_dcmipp->Instance->P1CFCTCR);
-	/* IPPlug AXI master FIFO partition — if DPREGSTART==DPREGEND the FIFO has
+	/* IPPlug AXI master FIFO partition â€” if DPREGSTART==DPREGEND the FIFO has
 	 * zero words and the DMA client cannot write anything to memory. */
 	DebugConsole_Printf(
 			"[CAMERA][CAPTURE] DCMIPP IPPlug (%s): IPGR1=0x%08lX IPGR2=0x%08lX IPGR3=0x%08lX IPC1R1=0x%08lX IPC1R3=0x%08lX IPC2R1=0x%08lX IPC2R3=0x%08lX IPC3R1=0x%08lX IPC3R3=0x%08lX.\r\n",
@@ -2657,7 +2285,7 @@ static void CameraPlatform_LogDcmippPipeRegisters(const char *reason) {
 			(unsigned long) capture_dcmipp->Instance->IPC2R3,
 			(unsigned long) capture_dcmipp->Instance->IPC3R1,
 			(unsigned long) capture_dcmipp->Instance->IPC3R3);
-	/* Shadow/current registers — reflect what was active during the last captured frame. */
+	/* Shadow/current registers â€” reflect what was active during the last captured frame. */
 	DebugConsole_Printf(
 			"[CAMERA][CAPTURE] DCMIPP PIPE0 current-frame regs (%s): P0CPPCR=0x%08lX P0CPPM0AR1=0x%08lX P0CPPM0AR2=0x%08lX P0CSCSTR=0x%08lX P0CSCSZR=0x%08lX P0CFCTCR=0x%08lX.\r\n",
 			(reason != NULL) ? reason : "capture",
@@ -2971,9 +2599,9 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 				completed_buffer_ptr =
 						camera_capture_buffers[completed_buffer_index];
 				#if 0
-				/* Buffer is noncacheable — no invalidate needed, reads go to SRAM. */
-				/* Read first 8 bytes straight from SRAM after invalidate — before
-				 * the nonzero scan — to show whether the cache or DMA is the issue. */
+				/* Buffer is noncacheable â€” no invalidate needed, reads go to SRAM. */
+				/* Read first 8 bytes straight from SRAM after invalidate â€” before
+				 * the nonzero scan â€” to show whether the cache or DMA is the issue. */
 				{
 					volatile uint8_t *vb =
 							(volatile uint8_t*) completed_buffer_ptr;
@@ -3043,7 +2671,7 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 						}
 					} else if (first_nonaa != 0xFFFFFFFFU) {
 						DebugConsole_Printf(
-								"[CAMERA][SCAN] Only zeros past 0xAA fill (BSS?): first_word=0x%05lX last=0x%05lX count=%lu addr=0x%08lX — DMA may be writing zeros or not writing.\r\n",
+								"[CAMERA][SCAN] Only zeros past 0xAA fill (BSS?): first_word=0x%05lX last=0x%05lX count=%lu addr=0x%08lX â€” DMA may be writing zeros or not writing.\r\n",
 								(unsigned long) first_nonaa,
 								(unsigned long) last_nonaa,
 								(unsigned long) nonaa_count,
@@ -3051,7 +2679,7 @@ static bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 										+ first_nonaa * 4U));
 					} else {
 						DebugConsole_Printf(
-								"[CAMERA][SCAN] All 0xAA in buffer from 0x%08lX — DMA not writing to SRAM at all.\r\n",
+								"[CAMERA][SCAN] All 0xAA in buffer from 0x%08lX â€” DMA not writing to SRAM at all.\r\n",
 								(unsigned long) (uintptr_t) completed_buffer_ptr);
 					}
 				}
@@ -3882,7 +3510,7 @@ int CMW_CAMERA_PIPE_VsyncEventCallback(uint32_t pipe) {
 	(void) tx_semaphore_put(&camera_capture_isp_semaphore);
 	camera_capture_vsync_event_count++;
 
-	/* No DebugConsole_Printf from ISR — mutex is illegal in interrupt context. */
+	/* No DebugConsole_Printf from ISR â€” mutex is illegal in interrupt context. */
 
 	return CMW_ERROR_NONE;
 }
@@ -3931,7 +3559,7 @@ int CMW_CAMERA_PIPE_FrameEventCallback(uint32_t pipe) {
 	camera_capture_byte_count = byte_count;
 	camera_capture_frame_done = true;
 
-	/* No DebugConsole_Printf from ISR — tx_mutex_get is illegal in interrupt
+	/* No DebugConsole_Printf from ISR â€” tx_mutex_get is illegal in interrupt
 	 * context.  The main capture thread logs first8 after the semaphore fires. */
 
 	(void) tx_semaphore_put(&camera_capture_done_semaphore);
@@ -3970,7 +3598,7 @@ void HAL_DCMIPP_ErrorCallback(DCMIPP_HandleTypeDef *hdcmipp) {
 	camera_capture_failed = true;
 	camera_capture_error_code = hdcmipp->ErrorCode;
 	camera_capture_snapshot_armed = false;
-	/* Log from main thread after semaphore fires — no Printf from ISR. */
+	/* Log from main thread after semaphore fires â€” no Printf from ISR. */
 	(void) tx_semaphore_put(&camera_capture_done_semaphore);
 }
 
@@ -4059,7 +3687,7 @@ void HAL_DCMIPP_CSI_ShortPacketDetectionEventCallback(
 		return;
 	}
 
-	/* No Printf from ISR — state is read by main thread after semaphore fires. */
+	/* No Printf from ISR â€” state is read by main thread after semaphore fires. */
 }
 
 /**

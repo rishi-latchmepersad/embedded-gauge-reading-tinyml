@@ -47,6 +47,11 @@ extern "C" {
 
 #define FX_APP_MEM_POOL_SIZE                     50000
 
+/* Keep the FileX media cache modest so the app has room for growth.
+ * The SD path can scale this later if profiling shows a real benefit. */
+#define FILEX_MEDIA_CACHE_SECTORS                4U
+#define FILEX_MEDIA_CACHE_BUFFER_SIZE            (FILEX_MEDIA_CACHE_SECTORS * 512U)
+
 /* USER CODE BEGIN EC */
 
 /* USER CODE END EC */

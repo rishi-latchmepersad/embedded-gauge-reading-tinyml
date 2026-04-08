@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "app_azure_rtos_config.h"
 #include "sd_spi_ll.h"
 #include "main.h"
 #include "app_threadx.h"
@@ -102,7 +103,6 @@ typedef struct {
 /* Main thread priority */
 #define FX_APP_THREAD_PRIO               14
 /* USER CODE BEGIN PD */
-#define FILEX_MEDIA_CACHE_BUFFER_SIZE    (8U * 512U) /* 8 sectors cache, 2048 bytes. */
 #define CAPTURED_IMAGES_DIRECTORY_NAME   "captured_images"
 #define CAPTURED_IMAGE_MAX_PATH_LENGTH   96U
 #define CAPTURED_IMAGE_FILE_NAME_LENGTH  32U
