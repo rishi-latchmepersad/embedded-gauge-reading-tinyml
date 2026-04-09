@@ -585,6 +585,60 @@ void AppCameraDiagnostics_LogDcmippPipeRegisters(const char *reason,
 }
 
 /**
+ * @brief Decode the DCMIPP error bitmask into a human-readable summary.
+ * @param error_code Raw DCMIPP ErrorCode value from the HAL handle.
+ */
+void AppCameraDiagnostics_LogDcmippErrorCode(uint32_t error_code) {
+	const struct {
+		uint32_t bit;
+		const char *label;
+	} error_map[] = {
+		{ HAL_DCMIPP_ERROR_AXI_TRANSFER, "AXI_TRANSFER" },
+		{ HAL_DCMIPP_ERROR_PARALLEL_SYNC, "PARALLEL_SYNC" },
+		{ HAL_DCMIPP_ERROR_PIPE0_LIMIT, "PIPE0_LIMIT" },
+		{ HAL_DCMIPP_ERROR_PIPE0_OVR, "PIPE0_OVR" },
+		{ HAL_DCMIPP_ERROR_PIPE1_OVR, "PIPE1_OVR" },
+		{ HAL_DCMIPP_ERROR_PIPE2_OVR, "PIPE2_OVR" },
+		{ HAL_DCMIPP_CSI_ERROR_SYNC, "CSI_SYNC" },
+		{ HAL_DCMIPP_CSI_ERROR_WDG, "CSI_WDG" },
+		{ HAL_DCMIPP_CSI_ERROR_SPKT, "CSI_SHORT_PACKET" },
+		{ HAL_DCMIPP_CSI_ERROR_DATA_ID, "CSI_DATA_ID" },
+		{ HAL_DCMIPP_CSI_ERROR_CECC, "CSI_CECC" },
+		{ HAL_DCMIPP_CSI_ERROR_ECC, "CSI_ECC" },
+		{ HAL_DCMIPP_CSI_ERROR_CRC, "CSI_CRC" },
+		{ HAL_DCMIPP_CSI_ERROR_DPHY_CTRL, "CSI_DPHY_CTRL" },
+		{ HAL_DCMIPP_CSI_ERROR_DPHY_LP_SYNC, "CSI_DPHY_LP_SYNC" },
+		{ HAL_DCMIPP_CSI_ERROR_DPHY_ESCAPE, "CSI_DPHY_ESCAPE" },
+		{ HAL_DCMIPP_CSI_ERROR_SOT_SYNC, "CSI_SOT_SYNC" },
+		{ HAL_DCMIPP_CSI_ERROR_SOT, "CSI_SOT" },
+	};
+	bool any = false;
+
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] DCMIPP error decode: raw=0x%08lX bits=",
+			(unsigned long) error_code);
+
+	for (uint32_t index = 0U; index < (sizeof(error_map) / sizeof(error_map[0]));
+			index++) {
+		if ((error_code & error_map[index].bit) == 0U) {
+			continue;
+		}
+
+		if (any) {
+			DebugConsole_WriteString("|");
+		}
+		DebugConsole_WriteString(error_map[index].label);
+		any = true;
+	}
+
+	if (!any) {
+		DebugConsole_WriteString("none");
+	}
+
+	DebugConsole_WriteString("\r\n");
+}
+
+/**
  * @brief Dump the camera, ISP, and pipe state snapshot used during capture bring-up.
  * @param snapshot Snapshot data collected by the camera thread.
  */

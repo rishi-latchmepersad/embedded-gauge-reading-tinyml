@@ -18,6 +18,7 @@ extern "C" {
 #include "tx_api.h"
 
 HAL_StatusTypeDef CameraPlatform_ReadImx335ChipId(uint8_t *chip_id);
+UINT CameraPlatform_ProbeBCamsImx(void);
 void CameraPlatform_ResetImx335Module(void);
 void CameraPlatform_CmwEnablePin(int value);
 void CameraPlatform_CmwShutdownPin(int value);

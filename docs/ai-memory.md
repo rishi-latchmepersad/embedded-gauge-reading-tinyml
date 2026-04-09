@@ -75,12 +75,15 @@ Already split out:
 - The camera middleware is not safe to enter from the ISP background thread and the probe/capture thread at the same time; pause the ISP background loop and also take the shared camera middleware mutex while probe and snapshot setup touch `CMW_CAMERA_*` / `ISP_*` state.
 - A hardfault we saw in `ISP_Algo_Process()` / `_ISP_BackgroundProcess()` went away after serializing those camera middleware entry points with the mutex.
 - The FileX thread should not hold the media mutex while draining the debug log queue; the SD log service already serializes its own file access and the outer lock can make capture writes look stalled.
+- Intermittent DCMIPP error `0x00008100` decodes to `CSI_SYNC | CSI_DPHY_CTRL`, which points at the camera link/CSI side rather than the AI worker or FileX path.
+- When `0x00008100` shows up after a full frame buffer has already been reported, the current capture path retries once because it often behaves like a late CSI/DPHY rearm hiccup rather than a hard failure.
 
 ## RTC Facts
 
 - The DS3231 should not be silently overwritten on every boot.
 - We previously removed the auto-write-from-build-time behavior.
 - RTC timestamp generation is centralized in `ds3231_clock.*`.
+- The old DS3231 implementation block has been removed from `main.c`; it only calls into `ds3231_clock.*` now.
 
 ## File / Module Responsibilities
 
@@ -93,7 +96,7 @@ Already split out:
 
 - Thread creation, startup ordering, and high-level orchestration.
 - It should not own generic utility code if it can live elsewhere.
-- Legacy camera capture/state helpers were removed from the active build; keep this file as orchestration plus the small low-level board glue that still needs to be shared.
+- Legacy camera capture/state helpers were removed from the active build; keep this file as orchestration only.
 
 ### `threadx_utils.*`
 
@@ -110,9 +113,12 @@ Already split out:
 - IMX335 chip-ID and reset helpers
 - Camera enable/shutdown pin control
 - Active DCMIPP handle selection
+- IMX335 probe/init helpers and sensor register access
 - DCMIPP arm/start helpers for snapshot capture
 - IMX335 stream start sequencing
 - Compatibility wrappers for camera-related tick helpers while the refactor is in progress
+- This module now owns the low-level sensor probe and middleware init path that used to live in `app_threadx.c`.
+- `app_threadx.c` should call this module for camera bring-up instead of implementing probe/init/register access inline.
 
 ### `app_storage.*`
 

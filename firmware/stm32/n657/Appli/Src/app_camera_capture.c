@@ -60,6 +60,19 @@ extern volatile uint32_t camera_capture_reported_byte_count;
 extern volatile uint32_t camera_capture_counter_status;
 extern uint8_t *camera_capture_result_buffer;
 extern uint32_t camera_capture_active_buffer_index;
+
+/**
+ * @brief Decide whether a DCMIPP error is worth retrying once.
+ *
+ * We treat the CSI sync plus DPHY control combo as a transient link issue when
+ * the capture buffer already filled, because the frame itself usually made it
+ * through before the late error surfaced.
+ * @retval true when one more capture attempt is reasonable.
+ */
+static bool AppCameraCapture_ShouldRetryDcmippError(uint32_t error_code) {
+	return (error_code == 0x00008100U)
+			&& (camera_capture_reported_byte_count >= CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
+}
 /* USER CODE END PV */
 
 /**
@@ -507,6 +520,8 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 			DebugConsole_Printf(
 					"[CAMERA][CAPTURE] DCMIPP reported capture error code 0x%08lX.\r\n",
 					(unsigned long) camera_capture_error_code);
+			AppCameraDiagnostics_LogDcmippErrorCode(camera_capture_error_code);
+			AppCameraCapture_LogCaptureState("capture-error");
 			break;
 		}
 
@@ -546,12 +561,34 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	bool result = false;
 	const CHAR *file_extension = camera_capture_use_cmw_pipeline ? "yuv422"
 			: "raw16";
+	const uint32_t max_capture_attempts = 2U;
+	uint32_t capture_attempt = 0U;
+	bool capture_ok = false;
 
 	if (!AppStorage_WaitForMediaReady(CAMERA_STORAGE_WAIT_TIMEOUT_MS)) {
 		return false;
 	}
 
-	if (!AppCameraCapture_CaptureSingleFrame(&captured_bytes)) {
+	for (capture_attempt = 0U; capture_attempt < max_capture_attempts;
+			capture_attempt++) {
+		if (capture_attempt > 0U) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] Retrying capture after DCMIPP error 0x%08lX.\r\n",
+					(unsigned long) camera_capture_error_code);
+			DelayMilliseconds_ThreadX(CAMERA_CAPTURE_RETRY_DELAY_MS);
+		}
+
+		if (AppCameraCapture_CaptureSingleFrame(&captured_bytes)) {
+			capture_ok = true;
+			break;
+		}
+
+		if (!AppCameraCapture_ShouldRetryDcmippError(camera_capture_error_code)) {
+			break;
+		}
+	}
+
+	if (!capture_ok) {
 		return false;
 	}
 

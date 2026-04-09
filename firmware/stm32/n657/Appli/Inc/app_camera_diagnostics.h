@@ -99,6 +99,9 @@ void AppCameraDiagnostics_LogCsiLineByteCounters(const char *reason,
 void AppCameraDiagnostics_LogDcmippPipeRegisters(const char *reason,
 		DCMIPP_HandleTypeDef *capture_dcmipp);
 
+/* Decode and print the DCMIPP error bitmask in a human-readable form. */
+void AppCameraDiagnostics_LogDcmippErrorCode(uint32_t error_code);
+
 /* Print the full camera/ISP/pipe state snapshot used during capture bring-up. */
 void AppCameraDiagnostics_LogCaptureState(
 		const AppCameraDiagnostics_CaptureState_t *snapshot);

@@ -173,9 +173,10 @@ Role:
 
 Next steps:
 
-1. Create this module when the remaining camera helper blocks get too large.
-2. Move IMX335 probe, init, stream start, and register access helpers here.
-3. Keep `app_threadx.c` as the caller, not the owner, of sensor setup.
+1. Keep the IMX335 probe, init, stream start, and register access helpers here.
+2. Keep `app_threadx.c` as the caller, not the owner, of sensor setup.
+3. Move any remaining camera middleware plumbing here before it grows back into the coordinator.
+4. Keep the actual probe/init helper implementations out of `app_threadx.c`.
 
 Done when:
 
