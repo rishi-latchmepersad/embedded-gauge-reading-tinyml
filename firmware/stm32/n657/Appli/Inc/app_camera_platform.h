@@ -25,8 +25,6 @@ void CameraPlatform_CmwDelay(uint32_t delay_ms);
 DCMIPP_HandleTypeDef *CameraPlatform_GetCaptureDcmippHandle(void);
 int32_t CameraPlatform_GetTickMs(void);
 ULONG CameraPlatform_MillisecondsToTicks(uint32_t timeout_ms);
-bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr);
-void CameraPlatform_LogCaptureState(const char *reason);
 bool CameraPlatform_SeedImx335ExposureGain(void);
 bool CameraPlatform_EnableImx335AutoExposure(void);
 void CameraPlatform_ReapplyImx335TestPattern(void);

@@ -97,8 +97,8 @@ Role:
 Next steps:
 
 1. Keep peeling utility helpers into shared modules.
-2. Move remaining camera bring-up helpers into a future `app_camera_platform.*`.
-3. Move any remaining capture flow helpers into `app_camera_capture.*`.
+2. Keep camera bring-up helpers in `app_camera_platform.*`.
+3. Keep capture flow helpers in `app_camera_capture.*`.
 4. Keep the file as the thread orchestration layer.
 
 Done when:
@@ -258,9 +258,9 @@ Done when:
 When we continue, the safest order is:
 
 1. Finish trimming any remaining generic helpers from `app_threadx.c`.
-2. Move camera bring-up helpers into `app_camera_platform.*`.
-3. Move the remaining capture helpers into `app_camera_capture.*`.
-4. Move inference invocation into `app_inference_runtime.*`.
+2. Keep camera bring-up helpers in `app_camera_platform.*`.
+3. Keep capture helpers in `app_camera_capture.*`.
+4. Keep inference invocation in `app_inference_runtime.*`.
 5. Split storage/logging policy if it still grows.
 6. Revisit memory budgets and linker layout once the code is cleaner.
 

@@ -7,13 +7,16 @@
 
 #include "app_camera_platform.h"
 
+#include "app_camera_buffers.h"
 #include "app_camera_config.h"
 #include "cmw_camera.h"
 #include "debug_console.h"
+#include "imx335.h"
 #include "threadx_utils.h"
 
 extern DCMIPP_HandleTypeDef hdcmipp;
 extern I2C_HandleTypeDef hi2c2;
+extern bool camera_stream_started;
 
 /**
  * @brief Read the official IMX335 chip-ID register.
@@ -99,4 +102,76 @@ int32_t CameraPlatform_GetTickMs(void) {
  */
 ULONG CameraPlatform_MillisecondsToTicks(uint32_t timeout_ms) {
 	return ThreadxUtils_MillisecondsToTicks(timeout_ms);
+}
+
+/**
+ * @brief Arm the DCMIPP CSI pipe for the next single-frame snapshot.
+ * @retval true when the receiver is ready to accept the next frame.
+ */
+bool CameraPlatform_StartDcmippSnapshot(void) {
+	DCMIPP_HandleTypeDef *capture_dcmipp =
+			CameraPlatform_GetCaptureDcmippHandle();
+
+	if ((capture_dcmipp == NULL) || (capture_dcmipp->Instance == NULL)
+			|| (camera_capture_result_buffer == NULL)) {
+		return false;
+	}
+
+	if (HAL_DCMIPP_CSI_PIPE_Start(capture_dcmipp, CAMERA_CAPTURE_PIPE,
+	DCMIPP_VIRTUAL_CHANNEL0, (uint32_t) camera_capture_result_buffer,
+	CMW_MODE_SNAPSHOT) != HAL_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Failed to start DCMIPP CSI pipe for snapshot mode.\r\n");
+		return false;
+	}
+
+	return true;
+}
+
+/**
+ * @brief Start the IMX335 sensor stream using the same register order as the
+ *        previous inline coordinator logic.
+ * @retval true when the sensor is streaming or has already been started.
+ */
+bool CameraPlatform_StartImx335Stream(void) {
+	uint8_t mode_select = 0x00U;
+
+	if (camera_stream_started) {
+		return true;
+	}
+
+	if (CameraPlatform_I2cWriteReg(BCAMS_IMX_I2C_ADDRESS_HAL,
+	IMX335_REG_MODE_SELECT, &mode_select, 1U) != IMX335_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Failed to write MODE_SELECT=0x00 to start IMX335 streaming.\r\n");
+		return false;
+	}
+	DelayMilliseconds_ThreadX(20U);
+
+	{
+		uint8_t xmsta_master_start_value = 0x00U;
+
+		if (CameraPlatform_I2cWriteReg(BCAMS_IMX_I2C_ADDRESS_HAL,
+		IMX335_REG_XMSTA, &xmsta_master_start_value, 1U) != IMX335_OK) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] Warning: XMSTA write failed after MODE_SELECT.\r\n");
+		}
+	}
+	DelayMilliseconds_ThreadX(5U);
+
+	if (!CameraPlatform_SeedImx335ExposureGain()) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Warning: failed to re-seed IMX335 exposure/gain after raw stream start.\r\n");
+	}
+
+	CameraPlatform_ReapplyImx335TestPattern();
+
+	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL,
+	IMX335_REG_MODE_SELECT, &mode_select, 1U) != IMX335_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] IMX335 entered streaming, but mode-select readback failed.\r\n");
+	}
+
+	camera_stream_started = true;
+	return true;
 }

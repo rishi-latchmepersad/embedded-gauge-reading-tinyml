@@ -158,12 +158,9 @@ static TX_THREAD camera_heartbeat_thread;
 static ULONG camera_heartbeat_thread_stack[CAMERA_HEARTBEAT_THREAD_STACK_SIZE_BYTES
 		/ sizeof(ULONG)];
 static bool camera_heartbeat_thread_created = false;
+static TX_MUTEX camera_capture_cmw_mutex;
+static bool camera_capture_cmw_mutex_created = false;
 CMW_IMX335_t camera_sensor;
-static CMW_Sensor_if_t camera_sensor_driver;
-static CMW_IMX335_config_t camera_sensor_config;
-static IMX335_Object_t camera_raw_sensor;
-static int32_t camera_sensor_gain_cache = 0;
-static int32_t camera_sensor_exposure_cache = 0;
 bool camera_cmw_initialized = false;
 /* Keep the middleware path active so the ISP/AEC pipeline can produce optical
  * frames instead of the raw sensor dump. */
@@ -188,6 +185,7 @@ volatile uint32_t camera_capture_csi_linebyte_event_count = 0U;
 volatile bool camera_capture_csi_linebyte_event_logged = false;
 volatile uint32_t camera_capture_vsync_event_count = 0U;
 volatile uint32_t camera_capture_isp_run_count = 0U;
+volatile bool camera_capture_isp_loop_paused = false;
 /* Count raw IRQ entry points so we can tell whether the interrupt chain is
  * alive even when the higher-level callbacks stay silent. */
 volatile uint32_t camera_capture_csi_irq_count = 0U;
@@ -223,153 +221,13 @@ static bool CameraPlatform_InitializeImx335Sensor(void);
 bool CameraPlatform_SeedImx335ExposureGain(void);
 bool CameraPlatform_EnableImx335AutoExposure(void);
 void CameraPlatform_ReapplyImx335TestPattern(void);
-bool CameraPlatform_StartImx335Stream(void);
-static void CameraPlatform_LogCaptureBufferSummary(uint32_t captured_bytes) {
-	AppCameraDiagnostics_LogCaptureBufferSummary(
-			(const uint8_t*) camera_capture_result_buffer, captured_bytes,
-			camera_capture_use_cmw_pipeline);
-}
 
 bool CameraPlatform_PrepareDcmippSnapshot(void);
-bool CameraPlatform_StartDcmippSnapshot(void);
 bool CameraPlatform_ConfigureCsiLineByteProbe(void);
 int32_t CameraPlatform_I2cReadReg(uint16_t dev_addr, uint16_t reg,
 		uint8_t *pdata, uint16_t length);
 int32_t CameraPlatform_I2cWriteReg(uint16_t dev_addr, uint16_t reg,
 		uint8_t *pdata, uint16_t length);
-
-/**
- * @brief Log the active DCMIPP receiver clocking once per boot.
- */
-static void CameraPlatform_LogDcmippClocking(void) {
-	static bool clocking_logged = false;
-	uint32_t dcmipp_freq_hz = 0U;
-	uint32_t csi_freq_hz = 0U;
-	uint32_t pclk5_freq_hz = 0U;
-	uint32_t dcmipp_source = 0U;
-	uint32_t sysclk_freq_hz = 0U;
-	uint32_t hclk_freq_hz = 0U;
-	uint32_t pll1_freq_hz = 0U;
-	uint32_t pll4_freq_hz = 0U;
-	uint32_t ic17_source = 0U;
-	uint32_t ic17_divider = 0U;
-	uint32_t ic17_enabled = 0U;
-	uint32_t ic18_source = 0U;
-	uint32_t ic18_divider = 0U;
-	uint32_t ic18_enabled = 0U;
-
-	if (clocking_logged) {
-		return;
-	}
-
-	dcmipp_freq_hz = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_DCMIPP);
-	csi_freq_hz = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_CSI);
-	pclk5_freq_hz = HAL_RCC_GetPCLK5Freq();
-	sysclk_freq_hz = HAL_RCC_GetSysClockFreq();
-	hclk_freq_hz = HAL_RCC_GetHCLKFreq();
-	pll1_freq_hz = HAL_RCCEx_GetPLL1CLKFreq();
-	pll4_freq_hz = HAL_RCCEx_GetPLL4CLKFreq();
-	dcmipp_source = __HAL_RCC_GET_DCMIPP_SOURCE();
-	ic17_source = LL_RCC_IC17_GetSource();
-	ic17_divider = LL_RCC_IC17_GetDivider();
-	ic17_enabled = LL_RCC_IC17_IsEnabled();
-	ic18_source = LL_RCC_IC18_GetSource();
-	ic18_divider = LL_RCC_IC18_GetDivider();
-	ic18_enabled = LL_RCC_IC18_IsEnabled();
-
-	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] DCMIPP clock source=%lu freq=%lu Hz, CSI freq=%lu Hz (PCLK5=%lu Hz, HCLK=%lu Hz, SYSCLK=%lu Hz).\r\n",
-			(unsigned long) dcmipp_source, (unsigned long) dcmipp_freq_hz,
-			(unsigned long) csi_freq_hz, (unsigned long) pclk5_freq_hz,
-			(unsigned long) hclk_freq_hz, (unsigned long) sysclk_freq_hz);
-	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] IC17 enabled=%lu source=%lu divider=%lu, IC18 enabled=%lu source=%lu divider=%lu, PLL1=%lu Hz, PLL4=%lu Hz.\r\n",
-			(unsigned long) ic17_enabled, (unsigned long) ic17_source,
-			(unsigned long) ic17_divider, (unsigned long) ic18_enabled,
-			(unsigned long) ic18_source, (unsigned long) ic18_divider,
-			(unsigned long) pll1_freq_hz, (unsigned long) pll4_freq_hz);
-	if (dcmipp_freq_hz < 200000000U) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Warning: DCMIPP kernel clock is unexpectedly low for IMX335 capture.\r\n");
-	}
-	clocking_logged = true;
-
-	/* Log the noncacheable MPU region bounds so we can verify it covers the
-	 * full 1.2 MB capture buffer.  __snoncacheable / __enoncacheable are linker
-	 * symbols exported from the LD script. */
-	{
-		extern uint32_t __snoncacheable;
-		extern uint32_t __enoncacheable;
-		uint32_t nc_base = (uint32_t) (uintptr_t) &__snoncacheable;
-		uint32_t nc_end = (uint32_t) (uintptr_t) &__enoncacheable;
-		uint32_t nc_size = nc_end - nc_base;
-		uint32_t buf_end = (uint32_t) (uintptr_t) camera_capture_buffers[0]
-				+ CAMERA_CAPTURE_BUFFER_SIZE_BYTES;
-		DebugConsole_Printf(
-				"[MPU] noncacheable: base=0x%08lX end=0x%08lX size=%lu KB; "
-						"buf[0]=0x%08lX buf_end=0x%08lX %s\r\n",
-				(unsigned long) nc_base, (unsigned long) nc_end,
-				(unsigned long) (nc_size / 1024U),
-				(unsigned long) (uintptr_t) camera_capture_buffers[0],
-				(unsigned long) buf_end,
-				(buf_end <= nc_end) ? "COVERED" : "OVERFLOW-NOT-COVERED");
-	}
-
-	/* Read RISAF2/RISAF3 and RIMC registers live Ã¢â‚¬â€ SystemIsolation_Config runs
-	 * before UART init so we can only verify them here.
-	 * Expected: RISAF2/3 CFGR=0x00000101 CIDCFGR=0x00020002
-	 *           RIMC_ATTRx[9] (DCMIPP): MCID=1 MSEC=1 MPRIV=1 -> 0x00000310
-	 *           RISC_SECCFGRx[2] bit29=1 and RISC_PRIVCFGRx[2] bit29=1. */
-	{
-		volatile uint32_t r2_cr = RISAF2_NS->CR;
-		volatile uint32_t r2_cfgr = RISAF2_NS->REG[0].CFGR;
-		volatile uint32_t r2_cidcfgr = RISAF2_NS->REG[0].CIDCFGR;
-		volatile uint32_t r2_startr = RISAF2_NS->REG[0].STARTR;
-		volatile uint32_t r2_endr = RISAF2_NS->REG[0].ENDR;
-		volatile uint32_t r3_cfgr = RISAF3_NS->REG[0].CFGR;
-		volatile uint32_t r3_cidcfgr = RISAF3_NS->REG[0].CIDCFGR;
-		volatile uint32_t rimc_cr = RIFSC->RIMC_CR;
-		volatile uint32_t rimc_dcmipp =
-		RIFSC->RIMC_ATTRx[RIF_MASTER_INDEX_DCMIPP];
-		volatile uint32_t risc_sec2 = RIFSC->RISC_SECCFGRx[2];
-		volatile uint32_t risc_priv2 = RIFSC->RISC_PRIVCFGRx[2];
-		/* RISC_SECCFGRx[4] bit12=AXISRAM1, bit13=AXISRAM2.
-		 * RISC_PRIVCFGRx[4] same positions.
-		 * Expected: SEC bits set, PRIV bits clear (DCMIPP is MPRIV=0). */
-		volatile uint32_t risc_sec4 = RIFSC->RISC_SECCFGRx[4];
-		volatile uint32_t risc_priv4 = RIFSC->RISC_PRIVCFGRx[4];
-		DebugConsole_Printf(
-				"[RIF] RISAF2 CR=0x%08lX REG0: CFGR=0x%08lX CIDCFGR=0x%08lX STARTR=0x%08lX ENDR=0x%08lX\r\n",
-				(unsigned long) r2_cr, (unsigned long) r2_cfgr,
-				(unsigned long) r2_cidcfgr, (unsigned long) r2_startr,
-				(unsigned long) r2_endr);
-		DebugConsole_Printf(
-				"[RIF] RISAF3 REG0: CFGR=0x%08lX CIDCFGR=0x%08lX\r\n",
-				(unsigned long) r3_cfgr, (unsigned long) r3_cidcfgr);
-		DebugConsole_Printf(
-				"[RIF] RIMC: CR=0x%08lX DCMIPP_ATTR=0x%08lX (MCID=%lu MSEC=%lu MPRIV=%lu)\r\n",
-				(unsigned long) rimc_cr, (unsigned long) rimc_dcmipp,
-				(unsigned long) ((rimc_dcmipp >> 4U) & 0x7U),
-				(unsigned long) ((rimc_dcmipp >> 8U) & 0x1U),
-				(unsigned long) ((rimc_dcmipp >> 9U) & 0x1U));
-		DebugConsole_Printf(
-				"[RIF] RISC REG2: SECCFGR=0x%08lX PRIVCFGR=0x%08lX "
-				"(DCMIPP SEC=%lu PRIV=%lu, CSI SEC=%lu PRIV=%lu)\r\n",
-				(unsigned long) risc_sec2, (unsigned long) risc_priv2,
-				(unsigned long) ((risc_sec2 >> 29U) & 1U),
-				(unsigned long) ((risc_priv2 >> 29U) & 1U),
-				(unsigned long) ((risc_sec2 >> 28U) & 1U),
-				(unsigned long) ((risc_priv2 >> 28U) & 1U));
-		/* AXISRAM1=bit12, AXISRAM2=bit13. Want: SEC=1, PRIV=0 for both. */
-		DebugConsole_Printf("[RIF] RISC REG4: SECCFGR=0x%08lX PRIVCFGR=0x%08lX "
-				"(AXISRAM1 SEC=%lu PRIV=%lu, AXISRAM2 SEC=%lu PRIV=%lu)\r\n",
-				(unsigned long) risc_sec4, (unsigned long) risc_priv4,
-				(unsigned long) ((risc_sec4 >> 12U) & 1U),
-				(unsigned long) ((risc_priv4 >> 12U) & 1U),
-				(unsigned long) ((risc_sec4 >> 13U) & 1U),
-				(unsigned long) ((risc_priv4 >> 13U) & 1U));
-	}
-}
 
 #if 0
 /**
@@ -573,6 +431,16 @@ UINT App_ThreadX_Start(void) {
 		 * TX_NO_WAIT corrupts the UART state when two threads collide mid-frame. */
 		(void) tx_mutex_create(&debug_uart_mutex, "debug_uart", TX_NO_INHERIT);
 
+		semaphore_status = tx_mutex_create(&camera_capture_cmw_mutex,
+				"camera_capture_cmw", TX_INHERIT);
+		if (semaphore_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[CAMERA][THREAD] Failed to create camera middleware mutex, status=%lu\r\n",
+					(unsigned long) semaphore_status);
+			return semaphore_status;
+		}
+		camera_capture_cmw_mutex_created = true;
+
 		camera_capture_sync_created = true;
 	}
 
@@ -677,6 +545,30 @@ void App_ThreadX_NotifyStorageReady(void) {
 }
 
 /**
+ * @brief Lock the shared camera middleware so only one thread touches CMW/ISP.
+ * @param timeout_ticks Maximum time to wait for the mutex.
+ * @retval true when the caller owns the camera middleware lock.
+ */
+bool App_ThreadX_LockCameraMiddleware(ULONG timeout_ticks) {
+	if (!camera_capture_cmw_mutex_created) {
+		return false;
+	}
+
+	return (tx_mutex_get(&camera_capture_cmw_mutex, timeout_ticks) == TX_SUCCESS);
+}
+
+/**
+ * @brief Release the shared camera middleware lock.
+ */
+void App_ThreadX_UnlockCameraMiddleware(void) {
+	if (!camera_capture_cmw_mutex_created) {
+		return;
+	}
+
+	(void) tx_mutex_put(&camera_capture_cmw_mutex);
+}
+
+/**
  * @brief Kernel initialization hook used by CubeMX.
  */
 void MX_ThreadX_Init(void) {
@@ -746,8 +638,20 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 	(void) DebugConsole_WriteString("[CAMERA] thread entry\r\n");
 	DelayMilliseconds_ThreadX(CAMERA_INIT_STARTUP_DELAY_MS);
 	(void) DebugConsole_WriteString("[CAMERA] probe start\r\n");
+	camera_capture_isp_loop_paused = true;
+
+	if (!App_ThreadX_LockCameraMiddleware(
+			CameraPlatform_MillisecondsToTicks(
+					CAMERA_MIDDLEWARE_LOCK_TIMEOUT_MS))) {
+		camera_capture_isp_loop_paused = false;
+		DebugConsole_Printf(
+				"[CAMERA][THREAD] Failed to lock camera middleware for probe.\r\n");
+		return;
+	}
 
 	if (CameraPlatform_ProbeBCamsImx() == TX_SUCCESS) {
+		App_ThreadX_UnlockCameraMiddleware();
+		camera_capture_isp_loop_paused = false;
 		DebugConsole_Printf(
 				"[CAMERA][THREAD] Camera probe completed successfully.\r\n");
 
@@ -771,6 +675,8 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 		}
 	}
 
+	App_ThreadX_UnlockCameraMiddleware();
+	camera_capture_isp_loop_paused = false;
 	DebugConsole_Printf(
 			"[CAMERA][THREAD] Camera probe failed or is not configured yet.\r\n");
 }
@@ -857,630 +763,12 @@ static void CameraPlatform_LogCsiDphySettle(void) {
  *        diagnostics.
  * @param reason Short note describing what triggered the dump.
  */
-void CameraPlatform_LogCaptureState(const char *reason) {
-	DCMIPP_HandleTypeDef *capture_dcmipp =
-			CameraPlatform_GetCaptureDcmippHandle();
-	ISP_SensorInfoTypeDef sensor_info = { 0 };
-	uint32_t pipe_mode = 0U;
-	uint32_t pipe_state = 0U;
-	uint32_t pipe_counter = 0U;
-	uint8_t mode_select = 0U;
-	uint8_t lane_mode_reg_3050 = 0U;
-	uint8_t lane_mode_reg_319d = 0U;
-	uint8_t lane_mode_reg_341c = 0U;
-	uint8_t lane_mode_reg_341d = 0U;
-	uint8_t lane_mode_reg_3a01 = 0U;
-	uint8_t hold_reg = 0U;
-	uint8_t tpg_reg = 0U;
-	uint16_t gain_reg = 0U;
-	uint32_t shutter_reg = 0U;
-	uint32_t vmax_reg = 0U;
-	int32_t cmw_exposure_mode = 0;
-	uint8_t cmw_aec_enabled = 0U;
-	int32_t cmw_exposure = 0;
-	int32_t cmw_gain = 0;
-	int32_t cmw_test_pattern = 0;
-	bool cmw_state_ok = false;
-	bool sensor_regs_ok = true;
-	AppCameraDiagnostics_CaptureState_t snapshot = { 0 };
-
-	if ((capture_dcmipp != NULL) && (capture_dcmipp->Instance != NULL)) {
-		pipe_mode = HAL_DCMIPP_GetMode(capture_dcmipp);
-		pipe_state = HAL_DCMIPP_PIPE_GetState(capture_dcmipp,
-		CAMERA_CAPTURE_PIPE);
-		(void) HAL_DCMIPP_PIPE_GetDataCounter(capture_dcmipp,
-		CAMERA_CAPTURE_PIPE, &pipe_counter);
-	}
-
-	if (camera_cmw_initialized) {
-		cmw_state_ok = true;
-		if (CMW_CAMERA_GetExposureMode(&cmw_exposure_mode) != CMW_ERROR_NONE) {
-			cmw_state_ok = false;
-		}
-		if (CMW_CAMERA_GetExposure(&cmw_exposure) != CMW_ERROR_NONE) {
-			cmw_state_ok = false;
-		}
-		if (CMW_CAMERA_GetGain(&cmw_gain) != CMW_ERROR_NONE) {
-			cmw_state_ok = false;
-		}
-		if (ISP_GetAECState(&camera_sensor.hIsp, &cmw_aec_enabled)
-				!= ISP_OK) {
-			cmw_state_ok = false;
-		}
-		if (CMW_CAMERA_GetTestPattern(&cmw_test_pattern) != CMW_ERROR_NONE) {
-			cmw_state_ok = false;
-		}
-		if (CMW_CAMERA_GetSensorInfo(&sensor_info) != CMW_ERROR_NONE) {
-			cmw_state_ok = false;
-		}
-	}
-
-	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL,
-	IMX335_REG_MODE_SELECT, &mode_select, 1U) != IMX335_OK) {
-		sensor_regs_ok = false;
-	}
-	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL, 0x3050U,
-			&lane_mode_reg_3050, 1U) != IMX335_OK) {
-		sensor_regs_ok = false;
-	}
-	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL, 0x319DU,
-			&lane_mode_reg_319d, 1U) != IMX335_OK) {
-		sensor_regs_ok = false;
-	}
-	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL, 0x341CU,
-			&lane_mode_reg_341c, 1U) != IMX335_OK) {
-		sensor_regs_ok = false;
-	}
-	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL, 0x341DU,
-			&lane_mode_reg_341d, 1U) != IMX335_OK) {
-		sensor_regs_ok = false;
-	}
-	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL, 0x3A01U,
-			&lane_mode_reg_3a01, 1U) != IMX335_OK) {
-		sensor_regs_ok = false;
-	}
-	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL, IMX335_REG_HOLD,
-			&hold_reg, 1U) != IMX335_OK) {
-		sensor_regs_ok = false;
-	}
-	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL, IMX335_REG_TPG,
-			&tpg_reg, 1U) != IMX335_OK) {
-		sensor_regs_ok = false;
-	}
-	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL, IMX335_REG_GAIN,
-			(uint8_t*) &gain_reg, 2U) != IMX335_OK) {
-		sensor_regs_ok = false;
-	}
-	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL,
-	IMX335_REG_SHUTTER, (uint8_t*) &shutter_reg, 3U) != IMX335_OK) {
-		sensor_regs_ok = false;
-	}
-	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL, IMX335_REG_VMAX,
-			(uint8_t*) &vmax_reg, 4U) != IMX335_OK) {
-		sensor_regs_ok = false;
-	}
-
-	snapshot.reason = reason;
-	snapshot.capture_dcmipp = capture_dcmipp;
-	snapshot.capture_pipe = CAMERA_CAPTURE_PIPE;
-	snapshot.pipe_memory_address =
-			(capture_dcmipp != NULL) ?
-					(uintptr_t) HAL_DCMIPP_PIPE_GetMemoryAddress(
-							capture_dcmipp, CAMERA_CAPTURE_PIPE,
-							DCMIPP_MEMORY_ADDRESS_0) :
-					0U;
-	snapshot.pipe_mode = pipe_mode;
-	snapshot.pipe_state = pipe_state;
-	snapshot.pipe_counter = pipe_counter;
-	snapshot.buffer0 = camera_capture_buffers[0];
-#if CAMERA_CAPTURE_BUFFER_COUNT > 1U
-	snapshot.buffer1 = camera_capture_buffers[1];
-#else
-	snapshot.buffer1 = NULL;
-#endif
-	snapshot.result_buffer = (const uint8_t*) camera_capture_result_buffer;
-	snapshot.snapshot_armed = camera_capture_snapshot_armed;
-	snapshot.stream_started = camera_stream_started;
-	snapshot.use_cmw_pipeline = camera_capture_use_cmw_pipeline;
-	snapshot.cmw_initialized = camera_cmw_initialized;
-	snapshot.frame_event_count = camera_capture_frame_event_count;
-	snapshot.vsync_event_count = camera_capture_vsync_event_count;
-	snapshot.isp_run_count = camera_capture_isp_run_count;
-	snapshot.csi_irq_count = camera_capture_csi_irq_count;
-	snapshot.dcmipp_irq_count = camera_capture_dcmipp_irq_count;
-	snapshot.reported_byte_count = camera_capture_reported_byte_count;
-	snapshot.counter_status = camera_capture_counter_status;
-	snapshot.sof_seen = camera_capture_sof_seen;
-	snapshot.eof_seen = camera_capture_eof_seen;
-	snapshot.failed = camera_capture_failed;
-	snapshot.error_code = camera_capture_error_code;
-	snapshot.line_error_count = camera_capture_line_error_count;
-	snapshot.line_error_mask = camera_capture_line_error_mask;
-	snapshot.active_buffer_index = camera_capture_active_buffer_index;
-	snapshot.cmw_state_ok = cmw_state_ok;
-	snapshot.cmw_exposure_mode = cmw_exposure_mode;
-	snapshot.cmw_aec_enabled = cmw_aec_enabled;
-	snapshot.cmw_exposure = cmw_exposure;
-	snapshot.cmw_gain = cmw_gain;
-	snapshot.cmw_test_pattern = cmw_test_pattern;
-	snapshot.sensor_name = sensor_info.name;
-	snapshot.sensor_width = sensor_info.width;
-	snapshot.sensor_height = sensor_info.height;
-	snapshot.sensor_gain_min = sensor_info.gain_min;
-	snapshot.sensor_gain_max = sensor_info.gain_max;
-	snapshot.sensor_again_max = sensor_info.again_max;
-	snapshot.sensor_exposure_min = sensor_info.exposure_min;
-	snapshot.sensor_exposure_max = sensor_info.exposure_max;
-	snapshot.sensor_regs_ok = sensor_regs_ok;
-	snapshot.mode_select = mode_select;
-	snapshot.lane_mode_reg_3050 = lane_mode_reg_3050;
-	snapshot.lane_mode_reg_319d = lane_mode_reg_319d;
-	snapshot.lane_mode_reg_341c = lane_mode_reg_341c;
-	snapshot.lane_mode_reg_341d = lane_mode_reg_341d;
-	snapshot.lane_mode_reg_3a01 = lane_mode_reg_3a01;
-	snapshot.hold_reg = hold_reg;
-	snapshot.tpg_reg = tpg_reg;
-	snapshot.gain_reg = gain_reg;
-	snapshot.shutter_reg = shutter_reg;
-	snapshot.vmax_reg = vmax_reg;
-	snapshot.csi_linebyte_event_count =
-			camera_capture_csi_linebyte_event_count;
-
-	AppCameraDiagnostics_LogCaptureState(&snapshot);
-}
 
 /**
  * @brief Configure the capture pipe for a 224x224 YUV422 capture sourced from RAW10 CSI input.
  * @param[out] captured_bytes_ptr Receives the final image byte count on success.
  * @retval true when a frame-complete interrupt arrives without a DCMIPP error.
  */
-bool CameraPlatform_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
-	const ULONG wait_ticks = CameraPlatform_MillisecondsToTicks(
-	CAMERA_CAPTURE_TIMEOUT_MS);
-	const ULONG poll_ticks = CameraPlatform_MillisecondsToTicks(20U);
-	ULONG next_wait_log_tick = 0U;
-	ULONG deadline_tick = 0U;
-	UINT semaphore_status = TX_SUCCESS;
-	DCMIPP_HandleTypeDef *capture_dcmipp =
-			CameraPlatform_GetCaptureDcmippHandle();
-
-	if (captured_bytes_ptr == NULL) {
-		return false;
-	}
-
-	/* Keep blue available for the save-success flash later in the flow. */
-	BSP_LED_Off(LED_BLUE);
-	if (!CameraPlatform_PrepareDcmippSnapshot()) {
-		return false;
-	}
-
-	camera_capture_failed = false;
-	camera_capture_error_code = 0U;
-	camera_capture_byte_count = 0U;
-	camera_capture_sof_seen = false;
-	camera_capture_eof_seen = false;
-	camera_capture_frame_done = false;
-	camera_capture_snapshot_armed = false;
-	camera_capture_frame_event_count = 0U;
-	camera_capture_line_error_count = 0U;
-	camera_capture_line_error_mask = 0U;
-	camera_capture_csi_linebyte_event_count = 0U;
-	camera_capture_csi_linebyte_event_logged = false;
-	camera_capture_vsync_event_count = 0U;
-	camera_capture_isp_run_count = 0U;
-	camera_capture_csi_irq_count = 0U;
-	camera_capture_dcmipp_irq_count = 0U;
-	camera_capture_reported_byte_count = 0U;
-	camera_capture_counter_status = (uint32_t) HAL_ERROR;
-	camera_capture_active_buffer_index = 0U;
-	camera_capture_result_buffer = camera_capture_buffers[0];
-	AppCameraBuffers_PrepareForDma();
-
-	/* Drain any stale semaphore token before arming the next snapshot. */
-	while (tx_semaphore_get(&camera_capture_done_semaphore, TX_NO_WAIT)
-			== TX_SUCCESS) {
-	}
-
-	/* Match ST's CMW_CAMERA_Start() ordering: arm the CSI/DCMIPP receiver first,
-	 * then start the ISP + sensor stream. This avoids missing the first valid
-	 * frame while the middleware is bringing the stream up. */
-	if (!CameraPlatform_StartDcmippSnapshot()) {
-		DelayMilliseconds_ThreadX(CAMERA_CAPTURE_RETRY_DELAY_MS);
-		if (!CameraPlatform_StartDcmippSnapshot()) {
-			return false;
-		}
-	}
-
-	camera_capture_snapshot_armed = true;
-
-	if (!camera_stream_started) {
-		if (!CameraPlatform_StartImx335Stream()) {
-			(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp, CAMERA_CAPTURE_PIPE,
-			DCMIPP_VIRTUAL_CHANNEL0);
-			camera_capture_snapshot_armed = false;
-			return false;
-		}
-	} else {
-		/* On later snapshots, give the already-running stream a brief moment to
-		 * advance to the armed frame boundary before we block on completion. */
-		DelayMilliseconds_ThreadX(CAMERA_STREAM_WARMUP_DELAY_MS);
-	}
-
-	deadline_tick = tx_time_get() + wait_ticks;
-	next_wait_log_tick = tx_time_get()
-			+ CameraPlatform_MillisecondsToTicks(1000U);
-	while (true) {
-		semaphore_status = tx_semaphore_get(&camera_capture_done_semaphore,
-				poll_ticks);
-		if (semaphore_status == TX_SUCCESS) {
-			if (!camera_capture_failed) {
-				const uint32_t completed_buffer_index =
-						camera_capture_active_buffer_index;
-				uint32_t completed_nonzero_bytes = 0U;
-				uint8_t *completed_buffer_ptr = NULL;
-				bool keep_waiting_for_convergence = false;
-
-				completed_buffer_ptr =
-						camera_capture_buffers[completed_buffer_index];
-				#if 0
-				/* Buffer is noncacheable Ã¢â‚¬â€ no invalidate needed, reads go to SRAM. */
-				/* Read first 8 bytes straight from SRAM after invalidate Ã¢â‚¬â€ before
-				 * the nonzero scan Ã¢â‚¬â€ to show whether the cache or DMA is the issue. */
-				{
-					volatile uint8_t *vb =
-							(volatile uint8_t*) completed_buffer_ptr;
-					DebugConsole_Printf(
-							"[CAMERA][CAPTURE] Buffer %lu after invalidate first8=[%02X %02X %02X %02X %02X %02X %02X %02X] addr=0x%08lX\r\n",
-							(unsigned long) completed_buffer_index,
-							(unsigned int) vb[0], (unsigned int) vb[1],
-							(unsigned int) vb[2], (unsigned int) vb[3],
-							(unsigned int) vb[4], (unsigned int) vb[5],
-							(unsigned int) vb[6], (unsigned int) vb[7],
-							(unsigned long) (uintptr_t) completed_buffer_ptr);
-				}
-				/* Scan the capture buffer to find where DMA data landed.
-				 * We look for words that are neither the 0xAA fill nor plain zero. */
-				{
-					const uint32_t scan_words = CAMERA_CAPTURE_BUFFER_SIZE_BYTES
-							/ 4U;
-					volatile uint32_t *scan_base =
-							(volatile uint32_t*) (uintptr_t) completed_buffer_ptr;
-					uint32_t first_data = 0xFFFFFFFFU; /* first word != 0xAA and != 0x00 */
-					uint32_t first_nonaa = 0xFFFFFFFFU; /* first word != 0xAA (includes zero) */
-					uint32_t last_nonaa = 0U;
-					uint32_t nonaa_count = 0U;
-					uint32_t nonzero_nonaa_count = 0U;
-					for (uint32_t wi = 0U; wi < scan_words; wi++) {
-						uint32_t v = scan_base[wi];
-						if (v != 0xAAAAAAAAU) {
-							if (first_nonaa == 0xFFFFFFFFU) {
-								first_nonaa = wi;
-							}
-							last_nonaa = wi;
-							nonaa_count++;
-							if (v != 0x00000000U) {
-								if (first_data == 0xFFFFFFFFU) {
-									first_data = wi;
-								}
-								nonzero_nonaa_count++;
-							}
-						}
-					}
-					if (first_data != 0xFFFFFFFFU) {
-						DebugConsole_Printf(
-								"[CAMERA][SCAN] REAL DATA found at word=0x%05lX addr=0x%08lX val=[0x%08lX 0x%08lX 0x%08lX 0x%08lX] nonzero_nonaa=%lu total_nonaa=%lu\r\n",
-								(unsigned long) first_data,
-								(unsigned long) ((uintptr_t) completed_buffer_ptr
-										+ first_data * 4U),
-								(unsigned long) scan_base[first_data],
-								(unsigned long) scan_base[first_data + 1U],
-								(unsigned long) scan_base[first_data + 2U],
-								(unsigned long) scan_base[first_data + 3U],
-								(unsigned long) nonzero_nonaa_count,
-								(unsigned long) nonaa_count);
-
-						/* Post-scan DCMIPP snapshot */
-						{
-							DCMIPP_HandleTypeDef *pdc =
-									CameraPlatform_GetCaptureDcmippHandle();
-							DebugConsole_Printf(
-									"[CAMERA][SCAN] Post CMSR1=0x%08lX CMSR2=0x%08lX P0DCCNTR=0x%08lX P0DCLMTR=0x%08lX P0SCSZR=0x%08lX CSI_SR0=0x%08lX CSI_SR1=0x%08lX\r\n",
-									(unsigned long) pdc->Instance->CMSR1,
-									(unsigned long) pdc->Instance->CMSR2,
-									(unsigned long) pdc->Instance->P0DCCNTR,
-									(unsigned long) pdc->Instance->P0DCLMTR,
-									(unsigned long) pdc->Instance->P0SCSZR,
-									(unsigned long) CSI->SR0,
-									(unsigned long) CSI->SR1);
-						}
-					} else if (first_nonaa != 0xFFFFFFFFU) {
-						DebugConsole_Printf(
-								"[CAMERA][SCAN] Only zeros past 0xAA fill (BSS?): first_word=0x%05lX last=0x%05lX count=%lu addr=0x%08lX Ã¢â‚¬â€ DMA may be writing zeros or not writing.\r\n",
-								(unsigned long) first_nonaa,
-								(unsigned long) last_nonaa,
-								(unsigned long) nonaa_count,
-								(unsigned long) ((uintptr_t) completed_buffer_ptr
-										+ first_nonaa * 4U));
-					} else {
-						DebugConsole_Printf(
-								"[CAMERA][SCAN] All 0xAA in buffer from 0x%08lX Ã¢â‚¬â€ DMA not writing to SRAM at all.\r\n",
-								(unsigned long) (uintptr_t) completed_buffer_ptr);
-					}
-				}
-				/* Check IAC and RISAF2 for illegal access flags. */
-				{
-					volatile uint32_t iac_isr0 = IAC->ISR[0];
-					volatile uint32_t iac_isr4 = IAC->ISR[4];
-					volatile uint32_t r2_iasr = RISAF2_NS->IASR;
-					volatile uint32_t r2_iaesr = RISAF2_NS->IAR[0].IAESR;
-					volatile uint32_t r2_iaddr = RISAF2_NS->IAR[0].IADDR;
-					volatile uint32_t r2s_iasr = RISAF2_S->IASR;
-					volatile uint32_t r2s_iaesr = RISAF2_S->IAR[0].IAESR;
-					DebugConsole_Printf(
-							"[RIF] IAC ISR0=0x%08lX ISR4=0x%08lX | RISAF2_NS IASR=0x%08lX IAESR=0x%08lX IADDR=0x%08lX | RISAF2_S IASR=0x%08lX IAESR=0x%08lX \r\n",
-							(unsigned long) iac_isr0, (unsigned long) iac_isr4,
-							(unsigned long) r2_iasr, (unsigned long) r2_iaesr,
-							(unsigned long) r2_iaddr, (unsigned long) r2s_iasr,
-							(unsigned long) r2s_iaesr);
-				}
-				#endif
-				completed_nonzero_bytes =
-						AppCameraBuffers_CountNonZeroBytes(
-						completed_buffer_ptr,
-						CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
-				camera_capture_result_buffer = completed_buffer_ptr;
-				CameraPlatform_LogCaptureBufferSummary(camera_capture_byte_count);
-				DebugConsole_Printf(
-						"[CAMERA][CAPTURE] Completed frame handed off: idx=%lu ptr=%p bytes=%lu nonzero=%lu snapshot_armed=%u pipe_state=%lu.\r\n",
-						(unsigned long) completed_buffer_index,
-						(void *) completed_buffer_ptr,
-						(unsigned long) camera_capture_byte_count,
-						(unsigned long) completed_nonzero_bytes,
-						camera_capture_snapshot_armed ? 1U : 0U,
-						(unsigned long) HAL_DCMIPP_PIPE_GetState(capture_dcmipp,
-						CAMERA_CAPTURE_PIPE));
-
-				if (camera_capture_use_cmw_pipeline) {
-					const uint32_t next_buffer_index = (completed_buffer_index
-							+ 1U) % CAMERA_CAPTURE_BUFFER_COUNT;
-
-					if (HAL_DCMIPP_PIPE_SetMemoryAddress(capture_dcmipp,
-					CAMERA_CAPTURE_PIPE, DCMIPP_MEMORY_ADDRESS_0,
-							(uint32_t) camera_capture_buffers[next_buffer_index])
-							!= HAL_OK) {
-						camera_capture_failed = true;
-						camera_capture_error_code = 0x50495045U; /* 'PIPE' */
-						camera_capture_snapshot_armed = false;
-						(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp,
-						CAMERA_CAPTURE_PIPE,
-						DCMIPP_VIRTUAL_CHANNEL0);
-						return false;
-					}
-
-					camera_capture_active_buffer_index = next_buffer_index;
-					camera_capture_frame_done = false;
-
-					if (completed_nonzero_bytes == 0U) {
-						/* Keep the stream alive until the ISP/AEC pipeline produces a
-						 * nonzero frame or the overall capture timeout expires. */
-						keep_waiting_for_convergence = true;
-					}
-				}
-
-				/* The raw diagnostic path also needs a few warm-up frames when the
-				 * sensor starts in a black state. Keep waiting until we either see a
-				 * nonzero payload or run out of the overall capture timeout. */
-				if (!camera_capture_use_cmw_pipeline
-						&& (completed_nonzero_bytes == 0U)) {
-					keep_waiting_for_convergence = true;
-				}
-
-				if (keep_waiting_for_convergence) {
-					next_wait_log_tick = tx_time_get()
-							+ CameraPlatform_MillisecondsToTicks(1000U);
-					continue;
-				}
-
-				camera_capture_snapshot_armed = false;
-			}
-			break;
-		}
-
-		if ((LONG) (tx_time_get() - next_wait_log_tick) >= 0) {
-			next_wait_log_tick = tx_time_get()
-					+ CameraPlatform_MillisecondsToTicks(1000U);
-		}
-
-		if ((LONG) (deadline_tick - tx_time_get()) <= 0) {
-			break;
-		}
-	}
-
-	if (semaphore_status != TX_SUCCESS) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Timed out waiting for frame event, status=%lu cmsr1=0x%08lX cmsr2=0x%08lX sr0=0x%08lX pipe=%lu state=%lu sof=%u eof=%u line_err_count=%lu line_err_mask=0x%08lX.\r\n",
-				(unsigned long) semaphore_status,
-				(unsigned long) capture_dcmipp->Instance->CMSR1,
-				(unsigned long) capture_dcmipp->Instance->CMSR2,
-				(unsigned long) CSI->SR0, (unsigned long) CAMERA_CAPTURE_PIPE,
-				(unsigned long) HAL_DCMIPP_PIPE_GetState(capture_dcmipp,
-				CAMERA_CAPTURE_PIPE), camera_capture_sof_seen ? 1U : 0U,
-				camera_capture_eof_seen ? 1U : 0U,
-				(unsigned long) camera_capture_line_error_count,
-				(unsigned long) camera_capture_line_error_mask);
-		(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp,
-		CAMERA_CAPTURE_PIPE,
-		DCMIPP_VIRTUAL_CHANNEL0);
-		return false;
-	}
-
-	if (camera_capture_failed) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] DCMIPP reported capture error code 0x%08lX.\r\n",
-				(unsigned long) camera_capture_error_code);
-		if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
-			(void) CMW_CAMERA_Suspend(CAMERA_CAPTURE_PIPE);
-			camera_stream_started = false;
-		}
-		(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp, CAMERA_CAPTURE_PIPE,
-		DCMIPP_VIRTUAL_CHANNEL0);
-		return false;
-	}
-
-	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
-		(void) CMW_CAMERA_Suspend(CAMERA_CAPTURE_PIPE);
-		camera_stream_started = false;
-	}
-	(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp, CAMERA_CAPTURE_PIPE,
-	DCMIPP_VIRTUAL_CHANNEL0);
-
-	AppCameraBuffers_InvalidateCaptureRegion(camera_capture_byte_count);
-
-	if ((camera_capture_byte_count == 0U)
-			|| (camera_capture_byte_count > CAMERA_CAPTURE_BUFFER_SIZE_BYTES)) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Invalid capture byte count %lu (sof=%u eof=%u frame=%u expected=%lu).\r\n",
-				(unsigned long) camera_capture_byte_count,
-				camera_capture_sof_seen ? 1U : 0U,
-				camera_capture_eof_seen ? 1U : 0U,
-				camera_capture_frame_done ? 1U : 0U,
-				(unsigned long) CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
-		return false;
-	}
-
-	*captured_bytes_ptr = camera_capture_byte_count;
-	return true;
-}
-
-/**
- * @brief Attempt to arm a single capture on VC0.
- * @retval true when HAL accepted the snapshot start request.
- */
-bool CameraPlatform_StartDcmippSnapshot(void) {
-	DCMIPP_HandleTypeDef *capture_dcmipp =
-			CameraPlatform_GetCaptureDcmippHandle();
-	uint8_t mode_select = IMX335_MODE_STANDBY;
-
-	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
-		if (CMW_CAMERA_Start(CAMERA_CAPTURE_PIPE,
-				camera_capture_buffers[camera_capture_active_buffer_index],
-				CMW_MODE_CONTINUOUS) != CMW_ERROR_NONE) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] CMW_CAMERA_Start() failed for capture pipe continuous capture.\r\n");
-			return false;
-		}
-
-		/* Some IMX335 bring-up notes expect XMSTA to be asserted after the sensor
-		 * leaves standby, not only during the initial table load. Re-apply it here
-		 * so we can see whether the timing matters on this board. */
-		{
-			uint8_t xmsta_master_start_value = 0x00U;
-
-			if (CameraPlatform_I2cWriteReg(BCAMS_IMX_I2C_ADDRESS_HAL,
-			IMX335_REG_XMSTA, &xmsta_master_start_value, 1U) != IMX335_OK) {
-				DebugConsole_Printf(
-						"[CAMERA][CAPTURE] Warning: XMSTA post-start write failed.\r\n");
-			}
-
-			DelayMilliseconds_ThreadX(5U);
-		}
-
-	if (!CameraPlatform_SeedImx335ExposureGain()) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Warning: failed to re-seed IMX335 exposure/gain after CMW stream start.\r\n");
-	}
-
-	CameraPlatform_ReapplyImx335TestPattern();
-
-	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL,
-	IMX335_REG_MODE_SELECT, &mode_select, 1U) != IMX335_OK) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] IMX335 stream started through CMW, but mode-select readback failed.\r\n");
-	}
-
-		return true;
-	}
-
-	/* Keep the raw diagnostic pipe in continuous mode so it matches the
-	 * reference capture start sequence, while the app still stops after the
-	 * first useful frame. */
-	if (HAL_DCMIPP_CSI_PIPE_Start(capture_dcmipp, CAMERA_CAPTURE_PIPE,
-	DCMIPP_VIRTUAL_CHANNEL0,
-			(uint32_t) camera_capture_buffers[camera_capture_active_buffer_index],
-			DCMIPP_MODE_CONTINUOUS) != HAL_OK) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] HAL_DCMIPP_CSI_PIPE_Start() failed. mode=%lu pipe_state=%lu buffer=0x%08lX sr0=0x%08lX\r\n",
-				(unsigned long) HAL_DCMIPP_GetMode(capture_dcmipp),
-				(unsigned long) HAL_DCMIPP_PIPE_GetState(capture_dcmipp,
-				CAMERA_CAPTURE_PIPE),
-				(unsigned long) ((uint32_t) camera_capture_buffers[camera_capture_active_buffer_index]),
-				(unsigned long) CSI->SR0);
-		return false;
-	}
-
-	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL,
-	IMX335_REG_MODE_SELECT, &mode_select, 1U) != IMX335_OK) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] DCMIPP pipe started through HAL, but IMX335 mode-select readback failed.\r\n");
-	}
-
-	return true;
-}
-
-/**
- * @brief Start IMX335 streaming for the current capture mode.
- * @retval true when the sensor enters streaming mode.
- */
-bool CameraPlatform_StartImx335Stream(void) {
-	uint8_t mode_select = IMX335_MODE_STANDBY;
-	uint8_t streaming_value = IMX335_MODE_STREAMING;
-
-	if (camera_stream_started) {
-		return true;
-	}
-
-	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
-		camera_stream_started = true;
-		DelayMilliseconds_ThreadX(CAMERA_FIRST_FRAME_WARMUP_DELAY_MS);
-		return true;
-	}
-
-	if (CameraPlatform_I2cWriteReg(BCAMS_IMX_I2C_ADDRESS_HAL,
-			IMX335_REG_MODE_SELECT, &streaming_value, 1U) != IMX335_OK) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Failed to write MODE_SELECT=0x00 to start IMX335 streaming.\r\n");
-		return false;
-	}
-	DelayMilliseconds_ThreadX(20U);
-
-	{
-		uint8_t xmsta_master_start_value = 0x00U;
-
-		if (CameraPlatform_I2cWriteReg(BCAMS_IMX_I2C_ADDRESS_HAL,
-		IMX335_REG_XMSTA, &xmsta_master_start_value, 1U) != IMX335_OK) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] Warning: XMSTA write failed after MODE_SELECT.\r\n");
-		}
-	}
-	DelayMilliseconds_ThreadX(5U);
-
-	if (!CameraPlatform_SeedImx335ExposureGain()) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Warning: failed to re-seed IMX335 exposure/gain after raw stream start.\r\n");
-	}
-
-	CameraPlatform_ReapplyImx335TestPattern();
-
-	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL,
-	IMX335_REG_MODE_SELECT, &mode_select, 1U) != IMX335_OK) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] IMX335 entered streaming, but mode-select readback failed.\r\n");
-	}
-
-	camera_stream_started = true;
-	return true;
-}
-
 /**
  * @brief Service ST's IMX335 middleware background process for ISP state updates.
  * @retval true when the background step succeeded or is not used by this driver.
@@ -1870,21 +1158,6 @@ void CameraPlatform_ReapplyImx335TestPattern(void) {
 #endif
 }
 
-/**
- * @brief Validate that the shared CubeMX I2C2 instance is ready for sensor use.
- * @retval IMX335_OK when the camera control bus handle is initialized.
- */
-static int32_t CameraPlatform_I2cInit(void) {
-	return (hi2c2.Instance == I2C2) ? IMX335_OK : IMX335_ERROR;
-}
-
-/**
- * @brief No-op deinit for the shared CubeMX I2C2 peripheral.
- * @retval Always returns IMX335_OK because the app owns the bus globally.
- */
-static int32_t CameraPlatform_I2cDeInit(void) {
-	return IMX335_OK;
-}
 
 /**
  * @brief Read a 16-bit IMX335 register using the existing HAL I2C2 handle.
@@ -1906,114 +1179,6 @@ int32_t CameraPlatform_I2cWriteReg(uint16_t dev_addr, uint16_t reg,
 	const HAL_StatusTypeDef status = HAL_I2C_Mem_Write(&hi2c2, dev_addr, reg,
 	I2C_MEMADD_SIZE_16BIT, pdata, length, 100U);
 	return (status == HAL_OK) ? IMX335_OK : IMX335_ERROR;
-}
-
-/**
- * @brief Let the ST ISP layer update sensor gain through the IMX335 middleware bridge.
- * @param camera_instance Unused single-camera instance selector.
- * @param gain Target sensor gain.
- * @retval ISP status for the requested operation.
- */
-static ISP_StatusTypeDef CameraPlatform_IspSetSensorGain(
-		uint32_t camera_instance, int32_t gain) {
-	UNUSED(camera_instance);
-	if ((camera_sensor_driver.SetGain == NULL)
-			|| (camera_sensor_driver.SetGain(&camera_sensor, gain)
-					!= CMW_ERROR_NONE)) {
-		return ISP_ERR_SENSORGAIN;
-	}
-
-	camera_sensor_gain_cache = gain;
-	return ISP_OK;
-}
-
-/**
- * @brief Let the ST ISP layer read sensor gain through the IMX335 middleware bridge.
- * @param camera_instance Unused single-camera instance selector.
- * @param gain Receives the current sensor gain.
- * @retval ISP status for the requested operation.
- */
-static ISP_StatusTypeDef CameraPlatform_IspGetSensorGain(
-		uint32_t camera_instance, int32_t *gain) {
-	UNUSED(camera_instance);
-	if (gain == NULL) {
-		return ISP_ERR_SENSORGAIN;
-	}
-
-	*gain = camera_sensor_gain_cache;
-	return ISP_OK;
-}
-
-/**
- * @brief Let the ST ISP layer update sensor exposure through the IMX335 middleware bridge.
- * @param camera_instance Unused single-camera instance selector.
- * @param exposure Target sensor exposure.
- * @retval ISP status for the requested operation.
- */
-static ISP_StatusTypeDef CameraPlatform_IspSetSensorExposure(
-		uint32_t camera_instance, int32_t exposure) {
-	UNUSED(camera_instance);
-	if ((camera_sensor_driver.SetExposure == NULL)
-			|| (camera_sensor_driver.SetExposure(&camera_sensor, exposure)
-					!= CMW_ERROR_NONE)) {
-		return ISP_ERR_SENSOREXPOSURE;
-	}
-
-	camera_sensor_exposure_cache = exposure;
-	return ISP_OK;
-}
-
-/**
- * @brief Let the ST ISP layer read sensor exposure through the IMX335 middleware bridge.
- * @param camera_instance Unused single-camera instance selector.
- * @param exposure Receives the current sensor exposure.
- * @retval ISP status for the requested operation.
- */
-static ISP_StatusTypeDef CameraPlatform_IspGetSensorExposure(
-		uint32_t camera_instance, int32_t *exposure) {
-	UNUSED(camera_instance);
-	if (exposure == NULL) {
-		return ISP_ERR_SENSOREXPOSURE;
-	}
-
-	*exposure = camera_sensor_exposure_cache;
-	return ISP_OK;
-}
-
-/**
- * @brief Let the ST ISP layer query IMX335 capabilities through the middleware bridge.
- * @param camera_instance Unused single-camera instance selector.
- * @param info Receives the sensor description.
- * @retval ISP status for the requested operation.
- */
-static ISP_StatusTypeDef CameraPlatform_IspGetSensorInfo(
-		uint32_t camera_instance, ISP_SensorInfoTypeDef *info) {
-	UNUSED(camera_instance);
-	if ((info == NULL) || (camera_sensor_driver.GetSensorInfo == NULL)
-			|| (camera_sensor_driver.GetSensorInfo(&camera_sensor, info)
-					!= CMW_ERROR_NONE)) {
-		return ISP_ERR_SENSORINFO;
-	}
-
-	return ISP_OK;
-}
-
-/**
- * @brief Let the ST ISP layer control the IMX335 test pattern through the middleware bridge.
- * @param camera_instance Unused single-camera instance selector.
- * @param mode Requested IMX335 test-pattern mode.
- * @retval ISP status for the requested operation.
- */
-static ISP_StatusTypeDef CameraPlatform_IspSetSensorTestPattern(
-		uint32_t camera_instance, int32_t mode) {
-	UNUSED(camera_instance);
-	if ((camera_sensor_driver.SetTestPattern == NULL)
-			|| (camera_sensor_driver.SetTestPattern(&camera_sensor, mode)
-					!= CMW_ERROR_NONE)) {
-		return ISP_ERR_SENSORTESTPATTERN;
-	}
-
-	return ISP_OK;
 }
 
 /**

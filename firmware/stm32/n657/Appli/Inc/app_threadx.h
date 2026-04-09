@@ -26,6 +26,7 @@
 #endif
 
 /* Includes ------------------------------------------------------------------*/
+#include <stdbool.h>
 #include "tx_api.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -66,6 +67,8 @@ void MX_ThreadX_Init(void);
 /* USER CODE BEGIN EFP */
 UINT App_ThreadX_Start(void);
 void App_ThreadX_NotifyStorageReady(void);
+bool App_ThreadX_LockCameraMiddleware(ULONG timeout_ticks);
+void App_ThreadX_UnlockCameraMiddleware(void);
 /* USER CODE END EFP */
 
 /* USER CODE BEGIN 1 */

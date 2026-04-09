@@ -101,17 +101,21 @@ bool AppStorage_BuildCaptureFileName(CHAR *file_name_ptr,
 	}
 
 	if (rtc_ready) {
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] Using RTC timestamp %s for capture name.\r\n",
 				rtc_stamp);
+#endif
 		written = snprintf(file_name_ptr, (size_t) file_name_length,
 				"capture_%s.%s", rtc_stamp, file_extension_ptr);
 		return (written > 0)
 				&& ((ULONG) written < file_name_length);
 	}
 
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 	DebugConsole_Printf(
 			"[CAMERA][CAPTURE] RTC timestamp unavailable; using numbered fallback.\r\n");
+#endif
 	return (AppFileX_GetNextCapturedImageName(file_name_ptr, file_name_length,
 			file_extension_ptr) == FX_SUCCESS);
 }

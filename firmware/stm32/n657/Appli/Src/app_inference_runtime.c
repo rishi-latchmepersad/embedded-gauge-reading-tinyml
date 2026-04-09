@@ -421,13 +421,17 @@ static VOID InferenceLogThread_Entry(ULONG thread_input) {
 				break;
 			}
 
-			int written = snprintf(row, sizeof(row), "%s,%.1f\r\n",
-					rtc_timestamp, (double) inference_value);
+			int written = snprintf(row, sizeof(row), "%s,",
+					rtc_timestamp);
 			if ((written <= 0) || ((size_t) written >= sizeof(row))) {
 				DebugConsole_Printf(
 						"[INFER_LOG] Failed to format CSV row.\r\n");
 				break;
 			}
+
+			AppInferenceLog_FormatFloatTenths(row + written,
+					sizeof(row) - (size_t) written, "", inference_value);
+			written = (int) strlen(row);
 
 			if (!AppFileX_IsMediaReady()) {
 				DebugConsole_Printf(

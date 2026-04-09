@@ -26,6 +26,9 @@ extern "C" {
 #define CAMERA_HEARTBEAT_LED_GPIO_PORT      GPIOG
 #define CAMERA_HEARTBEAT_LED_PIN            GPIO_PIN_0
 
+/* Camera middleware coordination ------------------------------------------ */
+#define CAMERA_MIDDLEWARE_LOCK_TIMEOUT_MS    5000U
+
 #ifdef __cplusplus
 }
 #endif

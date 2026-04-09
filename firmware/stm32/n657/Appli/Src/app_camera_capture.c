@@ -16,6 +16,8 @@
 #include <string.h>
 
 #include "main.h"
+#include "app_threadx.h"
+#include "app_threadx_config.h"
 #include "app_camera_buffers.h"
 #include "app_camera_config.h"
 #include "app_camera_diagnostics.h"
@@ -35,6 +37,7 @@ extern CMW_IMX335_t camera_sensor;
 extern bool camera_capture_use_cmw_pipeline;
 extern bool camera_cmw_initialized;
 extern bool camera_stream_started;
+extern volatile bool camera_capture_isp_loop_paused;
 extern volatile uint32_t camera_capture_isp_run_count;
 extern TX_SEMAPHORE camera_capture_done_semaphore;
 extern TX_SEMAPHORE camera_capture_isp_semaphore;
@@ -67,16 +70,13 @@ bool AppCameraCapture_RunImx335Background(void) {
 	/* The ISP background loop is only needed for the processed image path.
 	 * Raw Pipe0 diagnostics bypass the ISP output path, so running AWB/AEC
 	 * updates there can trip middleware code that expects the YUV pipeline. */
+	if (camera_capture_isp_loop_paused) {
+		return true;
+	}
+
 	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
-		camera_capture_isp_run_count++;
-
-		if (CMW_CAMERA_Run() != CMW_ERROR_NONE) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] CMW_CAMERA_Run() failed on ISP wake %lu.\r\n",
-					(unsigned long) camera_capture_isp_run_count);
-			return false;
-		}
-
+		/* Temporary isolation: keep the ISP background process off until we
+		 * confirm the capture/save/inference path is stable without it. */
 		return true;
 	}
 
@@ -277,9 +277,22 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 		return false;
 	}
 
+	camera_capture_isp_loop_paused = true;
+
+	if (!App_ThreadX_LockCameraMiddleware(
+			CameraPlatform_MillisecondsToTicks(
+					CAMERA_MIDDLEWARE_LOCK_TIMEOUT_MS))) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Failed to lock camera middleware for snapshot setup.\r\n");
+		camera_capture_isp_loop_paused = false;
+		return false;
+	}
+
 	/* Keep blue available for the save-success flash later in the flow. */
 	BSP_LED_Off(LED_BLUE);
 	if (!CameraPlatform_PrepareDcmippSnapshot()) {
+		App_ThreadX_UnlockCameraMiddleware();
+		camera_capture_isp_loop_paused = false;
 		return false;
 	}
 
@@ -316,6 +329,8 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	if (!CameraPlatform_StartDcmippSnapshot()) {
 		DelayMilliseconds_ThreadX(CAMERA_CAPTURE_RETRY_DELAY_MS);
 		if (!CameraPlatform_StartDcmippSnapshot()) {
+			App_ThreadX_UnlockCameraMiddleware();
+			camera_capture_isp_loop_paused = false;
 			return false;
 		}
 	}
@@ -327,6 +342,8 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 			(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp, CAMERA_CAPTURE_PIPE,
 			DCMIPP_VIRTUAL_CHANNEL0);
 			camera_capture_snapshot_armed = false;
+			App_ThreadX_UnlockCameraMiddleware();
+			camera_capture_isp_loop_paused = false;
 			return false;
 		}
 	} else {
@@ -334,6 +351,7 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 		 * advance to the armed frame boundary before we block on completion. */
 		DelayMilliseconds_ThreadX(CAMERA_STREAM_WARMUP_DELAY_MS);
 	}
+	App_ThreadX_UnlockCameraMiddleware();
 
 	deadline_tick = tx_time_get() + wait_ticks;
 	next_wait_log_tick = tx_time_get()
@@ -466,6 +484,7 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 							|| (camera_capture_failed)) {
 						DebugConsole_Printf(
 								"[CAMERA][CAPTURE] Camera path never produced nonzero pixels before timeout.\r\n");
+						camera_capture_isp_loop_paused = false;
 						return false;
 					}
 
@@ -510,6 +529,7 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp, CAMERA_CAPTURE_PIPE,
 	DCMIPP_VIRTUAL_CHANNEL0);
 	camera_capture_snapshot_armed = false;
+	camera_capture_isp_loop_paused = false;
 	return false;
 }
 
@@ -523,6 +543,7 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	CHAR capture_file_name[CAMERA_CAPTURE_FILE_NAME_LENGTH] = { 0 };
 	uint8_t *image_ptr = NULL;
 	ULONG image_length = captured_bytes;
+	bool result = false;
 	const CHAR *file_extension = camera_capture_use_cmw_pipeline ? "yuv422"
 			: "raw16";
 
@@ -539,35 +560,39 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	if (image_ptr == NULL) {
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] Capture buffer pointer is NULL after frame completion.\r\n");
-		return false;
+		goto cleanup;
 	}
 
+	(void) DebugConsole_WriteString("[CAMERA][CAPTURE] step: frame-ready\r\n");
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 	DebugConsole_Printf(
 			"[CAMERA][CAPTURE] Frame ready for save: ptr=%p length=%lu pipeline=%s\r\n",
 			(void *) image_ptr, (unsigned long) image_length,
 			camera_capture_use_cmw_pipeline ? "processed" : "raw");
+#endif
 
+	(void) DebugConsole_WriteString("[CAMERA][CAPTURE] step: preview\r\n");
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 	AppCameraDiagnostics_LogCaptureBufferPreview("ready-to-save", image_ptr,
 			(uint32_t) image_length);
+#endif
 
+	(void) DebugConsole_WriteString("[CAMERA][CAPTURE] step: build-name\r\n");
 	if (!AppStorage_BuildCaptureFileName(capture_file_name,
 			sizeof(capture_file_name), file_extension)) {
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] Failed to build capture filename.\r\n");
-		return false;
+		goto cleanup;
 	}
+	(void) DebugConsole_WriteString("[CAMERA][CAPTURE] step: build-name-done\r\n");
 
 	if (camera_capture_use_cmw_pipeline) {
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 		AppCameraCapture_LogCaptureState("processed-capture");
 		AppCameraDiagnostics_LogProcessedFrameDiagnostics("processed-capture",
 				image_ptr, (uint32_t) image_length);
+#endif
 	}
-
-	DebugConsole_Printf(
-			camera_capture_use_cmw_pipeline ?
-					"[CAMERA][CAPTURE] Saving YUV422 capture to /captured_images/%s (%lu bytes)...\r\n"
-					: "[CAMERA][CAPTURE] Saving raw Pipe0 capture to /captured_images/%s (%lu bytes)...\r\n",
-			capture_file_name, (unsigned long) image_length);
 
 	filex_status = AppFileX_WriteCapturedImage(capture_file_name,
 			image_ptr, image_length);
@@ -575,14 +600,8 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] Failed to write image to SD card, status=%lu.\r\n",
 				(unsigned long) filex_status);
-		return false;
+		goto cleanup;
 	}
-
-	DebugConsole_Printf(
-			camera_capture_use_cmw_pipeline ?
-					"[CAMERA][CAPTURE] Stored %lu-byte YUV422 image at /captured_images/%s.\r\n"
-					: "[CAMERA][CAPTURE] Stored %lu-byte raw Pipe0 frame at /captured_images/%s.\r\n",
-			(unsigned long) image_length, capture_file_name);
 
 	if (camera_capture_use_cmw_pipeline) {
 		if (!AppInferenceRuntime_RequestDryInference(
@@ -592,5 +611,9 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 		}
 	}
 
-	return true;
+	result = true;
+
+cleanup:
+	camera_capture_isp_loop_paused = false;
+	return result;
 }

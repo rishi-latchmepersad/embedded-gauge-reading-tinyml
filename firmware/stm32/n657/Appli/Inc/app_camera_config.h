@@ -80,6 +80,13 @@ extern "C" {
  * scene instead of a synthetic test pattern. */
 #define IMX335_TEST_PATTERN_MODE           -1
 
+/*
+ * Expensive frame diagnostics can monopolize the UART and make the board look
+ * stuck even when the camera path is fine. Keep them off by default so the
+ * capture/save/inference breadcrumbs stay visible.
+ */
+#define CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS  0U
+
 /* ST treats PIPE0 as the raw dump pipe and PIPE1 as the processed/YUV pipe.
  * Use PIPE0 only while the raw diagnostic branch is enabled. */
 #if CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC

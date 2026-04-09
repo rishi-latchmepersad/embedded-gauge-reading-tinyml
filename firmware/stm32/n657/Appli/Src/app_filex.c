@@ -672,11 +672,10 @@ static void AppFileX_StateMachine_Step(
 		/* Drain a bounded number of messages each cycle so we do not starve other work. */
 
 		if (context_ptr->log_service_is_initialized != 0U) {
-			context_ptr->threadx_status = AppFileX_LockMedia();
-			if (context_ptr->threadx_status == TX_SUCCESS) {
-				SdDebugLogService_ServiceQueue(32U);
-				AppFileX_UnlockMedia();
-			}
+#if 0
+			/* Temporarily disable SD debug-log draining while isolating capture/save deadlock behavior. */
+			SdDebugLogService_ServiceQueue(32U);
+#endif
 		}
 		break;
 	}
@@ -862,28 +861,17 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 	}
 
 	DebugConsole_Printf("[FILEX][CAPTURE] Preparing to save capture /%s.\r\n", path);
-
-	DebugConsole_Printf("[FILEX][CAPTURE] Waiting for media lock before opening /%s.\r\n",
-			path);
 	for (ULONG waited_ms = 0U; waited_ms < 15000U; waited_ms += 1000U) {
 		tx_status = tx_mutex_get(&g_filex_media_mutex,
 				AppFileX_MillisecondsToTicks(1000U));
 		if (tx_status == TX_SUCCESS) {
 			break;
 		}
-
-		DebugConsole_Printf(
-				"[FILEX][CAPTURE] Media lock still busy after %lu ms for /%s.\r\n",
-				(unsigned long) (waited_ms + 1000U), path);
 	}
 
 	if (tx_status != TX_SUCCESS) {
-		DebugConsole_Printf("[FILEX][CAPTURE] Failed to lock media, status=%lu.\r\n",
-				(unsigned long) tx_status);
 		return tx_status;
 	}
-
-	DebugConsole_Printf("[FILEX][CAPTURE] Media lock acquired for /%s.\r\n", path);
 
 	DebugConsole_Printf(
 			"[FILEX][CAPTURE] Setting default directory to /%s before opening.\r\n",
