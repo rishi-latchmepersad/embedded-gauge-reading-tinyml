@@ -72,8 +72,15 @@ def _load_image(image_path: Path, image_size: int) -> np.ndarray:
     return np.expand_dims(image_array / 255.0, axis=0)
 
 
-def _quantize_input(input_tensor: np.ndarray, input_details: dict[str, object]) -> np.ndarray:
-    """Quantize a float32 input tensor to the model's requested dtype."""
+def _prepare_input(
+    input_tensor: np.ndarray,
+    input_details: dict[str, object],
+) -> np.ndarray:
+    """Convert a float32 input tensor to the model's requested dtype."""
+    dtype = input_details["dtype"]
+    if dtype in (np.float32, np.float16):
+        return input_tensor.astype(dtype)
+
     scale = float(input_details["quantization"][0])
     zero_point = int(input_details["quantization"][1])
     qmin, qmax = np.iinfo(np.int8).min, np.iinfo(np.int8).max
@@ -81,11 +88,15 @@ def _quantize_input(input_tensor: np.ndarray, input_details: dict[str, object]) 
     return np.clip(quantized, qmin, qmax).astype(np.int8)
 
 
-def _dequantize_output(output_tensor: np.ndarray, output_details: dict[str, object]) -> float:
-    """Convert a quantized model output back to float."""
+def _prepare_output(raw_output: np.ndarray, output_details: dict[str, object]) -> float:
+    """Convert the model output back to a Python float."""
+    dtype = output_details["dtype"]
+    if dtype in (np.float32, np.float16):
+        return float(raw_output)
+
     scale = float(output_details["quantization"][0])
     zero_point = int(output_details["quantization"][1])
-    return float(scale * (int(output_tensor) - zero_point))
+    return float(scale * (int(raw_output) - zero_point))
 
 
 def _evaluate_model(model_path: Path, items: Iterable[EvalItem], image_size: int) -> None:
@@ -102,11 +113,11 @@ def _evaluate_model(model_path: Path, items: Iterable[EvalItem], image_size: int
     for item in items:
         print(f"[EVAL] Predicting {item.image_path.name}...", flush=True)
         input_tensor = _load_image(item.image_path, image_size)
-        quantized_input = _quantize_input(input_tensor, input_details[0])
-        interpreter.set_tensor(input_details[0]["index"], quantized_input)
+        prepared_input = _prepare_input(input_tensor, input_details[0])
+        interpreter.set_tensor(input_details[0]["index"], prepared_input)
         interpreter.invoke()
         raw_output = interpreter.get_tensor(output_details[0]["index"])[0][0]
-        prediction = _dequantize_output(raw_output, output_details[0])
+        prediction = _prepare_output(raw_output, output_details[0])
         abs_error = abs(prediction - item.value)
         abs_errors.append(abs_error)
         print(

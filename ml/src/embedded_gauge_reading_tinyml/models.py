@@ -139,6 +139,184 @@ def _mobilenetv2_model_name(
     return f"mobilenetv2_{regression_kind}_regressor_a{alpha_tag:03d}_h{head_units:03d}"
 
 
+def _build_interval_expectation_head(
+    logits: keras.KerasTensor,
+    *,
+    value_min: float,
+    value_max: float,
+    bin_width: float,
+) -> tuple[keras.KerasTensor, keras.KerasTensor]:
+    """Convert interval logits into a scalar expected temperature value."""
+    if bin_width <= 0.0:
+        raise ValueError("bin_width must be > 0.")
+    if value_max <= value_min:
+        raise ValueError("value_max must be > value_min.")
+
+    span = value_max - value_min
+    num_bins = int(math.ceil(span / bin_width))
+    if num_bins < 2:
+        raise ValueError("Need at least two bins for interval regression.")
+
+    # Place one center per fixed-width interval, anchored at the calibrated range.
+    bin_centers = [
+        value_min + (index + 0.5) * bin_width for index in range(num_bins)
+    ]
+    centers = keras.layers.Dense(
+        1,
+        use_bias=False,
+        trainable=False,
+        name="interval_value_projection",
+        kernel_initializer=keras.initializers.Constant(
+            [[center] for center in bin_centers]
+        ),
+    )
+    probs = keras.layers.Softmax(name="interval_probs")(logits)
+    value = centers(probs)
+    return value, probs
+
+
+def _build_interval_hybrid_head(
+    features: keras.KerasTensor,
+    logits: keras.KerasTensor,
+    *,
+    value_min: float,
+    value_max: float,
+    bin_width: float,
+) -> tuple[keras.KerasTensor, keras.KerasTensor]:
+    """Combine coarse bin expectation with a bounded residual correction."""
+    coarse_value, interval_probs = _build_interval_expectation_head(
+        logits,
+        value_min=value_min,
+        value_max=value_max,
+        bin_width=bin_width,
+    )
+
+    # Let the network learn a bounded local correction inside the coarse bin.
+    half_bin_width = 0.5 * bin_width
+    residual = keras.layers.Dense(
+        1,
+        activation="tanh",
+        name="interval_residual_raw",
+    )(features)
+    residual = keras.layers.Rescaling(
+        half_bin_width,
+        offset=0.0,
+        name="interval_residual",
+    )(residual)
+
+    value = keras.layers.Add(name="gauge_value")([coarse_value, residual])
+    return value, interval_probs
+
+
+def _build_ordinal_expectation_head(
+    logits: keras.KerasTensor,
+    *,
+    value_min: float,
+    value_max: float,
+    threshold_step: float,
+) -> tuple[keras.KerasTensor, keras.KerasTensor]:
+    """Convert ordinal threshold logits into a scalar expected value."""
+    if threshold_step <= 0.0:
+        raise ValueError("threshold_step must be > 0.")
+    if value_max <= value_min:
+        raise ValueError("value_max must be > value_min.")
+
+    span = value_max - value_min
+    num_thresholds = int(math.ceil(span / threshold_step))
+    if num_thresholds < 2:
+        raise ValueError("Need at least two thresholds for ordinal regression.")
+
+    probs = keras.layers.Activation("sigmoid", name="ordinal_probs")(logits)
+    threshold_count = keras.layers.Dense(
+        1,
+        use_bias=False,
+        trainable=False,
+        name="ordinal_threshold_count",
+        kernel_initializer=keras.initializers.Constant([[1.0]] * num_thresholds),
+    )(probs)
+    value = keras.layers.Rescaling(
+        threshold_step,
+        offset=value_min,
+        name="gauge_value",
+    )(threshold_count)
+    return value, probs
+
+
+def _build_sweep_fraction_head(
+    logits: keras.KerasTensor,
+    *,
+    value_min: float,
+    value_max: float,
+) -> tuple[keras.KerasTensor, keras.KerasTensor]:
+    """Convert a sweep-fraction logit into both fraction and calibrated value."""
+    if value_max <= value_min:
+        raise ValueError("value_max must be > value_min.")
+
+    fraction = keras.layers.Activation("sigmoid", name="sweep_fraction")(logits)
+    span = value_max - value_min
+    value = keras.layers.Rescaling(
+        span,
+        offset=value_min,
+        name="gauge_value",
+    )(fraction)
+    return value, fraction
+
+
+def _build_keypoint_heatmap_head(
+    features: keras.KerasTensor,
+    *,
+    heatmap_size: int,
+    num_keypoints: int = 2,
+) -> keras.KerasTensor:
+    """Build a small decoder that predicts keypoint heatmaps."""
+    if heatmap_size < 4:
+        raise ValueError("heatmap_size must be >= 4.")
+    if num_keypoints < 1:
+        raise ValueError("num_keypoints must be >= 1.")
+
+    x = keras.layers.Conv2D(
+        256,
+        3,
+        padding="same",
+        use_bias=False,
+    )(features)
+    x = _norm(x)
+    x = keras.layers.Activation("swish")(x)
+    x = keras.layers.UpSampling2D(size=2, interpolation="bilinear")(x)
+
+    x = keras.layers.Conv2D(
+        128,
+        3,
+        padding="same",
+        use_bias=False,
+    )(x)
+    x = _norm(x)
+    x = keras.layers.Activation("swish")(x)
+    x = keras.layers.UpSampling2D(size=2, interpolation="bilinear")(x)
+
+    x = keras.layers.Conv2D(
+        64,
+        3,
+        padding="same",
+        use_bias=False,
+    )(x)
+    x = _norm(x)
+    x = keras.layers.Activation("swish")(x)
+    x = keras.layers.Resizing(
+        heatmap_size,
+        heatmap_size,
+        interpolation="bilinear",
+        name="keypoint_heatmap_resize",
+    )(x)
+    heatmaps = keras.layers.Conv2D(
+        num_keypoints,
+        1,
+        activation="sigmoid",
+        name="keypoint_heatmaps",
+    )(x)
+    return heatmaps
+
+
 def build_regression_model(image_height: int, image_width: int) -> keras.Model:
     """Build a compact residual CNN regressor for scalar gauge value output."""
     inputs, x = _build_feature_backbone(image_height, image_width)
@@ -249,6 +427,225 @@ def build_mobilenetv2_direction_model(
         outputs=output,
         name=_mobilenetv2_model_name(
             regression_kind="needle_direction",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_interval_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    bin_width: float = 5.0,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a transfer-learning hybrid regressor with a coarse interval head."""
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    x = keras.layers.GlobalAveragePooling2D()(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+    x = keras.layers.Dense(head_units, activation="swish")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+
+    span = value_max - value_min
+    num_bins = int(math.ceil(span / bin_width))
+    if num_bins < 2:
+        raise ValueError("Interval model needs at least two bins.")
+
+    interval_logits = keras.layers.Dense(
+        num_bins,
+        name="interval_logits",
+    )(x)
+    gauge_value, interval_probs = _build_interval_hybrid_head(
+        x,
+        interval_logits,
+        value_min=value_min,
+        value_max=value_max,
+        bin_width=bin_width,
+    )
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "interval_logits": interval_logits,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="interval",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    setattr(model, "_mobilenet_interval_probs", interval_probs)
+    return model
+
+
+def build_mobilenetv2_ordinal_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    threshold_step: float = 2.5,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a transfer-learning regressor with an ordinal threshold head."""
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    x = keras.layers.GlobalAveragePooling2D()(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+    x = keras.layers.Dense(head_units, activation="swish")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+
+    span = value_max - value_min
+    num_thresholds = int(math.ceil(span / threshold_step))
+    if num_thresholds < 2:
+        raise ValueError("Need at least two thresholds for ordinal regression.")
+
+    ordinal_logits = keras.layers.Dense(
+        num_thresholds,
+        name="ordinal_logits",
+    )(x)
+    gauge_value, ordinal_probs = _build_ordinal_expectation_head(
+        ordinal_logits,
+        value_min=value_min,
+        value_max=value_max,
+        threshold_step=threshold_step,
+    )
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "ordinal_logits": ordinal_logits,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="ordinal",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    setattr(model, "_mobilenet_ordinal_probs", ordinal_probs)
+    return model
+
+
+def build_mobilenetv2_fraction_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a transfer-learning regressor with a normalized sweep-fraction head."""
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    x = keras.layers.GlobalAveragePooling2D()(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+    x = keras.layers.Dense(head_units, activation="swish")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+
+    sweep_fraction_logits = keras.layers.Dense(
+        1,
+        name="sweep_fraction_logits",
+    )(x)
+    gauge_value, sweep_fraction = _build_sweep_fraction_head(
+        sweep_fraction_logits,
+        value_min=value_min,
+        value_max=value_max,
+    )
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "sweep_fraction": sweep_fraction,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="fraction",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_keypoint_model(
+    image_height: int,
+    image_width: int,
+    *,
+    heatmap_size: int = 28,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a transfer-learning model with a scalar head plus keypoint heatmaps."""
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    scalar_features = keras.layers.GlobalAveragePooling2D()(x)
+    scalar_features = keras.layers.Dropout(head_dropout)(scalar_features)
+    scalar_features = keras.layers.Dense(head_units, activation="swish")(
+        scalar_features
+    )
+    scalar_features = keras.layers.Dropout(head_dropout)(scalar_features)
+    gauge_value = keras.layers.Dense(1, name="gauge_value")(scalar_features)
+
+    heatmaps = _build_keypoint_heatmap_head(
+        x,
+        heatmap_size=heatmap_size,
+        num_keypoints=2,
+    )
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "keypoint_heatmaps": heatmaps,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="keypoint",
             alpha=alpha,
             head_units=head_units,
         ),

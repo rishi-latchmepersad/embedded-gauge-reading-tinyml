@@ -214,13 +214,28 @@ bool CameraPlatform_SeedImx335ExposureGain(void) {
 		return false;
 	}
 
-	seed_exposure_us = sensor_info.exposure_min
-			+ ((sensor_info.exposure_max - sensor_info.exposure_min) / 3U);
+	{
+		const uint32_t exposure_range =
+				(sensor_info.exposure_max > sensor_info.exposure_min) ?
+						(sensor_info.exposure_max - sensor_info.exposure_min) : 0U;
+		seed_exposure_us = sensor_info.exposure_min
+				+ ((exposure_range
+						* CAMERA_IMX335_SEED_EXPOSURE_FRACTION_NUMERATOR)
+						/ CAMERA_IMX335_SEED_EXPOSURE_FRACTION_DENOMINATOR);
+	}
 	if (seed_exposure_us < sensor_info.exposure_min) {
 		seed_exposure_us = sensor_info.exposure_min;
 	}
 
-	seed_gain_mdb = sensor_info.gain_min;
+	{
+		const int32_t gain_range =
+				(sensor_info.gain_max > sensor_info.gain_min) ?
+						(sensor_info.gain_max - sensor_info.gain_min) : 0;
+		seed_gain_mdb = sensor_info.gain_min
+				+ ((gain_range
+						* CAMERA_IMX335_SEED_GAIN_FRACTION_NUMERATOR)
+						/ CAMERA_IMX335_SEED_GAIN_FRACTION_DENOMINATOR);
+	}
 	if (seed_gain_mdb < sensor_info.gain_min) {
 		seed_gain_mdb = sensor_info.gain_min;
 	}
@@ -249,6 +264,119 @@ bool CameraPlatform_SeedImx335ExposureGain(void) {
 }
 
 /**
+ * @brief Nudge the IMX335 exposure and gain toward a brighter or darker frame.
+ *
+ * This is a small corrective step used by the capture gate when a frame is
+ * technically valid but still far too dark or too bright for the model.
+ * @param brighten When true, move the sensor toward a brighter capture.
+ *                 When false, move it toward a darker capture.
+ * @retval true when the new settings were accepted by the middleware.
+ */
+bool CameraPlatform_AdjustImx335ExposureGain(bool brighten) {
+	ISP_SensorInfoTypeDef sensor_info = { 0 };
+	int32_t current_exposure_us = 0;
+	int32_t current_gain_mdb = 0;
+	int32_t exposure_step_us = 0;
+	int32_t gain_step_mdb = 0;
+	int32_t target_exposure_us = 0;
+	int32_t target_gain_mdb = 0;
+	int32_t cmw_status = CMW_ERROR_NONE;
+
+	cmw_status = CMW_CAMERA_GetSensorInfo(&sensor_info);
+	if (cmw_status != CMW_ERROR_NONE) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Failed to read sensor info for brightness adjustment, status=%ld.\r\n",
+				(long) cmw_status);
+		return false;
+	}
+
+	cmw_status = CMW_CAMERA_GetExposure(&current_exposure_us);
+	if (cmw_status != CMW_ERROR_NONE) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Failed to read current IMX335 exposure for brightness adjustment, status=%ld.\r\n",
+				(long) cmw_status);
+		return false;
+	}
+
+	cmw_status = CMW_CAMERA_GetGain(&current_gain_mdb);
+	if (cmw_status != CMW_ERROR_NONE) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Failed to read current IMX335 gain for brightness adjustment, status=%ld.\r\n",
+				(long) cmw_status);
+		return false;
+	}
+
+	{
+		const int32_t exposure_range =
+				(sensor_info.exposure_max > sensor_info.exposure_min) ?
+						((int32_t) sensor_info.exposure_max
+								- (int32_t) sensor_info.exposure_min) :
+						0;
+		const int32_t gain_range =
+				(sensor_info.gain_max > sensor_info.gain_min) ?
+						(sensor_info.gain_max - sensor_info.gain_min) : 0;
+
+		exposure_step_us = (exposure_range
+				* (int32_t) CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_NUMERATOR)
+				/ (int32_t) CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_DENOMINATOR;
+		gain_step_mdb =
+				(gain_range
+						* (int32_t) CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_NUMERATOR)
+						/ (int32_t) CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_DENOMINATOR;
+	}
+
+	if (exposure_step_us < 1) {
+		exposure_step_us = 1;
+	}
+	if (gain_step_mdb < 1) {
+		gain_step_mdb = 1;
+	}
+
+	if (brighten) {
+		target_exposure_us = current_exposure_us + exposure_step_us;
+		target_gain_mdb = current_gain_mdb + gain_step_mdb;
+	} else {
+		target_exposure_us = current_exposure_us - exposure_step_us;
+		target_gain_mdb = current_gain_mdb - gain_step_mdb;
+	}
+
+	if (target_exposure_us < (int32_t) sensor_info.exposure_min) {
+		target_exposure_us = (int32_t) sensor_info.exposure_min;
+	}
+	if (target_exposure_us > (int32_t) sensor_info.exposure_max) {
+		target_exposure_us = (int32_t) sensor_info.exposure_max;
+	}
+	if (target_gain_mdb < sensor_info.gain_min) {
+		target_gain_mdb = sensor_info.gain_min;
+	}
+	if (target_gain_mdb > sensor_info.gain_max) {
+		target_gain_mdb = sensor_info.gain_max;
+	}
+
+	cmw_status = CMW_CAMERA_SetExposure(target_exposure_us);
+	if (cmw_status != CMW_ERROR_NONE) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Failed to update IMX335 exposure to %ld us, status=%ld.\r\n",
+				(long) target_exposure_us, (long) cmw_status);
+		return false;
+	}
+
+	cmw_status = CMW_CAMERA_SetGain(target_gain_mdb);
+	if (cmw_status != CMW_ERROR_NONE) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Failed to update IMX335 gain to %ld mdB, status=%ld.\r\n",
+				(long) target_gain_mdb, (long) cmw_status);
+		return false;
+	}
+
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] Nudged IMX335 %s: exposure=%ld us gain=%ld mdB.\r\n",
+			brighten ? "brighter" : "darker", (long) target_exposure_us,
+			(long) target_gain_mdb);
+	return true;
+}
+
+/**
  * @brief Force the IMX335 ISP path into auto-exposure mode.
  *
  * The IMX335 middleware bridge does not expose a sensor-level exposure-mode
@@ -265,16 +393,34 @@ bool CameraPlatform_EnableImx335AutoExposure(void) {
 		return false;
 	}
 
-	if (ISP_GetAECState(&camera_sensor.hIsp, &aec_enabled) == ISP_OK) {
-		DebugConsole_Printf(
-				"[CAMERA][PROBE]   - IMX335 ISP auto exposure enabled (AEC=%u).\r\n",
-				(unsigned int) aec_enabled);
-	} else {
-		DebugConsole_Printf(
-				"[CAMERA][PROBE]   - IMX335 ISP auto exposure requested, but readback failed.\r\n");
-	}
+	(void) CameraPlatform_LogImx335AutoExposureState("probe");
 
 	return true;
+}
+
+/**
+ * @brief Log the current IMX335 ISP auto-exposure state.
+ *
+ * This is a cheap readback that helps us prove AEC is still enabled at the
+ * capture boundary, not just during initial probe.
+ * @param reason Short label that explains when the check ran.
+ * @retval true when the readback succeeded and AEC reported enabled.
+ */
+bool CameraPlatform_LogImx335AutoExposureState(const char *reason) {
+	uint8_t aec_enabled = 0U;
+	const char *tag = (reason != NULL) ? reason : "capture";
+
+	if (ISP_GetAECState(&camera_sensor.hIsp, &aec_enabled) == ISP_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][PROBE] IMX335 ISP auto exposure state (%s): AEC=%u\r\n",
+				tag, (unsigned int) aec_enabled);
+		return (aec_enabled != 0U);
+	}
+
+	DebugConsole_Printf(
+			"[CAMERA][PROBE] IMX335 ISP auto exposure state (%s): readback failed.\r\n",
+			tag);
+	return false;
 }
 
 /**

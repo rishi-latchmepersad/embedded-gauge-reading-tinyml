@@ -32,6 +32,19 @@ extern "C" {
  * usable live image. Set to 1 only if we need raw Pipe0 diagnostics. */
 #define CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC 0
 #define CAMERA_CAPTURE_TARGET_FRAME_COUNT   4U
+/* Brightness gate: reject frames that are still effectively black or blown out
+ * and nudge the sensor before trying again. */
+#define CAMERA_CAPTURE_BRIGHTNESS_GATE_ROI_SIZE_PIXELS      32U
+#define CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD      24U
+#define CAMERA_CAPTURE_BRIGHTNESS_DARK_MAX_THRESHOLD       48U
+#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD   232U
+#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MIN_THRESHOLD    208U
+#define CAMERA_CAPTURE_BRIGHTNESS_RETRY_LIMIT               5U
+#define CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_NUMERATOR   1U
+#define CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_DENOMINATOR 3U
+#define CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_NUMERATOR       1U
+#define CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_DENOMINATOR     6U
+#define CAMERA_CAPTURE_BRIGHTNESS_SETTLE_DELAY_MS         250U
 /* Capture crop is expressed directly in pixels/lines. */
 #define CAMERA_CAPTURE_CROP_HSTART_PIXELS   0U
 #define CAMERA_CAPTURE_CROP_VSTART_LINES    0U
@@ -69,6 +82,12 @@ extern "C" {
 #define IMX335_CAPTURE_FRAMERATE_FPS        10
 #define CAMERA_CAPTURE_FILE_NAME_LENGTH     64U
 #define CAMERA_STORAGE_READY_EVENT_FLAG     0x00000001U
+/* Seed IMX335 with a brighter starting point so AEC has a usable frame to
+ * converge from when the scene is dark. */
+#define CAMERA_IMX335_SEED_EXPOSURE_FRACTION_NUMERATOR    2U
+#define CAMERA_IMX335_SEED_EXPOSURE_FRACTION_DENOMINATOR  3U
+#define CAMERA_IMX335_SEED_GAIN_FRACTION_NUMERATOR        1U
+#define CAMERA_IMX335_SEED_GAIN_FRACTION_DENOMINATOR      8U
 /* Match ST's IMX335 middleware and upstream Linux driver ID check. */
 #define IMX335_CHIP_ID_REG                 0x3912U
 #define IMX335_CHIP_ID_VALUE               0x00U

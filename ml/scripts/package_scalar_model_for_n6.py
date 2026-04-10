@@ -49,6 +49,7 @@ DEFAULT_STAI_OUTPUT_DIR: Path = (
     / "scalar_full_finetune_from_best_piecewise_calibrated_int8"
     / "st_ai_output"
 )
+DEFAULT_WINDOWS_BUILD_ROOT: Path = Path("/mnt/c/Users/rishi_latchmepersad/ml_reloc_build")
 DEFAULT_PACK_ROOT: Path = Path(
     os.environ.get(
         "X_CUBE_AI_PACK_ROOT",
@@ -96,6 +97,12 @@ def _parse_args() -> argparse.Namespace:
         help="Root folder of the X-CUBE-AI pack installation.",
     )
     parser.add_argument(
+        "--windows-build-root",
+        type=Path,
+        default=DEFAULT_WINDOWS_BUILD_ROOT,
+        help="Windows-writable staging directory for the relocatable NPU build.",
+    )
+    parser.add_argument(
         "--name",
         type=str,
         default=DEFAULT_MODEL_NAME,
@@ -126,11 +133,21 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _run_command(command: list[str], *, cwd: Path | None = None) -> None:
+def _run_command(
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> None:
     """Run a subprocess and stream output to the console."""
     printable = " ".join(command)
     print(f"[RELOC] $ {printable}", flush=True)
-    subprocess.run(command, check=True, cwd=str(cwd) if cwd is not None else None)
+    subprocess.run(
+        command,
+        check=True,
+        cwd=str(cwd) if cwd is not None else None,
+        env=env,
+    )
 
 
 def _ensure_file(path: Path, description: str) -> None:
@@ -227,9 +244,14 @@ def main() -> None:
         if path.exists():
             shutil.rmtree(path)
 
+    staging_build_dir = args.windows_build_root / args.name
+    if staging_build_dir.exists():
+        shutil.rmtree(staging_build_dir)
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
     args.workspace_dir.mkdir(parents=True, exist_ok=True)
     args.stai_output_dir.mkdir(parents=True, exist_ok=True)
+    staging_build_dir.mkdir(parents=True, exist_ok=True)
 
     # The copied reloc profile still expects its memory-pool file in a sibling
     # `mpools/` directory, so stage that layout alongside the rewritten JSON.
@@ -299,26 +321,33 @@ def main() -> None:
     )
     print(f"[RELOC] Generated C file: {generated_c_file}", flush=True)
 
-    build_dir = args.output_dir / "build"
-    build_dir.mkdir(parents=True, exist_ok=True)
-
     npu_cmd: list[str] = [
         str(pack_python),
         _to_windows_path(npu_driver),
         "-i",
         _to_windows_path(generated_c_file),
         "-o",
-        _to_windows_path(build_dir),
+        _to_windows_path(staging_build_dir),
         "-n",
         args.name,
         "--no-clean",
         "--no-dbg-info",
+        "--verbosity",
+        "0",
     ]
 
-    print("[RELOC] Building relocatable binary...", flush=True)
-    _run_command(npu_cmd, cwd=REPO_ROOT)
+    # The Windows pack Python runtime defaults to a legacy console encoding
+    # that cannot print the box-drawing tables emitted by the N6 reloc driver.
+    # Force UTF-8 so the driver can finish its summary logging cleanly under WSL.
+    npu_env = os.environ.copy()
+    npu_env["PYTHONUTF8"] = "1"
+    npu_env["PYTHONIOENCODING"] = "utf-8"
+    npu_env["PYTHONLEGACYWINDOWSSTDIO"] = "1"
 
-    reloc_bin = build_dir / f"{args.name}_rel.bin"
+    print("[RELOC] Building relocatable binary...", flush=True)
+    _run_command(npu_cmd, cwd=REPO_ROOT, env=npu_env)
+
+    reloc_bin = staging_build_dir / f"{args.name}_rel.bin"
     if not reloc_bin.is_file():
         raise FileNotFoundError(f"Relocatable binary not found after packaging: {reloc_bin}")
 

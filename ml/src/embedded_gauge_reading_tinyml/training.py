@@ -18,6 +18,7 @@ from embedded_gauge_reading_tinyml.gauge.processing import (
     GaugeSpec,
     load_gauge_specs,
     needle_fraction,
+    needle_unit_xy_from_value,
     needle_value,
 )
 from embedded_gauge_reading_tinyml.labels import LabelSummary, summarize_label_sweep
@@ -40,6 +41,13 @@ from embedded_gauge_reading_tinyml.presets import (
     DEFAULT_MOBILENET_WARMUP_EPOCHS,
     DEFAULT_MIXED_PRECISION,
     DEFAULT_MODEL_FAMILY,
+    DEFAULT_INTERVAL_BIN_WIDTH,
+    DEFAULT_INTERPOLATION_PAIR_SCALE,
+    DEFAULT_ORDINAL_LOSS_WEIGHT,
+    DEFAULT_ORDINAL_THRESHOLD_STEP,
+    DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
+    DEFAULT_KEYPOINT_HEATMAP_SIZE,
+    DEFAULT_SWEEP_FRACTION_LOSS_WEIGHT,
     DEFAULT_SEED,
     DEFAULT_STRICT_LABELS,
     DEFAULT_EDGE_FOCUS_STRENGTH,
@@ -49,6 +57,11 @@ from embedded_gauge_reading_tinyml.presets import (
 from embedded_gauge_reading_tinyml.models import (
     build_mobilenetv2_regression_model,
     build_mobilenetv2_direction_model,
+    build_mobilenetv2_fraction_model,
+    build_mobilenetv2_keypoint_model,
+    build_mobilenetv2_interval_model,
+    build_mobilenetv2_ordinal_model,
+    build_needle_direction_model,
     build_regression_model,
 )
 
@@ -87,9 +100,14 @@ class TrainConfig:
     edge_focus_strength: float = DEFAULT_EDGE_FOCUS_STRENGTH
     model_family: Literal[
         "compact",
+        "compact_direction",
         "mobilenet_v2",
         "mobilenet_v2_tiny",
         "mobilenet_v2_direction",
+        "mobilenet_v2_fraction",
+        "mobilenet_v2_keypoint",
+        "mobilenet_v2_interval",
+        "mobilenet_v2_ordinal",
     ] = (
         DEFAULT_MODEL_FAMILY
     )
@@ -102,6 +120,17 @@ class TrainConfig:
     hard_case_manifest: str | None = None
     hard_case_repeat: int = 0
     init_model_path: str | None = None
+    monotonic_pair_strength: float = 0.0
+    monotonic_pair_margin: float = 0.0
+    mixup_alpha: float = 0.0
+    interval_bin_width: float = DEFAULT_INTERVAL_BIN_WIDTH
+    interpolation_pair_strength: float = 0.0
+    interpolation_pair_scale: float = DEFAULT_INTERPOLATION_PAIR_SCALE
+    ordinal_threshold_step: float = DEFAULT_ORDINAL_THRESHOLD_STEP
+    ordinal_loss_weight: float = DEFAULT_ORDINAL_LOSS_WEIGHT
+    sweep_fraction_loss_weight: float = DEFAULT_SWEEP_FRACTION_LOSS_WEIGHT
+    keypoint_heatmap_size: int = DEFAULT_KEYPOINT_HEATMAP_SIZE
+    keypoint_heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT
 
 
 @dataclass(frozen=True)
@@ -113,6 +142,9 @@ class TrainingExample:
     crop_box_xyxy: tuple[float, float, float, float]
     needle_unit_xy: tuple[float, float]
     value_norm: float = 0.0
+    center_xy: tuple[float, float] = (0.0, 0.0)
+    tip_xy: tuple[float, float] = (0.0, 0.0)
+    keypoint_heatmaps: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +184,28 @@ def _validate_split_config(config: TrainConfig) -> None:
         raise ValueError("mobilenet_head_units must be > 0.")
     if not (0.0 <= config.mobilenet_head_dropout < 1.0):
         raise ValueError("mobilenet_head_dropout must be in [0, 1).")
+    if config.monotonic_pair_strength < 0.0:
+        raise ValueError("monotonic_pair_strength must be >= 0.")
+    if config.monotonic_pair_margin < 0.0:
+        raise ValueError("monotonic_pair_margin must be >= 0.")
+    if config.mixup_alpha < 0.0:
+        raise ValueError("mixup_alpha must be >= 0.")
+    if config.interval_bin_width <= 0.0:
+        raise ValueError("interval_bin_width must be > 0.")
+    if config.interpolation_pair_strength < 0.0:
+        raise ValueError("interpolation_pair_strength must be >= 0.")
+    if config.interpolation_pair_scale <= 0.0:
+        raise ValueError("interpolation_pair_scale must be > 0.")
+    if config.ordinal_threshold_step <= 0.0:
+        raise ValueError("ordinal_threshold_step must be > 0.")
+    if config.ordinal_loss_weight < 0.0:
+        raise ValueError("ordinal_loss_weight must be >= 0.")
+    if config.sweep_fraction_loss_weight < 0.0:
+        raise ValueError("sweep_fraction_loss_weight must be >= 0.")
+    if config.keypoint_heatmap_size < 4:
+        raise ValueError("keypoint_heatmap_size must be >= 4.")
+    if config.keypoint_heatmap_loss_weight < 0.0:
+        raise ValueError("keypoint_heatmap_loss_weight must be >= 0.")
 
 
 def _configure_training_runtime(config: TrainConfig) -> None:
@@ -255,10 +309,92 @@ def _compute_crop_box(
     return (x_min, y_min, x_max, y_max)
 
 
+def _map_point_to_resized_crop_xy(
+    *,
+    point_xy: tuple[float, float],
+    crop_box_xyxy: tuple[float, float, float, float],
+    image_height: int,
+    image_width: int,
+) -> tuple[float, float]:
+    """Map a point from the original image into the resized crop frame.
+
+    We mirror the crop + resize_with_pad geometry used by the input pipeline so
+    keypoint heatmaps line up with the network input coordinates.
+    """
+    x_min, y_min, x_max, y_max = crop_box_xyxy
+    crop_w: float = max(x_max - x_min, 1.0)
+    crop_h: float = max(y_max - y_min, 1.0)
+    scale: float = min(image_width / crop_w, image_height / crop_h)
+    resized_w: float = crop_w * scale
+    resized_h: float = crop_h * scale
+    pad_x: float = 0.5 * float(image_width - resized_w)
+    pad_y: float = 0.5 * float(image_height - resized_h)
+
+    point_x, point_y = point_xy
+    out_x: float = (point_x - x_min) * scale + pad_x
+    out_y: float = (point_y - y_min) * scale + pad_y
+    return out_x, out_y
+
+
+def _make_gaussian_heatmap(
+    *,
+    point_xy: tuple[float, float],
+    heatmap_size: int,
+    sigma: float = 1.5,
+) -> np.ndarray:
+    """Build a single Gaussian heatmap centered on the given point."""
+    if heatmap_size < 4:
+        raise ValueError("heatmap_size must be >= 4.")
+    if sigma <= 0.0:
+        raise ValueError("sigma must be > 0.")
+
+    center_x, center_y = point_xy
+    yy, xx = np.meshgrid(
+        np.arange(heatmap_size, dtype=np.float32),
+        np.arange(heatmap_size, dtype=np.float32),
+        indexing="ij",
+    )
+    heatmap: np.ndarray = np.exp(
+        -(
+            (xx - np.float32(center_x)) ** 2
+            + (yy - np.float32(center_y)) ** 2
+        )
+        / (2.0 * np.float32(sigma) ** 2)
+    )
+    max_value: float = float(np.max(heatmap))
+    if max_value > 0.0:
+        heatmap = heatmap / max_value
+    return heatmap.astype(np.float32)
+
+
+def _make_keypoint_heatmaps(
+    *,
+    center_xy: tuple[float, float],
+    tip_xy: tuple[float, float],
+    heatmap_size: int,
+    sigma: float = 1.5,
+) -> np.ndarray:
+    """Build the two-channel heatmap target used by the keypoint model."""
+    center_heatmap = _make_gaussian_heatmap(
+        point_xy=center_xy,
+        heatmap_size=heatmap_size,
+        sigma=sigma,
+    )
+    tip_heatmap = _make_gaussian_heatmap(
+        point_xy=tip_xy,
+        heatmap_size=heatmap_size,
+        sigma=sigma,
+    )
+    return np.stack([center_heatmap, tip_heatmap], axis=-1)
+
+
 def _build_training_examples(
     samples: list[Sample],
     spec: GaugeSpec,
     *,
+    image_height: int,
+    image_width: int,
+    keypoint_heatmap_size: int,
     strict_labels: bool,
     crop_pad_ratio: float,
 ) -> tuple[list[TrainingExample], int]:
@@ -288,6 +424,26 @@ def _build_training_examples(
             dropped_out_of_sweep += 1
             continue
         needle_unit_xy: tuple[float, float] = (dx / length, dy / length)
+
+        center_xy: tuple[float, float] = _map_point_to_resized_crop_xy(
+            point_xy=(sample.center.x, sample.center.y),
+            crop_box_xyxy=crop_box,
+            image_height=image_height,
+            image_width=image_width,
+        )
+        tip_xy: tuple[float, float] = _map_point_to_resized_crop_xy(
+            point_xy=(sample.tip.x, sample.tip.y),
+            crop_box_xyxy=crop_box,
+            image_height=image_height,
+            image_width=image_width,
+        )
+        scale_x: float = (keypoint_heatmap_size - 1.0) / max(image_width - 1.0, 1.0)
+        scale_y: float = (keypoint_heatmap_size - 1.0) / max(image_height - 1.0, 1.0)
+        keypoint_heatmaps: np.ndarray = _make_keypoint_heatmaps(
+            center_xy=(center_xy[0] * scale_x, center_xy[1] * scale_y),
+            tip_xy=(tip_xy[0] * scale_x, tip_xy[1] * scale_y),
+            heatmap_size=keypoint_heatmap_size,
+        )
         examples.append(
             TrainingExample(
                 image_path=str(sample.image_path),
@@ -295,6 +451,9 @@ def _build_training_examples(
                 crop_box_xyxy=crop_box,
                 needle_unit_xy=needle_unit_xy,
                 value_norm=value_norm,
+                center_xy=center_xy,
+                tip_xy=tip_xy,
+                keypoint_heatmaps=keypoint_heatmaps,
             )
         )
 
@@ -307,10 +466,15 @@ def _load_hard_case_examples(
     image_height: int,
     image_width: int,
     value_range: tuple[float, float] = (0.0, 1.0),
+    target_kind: Literal["value", "needle_unit_xy", "ordinal_thresholds"] = "value",
+    spec: GaugeSpec | None = None,
 ) -> list[TrainingExample]:
     """Load extra board captures that should be upweighted during fine-tuning."""
     if not manifest_path.exists():
         raise FileNotFoundError(f"Hard-case manifest not found: {manifest_path}")
+
+    if target_kind == "needle_unit_xy" and spec is None:
+        raise ValueError("spec is required when target_kind='needle_unit_xy'.")
 
     examples: list[TrainingExample] = []
     with manifest_path.open("r", encoding="utf-8", newline="") as handle:
@@ -332,17 +496,108 @@ def _load_hard_case_examples(
             value_norm = 0.0
             if span > 0:
                 value_norm = min(max((value - min_value) / span, 0.0), 1.0)
+            if target_kind == "needle_unit_xy":
+                assert spec is not None
+                needle_unit_xy = needle_unit_xy_from_value(value, spec)
+            else:
+                needle_unit_xy = (1.0, 0.0)
             examples.append(
                 TrainingExample(
                     image_path=str(image_path),
                     value=value,
                     value_norm=value_norm,
                     crop_box_xyxy=(0.0, 0.0, float(image_width), float(image_height)),
-                    needle_unit_xy=(1.0, 0.0),
+                    needle_unit_xy=needle_unit_xy,
                 )
             )
 
     return examples
+
+
+def _interval_bin_count(
+    value_min: float,
+    value_max: float,
+    bin_width: float,
+) -> int:
+    """Return the number of fixed-width bins that cover the sweep range."""
+    span: float = value_max - value_min
+    num_bins: int = int(math.ceil(span / bin_width))
+    return max(num_bins, 2)
+
+
+def _value_to_interval_index(
+    value: float,
+    *,
+    value_min: float,
+    value_max: float,
+    bin_width: float,
+) -> int:
+    """Map a scalar label into a fixed-width interval class index."""
+    if bin_width <= 0.0:
+        raise ValueError("bin_width must be > 0.")
+    if value_max <= value_min:
+        raise ValueError("value_max must be > value_min.")
+
+    num_bins: int = _interval_bin_count(value_min, value_max, bin_width)
+    raw_index: int = int(math.floor((value - value_min) / bin_width))
+    return min(max(raw_index, 0), num_bins - 1)
+
+
+def _ordinal_threshold_count(
+    value_min: float,
+    value_max: float,
+    threshold_step: float,
+) -> int:
+    """Return the number of ordinal thresholds that cover the sweep range."""
+    span: float = value_max - value_min
+    num_thresholds: int = int(math.ceil(span / threshold_step))
+    return max(num_thresholds, 2)
+
+
+def _value_to_ordinal_threshold_vector(
+    value: float,
+    *,
+    value_min: float,
+    value_max: float,
+    threshold_step: float,
+) -> np.ndarray:
+    """Map a scalar label into a cumulative ordinal threshold vector."""
+    if threshold_step <= 0.0:
+        raise ValueError("threshold_step must be > 0.")
+    if value_max <= value_min:
+        raise ValueError("value_max must be > value_min.")
+
+    num_thresholds: int = _ordinal_threshold_count(
+        value_min, value_max, threshold_step
+    )
+    thresholds: np.ndarray = value_min + (
+        np.arange(num_thresholds, dtype=np.float32) + 0.5
+    ) * np.float32(threshold_step)
+    return (np.float32(value) > thresholds).astype(np.float32)
+
+
+def _build_interval_targets(
+    examples: list[TrainingExample],
+    *,
+    value_min: float,
+    value_max: float,
+    bin_width: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convert training examples into scalar and interval-class targets."""
+    scalar_targets = np.array([e.value for e in examples], dtype=np.float32)
+    interval_targets = np.array(
+        [
+            _value_to_interval_index(
+                example.value,
+                value_min=value_min,
+                value_max=value_max,
+                bin_width=bin_width,
+            )
+            for example in examples
+        ],
+        dtype=np.int32,
+    )
+    return scalar_targets, interval_targets
 
 
 def _load_init_model(init_model_path: Path) -> keras.Model:
@@ -360,6 +615,50 @@ def _load_init_model(init_model_path: Path) -> keras.Model:
     )
     model.trainable = True
     return model
+
+
+def _iter_layers_recursive(model: keras.Model) -> list[keras.layers.Layer]:
+    """Return all layers, including nested model layers, in a stable order."""
+    layers: list[keras.layers.Layer] = []
+    for layer in model.layers:
+        layers.append(layer)
+        if isinstance(layer, keras.Model):
+            layers.extend(_iter_layers_recursive(layer))
+    return layers
+
+
+def _transfer_matching_weights(source_model: keras.Model, target_model: keras.Model) -> int:
+    """Copy matching weights by name from one model into another model."""
+    source_layers: dict[str, keras.layers.Layer] = {
+        layer.name: layer for layer in _iter_layers_recursive(source_model)
+    }
+    transferred_layers: int = 0
+
+    for layer in _iter_layers_recursive(target_model):
+        source_layer = source_layers.get(layer.name)
+        if source_layer is None:
+            continue
+
+        source_weights = source_layer.get_weights()
+        target_weights = layer.get_weights()
+        if not source_weights or not target_weights:
+            continue
+        if len(source_weights) != len(target_weights):
+            continue
+        if not all(
+            source_weight.shape == target_weight.shape
+            for source_weight, target_weight in zip(source_weights, target_weights)
+        ):
+            continue
+
+        layer.set_weights(source_weights)
+        transferred_layers += 1
+
+    print(
+        "[TRAIN] Warm-start weight transfer complete: "
+        f"matched_layers={transferred_layers}",
+    )
+    return transferred_layers
 
 
 def _split_examples(
@@ -466,6 +765,187 @@ def _load_crop_with_weight(
     return image, target, weight
 
 
+def _load_crop_with_interval_weight(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    interval_index: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+    weight: tf.Tensor,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
+    """Load/crop one image and attach scalar, interval, and weight targets."""
+    image, target = _load_crop_and_preprocess_image(
+        image_path, value, crop_box_xyxy, image_height, image_width
+    )
+    interval_target = tf.cast(interval_index, tf.int32)
+    targets = {
+        "gauge_value": target,
+        "interval_logits": interval_target,
+    }
+    sample_weights = {
+        "gauge_value": weight,
+        "interval_logits": weight,
+    }
+    return image, targets, sample_weights
+
+
+def _load_crop_with_interval_target(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    interval_index: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
+    """Load/crop one image and attach scalar plus interval-class targets."""
+    image, target = _load_crop_and_preprocess_image(
+        image_path, value, crop_box_xyxy, image_height, image_width
+    )
+    interval_target = tf.cast(interval_index, tf.int32)
+    targets = {
+        "gauge_value": target,
+        "interval_logits": interval_target,
+    }
+    return image, targets
+
+
+def _load_crop_with_ordinal_target(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    ordinal_thresholds: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
+    """Load/crop one image and attach scalar plus ordinal-threshold targets."""
+    image, target = _load_crop_and_preprocess_image(
+        image_path, value, crop_box_xyxy, image_height, image_width
+    )
+    ordinal_target = tf.cast(ordinal_thresholds, tf.float32)
+    targets = {
+        "gauge_value": target,
+        "ordinal_logits": ordinal_target,
+    }
+    return image, targets
+
+
+def _load_crop_with_ordinal_weight(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    ordinal_thresholds: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+    weight: tf.Tensor,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
+    """Load/crop one image and attach ordinal targets plus sample weights."""
+    image, targets = _load_crop_with_ordinal_target(
+        image_path,
+        value,
+        ordinal_thresholds,
+        crop_box_xyxy,
+        image_height,
+        image_width,
+    )
+    sample_weights = {
+        "gauge_value": weight,
+        "ordinal_logits": weight,
+    }
+    return image, targets, sample_weights
+
+
+def _load_crop_with_fraction_target(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    fraction: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
+    """Load/crop one image and attach scalar plus sweep-fraction targets."""
+    image, target = _load_crop_and_preprocess_image(
+        image_path, value, crop_box_xyxy, image_height, image_width
+    )
+    fraction_target = tf.cast(fraction, tf.float32)
+    targets = {
+        "gauge_value": target,
+        "sweep_fraction": fraction_target,
+    }
+    return image, targets
+
+
+def _load_crop_with_fraction_weight(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    fraction: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+    weight: tf.Tensor,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
+    """Load/crop one image and attach sweep-fraction targets plus sample weights."""
+    image, targets = _load_crop_with_fraction_target(
+        image_path,
+        value,
+        fraction,
+        crop_box_xyxy,
+        image_height,
+        image_width,
+    )
+    sample_weights = {
+        "gauge_value": weight,
+        "sweep_fraction": weight,
+    }
+    return image, targets, sample_weights
+
+
+def _load_crop_with_keypoint_target(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    heatmaps: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
+    """Load/crop one image and attach scalar plus keypoint-heatmap targets."""
+    image, target = _load_crop_and_preprocess_image(
+        image_path, value, crop_box_xyxy, image_height, image_width
+    )
+    keypoint_target = tf.cast(heatmaps, tf.float32)
+    targets = {
+        "gauge_value": target,
+        "keypoint_heatmaps": keypoint_target,
+    }
+    return image, targets
+
+
+def _load_crop_with_keypoint_weight(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    heatmaps: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+    weight: tf.Tensor,
+    heatmap_weight: tf.Tensor,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
+    """Load/crop one image and attach keypoint targets plus sample weights."""
+    image, targets = _load_crop_with_keypoint_target(
+        image_path,
+        value,
+        heatmaps,
+        crop_box_xyxy,
+        image_height,
+        image_width,
+    )
+    sample_weights = {
+        "gauge_value": weight,
+        "keypoint_heatmaps": heatmap_weight,
+    }
+    return image, targets, sample_weights
+
+
 def _augment_image(image: tf.Tensor) -> tf.Tensor:
     """Apply light photometric augmentation that preserves gauge geometry."""
     image_shape: tf.Tensor = tf.shape(image)
@@ -503,7 +983,15 @@ def _build_tf_dataset(
     config: TrainConfig,
     *,
     training: bool,
-    target_kind: Literal["value", "needle_unit_xy"] = "value",
+    target_kind: Literal[
+        "value",
+        "needle_unit_xy",
+        "sweep_fraction",
+        "interval_value",
+        "ordinal_thresholds",
+        "keypoint_heatmaps",
+    ] = "value",
+    value_range: tuple[float, float] | None = None,
 ) -> tf.data.Dataset:
     """Create a tf.data pipeline for efficient training/eval input."""
     paths: np.ndarray = np.array([e.image_path for e in examples], dtype=str)
@@ -511,6 +999,14 @@ def _build_tf_dataset(
         targets: np.ndarray = np.array([e.value for e in examples], dtype=np.float32)
     elif target_kind == "needle_unit_xy":
         targets = np.array([e.needle_unit_xy for e in examples], dtype=np.float32)
+    elif target_kind == "sweep_fraction":
+        targets = np.array([e.value for e in examples], dtype=np.float32)
+    elif target_kind == "interval_value":
+        targets = np.array([e.value for e in examples], dtype=np.float32)
+    elif target_kind == "ordinal_thresholds":
+        targets = np.array([e.value for e in examples], dtype=np.float32)
+    elif target_kind == "keypoint_heatmaps":
+        targets = np.array([e.value for e in examples], dtype=np.float32)
     else:
         raise ValueError(f"Unsupported target_kind '{target_kind}'.")
     boxes: np.ndarray = np.array([e.crop_box_xyxy for e in examples], dtype=np.float32)
@@ -543,20 +1039,329 @@ def _build_tf_dataset(
                 lambda img, y, w: (_augment_image(img), y, w),
                 num_parallel_calls=tf.data.AUTOTUNE,
             )
-    else:
-        dataset = tf.data.Dataset.from_tensor_slices((paths, targets, boxes))
+        if config.mixup_alpha > 0.0:
+            dataset = dataset.batch(config.batch_size, drop_remainder=False)
+            dataset = dataset.map(
+                lambda img, y, w: _mixup_value_batch(img, y, w, config.mixup_alpha),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+    elif training and target_kind == "interval_value":
+        if config.mixup_alpha > 0.0:
+            raise ValueError("MixUp is not supported for interval-value targets yet.")
+        if value_range is None:
+            min_value = min(example.value for example in examples)
+            max_value = max(example.value for example in examples)
+        else:
+            min_value, max_value = value_range
+        weights = _compute_edge_weights(examples, config.edge_focus_strength)
+        interval_targets = np.array(
+            [
+                _value_to_interval_index(
+                    example.value,
+                    value_min=min_value,
+                    value_max=max_value,
+                    bin_width=config.interval_bin_width,
+                )
+                for example in examples
+            ],
+            dtype=np.int32,
+        )
+        dataset = tf.data.Dataset.from_tensor_slices(
+            (paths, targets, interval_targets, boxes, weights)
+        )
+        dataset = dataset.shuffle(
+            buffer_size=max(len(examples), 1),
+            seed=config.seed,
+            reshuffle_each_iteration=True,
+        )
         dataset = dataset.map(
-            lambda p, y, b: _load_crop_and_preprocess_image(
+            lambda p, y, c, b, w: _load_crop_with_interval_weight(
                 p,
                 y,
+                c,
                 b,
                 config.image_height,
                 config.image_width,
+                w,
             ),
             num_parallel_calls=tf.data.AUTOTUNE,
         )
+        if config.augment_training:
+            dataset = dataset.map(
+                lambda img, y, w: (_augment_image(img), y, w),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+    elif training and target_kind == "sweep_fraction":
+        if config.mixup_alpha > 0.0:
+            raise ValueError(
+                "MixUp is not supported for sweep-fraction targets yet."
+            )
+        weights = _compute_edge_weights(examples, config.edge_focus_strength)
+        fraction_targets = np.array([e.value_norm for e in examples], dtype=np.float32)
+        dataset = tf.data.Dataset.from_tensor_slices(
+            (paths, targets, fraction_targets, boxes, weights)
+        )
+        dataset = dataset.shuffle(
+            buffer_size=max(len(examples), 1),
+            seed=config.seed,
+            reshuffle_each_iteration=True,
+        )
+        dataset = dataset.map(
+            lambda p, y, f, b, w: _load_crop_with_fraction_weight(
+                p,
+                y,
+                f,
+                b,
+                config.image_height,
+                config.image_width,
+                w,
+            ),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+        if config.augment_training:
+            dataset = dataset.map(
+                lambda img, y, w: (_augment_image(img), y, w),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+    elif training and target_kind == "keypoint_heatmaps":
+        if config.mixup_alpha > 0.0:
+            raise ValueError(
+                "MixUp is not supported for keypoint-heatmap targets yet."
+            )
+        weights = _compute_edge_weights(examples, config.edge_focus_strength)
+        heatmap_weights = np.array(
+            [
+                np.full(
+                    (config.keypoint_heatmap_size, config.keypoint_heatmap_size),
+                    fill_value=(
+                        weight if example.keypoint_heatmaps is not None else 0.0
+                    ),
+                    dtype=np.float32,
+                )
+                for example, weight in zip(examples, weights, strict=True)
+            ],
+            dtype=np.float32,
+        )
+        heatmaps = np.array(
+            [
+                example.keypoint_heatmaps
+                if example.keypoint_heatmaps is not None
+                else np.zeros(
+                    (
+                        config.keypoint_heatmap_size,
+                        config.keypoint_heatmap_size,
+                        2,
+                    ),
+                    dtype=np.float32,
+                )
+                for example in examples
+            ],
+            dtype=np.float32,
+        )
+        dataset = tf.data.Dataset.from_tensor_slices(
+            (paths, targets, heatmaps, boxes, weights, heatmap_weights)
+        )
+        dataset = dataset.shuffle(
+            buffer_size=max(len(examples), 1),
+            seed=config.seed,
+            reshuffle_each_iteration=True,
+        )
+        dataset = dataset.map(
+            lambda p, y, h, b, w, hw: _load_crop_with_keypoint_weight(
+                p,
+                y,
+                h,
+                b,
+                config.image_height,
+                config.image_width,
+                w,
+                hw,
+            ),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+        if config.augment_training:
+            dataset = dataset.map(
+                lambda img, y, w: (_augment_image(img), y, w),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+    elif training and target_kind == "ordinal_thresholds":
+        if config.mixup_alpha > 0.0:
+            raise ValueError(
+                "MixUp is not supported for ordinal-threshold targets yet."
+            )
+        if value_range is None:
+            min_value = min(example.value for example in examples)
+            max_value = max(example.value for example in examples)
+        else:
+            min_value, max_value = value_range
+        weights = _compute_edge_weights(examples, config.edge_focus_strength)
+        ordinal_targets = np.array(
+            [
+                _value_to_ordinal_threshold_vector(
+                    example.value,
+                    value_min=min_value,
+                    value_max=max_value,
+                    threshold_step=config.ordinal_threshold_step,
+                )
+                for example in examples
+            ],
+            dtype=np.float32,
+        )
+        dataset = tf.data.Dataset.from_tensor_slices(
+            (paths, targets, ordinal_targets, boxes, weights)
+        )
+        dataset = dataset.shuffle(
+            buffer_size=max(len(examples), 1),
+            seed=config.seed,
+            reshuffle_each_iteration=True,
+        )
+        dataset = dataset.map(
+            lambda p, y, o, b, w: _load_crop_with_ordinal_weight(
+                p,
+                y,
+                o,
+                b,
+                config.image_height,
+                config.image_width,
+                w,
+            ),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+        if config.augment_training:
+            dataset = dataset.map(
+                lambda img, y, w: (_augment_image(img), y, w),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+    else:
+        if target_kind == "interval_value":
+            if value_range is None:
+                min_value = min(example.value for example in examples)
+                max_value = max(example.value for example in examples)
+            else:
+                min_value, max_value = value_range
+            interval_targets = np.array(
+                [
+                    _value_to_interval_index(
+                        example.value,
+                        value_min=min_value,
+                        value_max=max_value,
+                        bin_width=config.interval_bin_width,
+                    )
+                    for example in examples
+                ],
+                dtype=np.int32,
+            )
+            dataset = tf.data.Dataset.from_tensor_slices(
+                (paths, targets, interval_targets, boxes)
+            )
+            dataset = dataset.map(
+                lambda p, y, c, b: _load_crop_with_interval_target(
+                    p,
+                    y,
+                    c,
+                    b,
+                    config.image_height,
+                    config.image_width,
+                ),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+        elif target_kind == "sweep_fraction":
+            fraction_targets = np.array(
+                [example.value_norm for example in examples],
+                dtype=np.float32,
+            )
+            dataset = tf.data.Dataset.from_tensor_slices(
+                (paths, targets, fraction_targets, boxes)
+            )
+            dataset = dataset.map(
+                lambda p, y, f, b: _load_crop_with_fraction_target(
+                    p,
+                    y,
+                    f,
+                    b,
+                    config.image_height,
+                    config.image_width,
+                ),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+        elif target_kind == "keypoint_heatmaps":
+            heatmaps = np.array(
+                [
+                    example.keypoint_heatmaps
+                    if example.keypoint_heatmaps is not None
+                    else np.zeros(
+                        (
+                            config.keypoint_heatmap_size,
+                            config.keypoint_heatmap_size,
+                            2,
+                        ),
+                        dtype=np.float32,
+                    )
+                    for example in examples
+                ],
+                dtype=np.float32,
+            )
+            dataset = tf.data.Dataset.from_tensor_slices(
+                (paths, targets, heatmaps, boxes)
+            )
+            dataset = dataset.map(
+                lambda p, y, h, b: _load_crop_with_keypoint_target(
+                    p,
+                    y,
+                    h,
+                    b,
+                    config.image_height,
+                    config.image_width,
+                ),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+        elif target_kind == "ordinal_thresholds":
+            if value_range is None:
+                min_value = min(example.value for example in examples)
+                max_value = max(example.value for example in examples)
+            else:
+                min_value, max_value = value_range
+            ordinal_targets = np.array(
+                [
+                    _value_to_ordinal_threshold_vector(
+                        example.value,
+                        value_min=min_value,
+                        value_max=max_value,
+                        threshold_step=config.ordinal_threshold_step,
+                    )
+                    for example in examples
+                ],
+                dtype=np.float32,
+            )
+            dataset = tf.data.Dataset.from_tensor_slices(
+                (paths, targets, ordinal_targets, boxes)
+            )
+            dataset = dataset.map(
+                lambda p, y, o, b: _load_crop_with_ordinal_target(
+                    p,
+                    y,
+                    o,
+                    b,
+                    config.image_height,
+                    config.image_width,
+                ),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+        else:
+            dataset = tf.data.Dataset.from_tensor_slices((paths, targets, boxes))
+            dataset = dataset.map(
+                lambda p, y, b: _load_crop_and_preprocess_image(
+                    p,
+                    y,
+                    b,
+                    config.image_height,
+                    config.image_width,
+                ),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
 
-    dataset = dataset.batch(config.batch_size)
+    if not (training and target_kind == "value" and config.mixup_alpha > 0.0):
+        dataset = dataset.batch(config.batch_size)
     dataset = dataset.prefetch(tf.data.AUTOTUNE)
     return dataset
 
@@ -583,6 +1388,38 @@ def _compute_edge_weights(
     return weights
 
 
+def _sample_mixup_lambda(alpha: float) -> tf.Tensor:
+    """Sample a MixUp interpolation coefficient from a symmetric Beta law."""
+    if alpha <= 0.0:
+        return tf.constant(1.0, dtype=tf.float32)
+    left: tf.Tensor = tf.random.gamma([], alpha=alpha, beta=1.0, dtype=tf.float32)
+    right: tf.Tensor = tf.random.gamma([], alpha=alpha, beta=1.0, dtype=tf.float32)
+    return tf.cast(left / (left + right + 1e-7), tf.float32)
+
+
+def _mixup_value_batch(
+    images: tf.Tensor,
+    targets: tf.Tensor,
+    weights: tf.Tensor,
+    alpha: float,
+) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Apply MixUp to a batch of scalar-regression examples."""
+    batch_size: tf.Tensor = tf.shape(images)[0]
+    perm: tf.Tensor = tf.random.shuffle(tf.range(batch_size))
+    mixed_images: tf.Tensor = tf.gather(images, perm)
+    mixed_targets: tf.Tensor = tf.gather(targets, perm)
+    mixed_weights: tf.Tensor = tf.gather(weights, perm)
+
+    lam: tf.Tensor = _sample_mixup_lambda(alpha)
+    lam_img: tf.Tensor = tf.reshape(lam, [1, 1, 1, 1])
+    lam_vec: tf.Tensor = tf.reshape(lam, [1])
+
+    images = lam_img * images + (1.0 - lam_img) * mixed_images
+    targets = lam_vec * targets + (1.0 - lam_vec) * mixed_targets
+    weights = lam_vec * weights + (1.0 - lam_vec) * mixed_weights
+    return images, targets, weights
+
+
 def _compute_mean_baseline_mae(
     train_examples: list[TrainingExample],
     test_examples: list[TrainingExample],
@@ -596,23 +1433,240 @@ def _compute_mean_baseline_mae(
     return baseline_mae
 
 
+def _make_scalar_regression_loss(
+    *,
+    monotonic_pair_strength: float = 0.0,
+    monotonic_pair_margin: float = 0.0,
+    interpolation_pair_strength: float = 0.0,
+    interpolation_pair_scale: float = DEFAULT_INTERPOLATION_PAIR_SCALE,
+):
+    """Create the scalar regression loss used by the training heads."""
+    def monotonic_pair_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        """Penalize local ordering violations inside a batch."""
+        y_true_flat: tf.Tensor = tf.reshape(tf.cast(y_true, tf.float32), [-1])
+        y_pred_flat: tf.Tensor = tf.reshape(tf.cast(y_pred, tf.float32), [-1])
+        order: tf.Tensor = tf.argsort(y_true_flat, stable=True)
+        sorted_pred: tf.Tensor = tf.gather(y_pred_flat, order)
+        count: tf.Tensor = tf.shape(sorted_pred)[0]
+
+        def _compute() -> tf.Tensor:
+            diffs: tf.Tensor = sorted_pred[1:] - sorted_pred[:-1]
+            violations: tf.Tensor = tf.nn.relu(monotonic_pair_margin - diffs)
+            return tf.reduce_mean(violations)
+
+        return tf.cond(count < 2, lambda: tf.constant(0.0, dtype=tf.float32), _compute)
+
+    def interpolation_pair_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        """Penalize local slope mismatches so nearby temperatures interpolate smoothly."""
+        y_true_flat: tf.Tensor = tf.reshape(tf.cast(y_true, tf.float32), [-1])
+        y_pred_flat: tf.Tensor = tf.reshape(tf.cast(y_pred, tf.float32), [-1])
+        count: tf.Tensor = tf.shape(y_true_flat)[0]
+
+        def _compute() -> tf.Tensor:
+            true_i: tf.Tensor = tf.expand_dims(y_true_flat, axis=1)
+            true_j: tf.Tensor = tf.expand_dims(y_true_flat, axis=0)
+            pred_i: tf.Tensor = tf.expand_dims(y_pred_flat, axis=1)
+            pred_j: tf.Tensor = tf.expand_dims(y_pred_flat, axis=0)
+
+            true_diff: tf.Tensor = true_i - true_j
+            pred_diff: tf.Tensor = pred_i - pred_j
+            abs_true_diff: tf.Tensor = tf.abs(true_diff)
+            pair_weights: tf.Tensor = tf.exp(
+                -abs_true_diff / tf.constant(interpolation_pair_scale, dtype=tf.float32)
+            )
+            pair_mask: tf.Tensor = 1.0 - tf.eye(count, dtype=tf.float32)
+            pair_error: tf.Tensor = tf.abs(pred_diff - true_diff)
+            weighted_error: tf.Tensor = pair_weights * pair_mask * pair_error
+            normalizer: tf.Tensor = tf.reduce_sum(pair_weights * pair_mask)
+            return tf.math.divide_no_nan(tf.reduce_sum(weighted_error), normalizer)
+
+        return tf.cond(count < 2, lambda: tf.constant(0.0, dtype=tf.float32), _compute)
+
+    def combined_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        """Blend pointwise regression loss with interpolation and ordering penalties."""
+        mse: tf.Tensor = tf.reduce_mean(
+            tf.square(tf.cast(y_true, tf.float32) - tf.cast(y_pred, tf.float32))
+        )
+        total_loss: tf.Tensor = mse
+        if monotonic_pair_strength > 0.0:
+            total_loss = total_loss + monotonic_pair_strength * monotonic_pair_loss(
+                y_true, y_pred
+            )
+        if interpolation_pair_strength > 0.0:
+            total_loss = total_loss + interpolation_pair_strength * interpolation_pair_loss(
+                y_true, y_pred
+            )
+        return total_loss
+
+    return combined_loss
+
+
 def _compile_regression_model(
     model: keras.Model,
     *,
     learning_rate: float,
+    monotonic_pair_strength: float = 0.0,
+    monotonic_pair_margin: float = 0.0,
+    interpolation_pair_strength: float = 0.0,
+    interpolation_pair_scale: float = DEFAULT_INTERPOLATION_PAIR_SCALE,
 ) -> None:
     """Compile a scalar regression model with standard losses and metrics."""
     optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
         learning_rate=learning_rate,
         clipnorm=1.0,
     )
+
     model.compile(
         optimizer=optimizer,
-        loss=keras.losses.MeanSquaredError(),
+        loss=_make_scalar_regression_loss(
+            monotonic_pair_strength=monotonic_pair_strength,
+            monotonic_pair_margin=monotonic_pair_margin,
+            interpolation_pair_strength=interpolation_pair_strength,
+            interpolation_pair_scale=interpolation_pair_scale,
+        ),
         metrics=[
             keras.metrics.MeanAbsoluteError(name="mae"),
             keras.metrics.RootMeanSquaredError(name="rmse"),
         ],
+    )
+
+
+def _compile_fraction_model(
+    model: keras.Model,
+    *,
+    learning_rate: float,
+    fraction_loss_weight: float = DEFAULT_SWEEP_FRACTION_LOSS_WEIGHT,
+) -> None:
+    """Compile a sweep-fraction model with scalar and fraction losses."""
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+        learning_rate=learning_rate,
+        clipnorm=1.0,
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss={
+            "gauge_value": keras.losses.MeanSquaredError(),
+            "sweep_fraction": keras.losses.MeanSquaredError(),
+        },
+        loss_weights={
+            "gauge_value": 1.0,
+            "sweep_fraction": fraction_loss_weight,
+        },
+        metrics={
+            "gauge_value": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+                keras.metrics.RootMeanSquaredError(name="rmse"),
+            ],
+            "sweep_fraction": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+            ],
+        },
+    )
+
+
+def _compile_keypoint_model(
+    model: keras.Model,
+    *,
+    learning_rate: float,
+    heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
+) -> None:
+    """Compile a keypoint-auxiliary model with scalar and heatmap losses."""
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+        learning_rate=learning_rate,
+        clipnorm=1.0,
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss={
+            "gauge_value": keras.losses.MeanSquaredError(),
+            "keypoint_heatmaps": keras.losses.MeanSquaredError(),
+        },
+        loss_weights={
+            "gauge_value": 1.0,
+            "keypoint_heatmaps": heatmap_loss_weight,
+        },
+        metrics={
+            "gauge_value": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+                keras.metrics.RootMeanSquaredError(name="rmse"),
+            ],
+            "keypoint_heatmaps": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+            ],
+        },
+    )
+
+
+def _compile_interval_model(
+    model: keras.Model,
+    *,
+    learning_rate: float,
+    monotonic_pair_strength: float = 0.0,
+    monotonic_pair_margin: float = 0.0,
+    interval_loss_weight: float = 0.25,
+) -> None:
+    """Compile the hybrid interval model with scalar and coarse-bin losses."""
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+        learning_rate=learning_rate,
+        clipnorm=1.0,
+    )
+    scalar_loss = _make_scalar_regression_loss(
+        monotonic_pair_strength=monotonic_pair_strength,
+        monotonic_pair_margin=monotonic_pair_margin,
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss={
+            "gauge_value": scalar_loss,
+            "interval_logits": keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+        },
+        loss_weights={
+            "gauge_value": 1.0,
+            "interval_logits": interval_loss_weight,
+        },
+        metrics={
+            "gauge_value": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+                keras.metrics.RootMeanSquaredError(name="rmse"),
+            ],
+            "interval_logits": [
+                keras.metrics.SparseCategoricalAccuracy(name="acc"),
+            ],
+        },
+    )
+
+
+def _compile_ordinal_model(
+    model: keras.Model,
+    *,
+    learning_rate: float,
+    ordinal_loss_weight: float = DEFAULT_ORDINAL_LOSS_WEIGHT,
+) -> None:
+    """Compile an ordinal-threshold model with scalar and ordinal losses."""
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+        learning_rate=learning_rate,
+        clipnorm=1.0,
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss={
+            "gauge_value": keras.losses.MeanSquaredError(),
+            "ordinal_logits": keras.losses.BinaryCrossentropy(from_logits=True),
+        },
+        loss_weights={
+            "gauge_value": 1.0,
+            "ordinal_logits": ordinal_loss_weight,
+        },
+        metrics={
+            "gauge_value": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+                keras.metrics.RootMeanSquaredError(name="rmse"),
+            ],
+        },
     )
 
 
@@ -645,17 +1699,17 @@ def _compile_direction_model(
     )
 
 
-def _make_training_callbacks() -> list[keras.callbacks.Callback]:
+def _make_training_callbacks(*, monitor: str = "val_mae") -> list[keras.callbacks.Callback]:
     """Build standard callbacks used for the main training/fine-tuning phase."""
     return [
         keras.callbacks.EarlyStopping(
-            monitor="val_mae",
+            monitor=monitor,
             mode="min",
             patience=8,
             restore_best_weights=True,
         ),
         keras.callbacks.ReduceLROnPlateau(
-            monitor="val_mae",
+            monitor=monitor,
             mode="min",
             factor=0.5,
             patience=3,
@@ -770,6 +1824,9 @@ def train(config: TrainConfig) -> TrainingResult:
     examples, dropped_out_of_sweep = _build_training_examples(
         samples,
         spec,
+        image_height=config.image_height,
+        image_width=config.image_width,
+        keypoint_heatmap_size=config.keypoint_heatmap_size,
         strict_labels=config.strict_labels,
         crop_pad_ratio=config.crop_pad_ratio,
     )
@@ -785,15 +1842,32 @@ def train(config: TrainConfig) -> TrainingResult:
     print("[TRAIN] Splitting dataset...")
     split: DatasetSplit = _split_examples(examples, config)
 
-    if config.hard_case_manifest and config.model_family != "mobilenet_v2_direction":
+    if config.hard_case_manifest:
         hard_case_manifest_path: Path = Path(config.hard_case_manifest)
         if not hard_case_manifest_path.is_absolute():
             hard_case_manifest_path = ML_ROOT / hard_case_manifest_path
+        hard_case_target_kind: Literal[
+            "value",
+            "needle_unit_xy",
+            "sweep_fraction",
+            "keypoint_heatmaps",
+            "ordinal_thresholds",
+        ] = (
+            "needle_unit_xy"
+            if config.model_family in {"mobilenet_v2_direction", "compact_direction"}
+            else "sweep_fraction"
+            if config.model_family == "mobilenet_v2_fraction"
+            else "ordinal_thresholds"
+            if config.model_family == "mobilenet_v2_ordinal"
+            else "value"
+        )
         hard_case_examples: list[TrainingExample] = _load_hard_case_examples(
             hard_case_manifest_path,
             image_height=config.image_height,
             image_width=config.image_width,
             value_range=(spec.min_value, spec.max_value),
+            target_kind=hard_case_target_kind,
+            spec=spec if hard_case_target_kind == "needle_unit_xy" else None,
         )
         hard_case_repeat: int = max(config.hard_case_repeat, 0)
         if hard_case_repeat > 0 and hard_case_examples:
@@ -817,52 +1891,138 @@ def train(config: TrainConfig) -> TrainingResult:
     )
 
     _log_model_choice(config)
+    model: keras.Model | None = None
+    init_model: keras.Model | None = None
     if config.init_model_path:
         init_model_path: Path = Path(config.init_model_path)
         if not init_model_path.is_absolute():
             init_model_path = ML_ROOT / init_model_path
-        model = _load_init_model(init_model_path)
-    elif config.model_family == "compact":
-        print("[TRAIN] Building compact CNN model...")
-        model = build_regression_model(config.image_height, config.image_width)
-    elif config.model_family == "mobilenet_v2":
-        print("[TRAIN] Building MobileNetV2 model...")
-        model = build_mobilenetv2_regression_model(
-            config.image_height,
-            config.image_width,
-            pretrained=config.mobilenet_pretrained,
-            backbone_trainable=config.mobilenet_backbone_trainable,
-            alpha=config.mobilenet_alpha,
-            head_units=config.mobilenet_head_units,
-            head_dropout=config.mobilenet_head_dropout,
-        )
-    elif config.model_family == "mobilenet_v2_tiny":
-        print("[TRAIN] Building tiny MobileNetV2 model...")
-        model = build_mobilenetv2_regression_model(
-            config.image_height,
-            config.image_width,
-            pretrained=config.mobilenet_pretrained,
-            backbone_trainable=config.mobilenet_backbone_trainable,
-            alpha=config.mobilenet_alpha,
-            head_units=config.mobilenet_head_units,
-            head_dropout=config.mobilenet_head_dropout,
-        )
-    elif config.model_family == "mobilenet_v2_direction":
-        print("[TRAIN] Building MobileNetV2 direction model...")
-        model = build_mobilenetv2_direction_model(
-            config.image_height,
-            config.image_width,
-            pretrained=config.mobilenet_pretrained,
-            backbone_trainable=config.mobilenet_backbone_trainable,
-            alpha=config.mobilenet_alpha,
-            head_units=config.mobilenet_head_units,
-            head_dropout=config.mobilenet_head_dropout,
-        )
-    else:
-        raise ValueError(f"Unsupported model_family '{config.model_family}'.")
-    target_kind: Literal["value", "needle_unit_xy"] = (
+        if config.model_family in {
+            "mobilenet_v2_interval",
+            "mobilenet_v2_ordinal",
+            "mobilenet_v2_fraction",
+            "mobilenet_v2_keypoint",
+        }:
+            init_model = _load_init_model(init_model_path)
+        else:
+            model = _load_init_model(init_model_path)
+    if model is None:
+        if config.model_family == "compact":
+            print("[TRAIN] Building compact CNN model...")
+            model = build_regression_model(config.image_height, config.image_width)
+        elif config.model_family == "compact_direction":
+            print("[TRAIN] Building compact CNN direction model...")
+            model = build_needle_direction_model(config.image_height, config.image_width)
+        elif config.model_family == "mobilenet_v2":
+            print("[TRAIN] Building MobileNetV2 model...")
+            model = build_mobilenetv2_regression_model(
+                config.image_height,
+                config.image_width,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
+            )
+        elif config.model_family == "mobilenet_v2_tiny":
+            print("[TRAIN] Building tiny MobileNetV2 model...")
+            model = build_mobilenetv2_regression_model(
+                config.image_height,
+                config.image_width,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
+            )
+        elif config.model_family == "mobilenet_v2_direction":
+            print("[TRAIN] Building MobileNetV2 direction model...")
+            model = build_mobilenetv2_direction_model(
+                config.image_height,
+                config.image_width,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
+            )
+        elif config.model_family == "mobilenet_v2_fraction":
+            print("[TRAIN] Building MobileNetV2 sweep-fraction model...")
+            model = build_mobilenetv2_fraction_model(
+                config.image_height,
+                config.image_width,
+                value_min=spec.min_value,
+                value_max=spec.max_value,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
+            )
+        elif config.model_family == "mobilenet_v2_keypoint":
+            print("[TRAIN] Building MobileNetV2 keypoint-heatmap model...")
+            model = build_mobilenetv2_keypoint_model(
+                config.image_height,
+                config.image_width,
+                heatmap_size=config.keypoint_heatmap_size,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
+            )
+        elif config.model_family == "mobilenet_v2_interval":
+            print("[TRAIN] Building MobileNetV2 interval model...")
+            model = build_mobilenetv2_interval_model(
+                config.image_height,
+                config.image_width,
+                value_min=spec.min_value,
+                value_max=spec.max_value,
+                bin_width=config.interval_bin_width,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
+            )
+        elif config.model_family == "mobilenet_v2_ordinal":
+            print("[TRAIN] Building MobileNetV2 ordinal model...")
+            model = build_mobilenetv2_ordinal_model(
+                config.image_height,
+                config.image_width,
+                value_min=spec.min_value,
+                value_max=spec.max_value,
+                threshold_step=config.ordinal_threshold_step,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
+            )
+        else:
+            raise ValueError(f"Unsupported model_family '{config.model_family}'.")
+    if init_model is not None:
+        _transfer_matching_weights(init_model, model)
+        model.trainable = True
+    target_kind: Literal[
+        "value",
+        "needle_unit_xy",
+        "sweep_fraction",
+        "interval_value",
+        "ordinal_thresholds",
+        "keypoint_heatmaps",
+    ] = (
         "needle_unit_xy"
-        if config.model_family == "mobilenet_v2_direction"
+        if config.model_family
+        in {"mobilenet_v2_direction", "compact_direction"}
+        else "sweep_fraction"
+        if config.model_family == "mobilenet_v2_fraction"
+        else "keypoint_heatmaps"
+        if config.model_family == "mobilenet_v2_keypoint"
+        else "ordinal_thresholds"
+        if config.model_family == "mobilenet_v2_ordinal"
+        else "interval_value"
+        if config.model_family == "mobilenet_v2_interval"
         else "value"
     )
     train_ds = _build_tf_dataset(
@@ -870,18 +2030,30 @@ def train(config: TrainConfig) -> TrainingResult:
         config,
         training=True,
         target_kind=target_kind,
+        value_range=(spec.min_value, spec.max_value)
+        if target_kind
+        in {"interval_value", "ordinal_thresholds", "sweep_fraction", "keypoint_heatmaps"}
+        else None,
     )
     val_ds = _build_tf_dataset(
         split.val_examples,
         config,
         training=False,
         target_kind=target_kind,
+        value_range=(spec.min_value, spec.max_value)
+        if target_kind
+        in {"interval_value", "ordinal_thresholds", "sweep_fraction", "keypoint_heatmaps"}
+        else None,
     )
     test_ds = _build_tf_dataset(
         split.test_examples,
         config,
         training=False,
         target_kind=target_kind,
+        value_range=(spec.min_value, spec.max_value)
+        if target_kind
+        in {"interval_value", "ordinal_thresholds", "sweep_fraction", "keypoint_heatmaps"}
+        else None,
     )
     print("[TRAIN] TensorFlow datasets built.")
     model_name: str = getattr(model, "name", model.__class__.__name__)
@@ -890,10 +2062,28 @@ def train(config: TrainConfig) -> TrainingResult:
     else:
         model_params = "unknown"
     print(f"[TRAIN] Built model '{model_name}' with {model_params} parameters.")
-    callbacks: list[keras.callbacks.Callback] = _make_training_callbacks()
+    callbacks: list[keras.callbacks.Callback] = _make_training_callbacks(
+        monitor="val_gauge_value_mae"
+        if config.model_family
+        in {
+            "mobilenet_v2_interval",
+            "mobilenet_v2_ordinal",
+            "mobilenet_v2_fraction",
+            "mobilenet_v2_keypoint",
+        }
+        else "val_mae"
+    )
     should_use_two_stage_mobilenet: bool = (
         config.model_family
-        in {"mobilenet_v2", "mobilenet_v2_tiny", "mobilenet_v2_direction"}
+        in {
+            "mobilenet_v2",
+            "mobilenet_v2_tiny",
+            "mobilenet_v2_direction",
+            "mobilenet_v2_fraction",
+            "mobilenet_v2_keypoint",
+            "mobilenet_v2_interval",
+            "mobilenet_v2_ordinal",
+        }
         and config.mobilenet_pretrained
         and config.mobilenet_backbone_trainable
         and config.mobilenet_warmup_epochs > 0
@@ -916,14 +2106,46 @@ def train(config: TrainConfig) -> TrainingResult:
             "backbone_trainable=False"
         )
         backbone.trainable = False
-        if config.model_family == "mobilenet_v2_direction":
+        if config.model_family in {"mobilenet_v2_direction", "compact_direction"}:
             _compile_direction_model(
                 model,
                 learning_rate=config.learning_rate,
                 spec=spec,
             )
+        elif config.model_family == "mobilenet_v2_fraction":
+            _compile_fraction_model(
+                model,
+                learning_rate=config.learning_rate,
+                fraction_loss_weight=config.sweep_fraction_loss_weight,
+            )
+        elif config.model_family == "mobilenet_v2_keypoint":
+            _compile_keypoint_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+            )
+        elif config.model_family == "mobilenet_v2_interval":
+            _compile_interval_model(
+                model,
+                learning_rate=config.learning_rate,
+                monotonic_pair_strength=config.monotonic_pair_strength,
+                monotonic_pair_margin=config.monotonic_pair_margin,
+            )
+        elif config.model_family == "mobilenet_v2_ordinal":
+            _compile_ordinal_model(
+                model,
+                learning_rate=config.learning_rate,
+                ordinal_loss_weight=config.ordinal_loss_weight,
+            )
         else:
-            _compile_regression_model(model, learning_rate=config.learning_rate)
+            _compile_regression_model(
+                model,
+                learning_rate=config.learning_rate,
+                monotonic_pair_strength=config.monotonic_pair_strength,
+                monotonic_pair_margin=config.monotonic_pair_margin,
+                interpolation_pair_strength=config.interpolation_pair_strength,
+                interpolation_pair_scale=config.interpolation_pair_scale,
+            )
         warmup_history: keras.callbacks.History = model.fit(
             train_ds,
             validation_data=val_ds,
@@ -939,14 +2161,46 @@ def train(config: TrainConfig) -> TrainingResult:
             "backbone_trainable=True"
         )
         backbone.trainable = True
-        if config.model_family == "mobilenet_v2_direction":
+        if config.model_family in {"mobilenet_v2_direction", "compact_direction"}:
             _compile_direction_model(
                 model,
                 learning_rate=config.learning_rate,
                 spec=spec,
             )
+        elif config.model_family == "mobilenet_v2_fraction":
+            _compile_fraction_model(
+                model,
+                learning_rate=config.learning_rate,
+                fraction_loss_weight=config.sweep_fraction_loss_weight,
+            )
+        elif config.model_family == "mobilenet_v2_keypoint":
+            _compile_keypoint_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+            )
+        elif config.model_family == "mobilenet_v2_interval":
+            _compile_interval_model(
+                model,
+                learning_rate=config.learning_rate,
+                monotonic_pair_strength=config.monotonic_pair_strength,
+                monotonic_pair_margin=config.monotonic_pair_margin,
+            )
+        elif config.model_family == "mobilenet_v2_ordinal":
+            _compile_ordinal_model(
+                model,
+                learning_rate=config.learning_rate,
+                ordinal_loss_weight=config.ordinal_loss_weight,
+            )
         else:
-            _compile_regression_model(model, learning_rate=config.learning_rate)
+            _compile_regression_model(
+                model,
+                learning_rate=config.learning_rate,
+                monotonic_pair_strength=config.monotonic_pair_strength,
+                monotonic_pair_margin=config.monotonic_pair_margin,
+                interpolation_pair_strength=config.interpolation_pair_strength,
+                interpolation_pair_scale=config.interpolation_pair_scale,
+            )
         fine_tune_history: keras.callbacks.History = model.fit(
             train_ds,
             validation_data=val_ds,
@@ -958,14 +2212,46 @@ def train(config: TrainConfig) -> TrainingResult:
         history = _merge_histories(warmup_history, fine_tune_history)
     else:
         print("[TRAIN] Compact CNN stage: training end-to-end with callbacks.")
-        if config.model_family == "mobilenet_v2_direction":
+        if config.model_family in {"mobilenet_v2_direction", "compact_direction"}:
             _compile_direction_model(
                 model,
                 learning_rate=config.learning_rate,
                 spec=spec,
             )
+        elif config.model_family == "mobilenet_v2_fraction":
+            _compile_fraction_model(
+                model,
+                learning_rate=config.learning_rate,
+                fraction_loss_weight=config.sweep_fraction_loss_weight,
+            )
+        elif config.model_family == "mobilenet_v2_keypoint":
+            _compile_keypoint_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+            )
+        elif config.model_family == "mobilenet_v2_interval":
+            _compile_interval_model(
+                model,
+                learning_rate=config.learning_rate,
+                monotonic_pair_strength=config.monotonic_pair_strength,
+                monotonic_pair_margin=config.monotonic_pair_margin,
+            )
+        elif config.model_family == "mobilenet_v2_ordinal":
+            _compile_ordinal_model(
+                model,
+                learning_rate=config.learning_rate,
+                ordinal_loss_weight=config.ordinal_loss_weight,
+            )
         else:
-            _compile_regression_model(model, learning_rate=config.learning_rate)
+            _compile_regression_model(
+                model,
+                learning_rate=config.learning_rate,
+                monotonic_pair_strength=config.monotonic_pair_strength,
+                monotonic_pair_margin=config.monotonic_pair_margin,
+                interpolation_pair_strength=config.interpolation_pair_strength,
+                interpolation_pair_scale=config.interpolation_pair_scale,
+            )
         history = model.fit(
             train_ds,
             validation_data=val_ds,

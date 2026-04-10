@@ -23,6 +23,7 @@ Usage:
   bash scripts/wsl_ml.sh setup
   bash scripts/wsl_ml.sh gpu-check
   bash scripts/wsl_ml.sh baseline [baseline args...]
+  bash scripts/wsl_ml.sh baseline-manifest [manifest args...]
   bash scripts/wsl_ml.sh train [training args...]
   bash scripts/wsl_ml.sh train-tiny [tiny training args...]
   bash scripts/wsl_ml.sh fit-search [fit search args...]
@@ -48,6 +49,10 @@ case "${cmd}" in
   baseline)
     # Run the classical Canny + Hough baseline on the labelled dataset.
     exec "${POETRY_BIN}" run python scripts/run_classical_baseline.py "$@"
+    ;;
+  baseline-manifest)
+    # Run the classical baseline on an arbitrary image/value manifest.
+    exec "${POETRY_BIN}" run python scripts/eval_classical_baseline_on_manifest.py "$@"
     ;;
   single-image)
     # Run the classical baseline on one specific camera frame.

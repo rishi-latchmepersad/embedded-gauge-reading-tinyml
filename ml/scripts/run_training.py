@@ -32,6 +32,13 @@ from embedded_gauge_reading_tinyml.presets import (
     DEFAULT_MOBILENET_HEAD_DROPOUT,
     DEFAULT_MOBILENET_HEAD_UNITS,
     DEFAULT_MOBILENET_WARMUP_EPOCHS,
+    DEFAULT_INTERVAL_BIN_WIDTH,
+    DEFAULT_INTERPOLATION_PAIR_SCALE,
+    DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
+    DEFAULT_KEYPOINT_HEATMAP_SIZE,
+    DEFAULT_ORDINAL_LOSS_WEIGHT,
+    DEFAULT_ORDINAL_THRESHOLD_STEP,
+    DEFAULT_SWEEP_FRACTION_LOSS_WEIGHT,
     DEFAULT_MODEL_FAMILY,
     DEFAULT_SEED,
     DEFAULT_EDGE_FOCUS_STRENGTH,
@@ -53,9 +60,14 @@ def parse_args() -> argparse.Namespace:
         type=str,
         choices=[
             "compact",
+            "compact_direction",
             "mobilenet_v2",
             "mobilenet_v2_tiny",
             "mobilenet_v2_direction",
+            "mobilenet_v2_fraction",
+            "mobilenet_v2_keypoint",
+            "mobilenet_v2_interval",
+            "mobilenet_v2_ordinal",
         ],
         default=DEFAULT_MODEL_FAMILY,
         help="Select model architecture family.",
@@ -131,6 +143,72 @@ def parse_args() -> argparse.Namespace:
         help="Additional weight placed on extreme gauge values (0 disables).",
     )
     parser.add_argument(
+        "--monotonic-pair-strength",
+        type=float,
+        default=0.0,
+        help="Extra loss weight that penalizes ordering violations inside a batch.",
+    )
+    parser.add_argument(
+        "--monotonic-pair-margin",
+        type=float,
+        default=0.0,
+        help="Minimum prediction gap encouraged between ordered batch samples.",
+    )
+    parser.add_argument(
+        "--mixup-alpha",
+        type=float,
+        default=0.0,
+        help="MixUp Beta distribution alpha for scalar regression training.",
+    )
+    parser.add_argument(
+        "--interval-bin-width",
+        type=float,
+        default=DEFAULT_INTERVAL_BIN_WIDTH,
+        help="Width of the coarse temperature bins used by the hybrid interval head.",
+    )
+    parser.add_argument(
+        "--ordinal-threshold-step",
+        type=float,
+        default=DEFAULT_ORDINAL_THRESHOLD_STEP,
+        help="Spacing between ordinal thresholds for the ordered temperature head.",
+    )
+    parser.add_argument(
+        "--ordinal-loss-weight",
+        type=float,
+        default=DEFAULT_ORDINAL_LOSS_WEIGHT,
+        help="Loss weight applied to the ordinal threshold branch.",
+    )
+    parser.add_argument(
+        "--sweep-fraction-loss-weight",
+        type=float,
+        default=DEFAULT_SWEEP_FRACTION_LOSS_WEIGHT,
+        help="Loss weight applied to the sweep-fraction branch.",
+    )
+    parser.add_argument(
+        "--keypoint-heatmap-size",
+        type=int,
+        default=DEFAULT_KEYPOINT_HEATMAP_SIZE,
+        help="Resolution of the keypoint heatmap supervision grid.",
+    )
+    parser.add_argument(
+        "--keypoint-heatmap-loss-weight",
+        type=float,
+        default=DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
+        help="Loss weight applied to the keypoint heatmap branch.",
+    )
+    parser.add_argument(
+        "--interpolation-pair-strength",
+        type=float,
+        default=0.0,
+        help="Extra loss weight that penalizes local slope mismatches inside a batch.",
+    )
+    parser.add_argument(
+        "--interpolation-pair-scale",
+        type=float,
+        default=DEFAULT_INTERPOLATION_PAIR_SCALE,
+        help="Temperature scale that controls how far interpolation pairs reach.",
+    )
+    parser.add_argument(
         "--init-model",
         type=Path,
         default=None,
@@ -195,6 +273,17 @@ def main() -> None:
         gpu_memory_growth=not args.no_gpu_memory_growth,
         mixed_precision=args.mixed_precision,
         edge_focus_strength=args.edge_focus_strength,
+        monotonic_pair_strength=args.monotonic_pair_strength,
+        monotonic_pair_margin=args.monotonic_pair_margin,
+        mixup_alpha=args.mixup_alpha,
+        interval_bin_width=args.interval_bin_width,
+        interpolation_pair_strength=args.interpolation_pair_strength,
+        interpolation_pair_scale=args.interpolation_pair_scale,
+        ordinal_threshold_step=args.ordinal_threshold_step,
+        ordinal_loss_weight=args.ordinal_loss_weight,
+        sweep_fraction_loss_weight=args.sweep_fraction_loss_weight,
+        keypoint_heatmap_size=args.keypoint_heatmap_size,
+        keypoint_heatmap_loss_weight=args.keypoint_heatmap_loss_weight,
     )
 
     print(
@@ -214,6 +303,35 @@ def main() -> None:
         f"head_units={config.mobilenet_head_units} "
         f"head_dropout={config.mobilenet_head_dropout} "
         f"init_model={config.init_model_path}"
+    )
+    print(
+        "[RUN] Monotonic regularizer: "
+        f"pair_strength={config.monotonic_pair_strength} "
+        f"pair_margin={config.monotonic_pair_margin}"
+    )
+    print(
+        "[RUN] MixUp / interval: "
+        f"mixup_alpha={config.mixup_alpha} "
+        f"interval_bin_width={config.interval_bin_width}"
+    )
+    print(
+        "[RUN] Interpolation pairs: "
+        f"pair_strength={config.interpolation_pair_strength} "
+        f"pair_scale={config.interpolation_pair_scale}"
+    )
+    print(
+        "[RUN] Ordinal head: "
+        f"threshold_step={config.ordinal_threshold_step} "
+        f"loss_weight={config.ordinal_loss_weight}"
+    )
+    print(
+        "[RUN] Sweep fraction head: "
+        f"loss_weight={config.sweep_fraction_loss_weight}"
+    )
+    print(
+        "[RUN] Keypoint head: "
+        f"heatmap_size={config.keypoint_heatmap_size} "
+        f"loss_weight={config.keypoint_heatmap_loss_weight}"
     )
 
     # Execute training and evaluation.

@@ -13,6 +13,35 @@ The long-term shape we want is:
 We are not trying to rewrite the firmware in one shot.
 We are peeling out the biggest files one module at a time so the codebase stays testable.
 
+For model work, the current strongest path is still the MobileNetV2 teacher
+family plus careful board-specific calibration and hard-case validation. The
+latest GPU full-backbone fine-tune improved the overall test metrics, but a few
+board30 outliers still remain, so the model is better but not yet final.
+The classical geometry baseline is useful as a reference, but it is not strong
+enough on the hard cases by itself: the latest hard-case benchmark landed at
+about `13.99C` MAE with `10` cases above `5C`, so the classical path is not the
+answer on its own.
+The new hybrid interval-head experiment did not help: it converged to a
+midrange failure mode again, with about `18.7C` validation MAE and no real
+improvement on the sparse 30-35C interpolation hole. Treat that branch as an
+ablation result unless a later revision changes the supervision or head design.
+The first MobileNetV2 direction fine-tune on the full clean set plus valid
+board30 hard cases did not solve the problem either: the direction metrics
+stayed poor and the converted temperature MAE was still around `20.9C` on test
+data. That means the "predict full unit needle vector" formulation is also not
+the right answer by itself.
+The explicit sweep-fraction head was also not enough: the first warm-started
+MobileNetV2 fraction run still landed around `21.4C` value MAE on test data and
+kept the validation MAE near `18.5C`. So even a normalized sweep target did not
+fix the interpolation hole by itself.
+The new MobileNetV2 keypoint-heatmap experiment also failed to solve the
+interpolation hole: the heatmap branch learned somewhat, but the scalar output
+still sat near the mean on validation/test and the keypoint-augmented model was
+still around `20.0C` MAE on the hard-case-style test split. That suggests the
+next geometry-first attempt should be a more explicit needle-angle detector or a
+classical/ML hybrid, not another weak auxiliary head attached to the same scalar
+regressor.
+
 Already split out:
 
 - `ds3231_clock.*`
@@ -280,6 +309,134 @@ If the current `ROM` window becomes the limiter again, the next question is whet
 2. move constants or generated code to a different region,
 3. or expand the linker layout intentionally.
 
+## Model Recovery Plan
+
+The current source model is healthy, but the int8 export path is not yet
+preserving that behavior on the hard-case manifests.
+Before we do broader model upgrades, we should make sure the deployed camera
+path is still giving the model a healthy signal and that the export pipeline is
+not introducing a large accuracy drop.
+
+  The classical geometry baseline is a useful sanity check, but it is not the
+  deployment answer on its own: the latest hard-case benchmark landed around
+  `13.99C` MAE with `10` cases above `5C`, so a pure CV angle extractor still
+  needs a better detector or calibration layer.
+  The first keypoint-heatmap MobileNetV2 experiment also did not solve the
+  interpolation hole: the heatmap branch learned to localize somewhat, but the
+  scalar output remained around `20C` MAE on validation/test, so the
+  auxiliary-head version of geometry-first learning is not enough by itself.
+
+  The first full-backbone GPU fine-tune from the best board30 source model
+  improved the overall test metrics to `mae=1.3435`, but the hard-case mean error
+  is still `7.8301` because a few board30 captures are way off. The next GPU
+  iteration should focus on those outliers instead of changing architecture again
+  too early.
+  The newer balanced passes tightened the original hard-case set further:
+  `balanced3` reached `mean_abs_err=4.1410` with `cases_over_5c=6`, and
+  `balanced4` landed at `mean_abs_err=4.1701` with `cases_over_5c=6`, so the
+  remaining misses are stubborn rather than noisy.
+  When the obviously black board30 captures are filtered into
+  `hard_cases_plus_board30_valid.csv`, `balanced4` drops to
+  `mean_abs_err=3.8609` on the valid board30 set, which confirms that the black
+  captures are the main reason the expanded manifest still looks broken.
+  A follow-up clean fine-tune on `hard_cases_plus_board30_valid.csv` preserved
+  that improvement and reached `mean_abs_err=3.8086` on the valid board30 set
+  with the same `6` original hard cases still above `5C`. That suggests the
+  clean data path is the right one, and the next gains will likely come from
+  recapturing or replacing the remaining stubborn midrange cases rather than
+  training around invalid black frames.
+  The current recapture shortlist is in `ml/data/recapture_targets.csv`:
+  `capture_p20c_preview.png`, `capture_p35c_preview.png`,
+  `capture_m10c_preview.png`, `capture_0075.png`, `capture_m30c_preview.png`,
+  and `capture_p10c_preview.png`.
+  The newest labelled captures added to `captured_images/` were mixed: the
+  clean-plus-new fine-tune held at `mean_abs_err=4.0923` on the original hard
+  cases and `3.7714` on the valid board30 set. `capture_p15c.jpg`,
+  `capture_m10c.jpg`, `capture_m25c.jpg`, `capture_p20.jpg`, `capture_p25c.jpg`,
+  `capture_p35c.jpg`, and `capture_p42c.jpg` are useful additions on the newer
+  checkpoint. The later `clean_plus_new4` pass, which adds the new `p30c`
+  replacement shot, reaches `mean_abs_err=4.1435` on the original hard cases,
+  `3.7701` on the valid board30 set, and `3.6113` on the combined clean+new
+  manifest. `capture_p30c.jpg` is a clean training sample, but it still lands
+  at about `7.0737C` error on the current checkpoint, so it remains a model
+  weakness even though it is no longer a data-quality issue. A focused
+  fine-tune on only the remaining hard misses (`hard_cases_remaining_focus.csv`)
+  did not materially improve the original hard-case set: it landed at about
+  `4.1283C` MAE and still left the same six original cases above `5C`.
+  The new `capture_p31c.jpg` shot is also clean, but the current checkpoint
+  misses it badly (`25.8813C` error), so the next gain likely needs more nearby
+  31C/32C captures rather than another blind pass.
+  The direct scalar interpolation-loss runs did not solve this either: the
+  pairwise interpolation pass kept the original hard cases around `4.19C` MAE
+  but still left `capture_p31c.jpg` near `26C` error, and the stronger
+  mixup-plus-pairwise run did not change that conclusion. A later mid-band
+  emphasis run that upweighted the `18C..42C` region actually made the hole
+  worse, with `capture_p31c.jpg` falling to about `-1.10C` prediction and the
+  combined manifest degrading instead of improving. That suggests we need a
+  different supervision strategy or a different architecture if we want
+  genuinely smooth interpolation through the sparse midrange.
+  A crop-domain post-calibration pass on the clean board30-valid set helped the
+  midrange and lowered the combined hard-case MAE, but it still left `capture_p31c.jpg`
+  badly wrong (`24.9206C` error) and did not clear the remaining 20C/35C holes.
+  That means scalar post-calibration is useful, but it is not enough to make the
+  model universally interpolative on its own.
+  The next interpolation experiments, MixUp and monotonic pair regularization,
+  did not change that conclusion: the `p31c` hole stayed around `25C` error and
+  the original hard-case set still had `6` cases above `5C`. This points more
+  toward missing local coverage or a different architecture/loss than a simple
+  output-shaping fix.
+  The recapture shortlist should stay focused on the older hard misses that are
+  still obviously bad or still above the `5C` target after training.
+
+Next steps:
+
+1. Confirm auto exposure stays enabled through the full camera bring-up and
+   capture flow, including a runtime readback at capture start.
+2. Keep the capture brightness gate in place so we do not feed black or white
+   frames into model evaluation or export calibration.
+3. Re-export the board30 piecewise-calibrated source model through the int8
+   path and verify the new artifact against both hard-case manifests. The direct
+   Poetry export path works in WSL; the remaining issue is the accuracy drop in
+   the exported int8 artifact, not a model-load hang.
+4. If the int8 export still diverges from the source model, adjust the export
+   calibration strategy or move to a different quantization-aware strategy
+   before trying another architecture. The initial Keras-native QAT passes did
+   not yet meet the hard-case target.
+5. Keep doing GPU-backed MobileNetV2 fine-tunes before falling back to compact
+   CNNs again. The compact scalar and direction student runs both underperformed
+   on the hard-case set.
+6. Treat the exported int8 artifact as a candidate only if its scalar output
+   can be corrected enough to preserve the hard-case acceptance target. A
+   simple piecewise post-calibration on the int8 output currently gets the
+   original hard cases under 5C, but the expanded board30 set still needs work.
+7. Keep the board-side inference path stable while we iterate on model quality.
+
+Done when:
+
+- Auto exposure is confirmed on in the working capture path.
+- The capture gate rejects black/white frames before they reach storage or
+  inference.
+- The capture seed produces visibly non-black frames on the board.
+- The source board30 spline-calibrated scalar candidate stays below 5C error on
+  the expanded board30 manifest, and we still need to pull the original hard
+  cases back under 5C too.
+  - The crop-domain calibration variant improves some midrange cases, but it
+    still leaves the 31C hole and a few 20C/35C misses, so the raw model still
+    needs better generalization rather than just a stronger output transform.
+- The first full-backbone GPU fine-tune from the best board30 source model
+  improves the overall test MAE to about 1.34, but the hard-case set is still
+  above target because of a handful of board30 outliers.
+  - The latest balanced passes improved the original hard-case manifest to just
+    over 4C MAE, but six cases still remain above 5C and the expanded board30 set
+    is still dominated by the older black captures.
+  - The exported int8 artifact still needs to get below 5C error on every hard-
+    case sample before we package it for the board, although a post-quantization
+    piecewise calibration already brings the original hard-case set under 5C.
+- The direction-model experiment is evaluated against the same hard-case set
+  and beats the scalar baselines before we adopt it.
+- The packaged STM32N6 artifact matches the source model closely enough that the
+  hard-case acceptance criteria stay intact after export.
+
 ## Acceptance Criteria For Each Slice
 
 Every refactor slice should end with:
@@ -296,3 +453,5 @@ Every refactor slice should end with:
 - Keep `main.c` as the bootstrapper.
 - Keep generated/vendor glue behind thin wrappers.
 - If a module starts to feel like "everything camera-related," split again.
+- When the model collapses to zero, check exposure and capture quality first,
+  then retrain/calibrate before assuming the firmware inference path is broken.

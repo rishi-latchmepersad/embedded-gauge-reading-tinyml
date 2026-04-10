@@ -64,6 +64,20 @@ def needle_value(sample: Sample, spec: GaugeSpec, *, strict: bool = True) -> flo
     return value  # Return calibrated value.
 
 
+def needle_unit_xy_from_value(value: float, spec: GaugeSpec) -> tuple[float, float]:
+    """Convert a calibrated gauge value back into the corresponding unit needle vector."""
+    span: float = spec.max_value - spec.min_value
+    if span <= 0.0:
+        raise ValueError("Gauge spec must have max_value > min_value.")
+
+    # Clamp to the calibrated sweep so training stays stable on edge cases.
+    fraction: float = min(max((value - spec.min_value) / span, 0.0), 1.0)
+    angle: float = spec.min_angle_rad + fraction * spec.sweep_rad
+    unit_dx: float = math.cos(angle)
+    unit_dy: float = math.sin(angle)
+    return (unit_dx, unit_dy)
+
+
 def load_gauge_specs(path: Path = CALIBRATION_TOML_PATH) -> dict[str, GaugeSpec]:
     """Load per-gauge specs from a TOML file."""
     raw: dict[str, dict[str, float]] = tomllib.loads(  # Parse TOML text.

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import faulthandler
 import json
 from pathlib import Path
+import time
 from typing import Any, Iterable
 
 import keras
@@ -26,6 +28,7 @@ from embedded_gauge_reading_tinyml.training import (
     TrainConfig,
     _build_training_examples,
     _load_hard_case_examples,
+    _load_crop_and_preprocess_image,
     _split_examples,
 )
 
@@ -75,9 +78,35 @@ def _load_model(model_path: Path, *, legacy_mobilenetv2_preprocess: bool) -> ker
     }
     if legacy_mobilenetv2_preprocess:
         print("[EXPORT] Legacy MobileNetV2 preprocess support enabled.", flush=True)
-    model = keras.models.load_model(model_path, custom_objects=custom_objects)
+    model = keras.models.load_model(
+        model_path,
+        custom_objects=custom_objects,
+        compile=False,
+    )
     print(f"[EXPORT] Loaded model '{model.name}' from {model_path}.", flush=True)
     return model
+
+
+def _select_scalar_deployment_model(model: keras.Model) -> keras.Model:
+    """Extract the scalar gauge-value output for deployment."""
+    try:
+        scalar_output = model.get_layer("gauge_value").output
+    except ValueError:
+        return model
+
+    if len(model.outputs) == 1:
+        return model
+
+    scalar_model = keras.Model(
+        inputs=model.inputs,
+        outputs=scalar_output,
+        name=f"{model.name}_scalar",
+    )
+    print(
+        "[EXPORT] Using scalar deployment wrapper around multi-output model.",
+        flush=True,
+    )
+    return scalar_model
 
 
 def _build_representative_examples(
@@ -110,7 +139,28 @@ def _build_representative_examples(
     )
     split = _split_examples(examples, config)
 
-    rep_train_examples: list[TrainingExample] = split.train_examples[:representative_count]
+    sorted_train_examples: list[TrainingExample] = sorted(
+        split.train_examples,
+        key=lambda example: example.value,
+    )
+    if representative_count >= len(sorted_train_examples):
+        rep_train_examples = sorted_train_examples
+    elif representative_count <= 0:
+        rep_train_examples = []
+    else:
+        # Sample across the full label range so calibration sees extremes and midrange values.
+        positions = np.linspace(
+            0,
+            len(sorted_train_examples) - 1,
+            num=representative_count,
+            dtype=np.float64,
+        )
+        selected_indices = sorted(
+            {int(round(position)) for position in positions}
+        )
+        rep_train_examples = [
+            sorted_train_examples[index] for index in selected_indices
+        ]
     hard_case_examples: list[TrainingExample] = _load_hard_case_examples(
         hard_case_manifest,
         image_height=image_height,
@@ -136,13 +186,14 @@ def _representative_dataset(
 ) -> Iterable[list[np.ndarray]]:
     """Yield calibration images in the format TensorFlow Lite expects."""
     for example in examples:
-        image_path = Path(example.image_path)
-        image = tf.keras.utils.load_img(
-            image_path,
-            target_size=(image_height, image_width),
+        image, _ = _load_crop_and_preprocess_image(
+            tf.convert_to_tensor(example.image_path, dtype=tf.string),
+            tf.convert_to_tensor(example.value, dtype=tf.float32),
+            tf.convert_to_tensor(example.crop_box_xyxy, dtype=tf.float32),
+            image_height,
+            image_width,
         )
-        image_array = tf.keras.utils.img_to_array(image).astype(np.float32) / 255.0
-        yield [np.expand_dims(image_array, axis=0)]
+        yield [np.expand_dims(image.numpy().astype(np.float32), axis=0)]
 
 
 def _inspect_tflite_io(
@@ -210,68 +261,87 @@ def export_board_tflite_artifacts(config: ExportConfig) -> ExportResult:
     """Export the calibrated scalar CNN into an int8 TFLite bundle."""
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
-    model = _load_model(
-        config.model_path,
-        legacy_mobilenetv2_preprocess=config.legacy_mobilenetv2_preprocess,
-    )
-    representative_examples = _build_representative_examples(
-        hard_case_manifest=config.hard_case_manifest,
-        image_height=config.image_height,
-        image_width=config.image_width,
-        representative_count=config.representative_count,
-    )
+    start_time = time.monotonic()
+    faulthandler.dump_traceback_later(60.0, repeat=True)
+    try:
+        print("[EXPORT] Stage: load-model", flush=True)
+        model = _load_model(
+            config.model_path,
+            legacy_mobilenetv2_preprocess=config.legacy_mobilenetv2_preprocess,
+        )
+        model = _select_scalar_deployment_model(model)
+        print(
+            f"[EXPORT] Stage: load-model-done elapsed={time.monotonic() - start_time:.1f}s",
+            flush=True,
+        )
 
-    print("[EXPORT] Converting model to fully quantized int8 TFLite...", flush=True)
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
-    converter.optimizations = [tf.lite.Optimize.DEFAULT]
-    converter.representative_dataset = lambda: _representative_dataset(
-        representative_examples,
-        image_height=config.image_height,
-        image_width=config.image_width,
-    )
-    converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
-    converter.inference_input_type = tf.int8
-    converter.inference_output_type = tf.int8
-    tflite_model: bytes = converter.convert()
+        print("[EXPORT] Stage: build-representative-examples", flush=True)
+        representative_examples = _build_representative_examples(
+            hard_case_manifest=config.hard_case_manifest,
+            image_height=config.image_height,
+            image_width=config.image_width,
+            representative_count=config.representative_count,
+        )
+        print(
+            "[EXPORT] Stage: build-representative-examples-done "
+            f"elapsed={time.monotonic() - start_time:.1f}s",
+            flush=True,
+        )
 
-    tflite_path = config.output_dir / "model_int8.tflite"
-    tflite_path.write_bytes(tflite_model)
-    print(f"[EXPORT] Wrote TFLite model to {tflite_path}.", flush=True)
+        print("[EXPORT] Stage: convert-to-int8", flush=True)
+        print("[EXPORT] Converting model to fully quantized int8 TFLite...", flush=True)
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+        converter.optimizations = [tf.lite.Optimize.DEFAULT]
+        converter.representative_dataset = lambda: _representative_dataset(
+            representative_examples,
+            image_height=config.image_height,
+            image_width=config.image_width,
+        )
+        converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+        converter.inference_input_type = tf.int8
+        converter.inference_output_type = tf.int8
+        tflite_model: bytes = converter.convert()
 
-    (
-        input_shape,
-        output_shape,
-        input_scale,
-        input_zero_point,
-        output_scale,
-        output_zero_point,
-    ) = _inspect_tflite_io(tflite_path)
+        tflite_path = config.output_dir / "model_int8.tflite"
+        tflite_path.write_bytes(tflite_model)
+        print(f"[EXPORT] Wrote TFLite model to {tflite_path}.", flush=True)
 
-    metadata = build_export_metadata(
-        source_model_path=config.model_path,
-        tflite_path=tflite_path,
-        input_shape=input_shape,
-        output_shape=output_shape,
-        input_scale=input_scale,
-        input_zero_point=input_zero_point,
-        output_scale=output_scale,
-        output_zero_point=output_zero_point,
-        representative_examples=len(representative_examples),
-        hard_case_manifest=config.hard_case_manifest,
-    )
-    metadata_path = config.output_dir / "metadata.json"
-    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    print(f"[EXPORT] Wrote metadata to {metadata_path}.", flush=True)
+        (
+            input_shape,
+            output_shape,
+            input_scale,
+            input_zero_point,
+            output_scale,
+            output_zero_point,
+        ) = _inspect_tflite_io(tflite_path)
 
-    return ExportResult(
-        source_model_path=config.model_path,
-        tflite_path=tflite_path,
-        metadata_path=metadata_path,
-        input_shape=input_shape,
-        output_shape=output_shape,
-        input_scale=input_scale,
-        input_zero_point=input_zero_point,
-        output_scale=output_scale,
-        output_zero_point=output_zero_point,
-        representative_examples=len(representative_examples),
-    )
+        metadata = build_export_metadata(
+            source_model_path=config.model_path,
+            tflite_path=tflite_path,
+            input_shape=input_shape,
+            output_shape=output_shape,
+            input_scale=input_scale,
+            input_zero_point=input_zero_point,
+            output_scale=output_scale,
+            output_zero_point=output_zero_point,
+            representative_examples=len(representative_examples),
+            hard_case_manifest=config.hard_case_manifest,
+        )
+        metadata_path = config.output_dir / "metadata.json"
+        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        print(f"[EXPORT] Wrote metadata to {metadata_path}.", flush=True)
+
+        return ExportResult(
+            source_model_path=config.model_path,
+            tflite_path=tflite_path,
+            metadata_path=metadata_path,
+            input_shape=input_shape,
+            output_shape=output_shape,
+            input_scale=input_scale,
+            input_zero_point=input_zero_point,
+            output_scale=output_scale,
+            output_zero_point=output_zero_point,
+            representative_examples=len(representative_examples),
+        )
+    finally:
+        faulthandler.cancel_dump_traceback_later()

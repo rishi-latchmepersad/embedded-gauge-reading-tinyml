@@ -16,6 +16,7 @@
 #include <stdint.h>
 
 #include "debug_console.h"
+#include "app_inference_calibration.h"
 #define LL_ATON_PLATFORM LL_ATON_PLAT_STM32N6
 #define LL_ATON_OSAL LL_ATON_OSAL_THREADX
 #include "tx_api.h"
@@ -2020,6 +2021,8 @@ static void AppAI_LogInferenceResult(
 					- (float) head_zero_point) * head_scale;
 		}
 	}
+
+	output_value = AppInferenceCalibration_Apply(output_value);
 
 	/* Log both the final float output and the raw int8 tensor so we can spot
 	 * quantization mismatches without changing the model result path. */

@@ -73,6 +73,150 @@ static bool AppCameraCapture_ShouldRetryDcmippError(uint32_t error_code) {
 	return (error_code == 0x00008100U)
 			&& (camera_capture_reported_byte_count >= CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
 }
+
+/**
+ * @brief Brightness classification for the processed capture gate.
+ */
+typedef enum {
+	APP_CAMERA_CAPTURE_BRIGHTNESS_OK = 0,
+	APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_DARK,
+	APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_BRIGHT,
+} AppCameraCapture_BrightnessGate_t;
+
+/**
+ * @brief Center-ROI luma summary used to decide whether to accept a frame.
+ */
+typedef struct {
+	uint32_t sample_count;
+	uint8_t min_y;
+	uint8_t max_y;
+	uint32_t mean_y;
+} AppCameraCapture_BrightnessStats_t;
+
+/**
+ * @brief Measure the luma level of the processed YUV422 frame center ROI.
+ *
+ * The processed capture path stores YUYV-style data, so we treat the first
+ * byte in each 2-byte pixel pair as luma and use a centered ROI to avoid
+ * edge darkening from the crop.
+ */
+static bool AppCameraCapture_ComputeBrightnessStats(const uint8_t *buffer_ptr,
+		uint32_t length_bytes, AppCameraCapture_BrightnessStats_t *stats) {
+	const uint32_t roi_size_pixels =
+	CAMERA_CAPTURE_BRIGHTNESS_GATE_ROI_SIZE_PIXELS;
+	const uint32_t frame_width_pixels = CAMERA_CAPTURE_WIDTH_PIXELS;
+	const uint32_t frame_height_lines = CAMERA_CAPTURE_HEIGHT_PIXELS;
+	const uint32_t bytes_per_pixel = CAMERA_CAPTURE_BYTES_PER_PIXEL;
+	const uint32_t stride_bytes = frame_width_pixels * bytes_per_pixel;
+	uint32_t roi_start_x = 0U;
+	uint32_t roi_start_y = 0U;
+	uint64_t sum_y = 0U;
+	uint32_t sample_count = 0U;
+	uint8_t min_y = 0xFFU;
+	uint8_t max_y = 0U;
+
+	if ((buffer_ptr == NULL) || (stats == NULL) || (length_bytes < stride_bytes)) {
+		return false;
+	}
+
+	if ((frame_width_pixels < roi_size_pixels)
+			|| (frame_height_lines < roi_size_pixels)) {
+		return false;
+	}
+
+	roi_start_x = (frame_width_pixels - roi_size_pixels) / 2U;
+	roi_start_y = (frame_height_lines - roi_size_pixels) / 2U;
+
+	for (uint32_t row = 0U; row < roi_size_pixels; row++) {
+		const uint32_t src_y = roi_start_y + row;
+		const uint32_t row_base = src_y * stride_bytes;
+
+		if ((row_base + ((roi_start_x + roi_size_pixels) * bytes_per_pixel))
+				> length_bytes) {
+			return false;
+		}
+
+		for (uint32_t col = 0U; col < roi_size_pixels; col++) {
+			const uint32_t sample_index = row_base
+					+ ((roi_start_x + col) * bytes_per_pixel);
+			const uint8_t y_sample = buffer_ptr[sample_index];
+
+			if (y_sample < min_y) {
+				min_y = y_sample;
+			}
+			if (y_sample > max_y) {
+				max_y = y_sample;
+			}
+			sum_y += y_sample;
+			sample_count++;
+		}
+	}
+
+	if (sample_count == 0U) {
+		return false;
+	}
+
+	stats->sample_count = sample_count;
+	stats->min_y = min_y;
+	stats->max_y = max_y;
+	stats->mean_y = (uint32_t) (sum_y / sample_count);
+	return true;
+}
+
+/**
+ * @brief Decide whether a processed frame is too dark, too bright, or usable.
+ */
+static AppCameraCapture_BrightnessGate_t AppCameraCapture_ClassifyBrightness(
+		const AppCameraCapture_BrightnessStats_t *stats) {
+	if (stats == NULL) {
+		return APP_CAMERA_CAPTURE_BRIGHTNESS_OK;
+	}
+
+	if ((stats->mean_y <= CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD)
+			&& (stats->max_y <= CAMERA_CAPTURE_BRIGHTNESS_DARK_MAX_THRESHOLD)) {
+		return APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_DARK;
+	}
+
+	if ((stats->mean_y >= CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD)
+			&& (stats->min_y >= CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MIN_THRESHOLD)) {
+		return APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_BRIGHT;
+	}
+
+	return APP_CAMERA_CAPTURE_BRIGHTNESS_OK;
+}
+
+/**
+ * @brief Print the brightness gate result so we can see why a frame was retried.
+ */
+static void AppCameraCapture_LogBrightnessGateDecision(
+		const AppCameraCapture_BrightnessStats_t *stats,
+		AppCameraCapture_BrightnessGate_t decision) {
+	const char *decision_label = "ok";
+
+	switch (decision) {
+	case APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_DARK:
+		decision_label = "too-dark";
+		break;
+	case APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_BRIGHT:
+		decision_label = "too-bright";
+		break;
+	default:
+		break;
+	}
+
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] Brightness gate (%s): roi=%ux%u mean=%lu min=%u max=%u thresholds dark<=%u/%u bright>=%u/%u.\r\n",
+			decision_label,
+			(unsigned int) CAMERA_CAPTURE_BRIGHTNESS_GATE_ROI_SIZE_PIXELS,
+			(unsigned int) CAMERA_CAPTURE_BRIGHTNESS_GATE_ROI_SIZE_PIXELS,
+			(unsigned long) ((stats != NULL) ? stats->mean_y : 0U),
+			(unsigned int) ((stats != NULL) ? stats->min_y : 0U),
+			(unsigned int) ((stats != NULL) ? stats->max_y : 0U),
+			(unsigned int) CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD,
+			(unsigned int) CAMERA_CAPTURE_BRIGHTNESS_DARK_MAX_THRESHOLD,
+			(unsigned int) CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD,
+			(unsigned int) CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MIN_THRESHOLD);
+}
 /* USER CODE END PV */
 
 /**
@@ -364,6 +508,7 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 		 * advance to the armed frame boundary before we block on completion. */
 		DelayMilliseconds_ThreadX(CAMERA_STREAM_WARMUP_DELAY_MS);
 	}
+	(void) CameraPlatform_LogImx335AutoExposureState("capture-start");
 	App_ThreadX_UnlockCameraMiddleware();
 
 	deadline_tick = tx_time_get() + wait_ticks;
@@ -561,9 +706,13 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	bool result = false;
 	const CHAR *file_extension = camera_capture_use_cmw_pipeline ? "yuv422"
 			: "raw16";
-	const uint32_t max_capture_attempts = 2U;
+	const uint32_t max_capture_attempts =
+	CAMERA_CAPTURE_BRIGHTNESS_RETRY_LIMIT;
 	uint32_t capture_attempt = 0U;
 	bool capture_ok = false;
+	AppCameraCapture_BrightnessStats_t brightness_stats = { 0 };
+	AppCameraCapture_BrightnessGate_t brightness_gate =
+	APP_CAMERA_CAPTURE_BRIGHTNESS_OK;
 
 	if (!AppStorage_WaitForMediaReady(CAMERA_STORAGE_WAIT_TIMEOUT_MS)) {
 		return false;
@@ -580,6 +729,47 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 
 		if (AppCameraCapture_CaptureSingleFrame(&captured_bytes)) {
 			capture_ok = true;
+			image_ptr = camera_capture_result_buffer;
+			if (camera_capture_use_cmw_pipeline) {
+				if (!AppCameraCapture_ComputeBrightnessStats(image_ptr,
+						captured_bytes, &brightness_stats)) {
+					DebugConsole_Printf(
+							"[CAMERA][CAPTURE] Brightness gate could not analyze processed frame; retrying capture.\r\n");
+					capture_ok = false;
+					if ((capture_attempt + 1U) < max_capture_attempts) {
+						DelayMilliseconds_ThreadX(CAMERA_CAPTURE_RETRY_DELAY_MS);
+						continue;
+					}
+					break;
+				}
+
+				brightness_gate =
+				AppCameraCapture_ClassifyBrightness(&brightness_stats);
+				if (brightness_gate != APP_CAMERA_CAPTURE_BRIGHTNESS_OK) {
+					AppCameraCapture_LogBrightnessGateDecision(&brightness_stats,
+							brightness_gate);
+					capture_ok = false;
+					if ((capture_attempt + 1U) >= max_capture_attempts) {
+						DebugConsole_Printf(
+								"[CAMERA][CAPTURE] Brightness gate rejected the frame after %lu attempts.\r\n",
+								(unsigned long) max_capture_attempts);
+						break;
+					}
+
+					if (!CameraPlatform_AdjustImx335ExposureGain(
+							brightness_gate
+									== APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_DARK)) {
+						DebugConsole_Printf(
+								"[CAMERA][CAPTURE] Failed to nudge IMX335 exposure/gain after brightness gate rejection.\r\n");
+						break;
+					}
+
+					DelayMilliseconds_ThreadX(
+					CAMERA_CAPTURE_BRIGHTNESS_SETTLE_DELAY_MS);
+					continue;
+				}
+			}
+
 			break;
 		}
 

@@ -109,6 +109,15 @@ def _estimate_dial_geometry(image_bgr: np.ndarray) -> tuple[tuple[float, float],
     return (best_circle[0], best_circle[1]), best_circle[2]
 
 
+def estimate_dial_geometry(image_bgr: np.ndarray) -> tuple[tuple[float, float], float] | None:
+    """Public wrapper for the dial geometry estimator used by the baseline.
+
+    The manifest evaluator reuses this helper so the same geometry logic drives
+    both the one-off preview mode and the batch benchmark path.
+    """
+    return _estimate_dial_geometry(image_bgr)
+
+
 def _draw_annotation(
     image_bgr: np.ndarray,
     *,

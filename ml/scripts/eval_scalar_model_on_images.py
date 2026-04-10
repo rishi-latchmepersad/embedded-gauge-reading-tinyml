@@ -56,6 +56,16 @@ def _load_model(model_path: Path, *, legacy_preprocess: bool) -> tf.keras.Model:
         model = tf.keras.models.load_model(model_path, custom_objects=custom_objects)
     else:
         model = tf.keras.models.load_model(model_path)
+    try:
+        if len(model.outputs) > 1:
+            model = tf.keras.Model(
+                inputs=model.inputs,
+                outputs=model.get_layer("gauge_value").output,
+                name=f"{model.name}_scalar",
+            )
+            print("[EVAL] Using scalar gauge_value output for prediction.", flush=True)
+    except ValueError:
+        pass
     print("[EVAL] Model loaded.", flush=True)
     return model
 

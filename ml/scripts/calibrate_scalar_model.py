@@ -63,9 +63,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--spline-knot-mode",
         type=str,
-        choices=["all", "interior"],
+        choices=["all", "interior", "quantile"],
         default="all",
         help="Which prediction points to use as spline knots when --mode spline is selected.",
+    )
+    parser.add_argument(
+        "--spline-knot-count",
+        type=int,
+        default=8,
+        help="How many quantile knots to use when --spline-knot-mode quantile is selected.",
     )
     return parser.parse_args()
 
@@ -79,7 +85,13 @@ def _load_model(model_path: Path, *, legacy_preprocess: bool) -> keras.Model:
     }
     if legacy_preprocess:
         print("[CAL] Legacy MobileNetV2 preprocess support enabled.", flush=True)
-    model = keras.models.load_model(model_path, custom_objects=custom_objects)
+    # Calibration only needs the forward graph, so skip compile-time deserialization.
+    model = keras.models.load_model(
+        model_path,
+        custom_objects=custom_objects,
+        compile=False,
+        safe_mode=False,
+    )
     print(f"[CAL] Model loaded: {model.name}", flush=True)
     return model
 
@@ -155,6 +167,7 @@ def _fit_piecewise_calibration(
     labels: np.ndarray,
     *,
     knot_mode: str,
+    knot_count: int,
 ) -> tuple[float, np.ndarray, np.ndarray]:
     """Fit a fixed piecewise-linear calibration model on the scalar output."""
     if predictions.ndim != 1 or labels.ndim != 1:
@@ -167,6 +180,18 @@ def _fit_piecewise_calibration(
         raise ValueError("Need at least two unique predictions for spline calibration.")
     if knot_mode == "interior":
         knots = sorted_predictions[1:-1]
+    elif knot_mode == "quantile":
+        if knot_count < 2:
+            raise ValueError("Need at least two quantile knots for spline calibration.")
+        if sorted_predictions.size <= knot_count:
+            knots = sorted_predictions
+        else:
+            quantiles = np.linspace(0.0, 1.0, knot_count + 2, dtype=np.float32)[1:-1]
+            knots = np.quantile(predictions, quantiles).astype(np.float32)
+            knots = np.unique(knots)
+            knots = knots[(knots > sorted_predictions[0]) & (knots < sorted_predictions[-1])]
+            if knots.size == 0:
+                knots = sorted_predictions[1:-1]
     else:
         knots = sorted_predictions
 
@@ -295,6 +320,7 @@ def main() -> None:
             predictions,
             labels,
             knot_mode=args.spline_knot_mode,
+            knot_count=args.spline_knot_count,
         )
         design = np.column_stack(
             [predictions] + [np.maximum(predictions - knot, 0.0) for knot in knots]
@@ -316,6 +342,7 @@ def main() -> None:
             {
                 "mode": "spline",
                 "spline_knot_mode": args.spline_knot_mode,
+                "spline_knot_count": args.spline_knot_count,
                 "bias": bias,
                 "weights": weights.tolist(),
                 "knots": knots.tolist(),

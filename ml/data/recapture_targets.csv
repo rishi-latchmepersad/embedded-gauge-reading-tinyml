@@ -1,0 +1,8 @@
+image_path,value,abs_error,priority,notes
+captured_images/capture_p20c_preview.png,20,13.3153,high,"Lowest-confidence midrange miss; recapture with a clean needle view and no motion blur."
+captured_images/capture_p35c_preview.png,35,7.9916,high,"High-temp midrange miss; recapture with better contrast and a fully visible dial."
+captured_images/capture_m10c_preview.png,-10,8.8797,high,"Negative-range miss; check exposure/white balance and keep the full gauge in frame."
+captured_images/capture_0075.png,19,7.6286,medium,"Near-20C miss; recapture with a sharper needle and less glare."
+captured_images/capture_m30c_preview.png,-30,6.9683,medium,"Cold-end miss; ensure the sensor is not clipping low-light detail."
+captured_images/capture_p10c_preview.png,10,5.3624,medium,"Just above threshold; replace if we can get a crisper 10C capture."
+captured_images/capture_p30c.jpg,30,7.0350,medium,"This newer 30C shot is weaker than the earlier 30C captures; recapture with steadier framing and less glare."
