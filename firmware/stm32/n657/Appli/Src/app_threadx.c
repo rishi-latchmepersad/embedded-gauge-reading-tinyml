@@ -360,6 +360,10 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 	}
 
 	if (CameraPlatform_ProbeBCamsImx() == TX_SUCCESS) {
+		if (!CameraPlatform_DisableImx335AutoExposure()) {
+			DebugConsole_Printf(
+					"[CAMERA][THREAD] Warning: failed to lock IMX335 exposure after probe.\r\n");
+		}
 		App_ThreadX_UnlockCameraMiddleware();
 		camera_capture_isp_loop_paused = false;
 		DebugConsole_Printf(

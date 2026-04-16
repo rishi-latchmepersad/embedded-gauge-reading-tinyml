@@ -109,6 +109,12 @@ def _parse_args() -> argparse.Namespace:
         help="Basename used for the generated model bundle.",
     )
     parser.add_argument(
+        "--canonical-raw-path",
+        type=Path,
+        default=DEFAULT_CANONICAL_XSPI2_RAW,
+        help="Path where the generated xSPI2 raw blob should be copied.",
+    )
+    parser.add_argument(
         "--compression",
         type=str,
         choices=["none", "lossless", "low", "medium", "high"],
@@ -356,7 +362,7 @@ def main() -> None:
     print(f"[RELOC] Final relocatable binary: {final_bin}", flush=True)
     print(f"[RELOC] Size: {final_bin.stat().st_size} bytes", flush=True)
 
-    canonical_raw = DEFAULT_CANONICAL_XSPI2_RAW
+    canonical_raw = args.canonical_raw_path
     canonical_raw.parent.mkdir(parents=True, exist_ok=True)
     generated_raw = _find_generated_xspi2_raw_file(
         args.stai_output_dir,

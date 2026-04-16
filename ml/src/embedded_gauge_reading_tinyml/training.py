@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import csv
 from dataclasses import dataclass
 import math
@@ -14,6 +15,10 @@ import tensorflow as tf
 from sklearn.model_selection import train_test_split
 
 from embedded_gauge_reading_tinyml.dataset import Sample, load_dataset
+from embedded_gauge_reading_tinyml.board_crop_compare import (
+    load_rgb_image,
+    resize_with_pad_rgb,
+)
 from embedded_gauge_reading_tinyml.gauge.processing import (
     GaugeSpec,
     load_gauge_specs,
@@ -47,6 +52,11 @@ from embedded_gauge_reading_tinyml.presets import (
     DEFAULT_ORDINAL_THRESHOLD_STEP,
     DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
     DEFAULT_KEYPOINT_HEATMAP_SIZE,
+    DEFAULT_KEYPOINT_COORD_LOSS_WEIGHT,
+    DEFAULT_GEOMETRY_VALUE_LOSS_WEIGHT,
+    DEFAULT_GEOMETRY_UNCERTAINTY_LOSS_WEIGHT,
+    DEFAULT_GEOMETRY_UNCERTAINTY_LOW_QUANTILE,
+    DEFAULT_GEOMETRY_UNCERTAINTY_HIGH_QUANTILE,
     DEFAULT_SWEEP_FRACTION_LOSS_WEIGHT,
     DEFAULT_SEED,
     DEFAULT_STRICT_LABELS,
@@ -55,9 +65,17 @@ from embedded_gauge_reading_tinyml.presets import (
     DEFAULT_VAL_FRACTION,
 )
 from embedded_gauge_reading_tinyml.models import (
+    GaugeValueFromKeypoints,
+    SpatialSoftArgmax2D,
+    build_compact_interval_model,
+    build_compact_geometry_model,
+    build_mobilenetv2_rectifier_model,
     build_mobilenetv2_regression_model,
     build_mobilenetv2_direction_model,
     build_mobilenetv2_fraction_model,
+    build_mobilenetv2_detector_model,
+    build_mobilenetv2_geometry_model,
+    build_mobilenetv2_geometry_uncertainty_model,
     build_mobilenetv2_keypoint_model,
     build_mobilenetv2_interval_model,
     build_mobilenetv2_ordinal_model,
@@ -98,13 +116,20 @@ class TrainConfig:
     gpu_memory_growth: bool = DEFAULT_GPU_MEMORY_GROWTH
     mixed_precision: bool = DEFAULT_MIXED_PRECISION
     edge_focus_strength: float = DEFAULT_EDGE_FOCUS_STRENGTH
+    rectifier_model_path: str | None = None
+    rectifier_crop_scale: float = 1.5
     model_family: Literal[
         "compact",
         "compact_direction",
+        "compact_interval",
+        "compact_geometry",
         "mobilenet_v2",
         "mobilenet_v2_tiny",
         "mobilenet_v2_direction",
         "mobilenet_v2_fraction",
+        "mobilenet_v2_detector",
+        "mobilenet_v2_geometry",
+        "mobilenet_v2_geometry_uncertainty",
         "mobilenet_v2_keypoint",
         "mobilenet_v2_interval",
         "mobilenet_v2_ordinal",
@@ -131,6 +156,17 @@ class TrainConfig:
     sweep_fraction_loss_weight: float = DEFAULT_SWEEP_FRACTION_LOSS_WEIGHT
     keypoint_heatmap_size: int = DEFAULT_KEYPOINT_HEATMAP_SIZE
     keypoint_heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT
+    keypoint_coord_loss_weight: float = DEFAULT_KEYPOINT_COORD_LOSS_WEIGHT
+    geometry_value_loss_weight: float = DEFAULT_GEOMETRY_VALUE_LOSS_WEIGHT
+    geometry_uncertainty_loss_weight: float = (
+        DEFAULT_GEOMETRY_UNCERTAINTY_LOSS_WEIGHT
+    )
+    geometry_uncertainty_low_quantile: float = (
+        DEFAULT_GEOMETRY_UNCERTAINTY_LOW_QUANTILE
+    )
+    geometry_uncertainty_high_quantile: float = (
+        DEFAULT_GEOMETRY_UNCERTAINTY_HIGH_QUANTILE
+    )
 
 
 @dataclass(frozen=True)
@@ -145,6 +181,7 @@ class TrainingExample:
     center_xy: tuple[float, float] = (0.0, 0.0)
     tip_xy: tuple[float, float] = (0.0, 0.0)
     keypoint_heatmaps: np.ndarray | None = None
+    keypoint_coords: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -184,6 +221,8 @@ def _validate_split_config(config: TrainConfig) -> None:
         raise ValueError("mobilenet_head_units must be > 0.")
     if not (0.0 <= config.mobilenet_head_dropout < 1.0):
         raise ValueError("mobilenet_head_dropout must be in [0, 1).")
+    if config.rectifier_crop_scale <= 0.0:
+        raise ValueError("rectifier_crop_scale must be > 0.")
     if config.monotonic_pair_strength < 0.0:
         raise ValueError("monotonic_pair_strength must be >= 0.")
     if config.monotonic_pair_margin < 0.0:
@@ -206,29 +245,51 @@ def _validate_split_config(config: TrainConfig) -> None:
         raise ValueError("keypoint_heatmap_size must be >= 4.")
     if config.keypoint_heatmap_loss_weight < 0.0:
         raise ValueError("keypoint_heatmap_loss_weight must be >= 0.")
+    if config.geometry_value_loss_weight < 0.0:
+        raise ValueError("geometry_value_loss_weight must be >= 0.")
+    if config.geometry_uncertainty_loss_weight < 0.0:
+        raise ValueError("geometry_uncertainty_loss_weight must be >= 0.")
+    if not (0.0 < config.geometry_uncertainty_low_quantile < 0.5):
+        raise ValueError(
+            "geometry_uncertainty_low_quantile must be in (0, 0.5)."
+        )
+    if not (0.5 < config.geometry_uncertainty_high_quantile < 1.0):
+        raise ValueError(
+            "geometry_uncertainty_high_quantile must be in (0.5, 1)."
+        )
+    if config.geometry_uncertainty_low_quantile >= config.geometry_uncertainty_high_quantile:
+        raise ValueError(
+            "geometry_uncertainty_low_quantile must be < geometry_uncertainty_high_quantile."
+        )
 
 
 def _configure_training_runtime(config: TrainConfig) -> None:
     """Configure TensorFlow runtime for CPU/GPU selection and memory behavior."""
-    gpus: list[tf.config.PhysicalDevice] = tf.config.list_physical_devices("GPU")
-
     if config.device == "cpu":
-        if gpus:
-            try:
-                tf.config.set_visible_devices([], "GPU")
-            except RuntimeError as exc:
-                raise RuntimeError(
-                    "Unable to force CPU mode because TensorFlow runtime is already initialized."
-                ) from exc
+        # Force CPU execution without paying the cost of an eager GPU probe.
+        # Some WSL CUDA stacks stall while enumerating devices, so keep the
+        # CPU path as light as possible.
+        try:
+            tf.config.set_visible_devices([], "GPU")
+        except (RuntimeError, ValueError) as exc:
+            raise RuntimeError(
+                "Unable to force CPU mode because TensorFlow runtime is already initialized."
+            ) from exc
         keras.mixed_precision.set_global_policy("float32")
         return
 
-    if config.device == "gpu" and not gpus:
-        raise ValueError(
-            "device='gpu' was requested, but TensorFlow did not detect a GPU."
+    # When memory growth is enabled, we need to enumerate GPUs so TensorFlow
+    # can opt into the right allocator behavior. When it is disabled, skip the
+    # probe entirely because some WSL GPU stacks stall here even though the rest
+    # of the training job is fine.
+    if config.gpu_memory_growth:
+        gpus: list[tf.config.PhysicalDevice] = tf.config.list_physical_devices(
+            "GPU"
         )
-
-    if gpus and config.gpu_memory_growth:
+        if config.device == "gpu" and not gpus:
+            raise ValueError(
+                "device='gpu' was requested, but TensorFlow did not detect a GPU."
+            )
         for gpu in gpus:
             try:
                 tf.config.experimental.set_memory_growth(gpu, True)
@@ -244,20 +305,13 @@ def _configure_training_runtime(config: TrainConfig) -> None:
 
 def _log_runtime_state(config: TrainConfig) -> None:
     """Print the TensorFlow runtime state we care about before training starts."""
-    visible_gpus: list[tf.config.PhysicalDevice] = tf.config.list_physical_devices(
-        "GPU"
-    )
-    visible_cpus: list[tf.config.PhysicalDevice] = tf.config.list_physical_devices(
-        "CPU"
-    )
     print(
         "[TRAIN] Runtime: "
         f"device={config.device} "
         f"gpu_memory_growth={config.gpu_memory_growth} "
         f"mixed_precision={keras.mixed_precision.global_policy().name}"
     )
-    print(f"[TRAIN] TensorFlow CPUs: {visible_cpus}")
-    print(f"[TRAIN] TensorFlow GPUs: {visible_gpus}")
+    print("[TRAIN] TensorFlow device probe skipped to avoid WSL stalls.")
 
 
 def _log_dataset_state(
@@ -444,6 +498,13 @@ def _build_training_examples(
             tip_xy=(tip_xy[0] * scale_x, tip_xy[1] * scale_y),
             heatmap_size=keypoint_heatmap_size,
         )
+        keypoint_coords: np.ndarray = np.array(
+            [
+                [center_xy[0] * scale_x, center_xy[1] * scale_y],
+                [tip_xy[0] * scale_x, tip_xy[1] * scale_y],
+            ],
+            dtype=np.float32,
+        )
         examples.append(
             TrainingExample(
                 image_path=str(sample.image_path),
@@ -454,6 +515,7 @@ def _build_training_examples(
                 center_xy=center_xy,
                 tip_xy=tip_xy,
                 keypoint_heatmaps=keypoint_heatmaps,
+                keypoint_coords=keypoint_coords,
             )
         )
 
@@ -466,8 +528,16 @@ def _load_hard_case_examples(
     image_height: int,
     image_width: int,
     value_range: tuple[float, float] = (0.0, 1.0),
-    target_kind: Literal["value", "needle_unit_xy", "ordinal_thresholds"] = "value",
+    target_kind: Literal[
+        "value",
+        "needle_unit_xy",
+        "ordinal_thresholds",
+        "geometry",
+        "geometry_uncertainty",
+        "rectifier_box",
+    ] = "value",
     spec: GaugeSpec | None = None,
+    example_lookup: dict[str, TrainingExample] | None = None,
 ) -> list[TrainingExample]:
     """Load extra board captures that should be upweighted during fine-tuning."""
     if not manifest_path.exists():
@@ -475,7 +545,6 @@ def _load_hard_case_examples(
 
     if target_kind == "needle_unit_xy" and spec is None:
         raise ValueError("spec is required when target_kind='needle_unit_xy'.")
-
     examples: list[TrainingExample] = []
     with manifest_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -501,12 +570,24 @@ def _load_hard_case_examples(
                 needle_unit_xy = needle_unit_xy_from_value(value, spec)
             else:
                 needle_unit_xy = (1.0, 0.0)
+            if target_kind == "rectifier_box":
+                # Rectifier export only needs the image tensors themselves.
+                # Use the full frame as a dummy target box so captures outside
+                # the labelled dataset can still contribute calibration images.
+                crop_box_xyxy = (
+                    0.0,
+                    0.0,
+                    float(image_width),
+                    float(image_height),
+                )
+            else:
+                crop_box_xyxy = (0.0, 0.0, float(image_width), float(image_height))
             examples.append(
                 TrainingExample(
                     image_path=str(image_path),
                     value=value,
                     value_norm=value_norm,
-                    crop_box_xyxy=(0.0, 0.0, float(image_width), float(image_height)),
+                    crop_box_xyxy=crop_box_xyxy,
                     needle_unit_xy=needle_unit_xy,
                 )
             )
@@ -611,10 +692,131 @@ def _load_init_model(init_model_path: Path) -> keras.Model:
         compile=False,
         custom_objects={
             "preprocess_input": keras.applications.mobilenet_v2.preprocess_input,
+            "SpatialSoftArgmax2D": SpatialSoftArgmax2D,
+            "GaugeValueFromKeypoints": GaugeValueFromKeypoints,
         },
     )
     model.trainable = True
     return model
+
+
+def _load_rectifier_model(rectifier_model_path: Path) -> keras.Model:
+    """Load a saved rectifier model for crop generation during scalar training."""
+    if not rectifier_model_path.exists():
+        raise FileNotFoundError(f"Rectifier model not found: {rectifier_model_path}")
+
+    print(f"[TRAIN] Loading rectifier model from {rectifier_model_path}.")
+    model: keras.Model = keras.models.load_model(
+        rectifier_model_path,
+        compile=False,
+        safe_mode=False,
+        custom_objects={
+            "preprocess_input": keras.applications.mobilenet_v2.preprocess_input,
+        },
+    )
+    model.trainable = False
+    return model
+
+
+def _predict_rectifier_crop_box(
+    rectifier_model: keras.Model,
+    image_path: Path,
+    *,
+    image_size: int,
+    rectifier_crop_scale: float,
+) -> tuple[float, float, float, float]:
+    """Predict a rectifier crop box in original-image coordinates for one image."""
+    source_image: np.ndarray = load_rgb_image(image_path)
+    orig_height: int = int(source_image.shape[0])
+    orig_width: int = int(source_image.shape[1])
+    full_frame: np.ndarray = resize_with_pad_rgb(
+        source_image,
+        (
+            0.0,
+            0.0,
+            float(orig_width),
+            float(orig_height),
+        ),
+        image_size=image_size,
+    )
+    rectifier_batch: np.ndarray = np.expand_dims(
+        full_frame.astype(np.float32) / 255.0,
+        axis=0,
+    )
+    rectifier_pred: np.ndarray | dict[str, np.ndarray] = rectifier_model.predict(
+        rectifier_batch,
+        verbose=0,
+    )
+    if isinstance(rectifier_pred, dict):
+        rectifier_box = np.asarray(rectifier_pred["rectifier_box"]).reshape(-1)
+    else:
+        rectifier_box = np.asarray(rectifier_pred).reshape(-1)
+
+    center_x: float = float(np.clip(rectifier_box[0], 0.0, 1.0))
+    center_y: float = float(np.clip(rectifier_box[1], 0.0, 1.0))
+    box_w: float = min(1.0, float(np.clip(rectifier_box[2], 0.05, 1.0)) * rectifier_crop_scale)
+    box_h: float = min(1.0, float(np.clip(rectifier_box[3], 0.05, 1.0)) * rectifier_crop_scale)
+
+    canvas_w: float = float(image_size)
+    canvas_h: float = float(image_size)
+    x_min: float = max(0.0, (center_x - 0.5 * box_w) * canvas_w)
+    y_min: float = max(0.0, (center_y - 0.5 * box_h) * canvas_h)
+    x_max: float = min(canvas_w, (center_x + 0.5 * box_w) * canvas_w)
+    y_max: float = min(canvas_h, (center_y + 0.5 * box_h) * canvas_h)
+    if x_max <= x_min + 1.0:
+        x_max = min(canvas_w, x_min + 1.0)
+    if y_max <= y_min + 1.0:
+        y_max = min(canvas_h, y_min + 1.0)
+    scale: float = min(canvas_w / float(orig_width), canvas_h / float(orig_height))
+    scaled_width: float = float(orig_width) * scale
+    scaled_height: float = float(orig_height) * scale
+    pad_x: float = (canvas_w - scaled_width) * 0.5
+    pad_y: float = (canvas_h - scaled_height) * 0.5
+    x_min_orig: float = max(0.0, (x_min - pad_x) / scale)
+    y_min_orig: float = max(0.0, (y_min - pad_y) / scale)
+    x_max_orig: float = min(float(orig_width), (x_max - pad_x) / scale)
+    y_max_orig: float = min(float(orig_height), (y_max - pad_y) / scale)
+    if x_max_orig <= x_min_orig + 1.0:
+        x_max_orig = min(float(orig_width), x_min_orig + 1.0)
+    if y_max_orig <= y_min_orig + 1.0:
+        y_max_orig = min(float(orig_height), y_min_orig + 1.0)
+    return (x_min_orig, y_min_orig, x_max_orig, y_max_orig)
+
+
+def _rectify_examples_for_scalar(
+    examples: list[TrainingExample],
+    *,
+    rectifier_model_path: Path,
+    image_size: int,
+    rectifier_crop_scale: float,
+) -> list[TrainingExample]:
+    """Replace the training crop boxes with rectifier-predicted boxes."""
+    print(
+        "[TRAIN] step: rectify-crop-boxes",
+        flush=True,
+    )
+    rectified_examples: list[TrainingExample] = []
+    total_examples: int = len(examples)
+    with tf.device("/CPU:0"):
+        rectifier_model: keras.Model = _load_rectifier_model(rectifier_model_path)
+        for index, example in enumerate(examples, start=1):
+            image_path = Path(example.image_path)
+            crop_box_xyxy = _predict_rectifier_crop_box(
+                rectifier_model,
+                image_path,
+                image_size=image_size,
+                rectifier_crop_scale=rectifier_crop_scale,
+            )
+            rectified_examples.append(
+                replace(example, crop_box_xyxy=crop_box_xyxy)
+            )
+            if index % 50 == 0 or index == total_examples:
+                print(
+                    "[TRAIN] Rectified crops: "
+                    f"{index}/{total_examples}",
+                    flush=True,
+                )
+    return rectified_examples
 
 
 def _iter_layers_recursive(model: keras.Model) -> list[keras.layers.Layer]:
@@ -750,6 +952,80 @@ def _load_crop_and_preprocess_image(
     return image, target
 
 
+def _load_rectifier_and_preprocess_image(
+    image_path: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+) -> tuple[tf.Tensor, tf.Tensor]:
+    """Read a full image and emit a padded-canvas crop-box center/size target."""
+    image_bytes: tf.Tensor = tf.io.read_file(image_path)
+    image: tf.Tensor = tf.io.decode_image(
+        image_bytes,
+        channels=3,
+        expand_animations=False,
+    )
+    image = tf.ensure_shape(image, [None, None, 3])
+
+    orig_h: tf.Tensor = tf.cast(tf.shape(image)[0], tf.float32)
+    orig_w: tf.Tensor = tf.cast(tf.shape(image)[1], tf.float32)
+
+    # Keep the full frame intact so the rectifier learns the crop on the same
+    # padded 224x224 canvas used at inference time.
+    image = tf.image.resize_with_pad(image, image_height, image_width)
+    image = tf.cast(image, tf.float32) / 255.0
+
+    x_min: tf.Tensor = tf.cast(crop_box_xyxy[0], tf.float32)
+    y_min: tf.Tensor = tf.cast(crop_box_xyxy[1], tf.float32)
+    x_max: tf.Tensor = tf.cast(crop_box_xyxy[2], tf.float32)
+    y_max: tf.Tensor = tf.cast(crop_box_xyxy[3], tf.float32)
+
+    scale: tf.Tensor = tf.minimum(
+        tf.cast(image_height, tf.float32) / tf.maximum(orig_h, 1.0),
+        tf.cast(image_width, tf.float32) / tf.maximum(orig_w, 1.0),
+    )
+    scaled_w: tf.Tensor = orig_w * scale
+    scaled_h: tf.Tensor = orig_h * scale
+    pad_x: tf.Tensor = 0.5 * (tf.cast(image_width, tf.float32) - scaled_w)
+    pad_y: tf.Tensor = 0.5 * (tf.cast(image_height, tf.float32) - scaled_h)
+
+    x_min_canvas: tf.Tensor = x_min * scale + pad_x
+    y_min_canvas: tf.Tensor = y_min * scale + pad_y
+    x_max_canvas: tf.Tensor = x_max * scale + pad_x
+    y_max_canvas: tf.Tensor = y_max * scale + pad_y
+
+    center_x: tf.Tensor = tf.clip_by_value(
+        ((x_min_canvas + x_max_canvas) * 0.5) / tf.maximum(
+            tf.cast(image_width, tf.float32), 1.0
+        ),
+        0.0,
+        1.0,
+    )
+    center_y: tf.Tensor = tf.clip_by_value(
+        ((y_min_canvas + y_max_canvas) * 0.5) / tf.maximum(
+            tf.cast(image_height, tf.float32), 1.0
+        ),
+        0.0,
+        1.0,
+    )
+    box_w: tf.Tensor = tf.clip_by_value(
+        (x_max_canvas - x_min_canvas) / tf.maximum(
+            tf.cast(image_width, tf.float32), 1.0
+        ),
+        0.0,
+        1.0,
+    )
+    box_h: tf.Tensor = tf.clip_by_value(
+        (y_max_canvas - y_min_canvas) / tf.maximum(
+            tf.cast(image_height, tf.float32), 1.0
+        ),
+        0.0,
+        1.0,
+    )
+    target: tf.Tensor = tf.stack([center_x, center_y, box_w, box_h], axis=-1)
+    return image, target
+
+
 def _load_crop_with_weight(
     image_path: tf.Tensor,
     value: tf.Tensor,
@@ -761,6 +1037,23 @@ def _load_crop_with_weight(
     """Load/crop one image and attach the requested sample weight."""
     image, target = _load_crop_and_preprocess_image(
         image_path, value, crop_box_xyxy, image_height, image_width
+    )
+    return image, target, weight
+
+
+def _load_rectifier_with_weight(
+    image_path: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+    weight: tf.Tensor,
+) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Load a full-frame rectifier example and attach its sample weight."""
+    image, target = _load_rectifier_and_preprocess_image(
+        image_path,
+        crop_box_xyxy,
+        image_height,
+        image_width,
     )
     return image, target, weight
 
@@ -946,6 +1239,116 @@ def _load_crop_with_keypoint_weight(
     return image, targets, sample_weights
 
 
+def _load_crop_with_geometry_target(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    heatmaps: tf.Tensor,
+    coords: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
+    """Load/crop one image and attach geometry targets for detector training."""
+    image, value_target = _load_crop_and_preprocess_image(
+        image_path, value, crop_box_xyxy, image_height, image_width
+    )
+    keypoint_target = tf.cast(heatmaps, tf.float32)
+    coord_target = tf.cast(coords, tf.float32)
+    targets = {
+        "gauge_value": value_target,
+        "keypoint_heatmaps": keypoint_target,
+        "keypoint_coords": coord_target,
+    }
+    return image, targets
+
+
+def _load_crop_with_geometry_uncertainty_target(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    heatmaps: tf.Tensor,
+    coords: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
+    """Load/crop one image and attach geometry plus uncertainty targets."""
+    image, targets = _load_crop_with_geometry_target(
+        image_path,
+        value,
+        heatmaps,
+        coords,
+        crop_box_xyxy,
+        image_height,
+        image_width,
+    )
+    targets["gauge_value_lower"] = targets["gauge_value"]
+    targets["gauge_value_upper"] = targets["gauge_value"]
+    return image, targets
+
+
+def _load_crop_with_geometry_weight(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    heatmaps: tf.Tensor,
+    coords: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+    weight: tf.Tensor,
+    heatmap_weight: tf.Tensor,
+    coord_weight: tf.Tensor,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
+    """Load/crop one image and attach geometry targets plus sample weights."""
+    image, targets = _load_crop_with_geometry_target(
+        image_path,
+        value,
+        heatmaps,
+        coords,
+        crop_box_xyxy,
+        image_height,
+        image_width,
+    )
+    sample_weights = {
+        "gauge_value": weight,
+        "keypoint_heatmaps": heatmap_weight,
+        "keypoint_coords": coord_weight,
+    }
+    return image, targets, sample_weights
+
+
+def _load_crop_with_geometry_uncertainty_weight(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    heatmaps: tf.Tensor,
+    coords: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+    weight: tf.Tensor,
+    heatmap_weight: tf.Tensor,
+    coord_weight: tf.Tensor,
+    uncertainty_weight: tf.Tensor,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
+    """Load/crop one image and attach geometry uncertainty targets plus weights."""
+    image, targets = _load_crop_with_geometry_uncertainty_target(
+        image_path,
+        value,
+        heatmaps,
+        coords,
+        crop_box_xyxy,
+        image_height,
+        image_width,
+    )
+    sample_weights = {
+        "gauge_value": weight,
+        "keypoint_heatmaps": heatmap_weight,
+        "keypoint_coords": coord_weight,
+        "gauge_value_lower": uncertainty_weight,
+        "gauge_value_upper": uncertainty_weight,
+    }
+    return image, targets, sample_weights
+
+
 def _augment_image(image: tf.Tensor) -> tf.Tensor:
     """Apply light photometric augmentation that preserves gauge geometry."""
     image_shape: tf.Tensor = tf.shape(image)
@@ -990,6 +1393,9 @@ def _build_tf_dataset(
         "interval_value",
         "ordinal_thresholds",
         "keypoint_heatmaps",
+        "geometry",
+        "geometry_uncertainty",
+        "rectifier_box",
     ] = "value",
     value_range: tuple[float, float] | None = None,
 ) -> tf.data.Dataset:
@@ -1007,6 +1413,12 @@ def _build_tf_dataset(
         targets = np.array([e.value for e in examples], dtype=np.float32)
     elif target_kind == "keypoint_heatmaps":
         targets = np.array([e.value for e in examples], dtype=np.float32)
+    elif target_kind == "geometry":
+        targets = np.array([e.value for e in examples], dtype=np.float32)
+    elif target_kind == "geometry_uncertainty":
+        targets = np.array([e.value for e in examples], dtype=np.float32)
+    elif target_kind == "rectifier_box":
+        targets = np.array([e.crop_box_xyxy for e in examples], dtype=np.float32)
     else:
         raise ValueError(f"Unsupported target_kind '{target_kind}'.")
     boxes: np.ndarray = np.array([e.crop_box_xyxy for e in examples], dtype=np.float32)
@@ -1184,6 +1596,193 @@ def _build_tf_dataset(
                 lambda img, y, w: (_augment_image(img), y, w),
                 num_parallel_calls=tf.data.AUTOTUNE,
             )
+    elif training and target_kind == "geometry":
+        if config.mixup_alpha > 0.0:
+            raise ValueError("MixUp is not supported for geometry targets yet.")
+        weights = _compute_edge_weights(examples, config.edge_focus_strength)
+        heatmap_weights = np.array(
+            [
+                np.full(
+                    (config.keypoint_heatmap_size, config.keypoint_heatmap_size),
+                    fill_value=(
+                        weight if example.keypoint_heatmaps is not None else 0.0
+                    ),
+                    dtype=np.float32,
+                )
+                for example, weight in zip(examples, weights, strict=True)
+            ],
+            dtype=np.float32,
+        )
+        heatmaps = np.array(
+            [
+                example.keypoint_heatmaps
+                if example.keypoint_heatmaps is not None
+                else np.zeros(
+                    (
+                        config.keypoint_heatmap_size,
+                        config.keypoint_heatmap_size,
+                        2,
+                    ),
+                    dtype=np.float32,
+                )
+                for example in examples
+            ],
+            dtype=np.float32,
+        )
+        coords = np.array(
+            [
+                example.keypoint_coords
+                if example.keypoint_coords is not None
+                else np.zeros((2, 2), dtype=np.float32)
+                for example in examples
+            ],
+            dtype=np.float32,
+        )
+        coord_weights = np.array(
+            [
+                np.full(
+                    (2,),
+                    fill_value=weight if example.keypoint_coords is not None else 0.0,
+                    dtype=np.float32,
+                )
+                for example, weight in zip(examples, weights, strict=True)
+            ],
+            dtype=np.float32,
+        )
+        dataset = tf.data.Dataset.from_tensor_slices(
+            (paths, targets, heatmaps, coords, boxes, weights, heatmap_weights, coord_weights)
+        )
+        dataset = dataset.shuffle(
+            buffer_size=max(len(examples), 1),
+            seed=config.seed,
+            reshuffle_each_iteration=True,
+        )
+        dataset = dataset.map(
+            lambda p, y, h, c, b, w, hw, cw: _load_crop_with_geometry_weight(
+                p,
+                y,
+                h,
+                c,
+                b,
+                config.image_height,
+                config.image_width,
+                w,
+                hw,
+                cw,
+            ),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+        if config.augment_training:
+            dataset = dataset.map(
+                lambda img, y, w: (_augment_image(img), y, w),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+    elif training and target_kind == "geometry_uncertainty":
+        if config.mixup_alpha > 0.0:
+            raise ValueError(
+                "MixUp is not supported for geometry-uncertainty targets yet."
+            )
+        weights = _compute_edge_weights(examples, config.edge_focus_strength)
+        heatmap_weights = np.array(
+            [
+                np.full(
+                    (config.keypoint_heatmap_size, config.keypoint_heatmap_size),
+                    fill_value=(
+                        weight if example.keypoint_heatmaps is not None else 0.0
+                    ),
+                    dtype=np.float32,
+                )
+                for example, weight in zip(examples, weights, strict=True)
+            ],
+            dtype=np.float32,
+        )
+        heatmaps = np.array(
+            [
+                example.keypoint_heatmaps
+                if example.keypoint_heatmaps is not None
+                else np.zeros(
+                    (
+                        config.keypoint_heatmap_size,
+                        config.keypoint_heatmap_size,
+                        2,
+                    ),
+                    dtype=np.float32,
+                )
+                for example in examples
+            ],
+            dtype=np.float32,
+        )
+        coords = np.array(
+            [
+                example.keypoint_coords
+                if example.keypoint_coords is not None
+                else np.zeros((2, 2), dtype=np.float32)
+                for example in examples
+            ],
+            dtype=np.float32,
+        )
+        coord_weights = np.array(
+            [
+                np.full(
+                    (2,),
+                    fill_value=weight if example.keypoint_coords is not None else 0.0,
+                    dtype=np.float32,
+                )
+                for example, weight in zip(examples, weights, strict=True)
+            ],
+            dtype=np.float32,
+        )
+        dataset = tf.data.Dataset.from_tensor_slices(
+            (paths, targets, heatmaps, coords, boxes, weights, heatmap_weights, coord_weights)
+        )
+        dataset = dataset.shuffle(
+            buffer_size=max(len(examples), 1),
+            seed=config.seed,
+            reshuffle_each_iteration=True,
+        )
+        dataset = dataset.map(
+            lambda p, y, h, c, b, w, hw, cw: _load_crop_with_geometry_uncertainty_weight(
+                p,
+                y,
+                h,
+                c,
+                b,
+                config.image_height,
+                config.image_width,
+                w,
+                hw,
+                cw,
+                w,
+            ),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+        if config.augment_training:
+            dataset = dataset.map(
+                lambda img, y, w: (_augment_image(img), y, w),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+    elif training and target_kind == "rectifier_box":
+        if config.mixup_alpha > 0.0:
+            raise ValueError(
+                "MixUp is not supported for rectifier-box targets yet."
+            )
+        weights = _compute_edge_weights(examples, config.edge_focus_strength)
+        dataset = tf.data.Dataset.from_tensor_slices((paths, boxes, weights))
+        dataset = dataset.shuffle(
+            buffer_size=max(len(examples), 1),
+            seed=config.seed,
+            reshuffle_each_iteration=True,
+        )
+        dataset = dataset.map(
+            lambda p, b, w: _load_rectifier_with_weight(
+                p,
+                b,
+                config.image_height,
+                config.image_width,
+                w,
+            ),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
     elif training and target_kind == "ordinal_thresholds":
         if config.mixup_alpha > 0.0:
             raise ValueError(
@@ -1309,6 +1908,103 @@ def _build_tf_dataset(
                     p,
                     y,
                     h,
+                    b,
+                    config.image_height,
+                    config.image_width,
+                ),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+        elif target_kind == "geometry":
+            heatmaps = np.array(
+                [
+                    example.keypoint_heatmaps
+                    if example.keypoint_heatmaps is not None
+                    else np.zeros(
+                        (
+                            config.keypoint_heatmap_size,
+                            config.keypoint_heatmap_size,
+                            2,
+                        ),
+                        dtype=np.float32,
+                    )
+                    for example in examples
+                ],
+                dtype=np.float32,
+            )
+            coords = np.array(
+                [
+                    example.keypoint_coords
+                    if example.keypoint_coords is not None
+                    else np.zeros((2, 2), dtype=np.float32)
+                    for example in examples
+                ],
+                dtype=np.float32,
+            )
+            dataset = tf.data.Dataset.from_tensor_slices(
+                (paths, targets, heatmaps, coords, boxes)
+            )
+            dataset = dataset.map(
+                lambda p, y, h, c, b: _load_crop_with_geometry_target(
+                    p,
+                    y,
+                    h,
+                    c,
+                    b,
+                    config.image_height,
+                    config.image_width,
+                ),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+        elif target_kind == "geometry_uncertainty":
+            heatmaps = np.array(
+                [
+                    example.keypoint_heatmaps
+                    if example.keypoint_heatmaps is not None
+                    else np.zeros(
+                        (
+                            config.keypoint_heatmap_size,
+                            config.keypoint_heatmap_size,
+                            2,
+                        ),
+                        dtype=np.float32,
+                    )
+                    for example in examples
+                ],
+                dtype=np.float32,
+            )
+            coords = np.array(
+                [
+                    example.keypoint_coords
+                    if example.keypoint_coords is not None
+                    else np.zeros((2, 2), dtype=np.float32)
+                    for example in examples
+                ],
+                dtype=np.float32,
+            )
+            dataset = tf.data.Dataset.from_tensor_slices(
+                (paths, targets, heatmaps, coords, boxes)
+            )
+            dataset = dataset.map(
+                lambda p, y, h, c, b: _load_crop_with_geometry_uncertainty_target(
+                    p,
+                    y,
+                    h,
+                    c,
+                    b,
+                    config.image_height,
+                    config.image_width,
+                ),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+        elif target_kind == "rectifier_box":
+            box_targets = np.array(
+                [example.crop_box_xyxy for example in examples],
+                dtype=np.float32,
+            )
+            dataset = tf.data.Dataset.from_tensor_slices((paths, box_targets))
+            dataset = dataset.map(
+                lambda p, b: _load_rectifier_and_preprocess_image(
+                    p,
                     b,
                     config.image_height,
                     config.image_width,
@@ -1501,6 +2197,27 @@ def _make_scalar_regression_loss(
     return combined_loss
 
 
+def _make_pinball_loss(quantile: float):
+    """Create a pinball loss for a scalar quantile head."""
+    if not (0.0 < quantile < 1.0):
+        raise ValueError("quantile must be in (0, 1).")
+
+    quantile_const: tf.Tensor = tf.constant(quantile, dtype=tf.float32)
+
+    def pinball_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        """Penalize under- and over-estimates according to the target quantile."""
+        error: tf.Tensor = tf.cast(y_true, tf.float32) - tf.cast(y_pred, tf.float32)
+        return tf.reduce_mean(
+            tf.maximum(
+                quantile_const * error,
+                (quantile_const - 1.0) * error,
+            )
+        )
+
+    pinball_loss.__name__ = f"pinball_q{int(round(quantile * 100.0)):02d}"
+    return pinball_loss
+
+
 def _compile_regression_model(
     model: keras.Model,
     *,
@@ -1594,6 +2311,128 @@ def _compile_keypoint_model(
             ],
             "keypoint_heatmaps": [
                 keras.metrics.MeanAbsoluteError(name="mae"),
+            ],
+        },
+    )
+
+
+def _compile_geometry_model(
+    model: keras.Model,
+    *,
+    learning_rate: float,
+    heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
+    coord_loss_weight: float = DEFAULT_KEYPOINT_COORD_LOSS_WEIGHT,
+    value_loss_weight: float = DEFAULT_GEOMETRY_VALUE_LOSS_WEIGHT,
+) -> None:
+    """Compile a geometry detector with heatmap, coordinate, and value losses."""
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+        learning_rate=learning_rate,
+        clipnorm=1.0,
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss={
+            "gauge_value": keras.losses.MeanSquaredError(),
+            "keypoint_heatmaps": keras.losses.MeanSquaredError(),
+            "keypoint_coords": keras.losses.MeanSquaredError(),
+        },
+        loss_weights={
+            "gauge_value": value_loss_weight,
+            "keypoint_heatmaps": heatmap_loss_weight,
+            "keypoint_coords": coord_loss_weight,
+        },
+        metrics={
+            "gauge_value": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+                keras.metrics.RootMeanSquaredError(name="rmse"),
+            ],
+            "keypoint_heatmaps": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+            ],
+            "keypoint_coords": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+                _make_keypoint_angle_mae_metric(),
+            ],
+        },
+    )
+
+
+def _compile_geometry_uncertainty_model(
+    model: keras.Model,
+    *,
+    learning_rate: float,
+    heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
+    coord_loss_weight: float = DEFAULT_KEYPOINT_COORD_LOSS_WEIGHT,
+    value_loss_weight: float = DEFAULT_GEOMETRY_VALUE_LOSS_WEIGHT,
+    uncertainty_loss_weight: float = DEFAULT_GEOMETRY_UNCERTAINTY_LOSS_WEIGHT,
+    low_quantile: float = DEFAULT_GEOMETRY_UNCERTAINTY_LOW_QUANTILE,
+    high_quantile: float = DEFAULT_GEOMETRY_UNCERTAINTY_HIGH_QUANTILE,
+) -> None:
+    """Compile a geometry model with symmetric uncertainty bounds."""
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+        learning_rate=learning_rate,
+        clipnorm=1.0,
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss={
+            "gauge_value": keras.losses.MeanSquaredError(),
+            "keypoint_heatmaps": keras.losses.MeanSquaredError(),
+            "keypoint_coords": keras.losses.MeanSquaredError(),
+            "gauge_value_lower": _make_pinball_loss(low_quantile),
+            "gauge_value_upper": _make_pinball_loss(high_quantile),
+        },
+        loss_weights={
+            "gauge_value": value_loss_weight,
+            "keypoint_heatmaps": heatmap_loss_weight,
+            "keypoint_coords": coord_loss_weight,
+            "gauge_value_lower": uncertainty_loss_weight,
+            "gauge_value_upper": uncertainty_loss_weight,
+        },
+        metrics={
+            "gauge_value": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+                keras.metrics.RootMeanSquaredError(name="rmse"),
+            ],
+            "keypoint_heatmaps": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+            ],
+            "keypoint_coords": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+                _make_keypoint_angle_mae_metric(),
+            ],
+            "gauge_value_lower": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+            ],
+            "gauge_value_upper": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+            ],
+        },
+    )
+
+
+def _compile_rectifier_model(
+    model: keras.Model,
+    *,
+    learning_rate: float,
+) -> None:
+    """Compile a rectifier model that regresses the normalized crop box."""
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+        learning_rate=learning_rate,
+        clipnorm=1.0,
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss={
+            "rectifier_box": keras.losses.Huber(delta=0.05),
+        },
+        metrics={
+            "rectifier_box": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+                keras.metrics.RootMeanSquaredError(name="rmse"),
             ],
         },
     )
@@ -1787,18 +2626,49 @@ def _make_angle_mae_metric():
     return angle_mae_deg
 
 
+def _make_keypoint_angle_mae_metric():
+    """Report angular error in degrees from predicted center/tip coordinates."""
+
+    def angle_mae_deg(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        true_center: tf.Tensor = y_true[..., 0, :]
+        true_tip: tf.Tensor = y_true[..., 1, :]
+        pred_center: tf.Tensor = y_pred[..., 0, :]
+        pred_tip: tf.Tensor = y_pred[..., 1, :]
+
+        true_angle: tf.Tensor = tf.atan2(
+            true_tip[..., 1] - true_center[..., 1],
+            true_tip[..., 0] - true_center[..., 0],
+        )
+        pred_angle: tf.Tensor = tf.atan2(
+            pred_tip[..., 1] - pred_center[..., 1],
+            pred_tip[..., 0] - pred_center[..., 0],
+        )
+        delta: tf.Tensor = pred_angle - true_angle
+        wrapped: tf.Tensor = tf.atan2(tf.sin(delta), tf.cos(delta))
+        deg_abs: tf.Tensor = tf.abs(wrapped) * (180.0 / math.pi)
+        return tf.reduce_mean(deg_abs)
+
+    angle_mae_deg.__name__ = "angle_mae_deg"
+    return angle_mae_deg
+
+
 def train(config: TrainConfig) -> TrainingResult:
     """Run one full training cycle and return model + metrics."""
     print("[TRAIN] Entering train().")
+    print("[TRAIN] step: validate-split", flush=True)
     _validate_split_config(config)
     print("[TRAIN] Split config validated.")
+    print("[TRAIN] step: configure-runtime", flush=True)
     _configure_training_runtime(config)
     print("[TRAIN] Runtime configured.")
+    print("[TRAIN] step: log-runtime-state", flush=True)
     _log_runtime_state(config)
 
+    print("[TRAIN] step: set-seeds", flush=True)
     keras.utils.set_random_seed(config.seed)
     np.random.seed(config.seed)
 
+    print("[TRAIN] step: load-gauge-specs", flush=True)
     specs: dict[str, GaugeSpec] = load_gauge_specs()
     if config.gauge_id not in specs:
         raise ValueError(
@@ -1807,6 +2677,7 @@ def train(config: TrainConfig) -> TrainingResult:
     spec: GaugeSpec = specs[config.gauge_id]
     print(f"[TRAIN] Loaded gauge spec for '{config.gauge_id}'.")
 
+    print("[TRAIN] step: load-labelled-dataset", flush=True)
     print("[TRAIN] Loading labelled dataset...")
     samples: list[Sample] = load_dataset(labelled_dir=LABELLED_DIR, raw_dir=RAW_DIR)
     if not samples:
@@ -1816,10 +2687,12 @@ def train(config: TrainConfig) -> TrainingResult:
     print(f"[TRAIN] Loaded {len(samples)} labelled samples.")
 
     # This summary is still useful for visibility into raw annotation quality.
+    print("[TRAIN] step: summarize-label-sweep", flush=True)
     print("[TRAIN] Summarizing label sweep...")
     label_summary: LabelSummary = summarize_label_sweep(samples, spec)
     print("[TRAIN] Label sweep summary complete.")
 
+    print("[TRAIN] step: build-training-examples", flush=True)
     print("[TRAIN] Building training examples...")
     examples, dropped_out_of_sweep = _build_training_examples(
         samples,
@@ -1833,16 +2706,21 @@ def train(config: TrainConfig) -> TrainingResult:
     if len(examples) < 3:
         raise ValueError(
             "Not enough valid examples after filtering invalid sweep labels."
-        )
+    )
     print(
         "[TRAIN] Training examples ready: "
         f"examples={len(examples)} dropped_out_of_sweep={dropped_out_of_sweep}"
     )
 
+    print("[TRAIN] step: split-examples", flush=True)
     print("[TRAIN] Splitting dataset...")
     split: DatasetSplit = _split_examples(examples, config)
+    example_lookup: dict[str, TrainingExample] = {
+        example.image_path: example for example in examples
+    }
 
     if config.hard_case_manifest:
+        print("[TRAIN] step: load-hard-cases", flush=True)
         hard_case_manifest_path: Path = Path(config.hard_case_manifest)
         if not hard_case_manifest_path.is_absolute():
             hard_case_manifest_path = ML_ROOT / hard_case_manifest_path
@@ -1851,12 +2729,23 @@ def train(config: TrainConfig) -> TrainingResult:
             "needle_unit_xy",
             "sweep_fraction",
             "keypoint_heatmaps",
+            "geometry",
+            "geometry_uncertainty",
             "ordinal_thresholds",
+            "rectifier_box",
         ] = (
-            "needle_unit_xy"
+            "value"
+            if config.model_family == "mobilenet_v2_rectifier"
+            else "needle_unit_xy"
             if config.model_family in {"mobilenet_v2_direction", "compact_direction"}
             else "sweep_fraction"
             if config.model_family == "mobilenet_v2_fraction"
+            else "keypoint_heatmaps"
+            if config.model_family in {"mobilenet_v2_keypoint", "mobilenet_v2_detector"}
+            else "geometry_uncertainty"
+            if config.model_family == "mobilenet_v2_geometry_uncertainty"
+            else "geometry"
+            if config.model_family in {"mobilenet_v2_geometry", "compact_geometry"}
             else "ordinal_thresholds"
             if config.model_family == "mobilenet_v2_ordinal"
             else "value"
@@ -1870,7 +2759,28 @@ def train(config: TrainConfig) -> TrainingResult:
             spec=spec if hard_case_target_kind == "needle_unit_xy" else None,
         )
         hard_case_repeat: int = max(config.hard_case_repeat, 0)
-        if hard_case_repeat > 0 and hard_case_examples:
+        if config.model_family == "mobilenet_v2_rectifier" and hard_case_examples:
+            # Reuse labeled rectifier boxes from nearby-temperature examples so the
+            # hard-case manifest can upweight the failing temperature regions.
+            selected_hard_cases: list[TrainingExample] = []
+            for hard_case_example in hard_case_examples:
+                nearest_example = min(
+                    examples,
+                    key=lambda example: abs(example.value - hard_case_example.value),
+                )
+                selected_hard_cases.append(nearest_example)
+            repeated_hard_cases = selected_hard_cases * hard_case_repeat
+            split = DatasetSplit(
+                train_examples=split.train_examples + repeated_hard_cases,
+                val_examples=split.val_examples,
+                test_examples=split.test_examples,
+            )
+            print(
+                "[TRAIN] Hard-case rectifier examples mapped by value: "
+                f"base={len(hard_case_examples)} selected={len(selected_hard_cases)} "
+                f"repeat={hard_case_repeat} added={len(repeated_hard_cases)}"
+            )
+        elif hard_case_repeat > 0 and hard_case_examples:
             repeated_hard_cases: list[TrainingExample] = hard_case_examples * hard_case_repeat
             split = DatasetSplit(
                 train_examples=split.train_examples + repeated_hard_cases,
@@ -1883,6 +2793,38 @@ def train(config: TrainConfig) -> TrainingResult:
                 f"added={len(repeated_hard_cases)}"
             )
 
+    if config.rectifier_model_path:
+        print("[TRAIN] step: rectified-scalar-preprocess", flush=True)
+        rectifier_model_path: Path = Path(config.rectifier_model_path)
+        if not rectifier_model_path.is_absolute():
+            rectifier_model_path = ML_ROOT / rectifier_model_path
+        split = DatasetSplit(
+            train_examples=_rectify_examples_for_scalar(
+                split.train_examples,
+                rectifier_model_path=rectifier_model_path,
+                image_size=config.image_height,
+                rectifier_crop_scale=config.rectifier_crop_scale,
+            ),
+            val_examples=_rectify_examples_for_scalar(
+                split.val_examples,
+                rectifier_model_path=rectifier_model_path,
+                image_size=config.image_height,
+                rectifier_crop_scale=config.rectifier_crop_scale,
+            ),
+            test_examples=_rectify_examples_for_scalar(
+                split.test_examples,
+                rectifier_model_path=rectifier_model_path,
+                image_size=config.image_height,
+                rectifier_crop_scale=config.rectifier_crop_scale,
+            ),
+        )
+        print(
+            "[TRAIN] Rectified scalar crops generated: "
+            f"scale={config.rectifier_crop_scale:.2f}",
+            flush=True,
+        )
+
+    print("[TRAIN] step: log-dataset-state", flush=True)
     _log_dataset_state(
         config,
         label_summary=label_summary,
@@ -1890,29 +2832,58 @@ def train(config: TrainConfig) -> TrainingResult:
         dropped_out_of_sweep=dropped_out_of_sweep,
     )
 
+    print("[TRAIN] step: model-selection", flush=True)
     _log_model_choice(config)
     model: keras.Model | None = None
     init_model: keras.Model | None = None
     if config.init_model_path:
+        print("[TRAIN] step: load-init-model", flush=True)
         init_model_path: Path = Path(config.init_model_path)
         if not init_model_path.is_absolute():
             init_model_path = ML_ROOT / init_model_path
         if config.model_family in {
             "mobilenet_v2_interval",
+            "compact_interval",
+            "compact_geometry",
+            "mobilenet_v2_geometry_uncertainty",
+            "mobilenet_v2_rectifier",
             "mobilenet_v2_ordinal",
             "mobilenet_v2_fraction",
             "mobilenet_v2_keypoint",
+            "mobilenet_v2_detector",
+            "mobilenet_v2_geometry",
         }:
             init_model = _load_init_model(init_model_path)
         else:
             model = _load_init_model(init_model_path)
     if model is None:
+        print("[TRAIN] step: build-model", flush=True)
         if config.model_family == "compact":
             print("[TRAIN] Building compact CNN model...")
             model = build_regression_model(config.image_height, config.image_width)
         elif config.model_family == "compact_direction":
             print("[TRAIN] Building compact CNN direction model...")
             model = build_needle_direction_model(config.image_height, config.image_width)
+        elif config.model_family == "compact_interval":
+            print("[TRAIN] Building compact CNN interval model...")
+            model = build_compact_interval_model(
+                config.image_height,
+                config.image_width,
+                value_min=spec.min_value,
+                value_max=spec.max_value,
+                bin_width=config.interval_bin_width,
+            )
+        elif config.model_family == "compact_geometry":
+            print("[TRAIN] Building compact CNN geometry model...")
+            model = build_compact_geometry_model(
+                config.image_height,
+                config.image_width,
+                value_min=spec.min_value,
+                value_max=spec.max_value,
+                min_angle_rad=spec.min_angle_rad,
+                sweep_rad=spec.sweep_rad,
+                heatmap_size=config.keypoint_heatmap_size,
+            )
         elif config.model_family == "mobilenet_v2":
             print("[TRAIN] Building MobileNetV2 model...")
             model = build_mobilenetv2_regression_model(
@@ -1953,6 +2924,65 @@ def train(config: TrainConfig) -> TrainingResult:
                 config.image_width,
                 value_min=spec.min_value,
                 value_max=spec.max_value,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
+            )
+        elif config.model_family == "mobilenet_v2_detector":
+            print("[TRAIN] Building MobileNetV2 detector-first model...")
+            model = build_mobilenetv2_detector_model(
+                config.image_height,
+                config.image_width,
+                value_min=spec.min_value,
+                value_max=spec.max_value,
+                min_angle_rad=spec.min_angle_rad,
+                sweep_rad=spec.sweep_rad,
+                heatmap_size=config.keypoint_heatmap_size,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
+            )
+        elif config.model_family == "mobilenet_v2_geometry":
+            print("[TRAIN] Building MobileNetV2 geometry-detector model...")
+            model = build_mobilenetv2_geometry_model(
+                config.image_height,
+                config.image_width,
+                value_min=spec.min_value,
+                value_max=spec.max_value,
+                min_angle_rad=spec.min_angle_rad,
+                sweep_rad=spec.sweep_rad,
+                heatmap_size=config.keypoint_heatmap_size,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
+            )
+        elif config.model_family == "mobilenet_v2_geometry_uncertainty":
+            print("[TRAIN] Building MobileNetV2 geometry-uncertainty model...")
+            model = build_mobilenetv2_geometry_uncertainty_model(
+                config.image_height,
+                config.image_width,
+                value_min=spec.min_value,
+                value_max=spec.max_value,
+                min_angle_rad=spec.min_angle_rad,
+                sweep_rad=spec.sweep_rad,
+                heatmap_size=config.keypoint_heatmap_size,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
+            )
+        elif config.model_family == "mobilenet_v2_rectifier":
+            print("[TRAIN] Building MobileNetV2 rectifier model...")
+            model = build_mobilenetv2_rectifier_model(
+                config.image_height,
+                config.image_width,
                 pretrained=config.mobilenet_pretrained,
                 backbone_trainable=config.mobilenet_backbone_trainable,
                 alpha=config.mobilenet_alpha,
@@ -2002,6 +3032,7 @@ def train(config: TrainConfig) -> TrainingResult:
         else:
             raise ValueError(f"Unsupported model_family '{config.model_family}'.")
     if init_model is not None:
+        print("[TRAIN] step: transfer-init-weights", flush=True)
         _transfer_matching_weights(init_model, model)
         model.trainable = True
     target_kind: Literal[
@@ -2011,6 +3042,9 @@ def train(config: TrainConfig) -> TrainingResult:
         "interval_value",
         "ordinal_thresholds",
         "keypoint_heatmaps",
+        "geometry",
+        "geometry_uncertainty",
+        "rectifier_box",
     ] = (
         "needle_unit_xy"
         if config.model_family
@@ -2018,13 +3052,20 @@ def train(config: TrainConfig) -> TrainingResult:
         else "sweep_fraction"
         if config.model_family == "mobilenet_v2_fraction"
         else "keypoint_heatmaps"
-        if config.model_family == "mobilenet_v2_keypoint"
+        if config.model_family in {"mobilenet_v2_keypoint", "mobilenet_v2_detector"}
+        else "geometry_uncertainty"
+        if config.model_family == "mobilenet_v2_geometry_uncertainty"
+        else "rectifier_box"
+        if config.model_family == "mobilenet_v2_rectifier"
+        else "geometry"
+        if config.model_family in {"mobilenet_v2_geometry", "compact_geometry"}
         else "ordinal_thresholds"
         if config.model_family == "mobilenet_v2_ordinal"
         else "interval_value"
-        if config.model_family == "mobilenet_v2_interval"
+        if config.model_family in {"mobilenet_v2_interval", "compact_interval"}
         else "value"
     )
+    print("[TRAIN] step: build-datasets", flush=True)
     train_ds = _build_tf_dataset(
         split.train_examples,
         config,
@@ -2032,7 +3073,15 @@ def train(config: TrainConfig) -> TrainingResult:
         target_kind=target_kind,
         value_range=(spec.min_value, spec.max_value)
         if target_kind
-        in {"interval_value", "ordinal_thresholds", "sweep_fraction", "keypoint_heatmaps"}
+        in {
+            "interval_value",
+            "ordinal_thresholds",
+            "sweep_fraction",
+            "keypoint_heatmaps",
+            "geometry",
+            "geometry_uncertainty",
+            "rectifier_box",
+        }
         else None,
     )
     val_ds = _build_tf_dataset(
@@ -2042,7 +3091,15 @@ def train(config: TrainConfig) -> TrainingResult:
         target_kind=target_kind,
         value_range=(spec.min_value, spec.max_value)
         if target_kind
-        in {"interval_value", "ordinal_thresholds", "sweep_fraction", "keypoint_heatmaps"}
+        in {
+            "interval_value",
+            "ordinal_thresholds",
+            "sweep_fraction",
+            "keypoint_heatmaps",
+            "geometry",
+            "geometry_uncertainty",
+            "rectifier_box",
+        }
         else None,
     )
     test_ds = _build_tf_dataset(
@@ -2052,27 +3109,47 @@ def train(config: TrainConfig) -> TrainingResult:
         target_kind=target_kind,
         value_range=(spec.min_value, spec.max_value)
         if target_kind
-        in {"interval_value", "ordinal_thresholds", "sweep_fraction", "keypoint_heatmaps"}
+        in {
+            "interval_value",
+            "ordinal_thresholds",
+            "sweep_fraction",
+            "keypoint_heatmaps",
+            "geometry",
+            "geometry_uncertainty",
+            "rectifier_box",
+        }
         else None,
     )
     print("[TRAIN] TensorFlow datasets built.")
+    print("[TRAIN] step: callbacks", flush=True)
     model_name: str = getattr(model, "name", model.__class__.__name__)
     if hasattr(model, "count_params"):
         model_params: str = f"{int(model.count_params()):,}"
     else:
         model_params = "unknown"
     print(f"[TRAIN] Built model '{model_name}' with {model_params} parameters.")
-    callbacks: list[keras.callbacks.Callback] = _make_training_callbacks(
-        monitor="val_gauge_value_mae"
+    monitor_metric: str = (
+        "val_mae"
+        if config.model_family == "mobilenet_v2_rectifier"
+        else "val_gauge_value_mae"
         if config.model_family
         in {
             "mobilenet_v2_interval",
+            "compact_interval",
+            "compact_geometry",
+            "mobilenet_v2_geometry_uncertainty",
             "mobilenet_v2_ordinal",
             "mobilenet_v2_fraction",
             "mobilenet_v2_keypoint",
+            "mobilenet_v2_detector",
+            "mobilenet_v2_geometry",
         }
         else "val_mae"
     )
+    callbacks: list[keras.callbacks.Callback] = _make_training_callbacks(
+        monitor=monitor_metric
+    )
+    print("[TRAIN] step: maybe-two-stage", flush=True)
     should_use_two_stage_mobilenet: bool = (
         config.model_family
         in {
@@ -2080,6 +3157,10 @@ def train(config: TrainConfig) -> TrainingResult:
             "mobilenet_v2_tiny",
             "mobilenet_v2_direction",
             "mobilenet_v2_fraction",
+            "mobilenet_v2_detector",
+            "mobilenet_v2_geometry",
+            "mobilenet_v2_geometry_uncertainty",
+            "mobilenet_v2_rectifier",
             "mobilenet_v2_keypoint",
             "mobilenet_v2_interval",
             "mobilenet_v2_ordinal",
@@ -2092,6 +3173,7 @@ def train(config: TrainConfig) -> TrainingResult:
     )
 
     if should_use_two_stage_mobilenet:
+        print("[TRAIN] step: two-stage-start", flush=True)
         warmup_epochs: int = min(config.mobilenet_warmup_epochs, config.epochs - 1)
         backbone = getattr(model, "_mobilenet_backbone", None)
         if backbone is None:
@@ -2118,13 +3200,55 @@ def train(config: TrainConfig) -> TrainingResult:
                 learning_rate=config.learning_rate,
                 fraction_loss_weight=config.sweep_fraction_loss_weight,
             )
-        elif config.model_family == "mobilenet_v2_keypoint":
+        elif config.model_family in {
+            "mobilenet_v2_keypoint",
+            "mobilenet_v2_detector",
+        }:
             _compile_keypoint_model(
                 model,
                 learning_rate=config.learning_rate,
                 heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
             )
+        elif config.model_family == "compact_geometry":
+            _compile_geometry_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                coord_loss_weight=config.keypoint_coord_loss_weight,
+                value_loss_weight=config.geometry_value_loss_weight,
+            )
+        elif config.model_family == "mobilenet_v2_geometry":
+            _compile_geometry_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                coord_loss_weight=config.keypoint_coord_loss_weight,
+                value_loss_weight=config.geometry_value_loss_weight,
+            )
+        elif config.model_family == "mobilenet_v2_geometry_uncertainty":
+            _compile_geometry_uncertainty_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                coord_loss_weight=config.keypoint_coord_loss_weight,
+                value_loss_weight=config.geometry_value_loss_weight,
+                uncertainty_loss_weight=config.geometry_uncertainty_loss_weight,
+                low_quantile=config.geometry_uncertainty_low_quantile,
+                high_quantile=config.geometry_uncertainty_high_quantile,
+            )
+        elif config.model_family == "mobilenet_v2_rectifier":
+            _compile_rectifier_model(
+                model,
+                learning_rate=config.learning_rate,
+            )
         elif config.model_family == "mobilenet_v2_interval":
+            _compile_interval_model(
+                model,
+                learning_rate=config.learning_rate,
+                monotonic_pair_strength=config.monotonic_pair_strength,
+                monotonic_pair_margin=config.monotonic_pair_margin,
+            )
+        elif config.model_family == "compact_interval":
             _compile_interval_model(
                 model,
                 learning_rate=config.learning_rate,
@@ -2173,13 +3297,55 @@ def train(config: TrainConfig) -> TrainingResult:
                 learning_rate=config.learning_rate,
                 fraction_loss_weight=config.sweep_fraction_loss_weight,
             )
-        elif config.model_family == "mobilenet_v2_keypoint":
+        elif config.model_family in {
+            "mobilenet_v2_keypoint",
+            "mobilenet_v2_detector",
+        }:
             _compile_keypoint_model(
                 model,
                 learning_rate=config.learning_rate,
                 heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
             )
+        elif config.model_family == "compact_geometry":
+            _compile_geometry_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                coord_loss_weight=config.keypoint_coord_loss_weight,
+                value_loss_weight=config.geometry_value_loss_weight,
+            )
+        elif config.model_family == "mobilenet_v2_geometry":
+            _compile_geometry_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                coord_loss_weight=config.keypoint_coord_loss_weight,
+                value_loss_weight=config.geometry_value_loss_weight,
+            )
+        elif config.model_family == "mobilenet_v2_geometry_uncertainty":
+            _compile_geometry_uncertainty_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                coord_loss_weight=config.keypoint_coord_loss_weight,
+                value_loss_weight=config.geometry_value_loss_weight,
+                uncertainty_loss_weight=config.geometry_uncertainty_loss_weight,
+                low_quantile=config.geometry_uncertainty_low_quantile,
+                high_quantile=config.geometry_uncertainty_high_quantile,
+            )
+        elif config.model_family == "mobilenet_v2_rectifier":
+            _compile_rectifier_model(
+                model,
+                learning_rate=config.learning_rate,
+            )
         elif config.model_family == "mobilenet_v2_interval":
+            _compile_interval_model(
+                model,
+                learning_rate=config.learning_rate,
+                monotonic_pair_strength=config.monotonic_pair_strength,
+                monotonic_pair_margin=config.monotonic_pair_margin,
+            )
+        elif config.model_family == "compact_interval":
             _compile_interval_model(
                 model,
                 learning_rate=config.learning_rate,
@@ -2211,6 +3377,7 @@ def train(config: TrainConfig) -> TrainingResult:
         )
         history = _merge_histories(warmup_history, fine_tune_history)
     else:
+        print("[TRAIN] step: single-stage-fit", flush=True)
         print("[TRAIN] Compact CNN stage: training end-to-end with callbacks.")
         if config.model_family in {"mobilenet_v2_direction", "compact_direction"}:
             _compile_direction_model(
@@ -2224,13 +3391,55 @@ def train(config: TrainConfig) -> TrainingResult:
                 learning_rate=config.learning_rate,
                 fraction_loss_weight=config.sweep_fraction_loss_weight,
             )
-        elif config.model_family == "mobilenet_v2_keypoint":
+        elif config.model_family in {
+            "mobilenet_v2_keypoint",
+            "mobilenet_v2_detector",
+        }:
             _compile_keypoint_model(
                 model,
                 learning_rate=config.learning_rate,
                 heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
             )
+        elif config.model_family == "compact_geometry":
+            _compile_geometry_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                coord_loss_weight=config.keypoint_coord_loss_weight,
+                value_loss_weight=config.geometry_value_loss_weight,
+            )
+        elif config.model_family == "mobilenet_v2_geometry":
+            _compile_geometry_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                coord_loss_weight=config.keypoint_coord_loss_weight,
+                value_loss_weight=config.geometry_value_loss_weight,
+            )
+        elif config.model_family == "mobilenet_v2_geometry_uncertainty":
+            _compile_geometry_uncertainty_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                coord_loss_weight=config.keypoint_coord_loss_weight,
+                value_loss_weight=config.geometry_value_loss_weight,
+                uncertainty_loss_weight=config.geometry_uncertainty_loss_weight,
+                low_quantile=config.geometry_uncertainty_low_quantile,
+                high_quantile=config.geometry_uncertainty_high_quantile,
+            )
+        elif config.model_family == "mobilenet_v2_rectifier":
+            _compile_rectifier_model(
+                model,
+                learning_rate=config.learning_rate,
+            )
         elif config.model_family == "mobilenet_v2_interval":
+            _compile_interval_model(
+                model,
+                learning_rate=config.learning_rate,
+                monotonic_pair_strength=config.monotonic_pair_strength,
+                monotonic_pair_margin=config.monotonic_pair_margin,
+            )
+        elif config.model_family == "compact_interval":
             _compile_interval_model(
                 model,
                 learning_rate=config.learning_rate,

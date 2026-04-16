@@ -29,6 +29,7 @@ ULONG CameraPlatform_MillisecondsToTicks(uint32_t timeout_ms);
 bool CameraPlatform_SeedImx335ExposureGain(void);
 bool CameraPlatform_AdjustImx335ExposureGain(bool brighten);
 bool CameraPlatform_EnableImx335AutoExposure(void);
+bool CameraPlatform_DisableImx335AutoExposure(void);
 bool CameraPlatform_LogImx335AutoExposureState(const char *reason);
 void CameraPlatform_ReapplyImx335TestPattern(void);
 bool CameraPlatform_StartImx335Stream(void);

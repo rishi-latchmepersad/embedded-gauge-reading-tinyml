@@ -32,6 +32,12 @@ TRAINING_CROP_X_MIN_RATIO: Final[float] = 0.1027
 TRAINING_CROP_Y_MIN_RATIO: Final[float] = 0.2573
 TRAINING_CROP_X_MAX_RATIO: Final[float] = 0.7987
 TRAINING_CROP_Y_MAX_RATIO: Final[float] = 0.8071
+BOARD_CROP_WIDTH_SCALE_NUMERATOR: Final[int] = 17
+BOARD_CROP_WIDTH_SCALE_DENOMINATOR: Final[int] = 20
+BOARD_CROP_HEIGHT_SCALE_NUMERATOR: Final[int] = 17
+BOARD_CROP_HEIGHT_SCALE_DENOMINATOR: Final[int] = 20
+BOARD_CROP_CENTER_X_BIAS_PIXELS: Final[int] = 24
+BOARD_CROP_CENTER_Y_BIAS_PIXELS: Final[int] = 0
 DEFAULT_IMAGE_SIZE: Final[int] = 224
 
 
@@ -268,15 +274,27 @@ def estimate_board_crop_from_rgb(
 
     crop_width = max(
         1,
-        int(round(width * (TRAINING_CROP_X_MAX_RATIO - TRAINING_CROP_X_MIN_RATIO))),
+        int(round(
+            width
+            * (TRAINING_CROP_X_MAX_RATIO - TRAINING_CROP_X_MIN_RATIO)
+            * BOARD_CROP_WIDTH_SCALE_NUMERATOR
+            / BOARD_CROP_WIDTH_SCALE_DENOMINATOR,
+        )),
     )
     crop_height = max(
         1,
-        int(round(height * (TRAINING_CROP_Y_MAX_RATIO - TRAINING_CROP_Y_MIN_RATIO))),
+        int(round(
+            height
+            * (TRAINING_CROP_Y_MAX_RATIO - TRAINING_CROP_Y_MIN_RATIO)
+            * BOARD_CROP_HEIGHT_SCALE_NUMERATOR
+            / BOARD_CROP_HEIGHT_SCALE_DENOMINATOR,
+        )),
     )
 
-    left = max(0, centroid_x - (crop_width // 2))
-    top = max(0, centroid_y - (crop_height // 2))
+    biased_center_x = max(0, centroid_x - BOARD_CROP_CENTER_X_BIAS_PIXELS)
+    biased_center_y = max(0, centroid_y - BOARD_CROP_CENTER_Y_BIAS_PIXELS)
+    left = max(0, biased_center_x - (crop_width // 2))
+    top = max(0, biased_center_y - (crop_height // 2))
     right = left + crop_width
     bottom = top + crop_height
     if right > width:

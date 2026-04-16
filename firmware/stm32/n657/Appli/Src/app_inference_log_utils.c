@@ -37,3 +37,30 @@ void AppInferenceLog_FormatFloatTenths(char *dst, size_t dst_len,
 	(void) snprintf(dst, dst_len, "%s%s%ld.%01u\r\n", prefix,
 			negative ? "-" : "", whole, tenths);
 }
+
+/**
+ * @brief Format a floating-point value with six decimal places.
+ *
+ * The worker thread uses this when we need to see whether a value is really
+ * pinned, or just rounded into the same tenths bucket by the compact logger.
+ */
+void AppInferenceLog_FormatFloatMicros(char *dst, size_t dst_len,
+		const char *prefix, float value) {
+	if ((dst == NULL) || (dst_len == 0U) || (prefix == NULL)) {
+		return;
+	}
+
+	const bool negative = (value < 0.0f);
+	const double magnitude = negative ? -(double) value : (double) value;
+	unsigned long whole = (unsigned long) magnitude;
+	double fraction = magnitude - (double) whole;
+	unsigned long micros = (unsigned long) (fraction * 1000000.0 + 0.5);
+
+	if (micros >= 1000000UL) {
+		micros = 0UL;
+		whole += 1UL;
+	}
+
+	(void) snprintf(dst, dst_len, "%s%s%lu.%06lu\r\n", prefix,
+			negative ? "-" : "", whole, micros);
+}

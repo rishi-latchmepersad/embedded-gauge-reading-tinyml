@@ -36,6 +36,11 @@ from embedded_gauge_reading_tinyml.presets import (
     DEFAULT_INTERPOLATION_PAIR_SCALE,
     DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
     DEFAULT_KEYPOINT_HEATMAP_SIZE,
+    DEFAULT_KEYPOINT_COORD_LOSS_WEIGHT,
+    DEFAULT_GEOMETRY_VALUE_LOSS_WEIGHT,
+    DEFAULT_GEOMETRY_UNCERTAINTY_LOSS_WEIGHT,
+    DEFAULT_GEOMETRY_UNCERTAINTY_LOW_QUANTILE,
+    DEFAULT_GEOMETRY_UNCERTAINTY_HIGH_QUANTILE,
     DEFAULT_ORDINAL_LOSS_WEIGHT,
     DEFAULT_ORDINAL_THRESHOLD_STEP,
     DEFAULT_SWEEP_FRACTION_LOSS_WEIGHT,
@@ -61,10 +66,16 @@ def parse_args() -> argparse.Namespace:
         choices=[
             "compact",
             "compact_direction",
+            "compact_interval",
+            "compact_geometry",
             "mobilenet_v2",
             "mobilenet_v2_tiny",
             "mobilenet_v2_direction",
             "mobilenet_v2_fraction",
+            "mobilenet_v2_detector",
+            "mobilenet_v2_geometry",
+            "mobilenet_v2_geometry_uncertainty",
+            "mobilenet_v2_rectifier",
             "mobilenet_v2_keypoint",
             "mobilenet_v2_interval",
             "mobilenet_v2_ordinal",
@@ -143,6 +154,18 @@ def parse_args() -> argparse.Namespace:
         help="Additional weight placed on extreme gauge values (0 disables).",
     )
     parser.add_argument(
+        "--rectifier-model-path",
+        type=Path,
+        default=None,
+        help="Optional rectifier model used to generate rectified scalar crops.",
+    )
+    parser.add_argument(
+        "--rectifier-crop-scale",
+        type=float,
+        default=1.5,
+        help="Scale factor applied when generating rectified scalar crops.",
+    )
+    parser.add_argument(
         "--monotonic-pair-strength",
         type=float,
         default=0.0,
@@ -195,6 +218,36 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
         help="Loss weight applied to the keypoint heatmap branch.",
+    )
+    parser.add_argument(
+        "--keypoint-coord-loss-weight",
+        type=float,
+        default=DEFAULT_KEYPOINT_COORD_LOSS_WEIGHT,
+        help="Loss weight applied to the keypoint coordinate branch.",
+    )
+    parser.add_argument(
+        "--geometry-value-loss-weight",
+        type=float,
+        default=DEFAULT_GEOMETRY_VALUE_LOSS_WEIGHT,
+        help="Loss weight applied to the derived scalar value branch for geometry models.",
+    )
+    parser.add_argument(
+        "--geometry-uncertainty-loss-weight",
+        type=float,
+        default=DEFAULT_GEOMETRY_UNCERTAINTY_LOSS_WEIGHT,
+        help="Loss weight applied to the lower/upper uncertainty branches.",
+    )
+    parser.add_argument(
+        "--geometry-uncertainty-low-quantile",
+        type=float,
+        default=DEFAULT_GEOMETRY_UNCERTAINTY_LOW_QUANTILE,
+        help="Lower quantile used for the geometry uncertainty interval.",
+    )
+    parser.add_argument(
+        "--geometry-uncertainty-high-quantile",
+        type=float,
+        default=DEFAULT_GEOMETRY_UNCERTAINTY_HIGH_QUANTILE,
+        help="Upper quantile used for the geometry uncertainty interval.",
     )
     parser.add_argument(
         "--interpolation-pair-strength",
@@ -273,6 +326,8 @@ def main() -> None:
         gpu_memory_growth=not args.no_gpu_memory_growth,
         mixed_precision=args.mixed_precision,
         edge_focus_strength=args.edge_focus_strength,
+        rectifier_model_path=str(args.rectifier_model_path) if args.rectifier_model_path else None,
+        rectifier_crop_scale=args.rectifier_crop_scale,
         monotonic_pair_strength=args.monotonic_pair_strength,
         monotonic_pair_margin=args.monotonic_pair_margin,
         mixup_alpha=args.mixup_alpha,
@@ -284,6 +339,11 @@ def main() -> None:
         sweep_fraction_loss_weight=args.sweep_fraction_loss_weight,
         keypoint_heatmap_size=args.keypoint_heatmap_size,
         keypoint_heatmap_loss_weight=args.keypoint_heatmap_loss_weight,
+        keypoint_coord_loss_weight=args.keypoint_coord_loss_weight,
+        geometry_value_loss_weight=args.geometry_value_loss_weight,
+        geometry_uncertainty_loss_weight=args.geometry_uncertainty_loss_weight,
+        geometry_uncertainty_low_quantile=args.geometry_uncertainty_low_quantile,
+        geometry_uncertainty_high_quantile=args.geometry_uncertainty_high_quantile,
     )
 
     print(
@@ -328,11 +388,32 @@ def main() -> None:
         "[RUN] Sweep fraction head: "
         f"loss_weight={config.sweep_fraction_loss_weight}"
     )
-    print(
-        "[RUN] Keypoint head: "
-        f"heatmap_size={config.keypoint_heatmap_size} "
-        f"loss_weight={config.keypoint_heatmap_loss_weight}"
+    head_label = (
+        "Rectifier head"
+        if config.model_family == "mobilenet_v2_rectifier"
+        else
+        "Geometry head"
+        if config.model_family in {
+            "mobilenet_v2_detector",
+            "mobilenet_v2_geometry",
+            "mobilenet_v2_geometry_uncertainty",
+        }
+        else "Keypoint head"
     )
+    print(
+        f"[RUN] {head_label}: "
+        f"heatmap_size={config.keypoint_heatmap_size} "
+        f"heatmap_loss_weight={config.keypoint_heatmap_loss_weight} "
+        f"coord_loss_weight={config.keypoint_coord_loss_weight} "
+        f"value_loss_weight={config.geometry_value_loss_weight}"
+    )
+    if config.model_family == "mobilenet_v2_geometry_uncertainty":
+        print(
+            "[RUN] Geometry uncertainty head: "
+            f"loss_weight={config.geometry_uncertainty_loss_weight} "
+            f"low_q={config.geometry_uncertainty_low_quantile} "
+            f"high_q={config.geometry_uncertainty_high_quantile}"
+        )
 
     # Execute training and evaluation.
     result = train(config)

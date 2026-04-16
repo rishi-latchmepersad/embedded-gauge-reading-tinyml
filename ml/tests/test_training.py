@@ -12,7 +12,11 @@ import tensorflow as tf
 
 import embedded_gauge_reading_tinyml.training as training
 from embedded_gauge_reading_tinyml.models import (
+    build_compact_interval_model,
+    build_compact_geometry_model,
     build_mobilenetv2_direction_model,
+    build_mobilenetv2_geometry_uncertainty_model,
+    build_mobilenetv2_rectifier_model,
     build_mobilenetv2_regression_model,
 )
 from embedded_gauge_reading_tinyml.dataset import EllipseLabel, PointLabel, Sample
@@ -104,6 +108,9 @@ def test_train_config_defaults_match_strong_mobilenetv2_preset() -> None:
     assert config.mobilenet_alpha == pytest.approx(1.0)
     assert config.mobilenet_head_units == 128
     assert config.mobilenet_head_dropout == pytest.approx(0.2)
+    assert config.geometry_uncertainty_loss_weight == pytest.approx(0.25)
+    assert config.geometry_uncertainty_low_quantile == pytest.approx(0.10)
+    assert config.geometry_uncertainty_high_quantile == pytest.approx(0.90)
     assert config.init_model_path is None
 
 
@@ -128,6 +135,315 @@ def test_build_mobilenetv2_tiny_regression_model_is_smaller() -> None:
     assert tiny.name == "mobilenetv2_gauge_regressor_a035_h064"
     assert tiny.output_shape == (None, 1)
     assert tiny.count_params() < standard.count_params()
+
+
+def test_build_compact_interval_model_outputs_scalar_and_bins() -> None:
+    """Compact interval CNN should emit both gauge_value and interval logits."""
+    model = build_compact_interval_model(
+        image_height=32,
+        image_width=32,
+        value_min=-30.0,
+        value_max=50.0,
+        bin_width=10.0,
+    )
+    batch: tf.Tensor = tf.zeros((2, 32, 32, 3), dtype=tf.float32)
+    outputs = model(batch)
+
+    assert model.name == "compact_interval_gauge_regressor"
+    assert outputs["gauge_value"].shape == (2, 1)
+    assert outputs["interval_logits"].shape == (2, 8)
+
+
+def test_build_compact_geometry_model_outputs_geometry_tensors() -> None:
+    """Compact geometry CNN should emit scalar, heatmaps, and keypoint coords."""
+    model = build_compact_geometry_model(
+        image_height=32,
+        image_width=32,
+        value_min=-30.0,
+        value_max=50.0,
+        min_angle_rad=0.0,
+        sweep_rad=np.pi,
+        heatmap_size=16,
+    )
+    batch: tf.Tensor = tf.zeros((2, 32, 32, 3), dtype=tf.float32)
+    outputs = model(batch)
+
+    assert model.name == "compact_geometry_gauge_regressor"
+    assert outputs["gauge_value"].shape == (2, 1)
+    assert outputs["keypoint_heatmaps"].shape == (2, 16, 16, 2)
+    assert outputs["keypoint_coords"].shape == (2, 2, 2)
+
+
+def test_build_mobilenetv2_geometry_uncertainty_model_outputs_bounds() -> None:
+    """Geometry-uncertainty CNN should emit scalar, heatmaps, coords, and bounds."""
+    model = build_mobilenetv2_geometry_uncertainty_model(
+        image_height=32,
+        image_width=32,
+        value_min=-30.0,
+        value_max=50.0,
+        min_angle_rad=0.0,
+        sweep_rad=np.pi,
+        heatmap_size=16,
+        pretrained=False,
+        backbone_trainable=False,
+    )
+    batch: tf.Tensor = tf.zeros((2, 32, 32, 3), dtype=tf.float32)
+    outputs = model(batch)
+
+    assert model.name == "mobilenetv2_geometry_uncertainty_regressor"
+    assert outputs["gauge_value"].shape == (2, 1)
+    assert outputs["keypoint_heatmaps"].shape == (2, 16, 16, 2)
+    assert outputs["keypoint_coords"].shape == (2, 2, 2)
+    assert outputs["gauge_value_lower"].shape == (2, 1)
+    assert outputs["gauge_value_upper"].shape == (2, 1)
+
+
+def test_build_mobilenetv2_rectifier_model_outputs_box() -> None:
+    """Rectifier CNN should emit a normalized crop-box prediction."""
+    model = build_mobilenetv2_rectifier_model(
+        image_height=32,
+        image_width=32,
+        pretrained=False,
+        backbone_trainable=False,
+    )
+    batch: tf.Tensor = tf.zeros((2, 32, 32, 3), dtype=tf.float32)
+    outputs = model(batch)
+
+    assert model.name == "mobilenetv2_rectifier_regressor"
+    assert outputs["rectifier_box"].shape == (2, 4)
+
+
+def test_train_happy_path_with_mobilenetv2_geometry_uncertainty_mocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """train should route through the geometry-uncertainty MobileNetV2 family."""
+    spec: GaugeSpec = _make_spec()
+
+    label_summary: LabelSummary = LabelSummary(
+        total_samples=10,
+        in_sweep=9,
+        out_of_sweep=1,
+        min_fraction=0.0,
+        max_fraction=1.0,
+    )
+
+    examples: list[training.TrainingExample] = [
+        training.TrainingExample("a.jpg", 1.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("b.jpg", 2.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("c.jpg", 3.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("d.jpg", 4.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+    ]
+    split: training.DatasetSplit = training.DatasetSplit(
+        train_examples=examples[:2],
+        val_examples=examples[2:3],
+        test_examples=examples[3:],
+    )
+
+    class _FakeHistory:
+        """Small stand-in for keras.callbacks.History."""
+
+        def __init__(self) -> None:
+            self.history: dict[str, list[float]] = {"loss": [1.0], "val_loss": [1.2]}
+
+    class _FakeModel:
+        """Small stand-in for a compiled geometry-uncertainty model."""
+
+        def compile(self, **kwargs: Any) -> None:
+            _ = kwargs
+
+        def fit(
+            self,
+            train_ds: Any,
+            validation_data: Any,
+            epochs: int,
+            callbacks: list[Any],
+            verbose: int,
+        ) -> _FakeHistory:
+            assert train_ds is not None
+            assert validation_data is not None
+            assert epochs == 1
+            assert len(callbacks) == 2
+            assert verbose == 2
+            return _FakeHistory()
+
+        def evaluate(
+            self, test_ds: Any, return_dict: bool, verbose: int
+        ) -> dict[str, float]:
+            assert test_ds is not None
+            assert return_dict is True
+            assert verbose == 0
+            return {"loss": 1.0, "mae": 0.5, "rmse": 0.75}
+
+    fake_model = _FakeModel()
+
+    def _build_tf_dataset_stub(
+        examples: list[training.TrainingExample],
+        config: training.TrainConfig,
+        training: bool,
+        target_kind: str = "value",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        assert target_kind == "geometry_uncertainty"
+        assert kwargs.get("value_range") == (-30.0, 50.0)
+        return {"n": len(examples), "train": training, "target_kind": target_kind}
+
+    monkeypatch.setattr(training, "load_gauge_specs", lambda: {spec.gauge_id: spec})
+    monkeypatch.setattr(
+        training, "load_dataset", lambda labelled_dir, raw_dir: [object()] * 10
+    )
+    monkeypatch.setattr(
+        training, "summarize_label_sweep", lambda samples, spec: label_summary
+    )
+    monkeypatch.setattr(
+        training,
+        "_build_training_examples",
+        lambda samples, spec, **kwargs: (examples, 1),
+    )
+    monkeypatch.setattr(training, "_split_examples", lambda examples, config: split)
+    monkeypatch.setattr(training, "_build_tf_dataset", _build_tf_dataset_stub)
+    monkeypatch.setattr(
+        training,
+        "build_mobilenetv2_geometry_uncertainty_model",
+        lambda *args, **kwargs: fake_model,
+    )
+    monkeypatch.setattr(
+        training,
+        "_compute_mean_baseline_mae",
+        lambda train_examples, test_examples: 2.5,
+    )
+
+    result: training.TrainingResult = training.train(
+        training.TrainConfig(epochs=1, model_family="mobilenet_v2_geometry_uncertainty")
+    )
+
+    assert result.model is fake_model
+    assert result.label_summary == label_summary
+    assert result.dropped_out_of_sweep == 1
+    assert result.baseline_test_mae == pytest.approx(2.5)
+    assert result.test_metrics == {
+        "loss": 1.0,
+        "mae": 0.5,
+        "rmse": 0.75,
+        "baseline_mae_mean_predictor": 2.5,
+    }
+
+
+def test_train_happy_path_with_mobilenetv2_rectifier_mocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """train should route through the MobileNetV2 rectifier family."""
+    spec: GaugeSpec = _make_spec()
+
+    label_summary: LabelSummary = LabelSummary(
+        total_samples=10,
+        in_sweep=9,
+        out_of_sweep=1,
+        min_fraction=0.0,
+        max_fraction=1.0,
+    )
+
+    examples: list[training.TrainingExample] = [
+        training.TrainingExample("a.jpg", 1.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("b.jpg", 2.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("c.jpg", 3.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("d.jpg", 4.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+    ]
+    split: training.DatasetSplit = training.DatasetSplit(
+        train_examples=examples[:2],
+        val_examples=examples[2:3],
+        test_examples=examples[3:],
+    )
+
+    class _FakeHistory:
+        """Small stand-in for keras.callbacks.History."""
+
+        def __init__(self) -> None:
+            self.history: dict[str, list[float]] = {"loss": [1.0], "val_loss": [1.2]}
+
+    class _FakeModel:
+        """Small stand-in for a compiled rectifier model."""
+
+        def compile(self, **kwargs: Any) -> None:
+            _ = kwargs
+
+        def fit(
+            self,
+            train_ds: Any,
+            validation_data: Any,
+            epochs: int,
+            callbacks: list[Any],
+            verbose: int,
+        ) -> _FakeHistory:
+            assert train_ds is not None
+            assert validation_data is not None
+            assert epochs == 1
+            assert len(callbacks) == 2
+            assert verbose == 2
+            return _FakeHistory()
+
+        def evaluate(
+            self, test_ds: Any, return_dict: bool, verbose: int
+        ) -> dict[str, float]:
+            assert test_ds is not None
+            assert return_dict is True
+            assert verbose == 0
+            return {"loss": 1.0, "mae": 0.5, "rmse": 0.75}
+
+    fake_model = _FakeModel()
+
+    def _build_tf_dataset_stub(
+        examples: list[training.TrainingExample],
+        config: training.TrainConfig,
+        training: bool,
+        target_kind: str = "value",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        assert target_kind == "rectifier_box"
+        value_range = kwargs.get("value_range")
+        assert value_range is None or (
+            isinstance(value_range, tuple) and len(value_range) == 2
+        )
+        return {"n": len(examples), "train": training, "target_kind": target_kind}
+
+    monkeypatch.setattr(training, "load_gauge_specs", lambda: {spec.gauge_id: spec})
+    monkeypatch.setattr(
+        training, "load_dataset", lambda labelled_dir, raw_dir: [object()] * 10
+    )
+    monkeypatch.setattr(
+        training, "summarize_label_sweep", lambda samples, spec: label_summary
+    )
+    monkeypatch.setattr(
+        training,
+        "_build_training_examples",
+        lambda samples, spec, **kwargs: (examples, 1),
+    )
+    monkeypatch.setattr(training, "_split_examples", lambda examples, config: split)
+    monkeypatch.setattr(training, "_build_tf_dataset", _build_tf_dataset_stub)
+    monkeypatch.setattr(
+        training,
+        "build_mobilenetv2_rectifier_model",
+        lambda *args, **kwargs: fake_model,
+    )
+    monkeypatch.setattr(
+        training,
+        "_compute_mean_baseline_mae",
+        lambda train_examples, test_examples: 2.5,
+    )
+
+    result: training.TrainingResult = training.train(
+        training.TrainConfig(epochs=1, model_family="mobilenet_v2_rectifier")
+    )
+
+    assert result.model is fake_model
+    assert result.label_summary == label_summary
+    assert result.dropped_out_of_sweep == 1
+    assert result.baseline_test_mae == pytest.approx(2.5)
+    assert result.test_metrics == {
+        "loss": 1.0,
+        "mae": 0.5,
+        "rmse": 0.75,
+        "baseline_mae_mean_predictor": 2.5,
+    }
 
 
 def test_build_mobilenetv2_direction_model_outputs_unit_vector() -> None:
@@ -497,13 +813,13 @@ def test_train_happy_path_with_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         training,
         "_build_training_examples",
-        lambda samples, spec, strict_labels, crop_pad_ratio: (examples, 1),
+        lambda samples, spec, **kwargs: (examples, 1),
     )
     monkeypatch.setattr(training, "_split_examples", lambda examples, config: split)
     monkeypatch.setattr(
         training,
         "_build_tf_dataset",
-        lambda examples, config, training, target_kind="value": {
+        lambda examples, config, training, target_kind="value", **kwargs: {
             "n": len(examples),
             "train": training,
             "target_kind": target_kind,
@@ -527,6 +843,233 @@ def test_train_happy_path_with_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
 
     result: training.TrainingResult = training.train(
         training.TrainConfig(epochs=1, model_family="compact")
+    )
+
+    assert result.model is fake_model
+    assert result.label_summary == label_summary
+    assert result.dropped_out_of_sweep == 1
+    assert result.baseline_test_mae == pytest.approx(2.5)
+    assert result.test_metrics == {
+        "loss": 1.0,
+        "mae": 0.5,
+        "rmse": 0.75,
+        "baseline_mae_mean_predictor": 2.5,
+    }
+
+
+def test_train_happy_path_with_compact_interval_mocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """train should route through the compact interval model family."""
+    spec: GaugeSpec = _make_spec()
+
+    label_summary: LabelSummary = LabelSummary(
+        total_samples=10,
+        in_sweep=9,
+        out_of_sweep=1,
+        min_fraction=0.0,
+        max_fraction=1.0,
+    )
+
+    examples: list[training.TrainingExample] = [
+        training.TrainingExample("a.jpg", 1.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("b.jpg", 2.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("c.jpg", 3.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("d.jpg", 4.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+    ]
+    split: training.DatasetSplit = training.DatasetSplit(
+        train_examples=examples[:2],
+        val_examples=examples[2:3],
+        test_examples=examples[3:],
+    )
+
+    class _FakeHistory:
+        """Small stand-in for keras.callbacks.History."""
+
+        def __init__(self) -> None:
+            self.history: dict[str, list[float]] = {"loss": [1.0], "val_loss": [1.2]}
+
+    class _FakeModel:
+        """Small stand-in for a compiled interval model."""
+
+        def compile(self, **kwargs: Any) -> None:
+            _ = kwargs
+
+        def fit(
+            self,
+            train_ds: Any,
+            validation_data: Any,
+            epochs: int,
+            callbacks: list[Any],
+            verbose: int,
+        ) -> _FakeHistory:
+            assert train_ds is not None
+            assert validation_data is not None
+            assert epochs == 1
+            assert len(callbacks) == 2
+            assert verbose == 2
+            return _FakeHistory()
+
+        def evaluate(
+            self, test_ds: Any, return_dict: bool, verbose: int
+        ) -> dict[str, float]:
+            assert test_ds is not None
+            assert return_dict is True
+            assert verbose == 0
+            return {"loss": 1.0, "mae": 0.5, "rmse": 0.75}
+
+    fake_model = _FakeModel()
+
+    monkeypatch.setattr(training, "load_gauge_specs", lambda: {spec.gauge_id: spec})
+    monkeypatch.setattr(
+        training, "load_dataset", lambda labelled_dir, raw_dir: [object()] * 10
+    )
+    monkeypatch.setattr(
+        training, "summarize_label_sweep", lambda samples, spec: label_summary
+    )
+    monkeypatch.setattr(
+        training,
+        "_build_training_examples",
+        lambda samples, spec, **kwargs: (examples, 1),
+    )
+    monkeypatch.setattr(training, "_split_examples", lambda examples, config: split)
+    monkeypatch.setattr(
+        training,
+        "_build_tf_dataset",
+        lambda examples, config, training, target_kind="value", **kwargs: {
+            "n": len(examples),
+            "train": training,
+            "target_kind": target_kind,
+        },
+    )
+    monkeypatch.setattr(
+        training,
+        "build_compact_interval_model",
+        lambda *args, **kwargs: fake_model,
+    )
+    monkeypatch.setattr(
+        training,
+        "_compute_mean_baseline_mae",
+        lambda train_examples, test_examples: 2.5,
+    )
+
+    result: training.TrainingResult = training.train(
+        training.TrainConfig(epochs=1, model_family="compact_interval")
+    )
+
+    assert result.model is fake_model
+    assert result.label_summary == label_summary
+    assert result.dropped_out_of_sweep == 1
+    assert result.baseline_test_mae == pytest.approx(2.5)
+    assert result.test_metrics == {
+        "loss": 1.0,
+        "mae": 0.5,
+        "rmse": 0.75,
+        "baseline_mae_mean_predictor": 2.5,
+    }
+
+
+def test_train_happy_path_with_compact_geometry_mocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """train should route through the compact geometry model family."""
+    spec: GaugeSpec = _make_spec()
+
+    label_summary: LabelSummary = LabelSummary(
+        total_samples=10,
+        in_sweep=9,
+        out_of_sweep=1,
+        min_fraction=0.0,
+        max_fraction=1.0,
+    )
+
+    examples: list[training.TrainingExample] = [
+        training.TrainingExample("a.jpg", 1.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("b.jpg", 2.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("c.jpg", 3.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("d.jpg", 4.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+    ]
+    split: training.DatasetSplit = training.DatasetSplit(
+        train_examples=examples[:2],
+        val_examples=examples[2:3],
+        test_examples=examples[3:],
+    )
+
+    class _FakeHistory:
+        """Small stand-in for keras.callbacks.History."""
+
+        def __init__(self) -> None:
+            self.history: dict[str, list[float]] = {"loss": [1.0], "val_loss": [1.2]}
+
+    class _FakeModel:
+        """Small stand-in for a compiled compact geometry model."""
+
+        def compile(self, **kwargs: Any) -> None:
+            _ = kwargs
+
+        def fit(
+            self,
+            train_ds: Any,
+            validation_data: Any,
+            epochs: int,
+            callbacks: list[Any],
+            verbose: int,
+        ) -> _FakeHistory:
+            assert train_ds is not None
+            assert validation_data is not None
+            assert epochs == 1
+            assert len(callbacks) == 2
+            assert verbose == 2
+            return _FakeHistory()
+
+        def evaluate(
+            self, test_ds: Any, return_dict: bool, verbose: int
+        ) -> dict[str, float]:
+            assert test_ds is not None
+            assert return_dict is True
+            assert verbose == 0
+            return {"loss": 1.0, "mae": 0.5, "rmse": 0.75}
+
+    fake_model = _FakeModel()
+
+    def _build_tf_dataset_stub(
+        examples: list[training.TrainingExample],
+        config: training.TrainConfig,
+        training: bool,
+        target_kind: str = "value",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        assert target_kind == "geometry"
+        assert kwargs.get("value_range") == (-30.0, 50.0)
+        return {"n": len(examples), "train": training, "target_kind": target_kind}
+
+    monkeypatch.setattr(training, "load_gauge_specs", lambda: {spec.gauge_id: spec})
+    monkeypatch.setattr(
+        training, "load_dataset", lambda labelled_dir, raw_dir: [object()] * 10
+    )
+    monkeypatch.setattr(
+        training, "summarize_label_sweep", lambda samples, spec: label_summary
+    )
+    monkeypatch.setattr(
+        training,
+        "_build_training_examples",
+        lambda samples, spec, **kwargs: (examples, 1),
+    )
+    monkeypatch.setattr(training, "_split_examples", lambda examples, config: split)
+    monkeypatch.setattr(training, "_build_tf_dataset", _build_tf_dataset_stub)
+    monkeypatch.setattr(
+        training,
+        "build_compact_geometry_model",
+        lambda *args, **kwargs: fake_model,
+    )
+    monkeypatch.setattr(
+        training,
+        "_compute_mean_baseline_mae",
+        lambda train_examples, test_examples: 2.5,
+    )
+
+    result: training.TrainingResult = training.train(
+        training.TrainConfig(epochs=1, model_family="compact_geometry")
     )
 
     assert result.model is fake_model
@@ -620,13 +1163,13 @@ def test_train_can_warm_start_from_existing_model(
     monkeypatch.setattr(
         training,
         "_build_training_examples",
-        lambda samples, spec, strict_labels, crop_pad_ratio: (examples, 1),
+        lambda samples, spec, **kwargs: (examples, 1),
     )
     monkeypatch.setattr(training, "_split_examples", lambda examples, config: split)
     monkeypatch.setattr(
         training,
         "_build_tf_dataset",
-        lambda examples, config, training, target_kind="value": {
+        lambda examples, config, training, target_kind="value", **kwargs: {
             "n": len(examples),
             "train": training,
             "target_kind": target_kind,

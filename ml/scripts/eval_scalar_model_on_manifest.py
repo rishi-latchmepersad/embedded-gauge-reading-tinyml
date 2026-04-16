@@ -17,6 +17,11 @@ SRC_DIR: Path = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from embedded_gauge_reading_tinyml.models import (
+    GaugeValueFromKeypoints,
+    SpatialSoftArgmax2D,
+)
+
 
 def _parse_args() -> argparse.Namespace:
     """Parse CLI arguments for the manifest evaluation job."""
@@ -35,7 +40,9 @@ def _load_model(model_path: Path, *, legacy_preprocess: bool) -> tf.keras.Model:
     """Load a saved Keras model with optional legacy MobileNetV2 support."""
     print(f"[EVAL] Loading model from {model_path}...", flush=True)
     custom_objects: dict[str, Any] = {
-        "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input
+        "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input,
+        "SpatialSoftArgmax2D": SpatialSoftArgmax2D,
+        "GaugeValueFromKeypoints": GaugeValueFromKeypoints,
     }
     if legacy_preprocess:
         print("[EVAL] Legacy MobileNetV2 preprocess support enabled.", flush=True)

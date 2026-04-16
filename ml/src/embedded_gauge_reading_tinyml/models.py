@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import keras
+import tensorflow as tf
 
 
 def _norm(x: keras.KerasTensor) -> keras.KerasTensor:
@@ -95,6 +96,27 @@ def _build_feature_backbone(
     x = _residual_separable_block(x, 128, dropout_rate=0.08)
     x = keras.layers.GlobalAveragePooling2D()(x)
     return inputs, x
+
+
+def _build_compact_geometry_backbone(
+    image_height: int, image_width: int
+) -> tuple[keras.KerasTensor, keras.KerasTensor, keras.KerasTensor]:
+    """Build compact CNN features for both spatial and pooled geometry heads."""
+    inputs = keras.Input(shape=(image_height, image_width, 3), name="image")
+
+    x = _conv_norm_swish(inputs, 32, strides=2)
+    x = _residual_separable_block(x, 32, dropout_rate=0.02)
+    x = keras.layers.MaxPool2D(pool_size=2)(x)
+
+    x = _residual_separable_block(x, 64, dropout_rate=0.04)
+    x = keras.layers.MaxPool2D(pool_size=2)(x)
+
+    x = _residual_separable_block(x, 96, dropout_rate=0.06)
+    x = keras.layers.MaxPool2D(pool_size=2)(x)
+
+    spatial_features = _residual_separable_block(x, 128, dropout_rate=0.08)
+    pooled_features = keras.layers.GlobalAveragePooling2D()(spatial_features)
+    return inputs, spatial_features, pooled_features
 
 
 def _build_mobilenetv2_backbone(
@@ -317,6 +339,130 @@ def _build_keypoint_heatmap_head(
     return heatmaps
 
 
+@keras.saving.register_keras_serializable(
+    package="embedded_gauge_reading_tinyml"
+)
+class SpatialSoftArgmax2D(keras.layers.Layer):
+    """Convert per-keypoint heatmaps into soft coordinates."""
+
+    def __init__(
+        self,
+        *,
+        heatmap_size: int,
+        num_keypoints: int = 2,
+        temperature: float = 10.0,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        if heatmap_size < 4:
+            raise ValueError("heatmap_size must be >= 4.")
+        if num_keypoints < 1:
+            raise ValueError("num_keypoints must be >= 1.")
+        if temperature <= 0.0:
+            raise ValueError("temperature must be > 0.")
+        self.heatmap_size = heatmap_size
+        self.num_keypoints = num_keypoints
+        self.temperature = temperature
+        self._grid_x: tf.Tensor | None = None
+        self._grid_y: tf.Tensor | None = None
+
+    def build(self, input_shape: tf.TensorShape) -> None:
+        """Precompute the heatmap coordinate grid used by the soft argmax."""
+        if len(input_shape) != 4:
+            raise ValueError("Heatmap tensor must be rank 4.")
+        channels = input_shape[-1]
+        if channels is not None and int(channels) != self.num_keypoints:
+            raise ValueError("Heatmap channel count must match num_keypoints.")
+
+        coords = tf.range(self.heatmap_size, dtype=tf.float32)
+        grid_y, grid_x = tf.meshgrid(coords, coords, indexing="ij")
+        self._grid_x = tf.reshape(grid_x, [1, -1, 1])
+        self._grid_y = tf.reshape(grid_y, [1, -1, 1])
+        super().build(input_shape)
+
+    def call(self, inputs: tf.Tensor) -> tf.Tensor:
+        """Turn sigmoid heatmaps into coordinate expectations."""
+        if self._grid_x is None or self._grid_y is None:
+            raise RuntimeError("SpatialSoftArgmax2D was not built correctly.")
+
+        heatmaps = tf.cast(inputs, tf.float32)
+        batch_size = tf.shape(heatmaps)[0]
+        flattened = tf.reshape(
+            heatmaps,
+            [batch_size, self.heatmap_size * self.heatmap_size, self.num_keypoints],
+        )
+        weights = tf.nn.softmax(flattened * self.temperature, axis=1)
+        x_coords = tf.reduce_sum(weights * self._grid_x, axis=1)
+        y_coords = tf.reduce_sum(weights * self._grid_y, axis=1)
+        return tf.stack([x_coords, y_coords], axis=-1)
+
+    def get_config(self) -> dict[str, object]:
+        """Serialize the layer config for saved models."""
+        config = super().get_config()
+        config.update(
+            {
+                "heatmap_size": self.heatmap_size,
+                "num_keypoints": self.num_keypoints,
+                "temperature": self.temperature,
+            }
+        )
+        return config
+
+
+@keras.saving.register_keras_serializable(
+    package="embedded_gauge_reading_tinyml"
+)
+class GaugeValueFromKeypoints(keras.layers.Layer):
+    """Convert detected center/tip keypoints into a calibrated gauge value."""
+
+    def __init__(
+        self,
+        *,
+        value_min: float,
+        value_max: float,
+        min_angle_rad: float,
+        sweep_rad: float,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        if value_max <= value_min:
+            raise ValueError("value_max must be > value_min.")
+        if sweep_rad <= 0.0:
+            raise ValueError("sweep_rad must be > 0.")
+        self.value_min = float(value_min)
+        self.value_max = float(value_max)
+        self.min_angle_rad = float(min_angle_rad)
+        self.sweep_rad = float(sweep_rad)
+        self._two_pi = float(2.0 * math.pi)
+
+    def call(self, inputs: tf.Tensor) -> tf.Tensor:
+        """Map a center/tip coordinate pair into the calibrated gauge value."""
+        keypoints = tf.cast(inputs, tf.float32)
+        center = keypoints[:, 0, :]
+        tip = keypoints[:, 1, :]
+        dx = tip[:, 0] - center[:, 0]
+        dy = tip[:, 1] - center[:, 1]
+        raw_angle = tf.atan2(dy, dx)
+        shifted = tf.math.floormod(raw_angle - self.min_angle_rad, self._two_pi)
+        fraction = tf.clip_by_value(shifted / self.sweep_rad, 0.0, 1.0)
+        span = self.value_max - self.value_min
+        value = self.value_min + fraction * span
+        return tf.expand_dims(value, axis=-1)
+
+    def get_config(self) -> dict[str, object]:
+        """Serialize the layer config for saved models."""
+        config = super().get_config()
+        config.update(
+            {
+                "value_min": self.value_min,
+                "value_max": self.value_max,
+                "min_angle_rad": self.min_angle_rad,
+                "sweep_rad": self.sweep_rad,
+            }
+        )
+        return config
+
+
 def build_regression_model(image_height: int, image_width: int) -> keras.Model:
     """Build a compact residual CNN regressor for scalar gauge value output."""
     inputs, x = _build_feature_backbone(image_height, image_width)
@@ -338,6 +484,94 @@ def build_needle_direction_model(image_height: int, image_width: int) -> keras.M
     output = keras.layers.UnitNormalization(axis=-1, name="needle_xy")(x)
 
     return keras.Model(inputs=inputs, outputs=output, name="needle_direction_regressor")
+
+
+def build_compact_interval_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    bin_width: float = 5.0,
+) -> keras.Model:
+    """Build a compact CNN that predicts coarse bins plus a local residual."""
+    inputs, x = _build_feature_backbone(image_height, image_width)
+
+    x = keras.layers.Dense(192, activation="swish")(x)
+    x = keras.layers.Dropout(0.2)(x)
+
+    span = value_max - value_min
+    num_bins = int(math.ceil(span / bin_width))
+    if num_bins < 2:
+        raise ValueError("Compact interval model needs at least two bins.")
+
+    interval_logits = keras.layers.Dense(
+        num_bins,
+        name="interval_logits",
+    )(x)
+    gauge_value, interval_probs = _build_interval_hybrid_head(
+        x,
+        interval_logits,
+        value_min=value_min,
+        value_max=value_max,
+        bin_width=bin_width,
+    )
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "interval_logits": interval_logits,
+        },
+        name="compact_interval_gauge_regressor",
+    )
+    setattr(model, "_compact_interval_probs", interval_probs)
+    return model
+
+
+def build_compact_geometry_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    min_angle_rad: float,
+    sweep_rad: float,
+    heatmap_size: int = 28,
+) -> keras.Model:
+    """Build a compact CNN with explicit keypoint heatmaps and geometry value."""
+    inputs, spatial_features, _pooled_features = _build_compact_geometry_backbone(
+        image_height,
+        image_width,
+    )
+    heatmaps = _build_keypoint_heatmap_head(
+        spatial_features,
+        heatmap_size=heatmap_size,
+        num_keypoints=2,
+    )
+    keypoints = SpatialSoftArgmax2D(
+        heatmap_size=heatmap_size,
+        num_keypoints=2,
+        name="keypoint_coords",
+    )(heatmaps)
+    gauge_value = GaugeValueFromKeypoints(
+        value_min=value_min,
+        value_max=value_max,
+        min_angle_rad=min_angle_rad,
+        sweep_rad=sweep_rad,
+        name="gauge_value",
+    )(keypoints)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "keypoint_heatmaps": heatmaps,
+            "keypoint_coords": keypoints,
+        },
+        name="compact_geometry_gauge_regressor",
+    )
+    return model
 
 
 def build_mobilenetv2_regression_model(
@@ -651,4 +885,252 @@ def build_mobilenetv2_keypoint_model(
         ),
     )
     setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_detector_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    min_angle_rad: float,
+    sweep_rad: float,
+    heatmap_size: int = 28,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a detector-first model that turns keypoints into gauge value."""
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    heatmaps = _build_keypoint_heatmap_head(
+        x,
+        heatmap_size=heatmap_size,
+        num_keypoints=2,
+    )
+    keypoints = SpatialSoftArgmax2D(
+        heatmap_size=heatmap_size,
+        num_keypoints=2,
+        name="keypoint_coords",
+    )(heatmaps)
+    gauge_value = GaugeValueFromKeypoints(
+        value_min=value_min,
+        value_max=value_max,
+        min_angle_rad=min_angle_rad,
+        sweep_rad=sweep_rad,
+        name="gauge_value",
+    )(keypoints)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "keypoint_heatmaps": heatmaps,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="detector",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_geometry_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    min_angle_rad: float,
+    sweep_rad: float,
+    heatmap_size: int = 28,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a geometry-first model with explicit keypoint and value outputs."""
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    heatmaps = _build_keypoint_heatmap_head(
+        x,
+        heatmap_size=heatmap_size,
+        num_keypoints=2,
+    )
+    keypoints = SpatialSoftArgmax2D(
+        heatmap_size=heatmap_size,
+        num_keypoints=2,
+        name="keypoint_coords",
+    )(heatmaps)
+    gauge_value = GaugeValueFromKeypoints(
+        value_min=value_min,
+        value_max=value_max,
+        min_angle_rad=min_angle_rad,
+        sweep_rad=sweep_rad,
+        name="gauge_value",
+    )(keypoints)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "keypoint_heatmaps": heatmaps,
+            "keypoint_coords": keypoints,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="geometry",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_geometry_uncertainty_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    min_angle_rad: float,
+    sweep_rad: float,
+    heatmap_size: int = 28,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a geometry model with symmetric uncertainty bounds around the value."""
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    pooled_features = keras.layers.GlobalAveragePooling2D(
+        name="geometry_pooled_features"
+    )(x)
+    heatmaps = _build_keypoint_heatmap_head(
+        x,
+        heatmap_size=heatmap_size,
+        num_keypoints=2,
+    )
+    keypoints = SpatialSoftArgmax2D(
+        heatmap_size=heatmap_size,
+        num_keypoints=2,
+        name="keypoint_coords",
+    )(heatmaps)
+    gauge_value = GaugeValueFromKeypoints(
+        value_min=value_min,
+        value_max=value_max,
+        min_angle_rad=min_angle_rad,
+        sweep_rad=sweep_rad,
+        name="gauge_value",
+    )(keypoints)
+
+    uncertainty_features = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="geometry_uncertainty_dense",
+    )(pooled_features)
+    uncertainty_features = keras.layers.Dropout(head_dropout)(
+        uncertainty_features
+    )
+    interval_radius = keras.layers.Dense(
+        1,
+        activation="softplus",
+        name="gauge_value_interval_radius",
+    )(uncertainty_features)
+    half_interval = keras.layers.Rescaling(
+        0.5,
+        name="gauge_value_half_interval",
+    )(interval_radius)
+    gauge_value_lower = keras.layers.Subtract(name="gauge_value_lower")(
+        [gauge_value, half_interval]
+    )
+    gauge_value_upper = keras.layers.Add(name="gauge_value_upper")(
+        [gauge_value, half_interval]
+    )
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "keypoint_heatmaps": heatmaps,
+            "keypoint_coords": keypoints,
+            "gauge_value_lower": gauge_value_lower,
+            "gauge_value_upper": gauge_value_upper,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="geometry_uncertainty",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_rectifier_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a compact rectifier model that predicts a normalized dial crop box."""
+    _ = pretrained
+    _ = backbone_trainable
+    _ = alpha
+
+    # Keep the rectifier lightweight so the two-stage STM32 build stays within
+    # the board flash budget while still learning a useful crop proposal.
+    inputs, x = _build_feature_backbone(image_height, image_width)
+    x = keras.layers.LayerNormalization(name="rectifier_pooled_features")(x)
+    x = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="rectifier_dense",
+    )(x)
+    x = keras.layers.Dropout(head_dropout, name="rectifier_dropout")(x)
+
+    # Predict normalized center-x, center-y, width, height in [0, 1].
+    box = keras.layers.Dense(
+        4,
+        activation="sigmoid",
+        name="rectifier_box",
+    )(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={"rectifier_box": box},
+        name=_mobilenetv2_model_name(
+            regression_kind="rectifier",
+            alpha=1.0,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", None)
     return model

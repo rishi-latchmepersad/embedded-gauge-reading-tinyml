@@ -23,7 +23,10 @@ if str(SRC_DIR) not in sys.path:
 
 from embedded_gauge_reading_tinyml.dataset import load_dataset
 from embedded_gauge_reading_tinyml.gauge.processing import load_gauge_specs
-from embedded_gauge_reading_tinyml.presets import DEFAULT_GAUGE_ID
+from embedded_gauge_reading_tinyml.presets import (
+    DEFAULT_GAUGE_ID,
+    DEFAULT_KEYPOINT_HEATMAP_SIZE,
+)
 from embedded_gauge_reading_tinyml.training import (
     TrainConfig,
     _build_tf_dataset,
@@ -410,6 +413,9 @@ def main() -> None:
     training_examples, dropped_out_of_sweep = _build_training_examples(
         samples,
         spec,
+        image_height=image_height,
+        image_width=image_width,
+        keypoint_heatmap_size=DEFAULT_KEYPOINT_HEATMAP_SIZE,
         strict_labels=args.strict_labels,
         crop_pad_ratio=args.crop_pad_ratio,
     )

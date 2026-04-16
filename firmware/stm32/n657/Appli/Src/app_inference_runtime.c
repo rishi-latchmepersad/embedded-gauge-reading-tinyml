@@ -252,12 +252,21 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 					float f;
 					ULONG u;
 				} bits = { .f = result };
-				char inference_line[48] = { 0 };
+				char inference_line[64] = { 0 };
 
+				/* Keep the existing compact line for the CSV-friendly view, and
+				 * add a precise line so we can tell whether the value is truly
+				 * fixed or only looks fixed after rounding to tenths. */
 				AppInferenceLog_FormatFloatTenths(inference_line,
 						sizeof(inference_line), "[AI] Inference value: ",
 						result);
 				(void) DebugConsole_WriteString(inference_line);
+				AppInferenceLog_FormatFloatMicros(inference_line,
+						sizeof(inference_line), "[AI] Inference exact: ",
+						result);
+				(void) DebugConsole_WriteString(inference_line);
+				DebugConsole_Printf("[AI] Inference bits=0x%08lx\r\n",
+						(unsigned long) bits.u);
 				if (inference_log_thread_created) {
 					(void) tx_queue_send(&inference_log_queue, &bits.u,
 							TX_NO_WAIT);
@@ -405,12 +414,16 @@ static VOID InferenceLogThread_Entry(ULONG thread_input) {
 				float f;
 			} bits = { .u = value_bits };
 			float inference_value = bits.f;
-			char inference_line[48] = { 0 };
+			char inference_line[64] = { 0 };
 			char row[INFERENCE_LOG_ROW_MAX_LENGTH] = { 0 };
 			char rtc_timestamp[32] = { 0 };
 
 			AppInferenceLog_FormatFloatTenths(inference_line,
 					sizeof(inference_line), "[INFER_LOG] Inference value: ",
+					inference_value);
+			(void) DebugConsole_WriteString(inference_line);
+			AppInferenceLog_FormatFloatMicros(inference_line,
+					sizeof(inference_line), "[INFER_LOG] Inference exact: ",
 					inference_value);
 			(void) DebugConsole_WriteString(inference_line);
 

@@ -45,6 +45,7 @@ from embedded_gauge_reading_tinyml.training import (  # noqa: E402
 )
 from embedded_gauge_reading_tinyml.presets import (  # noqa: E402
     DEFAULT_EDGE_FOCUS_STRENGTH,
+    DEFAULT_KEYPOINT_HEATMAP_SIZE,
 )
 
 
@@ -89,6 +90,11 @@ def _parse_args() -> argparse.Namespace:
         type=str,
         choices=["auto", "cpu", "gpu"],
         default="gpu",
+    )
+    parser.add_argument(
+        "--no-gpu-memory-growth",
+        action="store_true",
+        help="Disable TensorFlow GPU memory growth if GPU startup is flaky.",
     )
     parser.add_argument(
         "--artifacts-dir",
@@ -218,6 +224,7 @@ def main() -> None:
         epochs=args.epochs,
         learning_rate=args.learning_rate,
         device=args.device,
+        gpu_memory_growth=not args.no_gpu_memory_growth,
         hard_case_manifest=str(args.hard_case_manifest),
         hard_case_repeat=args.hard_case_repeat,
         edge_focus_strength=args.edge_focus_strength,
@@ -265,6 +272,9 @@ def main() -> None:
     examples, dropped_out_of_sweep = _build_training_examples(
         samples,
         spec,
+        image_height=config.image_height,
+        image_width=config.image_width,
+        keypoint_heatmap_size=DEFAULT_KEYPOINT_HEATMAP_SIZE,
         strict_labels=config.strict_labels,
         crop_pad_ratio=config.crop_pad_ratio,
     )

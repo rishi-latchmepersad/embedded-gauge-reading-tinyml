@@ -17,6 +17,11 @@ SRC_DIR: Path = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from embedded_gauge_reading_tinyml.models import (
+    GaugeValueFromKeypoints,
+    SpatialSoftArgmax2D,
+)
+
 
 @dataclass(frozen=True)
 class EvalItem:
@@ -49,13 +54,14 @@ def _parse_args() -> argparse.Namespace:
 def _load_model(model_path: Path, *, legacy_preprocess: bool) -> tf.keras.Model:
     """Load a saved Keras model, optionally providing the legacy preprocess symbol."""
     print(f"[EVAL] Loading model from {model_path}...", flush=True)
+    custom_objects: dict[str, Any] = {
+        "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input,
+        "SpatialSoftArgmax2D": SpatialSoftArgmax2D,
+        "GaugeValueFromKeypoints": GaugeValueFromKeypoints,
+    }
     if legacy_preprocess:
-        custom_objects: dict[str, Any] = {
-            "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input
-        }
-        model = tf.keras.models.load_model(model_path, custom_objects=custom_objects)
-    else:
-        model = tf.keras.models.load_model(model_path)
+        print("[EVAL] Legacy MobileNetV2 preprocess support enabled.", flush=True)
+    model = tf.keras.models.load_model(model_path, custom_objects=custom_objects)
     try:
         if len(model.outputs) > 1:
             model = tf.keras.Model(

@@ -1,25 +1,35 @@
-"""Export utilities for turning the calibrated scalar CNN into board artifacts."""
+"""Export utilities for turning gauge models into board artifacts."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import faulthandler
 import json
+import os
 from pathlib import Path
 import time
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
+
+# Keep export on CPU so TensorFlow does not stall on WSL GPU enumeration.
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
 import keras
 import numpy as np
 import tensorflow as tf
 
 from embedded_gauge_reading_tinyml.dataset import load_dataset
+from embedded_gauge_reading_tinyml.models import (
+    GaugeValueFromKeypoints,
+    SpatialSoftArgmax2D,
+)
 from embedded_gauge_reading_tinyml.gauge.processing import load_gauge_specs
 from embedded_gauge_reading_tinyml.presets import (
     DEFAULT_CROP_PAD_RATIO,
     DEFAULT_GAUGE_ID,
     DEFAULT_IMAGE_HEIGHT,
     DEFAULT_IMAGE_WIDTH,
+    DEFAULT_KEYPOINT_HEATMAP_SIZE,
 )
 from embedded_gauge_reading_tinyml.training import (
     LABELLED_DIR,
@@ -28,6 +38,7 @@ from embedded_gauge_reading_tinyml.training import (
     TrainConfig,
     _build_training_examples,
     _load_hard_case_examples,
+    _load_rectifier_and_preprocess_image,
     _load_crop_and_preprocess_image,
     _split_examples,
 )
@@ -40,6 +51,7 @@ class ExportConfig:
     model_path: Path
     output_dir: Path
     hard_case_manifest: Path
+    deployment_kind: Literal["scalar", "rectifier"] = "scalar"
     representative_count: int = 32
     image_height: int = DEFAULT_IMAGE_HEIGHT
     image_width: int = DEFAULT_IMAGE_WIDTH
@@ -72,9 +84,11 @@ def _resolve_repo_path(path: Path, repo_root: Path) -> Path:
 
 
 def _load_model(model_path: Path, *, legacy_mobilenetv2_preprocess: bool) -> keras.Model:
-    """Load the calibrated scalar model artifact."""
+    """Load a saved Keras model artifact."""
     custom_objects: dict[str, Any] = {
-        "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input
+        "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input,
+        "SpatialSoftArgmax2D": SpatialSoftArgmax2D,
+        "GaugeValueFromKeypoints": GaugeValueFromKeypoints,
     }
     if legacy_mobilenetv2_preprocess:
         print("[EXPORT] Legacy MobileNetV2 preprocess support enabled.", flush=True)
@@ -115,12 +129,14 @@ def _build_representative_examples(
     image_height: int,
     image_width: int,
     representative_count: int,
+    deployment_kind: Literal["scalar", "rectifier"],
 ) -> list[TrainingExample]:
     """Collect a deterministic slice of labeled images for TFLite calibration."""
     config = TrainConfig(
         image_height=image_height,
         image_width=image_width,
         crop_pad_ratio=DEFAULT_CROP_PAD_RATIO,
+        keypoint_heatmap_size=DEFAULT_KEYPOINT_HEATMAP_SIZE,
         augment_training=False,
         hard_case_manifest=None,
         hard_case_repeat=0,
@@ -136,8 +152,14 @@ def _build_representative_examples(
         spec,
         strict_labels=config.strict_labels,
         crop_pad_ratio=config.crop_pad_ratio,
+        image_height=config.image_height,
+        image_width=config.image_width,
+        keypoint_heatmap_size=config.keypoint_heatmap_size,
     )
     split = _split_examples(examples, config)
+    example_lookup: dict[str, TrainingExample] = {
+        str(example.image_path): example for example in examples
+    }
 
     sorted_train_examples: list[TrainingExample] = sorted(
         split.train_examples,
@@ -161,12 +183,22 @@ def _build_representative_examples(
         rep_train_examples = [
             sorted_train_examples[index] for index in selected_indices
         ]
-    hard_case_examples: list[TrainingExample] = _load_hard_case_examples(
-        hard_case_manifest,
-        image_height=image_height,
-        image_width=image_width,
-        value_range=(spec.min_value, spec.max_value),
-    )
+    if deployment_kind == "rectifier":
+        hard_case_examples = _load_hard_case_examples(
+            hard_case_manifest,
+            image_height=image_height,
+            image_width=image_width,
+            value_range=(spec.min_value, spec.max_value),
+            target_kind="rectifier_box",
+            example_lookup=example_lookup,
+        )
+    else:
+        hard_case_examples = _load_hard_case_examples(
+            hard_case_manifest,
+            image_height=image_height,
+            image_width=image_width,
+            value_range=(spec.min_value, spec.max_value),
+        )
 
     print(
         "[EXPORT] Representative data: "
@@ -189,6 +221,23 @@ def _representative_dataset(
         image, _ = _load_crop_and_preprocess_image(
             tf.convert_to_tensor(example.image_path, dtype=tf.string),
             tf.convert_to_tensor(example.value, dtype=tf.float32),
+            tf.convert_to_tensor(example.crop_box_xyxy, dtype=tf.float32),
+            image_height,
+            image_width,
+        )
+        yield [np.expand_dims(image.numpy().astype(np.float32), axis=0)]
+
+
+def _representative_dataset_rectifier(
+    examples: Iterable[TrainingExample],
+    *,
+    image_height: int,
+    image_width: int,
+) -> Iterable[list[np.ndarray]]:
+    """Yield full-frame calibration images for a rectifier deployment."""
+    for example in examples:
+        image, _ = _load_rectifier_and_preprocess_image(
+            tf.convert_to_tensor(example.image_path, dtype=tf.string),
             tf.convert_to_tensor(example.crop_box_xyxy, dtype=tf.float32),
             image_height,
             image_width,
@@ -233,6 +282,7 @@ def build_export_metadata(
     output_zero_point: int,
     representative_examples: int,
     hard_case_manifest: Path,
+    deployment_kind: Literal["scalar", "rectifier"],
 ) -> dict[str, Any]:
     """Build a serializable metadata payload for firmware handoff."""
     return {
@@ -253,23 +303,27 @@ def build_export_metadata(
         "board_notes": (
             "Use this artifact with the STM32 capture path that already crops to "
             "224x224 and preserves gauge geometry."
+            if deployment_kind == "scalar"
+            else "Use this artifact as the first-stage rectifier on the STM32 "
+            "capture path. It consumes the full frame and predicts a dial crop."
         ),
     }
 
 
 def export_board_tflite_artifacts(config: ExportConfig) -> ExportResult:
-    """Export the calibrated scalar CNN into an int8 TFLite bundle."""
+    """Export a board CNN into an int8 TFLite bundle."""
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
     start_time = time.monotonic()
-    faulthandler.dump_traceback_later(60.0, repeat=True)
+    faulthandler.dump_traceback_later(300.0, repeat=False)
     try:
         print("[EXPORT] Stage: load-model", flush=True)
         model = _load_model(
             config.model_path,
             legacy_mobilenetv2_preprocess=config.legacy_mobilenetv2_preprocess,
         )
-        model = _select_scalar_deployment_model(model)
+        if config.deployment_kind == "scalar":
+            model = _select_scalar_deployment_model(model)
         print(
             f"[EXPORT] Stage: load-model-done elapsed={time.monotonic() - start_time:.1f}s",
             flush=True,
@@ -281,6 +335,7 @@ def export_board_tflite_artifacts(config: ExportConfig) -> ExportResult:
             image_height=config.image_height,
             image_width=config.image_width,
             representative_count=config.representative_count,
+            deployment_kind=config.deployment_kind,
         )
         print(
             "[EXPORT] Stage: build-representative-examples-done "
@@ -292,11 +347,18 @@ def export_board_tflite_artifacts(config: ExportConfig) -> ExportResult:
         print("[EXPORT] Converting model to fully quantized int8 TFLite...", flush=True)
         converter = tf.lite.TFLiteConverter.from_keras_model(model)
         converter.optimizations = [tf.lite.Optimize.DEFAULT]
-        converter.representative_dataset = lambda: _representative_dataset(
-            representative_examples,
-            image_height=config.image_height,
-            image_width=config.image_width,
-        )
+        if config.deployment_kind == "rectifier":
+            converter.representative_dataset = lambda: _representative_dataset_rectifier(
+                representative_examples,
+                image_height=config.image_height,
+                image_width=config.image_width,
+            )
+        else:
+            converter.representative_dataset = lambda: _representative_dataset(
+                representative_examples,
+                image_height=config.image_height,
+                image_width=config.image_width,
+            )
         converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
         converter.inference_input_type = tf.int8
         converter.inference_output_type = tf.int8
@@ -326,7 +388,9 @@ def export_board_tflite_artifacts(config: ExportConfig) -> ExportResult:
             output_zero_point=output_zero_point,
             representative_examples=len(representative_examples),
             hard_case_manifest=config.hard_case_manifest,
+            deployment_kind=config.deployment_kind,
         )
+        metadata["deployment_kind"] = config.deployment_kind
         metadata_path = config.output_dir / "metadata.json"
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         print(f"[EXPORT] Wrote metadata to {metadata_path}.", flush=True)

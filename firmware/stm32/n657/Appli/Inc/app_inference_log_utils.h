@@ -18,6 +18,10 @@ extern "C" {
 void AppInferenceLog_FormatFloatTenths(char *dst, size_t dst_len,
 		const char *prefix, float value);
 
+/* Format a floating-point value with six decimal places for debug tracing. */
+void AppInferenceLog_FormatFloatMicros(char *dst, size_t dst_len,
+		const char *prefix, float value);
+
 #ifdef __cplusplus
 }
 #endif

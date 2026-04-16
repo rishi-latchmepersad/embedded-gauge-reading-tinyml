@@ -18,7 +18,7 @@ extern "C" {
  * @brief Apply the deploy-time scalar calibration to the model output.
  *
  * The deployed int8 model still benefits from a lightweight post-processing
- * correction derived from the strongest board30 float16 source model.
+ * correction derived from the board-ready weighted calibration fit.
  *
  * @param raw_value Model output in Celsius before calibration.
  * @return Calibrated output in Celsius.

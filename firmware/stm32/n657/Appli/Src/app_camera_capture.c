@@ -172,7 +172,9 @@ static AppCameraCapture_BrightnessGate_t AppCameraCapture_ClassifyBrightness(
 		return APP_CAMERA_CAPTURE_BRIGHTNESS_OK;
 	}
 
-	if ((stats->mean_y <= CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD)
+	/* Treat the exact threshold as acceptable so the retry loop can exit on
+	 * a borderline-but-usable frame instead of failing the whole capture. */
+	if ((stats->mean_y < CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD)
 			&& (stats->max_y <= CAMERA_CAPTURE_BRIGHTNESS_DARK_MAX_THRESHOLD)) {
 		return APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_DARK;
 	}
@@ -232,8 +234,9 @@ bool AppCameraCapture_RunImx335Background(void) {
 	}
 
 	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
-		/* Temporary isolation: keep the ISP background process off until we
-		 * confirm the capture/save/inference path is stable without it. */
+		/* Keep the background path quiescent for now. The live AEC loop was
+		 * freezing the board; the capture retry gate below is the safer
+		 * steering mechanism for bright and dark scenes. */
 		return true;
 	}
 
@@ -721,9 +724,14 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	for (capture_attempt = 0U; capture_attempt < max_capture_attempts;
 			capture_attempt++) {
 		if (capture_attempt > 0U) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] Retrying capture after DCMIPP error 0x%08lX.\r\n",
-					(unsigned long) camera_capture_error_code);
+			if (camera_capture_error_code != 0U) {
+				DebugConsole_Printf(
+						"[CAMERA][CAPTURE] Retrying capture after DCMIPP error 0x%08lX.\r\n",
+						(unsigned long) camera_capture_error_code);
+			} else {
+				(void) DebugConsole_WriteString(
+						"[CAMERA][CAPTURE] Retrying capture after brightness gate.\r\n");
+			}
 			DelayMilliseconds_ThreadX(CAMERA_CAPTURE_RETRY_DELAY_MS);
 		}
 
@@ -752,7 +760,7 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 					if ((capture_attempt + 1U) >= max_capture_attempts) {
 						DebugConsole_Printf(
 								"[CAMERA][CAPTURE] Brightness gate rejected the frame after %lu attempts.\r\n",
-								(unsigned long) max_capture_attempts);
+						(unsigned long) max_capture_attempts);
 						break;
 					}
 

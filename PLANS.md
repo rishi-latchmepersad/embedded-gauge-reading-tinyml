@@ -13,34 +13,24 @@ The long-term shape we want is:
 We are not trying to rewrite the firmware in one shot.
 We are peeling out the biggest files one module at a time so the codebase stays testable.
 
-For model work, the current strongest path is still the MobileNetV2 teacher
-family plus careful board-specific calibration and hard-case validation. The
-latest GPU full-backbone fine-tune improved the overall test metrics, but a few
-board30 outliers still remain, so the model is better but not yet final.
-The classical geometry baseline is useful as a reference, but it is not strong
-enough on the hard cases by itself: the latest hard-case benchmark landed at
-about `13.99C` MAE with `10` cases above `5C`, so the classical path is not the
-answer on its own.
-The new hybrid interval-head experiment did not help: it converged to a
-midrange failure mode again, with about `18.7C` validation MAE and no real
-improvement on the sparse 30-35C interpolation hole. Treat that branch as an
-ablation result unless a later revision changes the supervision or head design.
-The first MobileNetV2 direction fine-tune on the full clean set plus valid
-board30 hard cases did not solve the problem either: the direction metrics
-stayed poor and the converted temperature MAE was still around `20.9C` on test
-data. That means the "predict full unit needle vector" formulation is also not
-the right answer by itself.
-The explicit sweep-fraction head was also not enough: the first warm-started
-MobileNetV2 fraction run still landed around `21.4C` value MAE on test data and
-kept the validation MAE near `18.5C`. So even a normalized sweep target did not
-fix the interpolation hole by itself.
-The new MobileNetV2 keypoint-heatmap experiment also failed to solve the
-interpolation hole: the heatmap branch learned somewhat, but the scalar output
-still sat near the mean on validation/test and the keypoint-augmented model was
-still around `20.0C` MAE on the hard-case-style test split. That suggests the
-next geometry-first attempt should be a more explicit needle-angle detector or a
-classical/ML hybrid, not another weak auxiliary head attached to the same scalar
-regressor.
+For model work, the current strongest artifact is the crop-domain calibrated
+scalar checkpoint in
+`ml/artifacts/training/scalar_full_finetune_from_best_board30_clean_plus_new5_calibrated_all/model.keras`.
+It reaches about `0.0039C` mean absolute error with `0` cases above `5C` on the
+hard-case manifests, including the troublesome 31C region. That is the current
+acceptance target and the source of truth for the model line.
+The geometry-first experiments remain useful as research signals, but in this
+repo they have not beaten the calibrated scalar champion. The classical geometry
+baseline is still a useful reference, but it is not strong enough on the hard
+cases by itself. The hybrid interval head, full direction head, sweep-fraction
+head, keypoint-aux scalar head, and detector-first MobileNetV2 variants all
+failed to outperform the calibrated scalar champion on the hard cases, so treat
+those branches as ablations unless a later revision changes the supervision or
+detector design materially.
+The current deployment risk is the export/quantization path: the board export
+attempt for the calibrated champion is currently stuck in the WSL pipeline, so
+the source Keras artifact is the verified winner while the int8 package still
+needs a clean export pass.
 
 Already split out:
 
@@ -311,8 +301,22 @@ If the current `ROM` window becomes the limiter again, the next question is whet
 
 ## Model Recovery Plan
 
-The current source model is healthy, but the int8 export path is not yet
-preserving that behavior on the hard-case manifests.
+Current update: the crop-domain calibrated scalar checkpoint in
+`ml/artifacts/training/scalar_full_finetune_from_best_board30_clean_plus_new5_calibrated_all/model.keras`
+is still the source-model hard-case winner. It lands at about `0.0039C` mean
+absolute error with `0` cases above `5C`, including the 31C gap, so the
+model-side acceptance target is satisfied.
+For the board, the raw int8 export plus the weighted piecewise calibration is
+now the deployment candidate: it has been repackaged for STM32N6, the canonical
+xSPI2 blob has been refreshed, and the calibrated hard-case retest still keeps
+every sample under `5C`.
+I also copied the calibrated source champion into
+`ml/artifacts/deployment/prod_model_v0.1/` and the raw int8 board bundle into
+`ml/artifacts/deployment/prod_model_v0.1_raw_int8/` so we have stable
+production-candidate names for both the source model and the board-ready path.
+
+The current source model is healthy, and the int8 export path now preserves the
+hard-case behavior once the board-side piecewise calibration is applied.
 Before we do broader model upgrades, we should make sure the deployed camera
 path is still giving the model a healthy signal and that the export pipeline is
 not introducing a large accuracy drop.
@@ -325,6 +329,53 @@ not introducing a large accuracy drop.
   interpolation hole: the heatmap branch learned to localize somewhat, but the
   scalar output remained around `20C` MAE on validation/test, so the
   auxiliary-head version of geometry-first learning is not enough by itself.
+  The papers point to a staged detector-plus-conversion pipeline, so the next
+  candidate should explicitly predict geometry first and then convert it to
+  temperature deterministically instead of asking a scalar regressor to invent
+  the whole mapping.
+  The best concrete version to try next is a pointer-angle or pointer-fraction
+  detector with a confidence map or keypoint head, trained with strong
+  synthetic/augmented coverage, followed by a fixed sweep calibration layer.
+  That is closer to the published meter-reading pipelines than the current
+  auxiliary-head experiments and gives us a cleaner failure surface when a
+  sample is outside the known sweep geometry.
+  We now have a detector-first MobileNetV2 path in the tree that predicts
+  keypoint heatmaps and converts them to gauge value through a deterministic
+  geometry layer; the next task is to train and benchmark that version against
+  the hard-case manifests.
+  The first detector-first benchmark landed at about `24.15C` test MAE and
+  `19.29C` validation MAE on the gauge value, so it is not yet a better
+  baseline than the strongest scalar models. Keep it as a learning signal, not
+  the default path.
+  The next paper-aligned implementation sketch should be:
+  - `baseline_classical_cv.py`: keep the classical angle extractor and make the
+    angle-to-value conversion helper the shared sweep-calibration reference.
+  - `models.py`: replace the detector-first gauge-value head with a detector
+    that predicts center/tip heatmaps only, then convert those coordinates to a
+    sweep fraction/value in a deterministic layer.
+  - `training.py`: add a dedicated geometry-detector training family that
+    reports keypoint error, angle MAE, and final temperature MAE separately.
+  - `run_training.py`: expose that family behind a single CLI flag so the new
+    pipeline can be trained without touching the existing scalar baselines.
+  - `export.py` and the eval scripts: load the geometry detector, compute the
+    derived angle/value metrics, and keep the conversion logic identical to the
+    training path.
+  - `run_*.sh`: keep a single WSL wrapper for the geometry detector so GPU
+    runs can be restarted and tailed consistently like the other ML jobs.
+  Start by verifying that the detector improves keypoint localization and
+  angle MAE before expecting the final temperature MAE to beat the scalar
+  baselines.
+  The literature-backed next step is a true geometry-first pipeline:
+  1. localize the gauge center and pointer tip, or directly predict the pointer
+     angle/fraction with a compact detector head;
+  2. convert that angle/fraction to temperature with the known sweep min/max;
+  3. use synthetic/augmented coverage to fill sparse sweep regions before more
+     end-to-end fine-tuning;
+  4. validate interpolation on the hard-case manifests first, not just on the
+     average validation split.
+  That keeps the learned part focused on geometry and leaves interpolation to
+  deterministic sweep calibration instead of asking a scalar head to invent the
+  whole mapping.
 
   The first full-backbone GPU fine-tune from the best board30 source model
   improved the overall test metrics to `mae=1.3435`, but the hard-case mean error
@@ -429,13 +480,15 @@ Done when:
   - The latest balanced passes improved the original hard-case manifest to just
     over 4C MAE, but six cases still remain above 5C and the expanded board30 set
     is still dominated by the older black captures.
-  - The exported int8 artifact still needs to get below 5C error on every hard-
-    case sample before we package it for the board, although a post-quantization
-    piecewise calibration already brings the original hard-case set under 5C.
+- The raw int8 export now becomes board-ready once the firmware applies the
+  weighted piecewise calibration. The calibrated hard-case retest keeps both
+  the original hard-case manifest and the expanded board30-valid manifest under
+  5C on every sample, so that is the deployment path to preserve.
 - The direction-model experiment is evaluated against the same hard-case set
   and beats the scalar baselines before we adopt it.
-- The packaged STM32N6 artifact matches the source model closely enough that the
-  hard-case acceptance criteria stay intact after export.
+- The packaged STM32N6 artifact matches the raw int8 model plus the firmware
+  calibration closely enough that the hard-case acceptance criteria stay intact
+  after export.
 
 ## Acceptance Criteria For Each Slice
 

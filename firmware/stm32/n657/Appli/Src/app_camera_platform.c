@@ -280,6 +280,8 @@ bool CameraPlatform_AdjustImx335ExposureGain(bool brighten) {
 	int32_t gain_step_mdb = 0;
 	int32_t target_exposure_us = 0;
 	int32_t target_gain_mdb = 0;
+	bool apply_exposure = false;
+	bool apply_gain = false;
 	int32_t cmw_status = CMW_ERROR_NONE;
 
 	cmw_status = CMW_CAMERA_GetSensorInfo(&sensor_info);
@@ -332,47 +334,72 @@ bool CameraPlatform_AdjustImx335ExposureGain(bool brighten) {
 		gain_step_mdb = 1;
 	}
 
+	/* Walk exposure first so a dim frame does not jump straight from
+	 * under-exposed to heavily over-exposed just because gain moved too. */
+	target_exposure_us = current_exposure_us;
+	target_gain_mdb = current_gain_mdb;
+
 	if (brighten) {
-		target_exposure_us = current_exposure_us + exposure_step_us;
-		target_gain_mdb = current_gain_mdb + gain_step_mdb;
+		if (current_exposure_us < (int32_t) sensor_info.exposure_max) {
+			target_exposure_us = current_exposure_us + exposure_step_us;
+			if (target_exposure_us > (int32_t) sensor_info.exposure_max) {
+				target_exposure_us = (int32_t) sensor_info.exposure_max;
+			}
+			apply_exposure = (target_exposure_us != current_exposure_us);
+		} else {
+			target_gain_mdb = current_gain_mdb + gain_step_mdb;
+			if (target_gain_mdb > sensor_info.gain_max) {
+				target_gain_mdb = sensor_info.gain_max;
+			}
+			apply_gain = (target_gain_mdb != current_gain_mdb);
+		}
 	} else {
-		target_exposure_us = current_exposure_us - exposure_step_us;
-		target_gain_mdb = current_gain_mdb - gain_step_mdb;
+		if (current_exposure_us > (int32_t) sensor_info.exposure_min) {
+			target_exposure_us = current_exposure_us - exposure_step_us;
+			if (target_exposure_us < (int32_t) sensor_info.exposure_min) {
+				target_exposure_us = (int32_t) sensor_info.exposure_min;
+			}
+			apply_exposure = (target_exposure_us != current_exposure_us);
+		} else {
+			target_gain_mdb = current_gain_mdb - gain_step_mdb;
+			if (target_gain_mdb < sensor_info.gain_min) {
+				target_gain_mdb = sensor_info.gain_min;
+			}
+			apply_gain = (target_gain_mdb != current_gain_mdb);
+		}
 	}
 
-	if (target_exposure_us < (int32_t) sensor_info.exposure_min) {
-		target_exposure_us = (int32_t) sensor_info.exposure_min;
-	}
-	if (target_exposure_us > (int32_t) sensor_info.exposure_max) {
-		target_exposure_us = (int32_t) sensor_info.exposure_max;
-	}
-	if (target_gain_mdb < sensor_info.gain_min) {
-		target_gain_mdb = sensor_info.gain_min;
-	}
-	if (target_gain_mdb > sensor_info.gain_max) {
-		target_gain_mdb = sensor_info.gain_max;
-	}
-
-	cmw_status = CMW_CAMERA_SetExposure(target_exposure_us);
-	if (cmw_status != CMW_ERROR_NONE) {
+	if (!apply_exposure && !apply_gain) {
 		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Failed to update IMX335 exposure to %ld us, status=%ld.\r\n",
-				(long) target_exposure_us, (long) cmw_status);
+				"[CAMERA][CAPTURE] IMX335 brightness nudge reached sensor limit; no change applied.\r\n");
 		return false;
 	}
 
-	cmw_status = CMW_CAMERA_SetGain(target_gain_mdb);
-	if (cmw_status != CMW_ERROR_NONE) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Failed to update IMX335 gain to %ld mdB, status=%ld.\r\n",
-				(long) target_gain_mdb, (long) cmw_status);
-		return false;
+	if (apply_exposure) {
+		cmw_status = CMW_CAMERA_SetExposure(target_exposure_us);
+		if (cmw_status != CMW_ERROR_NONE) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] Failed to update IMX335 exposure to %ld us, status=%ld.\r\n",
+					(long) target_exposure_us, (long) cmw_status);
+			return false;
+		}
+	}
+
+	if (apply_gain) {
+		cmw_status = CMW_CAMERA_SetGain(target_gain_mdb);
+		if (cmw_status != CMW_ERROR_NONE) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] Failed to update IMX335 gain to %ld mdB, status=%ld.\r\n",
+					(long) target_gain_mdb, (long) cmw_status);
+			return false;
+		}
 	}
 
 	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] Nudged IMX335 %s: exposure=%ld us gain=%ld mdB.\r\n",
+			"[CAMERA][CAPTURE] Nudged IMX335 %s: exposure=%ld us gain=%ld mdB.%s%s\r\n",
 			brighten ? "brighter" : "darker", (long) target_exposure_us,
-			(long) target_gain_mdb);
+			(long) target_gain_mdb, apply_exposure ? " exposure" : "",
+			apply_gain ? " gain" : "");
 	return true;
 }
 
@@ -395,6 +422,25 @@ bool CameraPlatform_EnableImx335AutoExposure(void) {
 
 	(void) CameraPlatform_LogImx335AutoExposureState("probe");
 
+	return true;
+}
+
+/**
+ * @brief Lock the IMX335 ISP path out of auto-exposure mode.
+ *
+ * We use AEC during probe to settle the sensor, then disable it before the
+ * regular capture loop so the gauge reading is not fighting a moving target.
+ * @retval true when the ISP accepted the AEC disable request.
+ */
+bool CameraPlatform_DisableImx335AutoExposure(void) {
+	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: ae-lock\r\n");
+	if (ISP_SetAECState(&camera_sensor.hIsp, 0U) != ISP_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][PROBE]   - Failed to disable IMX335 ISP auto exposure.\r\n");
+		return false;
+	}
+
+	(void) CameraPlatform_LogImx335AutoExposureState("capture-lock");
 	return true;
 }
 

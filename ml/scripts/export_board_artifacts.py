@@ -49,6 +49,12 @@ def _parse_args() -> argparse.Namespace:
         help="Directory where TFLite and metadata should be written.",
     )
     parser.add_argument(
+        "--deployment-kind",
+        choices=["scalar", "rectifier"],
+        default="scalar",
+        help="Deployment flavor to export for the board.",
+    )
+    parser.add_argument(
         "--representative-count",
         type=int,
         default=32,
@@ -69,6 +75,7 @@ def main() -> None:
         model_path=args.model,
         output_dir=args.output_dir,
         hard_case_manifest=args.hard_case_manifest,
+        deployment_kind=args.deployment_kind,
         representative_count=args.representative_count,
         legacy_mobilenetv2_preprocess=args.legacy_mobilenetv2_preprocess,
     )
