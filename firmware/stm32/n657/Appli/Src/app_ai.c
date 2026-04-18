@@ -31,14 +31,25 @@
 #include "stm32n6xx_hal.h"
 
 /*
- * The AI bring-up path is very verbose in Debug builds and the format strings
- * alone can overflow the internal ROM region. Keep the model execution path
- * intact, but compile the per-step console chatter out unless a developer
- * explicitly re-enables it for a size-debugging session.
+ * Keep the very noisy tensor and patch dumps behind a toggle, but leave the
+ * normal AI status logs enabled so the USART console still shows boot and
+ * inference progress by default.
  */
 #ifndef APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 #define APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS 0
 #endif
+
+static void AppAI_StatusWrite(const char *message) {
+	if (message != NULL) {
+		(void) DebugConsole_WriteString(message);
+	}
+}
+
+/*
+ * When verbose AI logging is off, keep the high-volume printf-style traces
+ * out of the image, but leave the short status writes alone so the USART still
+ * shows the normal boot and stage progress messages.
+ */
 #if !APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 #undef DebugConsole_Printf
 #define DebugConsole_Printf(...) ((void) 0)
@@ -282,6 +293,10 @@ static const AppAI_ModelStageSpec app_ai_rectifier_stage = {
 /* USER CODE BEGIN PFP */
 static const LL_Buffer_InfoTypeDef *AppAI_GetInputBufferInfo(void);
 static const LL_Buffer_InfoTypeDef *AppAI_GetOutputBufferInfo(void);
+static const LL_Buffer_InfoTypeDef *AppAI_GetStageInputBufferInfo(
+		const AppAI_ModelStageSpec *stage);
+static const LL_Buffer_InfoTypeDef *AppAI_GetStageOutputBufferInfo(
+		const AppAI_ModelStageSpec *stage);
 static const LL_Buffer_InfoTypeDef *AppAI_FindBufferInfoByName(
 		const LL_Buffer_InfoTypeDef *buffer_list, const char *name);
 static const LL_Buffer_InfoTypeDef *AppAI_FindFirstBufferInfoByNames(
@@ -323,10 +338,12 @@ static void AppAI_LogRawBufferSignature(const char *label,
 static const char *AppAI_BufferTypeName(const LL_Buffer_InfoTypeDef *buffer_info);
 static void AppAI_LogBufferInfoAndSignature(const char *label,
 		const LL_Buffer_InfoTypeDef *buffer_info);
+#if APP_AI_USE_ADAPTIVE_GAUGE_CROP
 static bool AppAI_EstimateGaugeCropBoxFromYuv422(const uint8_t *frame_bytes,
 		size_t frame_size, size_t frame_width_pixels, size_t frame_height_pixels,
 		size_t *crop_x_min, size_t *crop_y_min, size_t *crop_width,
 		size_t *crop_height);
+#endif
 static bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr);
 static void AppAI_LogXspi2FlashPrefix(void);
 static void AppAI_LogXspi2MappedScaleBytes(void);
@@ -343,13 +360,8 @@ static int AppAI_ApplyCacheRange(uint32_t start_addr, uint32_t end_addr,
 static void AppAI_EnableNpuMemoryAndCaches(void);
 static void AppAI_ConfigureNpuAccessControl(void);
 static void AppAI_ConfigureNpuRisafDefaults(void);
-static bool AppAI_EnsureXspi2ModelImageReady(void);
-static bool AppAI_Xspi2ModelImageMatchesFlash(void);
-static bool AppAI_ProgramXspi2ModelImageFromSd(void);
 static bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage);
 static bool AppAI_EnsureXspi2ModelImageReadyForStage(
-		const AppAI_ModelStageSpec *stage);
-static bool AppAI_ProgramXspi2ModelImageFromSdForStage(
 		const AppAI_ModelStageSpec *stage);
 static bool AppAI_WaitForFileXMediaReady(uint32_t timeout_ms);
 static bool AppAI_RuntimeInitStepwise(void);
@@ -436,11 +448,13 @@ static bool AppAI_EnsureXspi2MemoryReady(void) {
 	flash.TransferRate = BSP_XSPI_NOR_STR_TRANSFER;
 	bsp_status = BSP_XSPI_NOR_Init(0U, &flash);
 	if (bsp_status != BSP_ERROR_NONE) {
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 		char msg[96];
 		(void) snprintf(msg, sizeof(msg),
 				"[AI] BSP_XSPI_NOR_Init for provisioning failed: %ld\r\n",
 				(long) bsp_status);
 		(void) DebugConsole_WriteString(msg);
+#endif
 		return false;
 	}
 
@@ -486,11 +500,13 @@ static bool AppAI_ReconfigureXspi2ForRuntime(void) {
 	(void) DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: init start.\r\n");
 	bsp_status = BSP_XSPI_NOR_Init(0U, &flash);
 	if (bsp_status != BSP_ERROR_NONE) {
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 		char msg[96];
 		(void) snprintf(msg, sizeof(msg),
 				"[AI] xSPI2 runtime reconfigure: init failed: %ld\r\n",
 				(long) bsp_status);
 		(void) DebugConsole_WriteString(msg);
+#endif
 		return false;
 	}
 	(void) DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: init OK.\r\n");
@@ -547,6 +563,7 @@ static bool AppAI_Xspi2ReadMappedProbe(const uint32_t flash_offset,
 	return (memcmp(flash_ptr, expected_bytes, expected_length) == 0);
 }
 
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 static void AppAI_LogXspi2PrefixBytes(const char *label,
 		const uint8_t *bytes) {
 	if ((label == NULL) || (bytes == NULL)) {
@@ -571,6 +588,10 @@ static void AppAI_LogFrameSignature(const uint8_t *frame_bytes,
 	uint8_t first_bytes[8U] = { 0U };
 	uint32_t hash = 2166136261UL;
 	size_t preview_count = 0U;
+
+	if (!APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		return;
+	}
 
 	if ((frame_bytes == NULL) || (frame_size == 0U)) {
 		DebugConsole_Printf("[AI] Frame signature skipped: empty frame.\r\n");
@@ -612,6 +633,10 @@ static void AppAI_LogInputSignature(const float *input_buffer,
 	size_t byte_count = 0U;
 	size_t preview_bytes = 0U;
 	size_t preview_words = 0U;
+
+	if (!APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		return;
+	}
 
 	if ((input_buffer == NULL) || (input_float_count == 0U)) {
 		DebugConsole_Printf("[AI] Input signature skipped: empty tensor.\r\n");
@@ -695,6 +720,10 @@ static void AppAI_LogInputTensorWindow(const float *input_buffer,
 	unsigned long max_g_milli = 0U;
 	unsigned long max_b_milli = 0U;
 	size_t sample_count = 0U;
+
+	if (!APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		return;
+	}
 
 	if ((input_buffer == NULL) || (input_float_count < APP_AI_MODEL_INPUT_FLOAT_COUNT)) {
 		return;
@@ -935,6 +964,10 @@ static void AppAI_LogTensorRowSamples(const char *label,
 	const size_t sample_count = 5U;
 	size_t positions[5U] = { 0U };
 
+	if (!APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		return;
+	}
+
 	if ((label == NULL) || (input_buffer == NULL) || (tensor_width == 0U)
 			|| (x_max <= x_min)) {
 		return;
@@ -984,6 +1017,10 @@ static void AppAI_LogSourcePatch(const char *label, const uint8_t *frame_bytes,
 			< APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS) ? (center_y + radius_pixels)
 			: (APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS - 1U);
 
+	if (!APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		return;
+	}
+
 	if ((label == NULL) || (frame_bytes == NULL) || (frame_width_pixels == 0U)) {
 		return;
 	}
@@ -1023,6 +1060,10 @@ static void AppAI_LogTensorPatch(const char *label, const float *input_buffer,
 	const size_t y_max = ((center_y + radius_pixels)
 			< APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS) ? (center_y + radius_pixels)
 			: (APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS - 1U);
+
+	if (!APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		return;
+	}
 
 	if ((label == NULL) || (input_buffer == NULL) || (tensor_width == 0U)) {
 		return;
@@ -1084,6 +1125,10 @@ static void AppAI_LogSourceCropWindow(const uint8_t *frame_bytes,
 	unsigned long min_luma_milli = 0U;
 	unsigned long max_luma_milli = 0U;
 	size_t sample_count = 0U;
+
+	if (!APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		return;
+	}
 
 	if ((frame_bytes == NULL) || (frame_size < (frame_width_pixels
 			* frame_height_pixels * 2U))) {
@@ -1174,6 +1219,10 @@ static void AppAI_LogInt8BufferSignature(const char *label,
 	uint32_t hash = 2166136261UL;
 	size_t preview_count = 0U;
 
+	if (!APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		return;
+	}
+
 	if ((label == NULL) || (buffer_ptr == NULL) || (buffer_len_bytes == 0U)) {
 		DebugConsole_Printf(
 				"[AI] %s int8 signature skipped: empty buffer.\r\n",
@@ -1232,6 +1281,10 @@ static void AppAI_LogRawBufferSignature(const char *label,
 	uint32_t nonzero_count = 0U;
 	uint32_t hash = 2166136261UL;
 	size_t preview_count = 0U;
+
+	if (!APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		return;
+	}
 
 	if ((label == NULL) || (buffer_ptr == NULL) || (buffer_len_bytes == 0U)) {
 		DebugConsole_Printf(
@@ -1345,6 +1398,8 @@ static void AppAI_LogBufferInfoAndSignature(const char *label,
 				buffer_len);
 	}
 }
+
+#endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
 
 /**
  * @brief Estimate a gauge crop from bright pixels in the Y channel.
@@ -1515,7 +1570,9 @@ static bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr) {
 		return false;
 	}
 
-	AppAI_LogXspi2PrefixBytes("xSPI2 source prefix:", source_bytes);
+	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		AppAI_LogXspi2PrefixBytes("xSPI2 source prefix:", source_bytes);
+	}
 
 	fx_status = fx_file_seek(model_file_ptr, 0U);
 	if (fx_status != FX_SUCCESS) {
@@ -1528,6 +1585,7 @@ static bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr) {
 	return true;
 }
 
+#if 0
 static bool AppAI_Xspi2ModelImageMatchesFlash(void) {
 	if (!AppAI_Xspi2ReadFlashProbe(APP_AI_XSPI2_SCALAR_CHIP_OFFSET, 0U,
 			app_ai_xspi2_signature_start,
@@ -1547,6 +1605,7 @@ static bool AppAI_Xspi2ModelImageMatchesFlash(void) {
 
 	return true;
 }
+#endif /* 0 */
 
 static bool AppAI_Xspi2ModelImageMatchesMappedFlash(void) {
 	if (!AppAI_Xspi2ReadMappedProbe(0U, app_ai_xspi2_signature_start,
@@ -1614,6 +1673,7 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 			char vlog[128];
 			(void) BSP_XSPI_NOR_Read(0U, actual,
 					stage->xspi2_chip_offset, APP_AI_XSPI2_PROBE_BYTES);
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 			(void) snprintf(vlog, sizeof(vlog),
 					"[AI] %s verify fail: flash=[%02X%02X%02X%02X%02X%02X%02X%02X"
 					"%02X%02X%02X%02X%02X%02X%02X%02X] "
@@ -1629,6 +1689,7 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 					sig_start[8],sig_start[9],sig_start[10],sig_start[11],
 					sig_start[12],sig_start[13],sig_start[14],sig_start[15]);
 			(void) DebugConsole_WriteString(vlog);
+#endif
 		}
 		return false;
 	}
@@ -1639,10 +1700,12 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 					sig_tail, APP_AI_XSPI2_PROBE_BYTES)) {
 		{
 			char vlog[64];
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 			(void) snprintf(vlog, sizeof(vlog),
 					"[AI] %s flash verify: tail mismatch.\r\n",
 					stage->stage_label);
 			(void) DebugConsole_WriteString(vlog);
+#endif
 		}
 		return false;
 	}
@@ -1811,8 +1874,10 @@ static bool AppAI_ProgramXspi2ModelImageFromSd(void) {
 		return false;
 	}
 
-	AppAI_LogXspi2IndirectAndMappedPrefix();
-	AppAI_LogXspi2MappedScaleBytes();
+	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		AppAI_LogXspi2IndirectAndMappedPrefix();
+		AppAI_LogXspi2MappedScaleBytes();
+	}
 
 	return true;
 }
@@ -1840,15 +1905,16 @@ static const LL_Buffer_InfoTypeDef *AppAI_GetStageInputBufferInfo(
 		const AppAI_ModelStageSpec *stage) {
 	const LL_Buffer_InfoTypeDef *input_info = NULL;
 
-	if ((stage == NULL) || (stage->nn_instance == NULL)) {
+	if ((stage == NULL) || (stage->nn_instance == NULL)
+			|| (stage->nn_instance->network == NULL)
+			|| (stage->nn_instance->network->input_buffers_info == NULL)) {
 		return NULL;
 	}
 
-	input_info = LL_ATON_Input_Buffers_Info(stage->nn_instance);
+	input_info = stage->nn_instance->network->input_buffers_info();
 	if ((input_info == NULL) || (input_info->name == NULL)) {
 		return NULL;
 	}
-
 	return input_info;
 }
 
@@ -1856,15 +1922,16 @@ static const LL_Buffer_InfoTypeDef *AppAI_GetStageOutputBufferInfo(
 		const AppAI_ModelStageSpec *stage) {
 	const LL_Buffer_InfoTypeDef *output_info = NULL;
 
-	if ((stage == NULL) || (stage->nn_instance == NULL)) {
+	if ((stage == NULL) || (stage->nn_instance == NULL)
+			|| (stage->nn_instance->network == NULL)
+			|| (stage->nn_instance->network->output_buffers_info == NULL)) {
 		return NULL;
 	}
 
-	output_info = LL_ATON_Output_Buffers_Info(stage->nn_instance);
+	output_info = stage->nn_instance->network->output_buffers_info();
 	if ((output_info == NULL) || (output_info->name == NULL)) {
 		return NULL;
 	}
-
 	return output_info;
 }
 
@@ -1893,7 +1960,9 @@ static bool AppAI_ReadXspi2ModelSourceProbes(FX_FILE *model_file_ptr,
 			|| (bytes_read != APP_AI_XSPI2_PROBE_BYTES)) {
 		return false;
 	}
-	AppAI_LogXspi2PrefixBytes("xSPI2 source prefix:", source_prefix);
+	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		AppAI_LogXspi2PrefixBytes("xSPI2 source prefix:", source_prefix);
+	}
 
 	if (file_size >= APP_AI_XSPI2_PROBE_BYTES) {
 		fx_status = fx_file_seek(model_file_ptr,
@@ -1909,7 +1978,9 @@ static bool AppAI_ReadXspi2ModelSourceProbes(FX_FILE *model_file_ptr,
 				|| (bytes_read != APP_AI_XSPI2_PROBE_BYTES)) {
 			return false;
 		}
-		AppAI_LogXspi2PrefixBytes("xSPI2 source tail:", source_tail);
+		if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+			AppAI_LogXspi2PrefixBytes("xSPI2 source tail:", source_tail);
+		}
 		*has_tail_out = true;
 	}
 
@@ -1921,6 +1992,7 @@ static bool AppAI_ReadXspi2ModelSourceProbes(FX_FILE *model_file_ptr,
 	return true;
 }
 
+#if 0
 static bool AppAI_ProgramXspi2ModelImageFromSdForStage(
 		const AppAI_ModelStageSpec *stage) {
 	FX_MEDIA *media_ptr = NULL;
@@ -2088,6 +2160,7 @@ static bool AppAI_ProgramXspi2ModelImageFromSdForStage(
 		char pwlog[128];
 		(void) BSP_XSPI_NOR_Read(0U, post_write,
 				stage->xspi2_chip_offset, APP_AI_XSPI2_PROBE_BYTES);
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 		(void) snprintf(pwlog, sizeof(pwlog),
 				"[AI] %s post-write probe: [%02X%02X%02X%02X%02X%02X%02X%02X"
 				"%02X%02X%02X%02X%02X%02X%02X%02X] "
@@ -2103,6 +2176,7 @@ static bool AppAI_ProgramXspi2ModelImageFromSdForStage(
 				source_prefix[8],source_prefix[9],source_prefix[10],source_prefix[11],
 				source_prefix[12],source_prefix[13],source_prefix[14],source_prefix[15]);
 		(void) DebugConsole_WriteString(pwlog);
+#endif
 	}
 
 	(void) fx_file_close(&model_file);
@@ -2141,13 +2215,16 @@ static bool AppAI_ProgramXspi2ModelImageFromSdForStage(
 
 	(void) DebugConsole_WriteString(
 			"[AI] xSPI2 stage provisioning complete; verify skipped.\r\n");
-	AppAI_LogXspi2IndirectAndMappedPrefix();
-	AppAI_LogXspi2MappedScaleBytes();
+	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		AppAI_LogXspi2IndirectAndMappedPrefix();
+		AppAI_LogXspi2MappedScaleBytes();
+	}
 	app_ai_loaded_xspi2_stage = stage;
 	DebugConsole_Printf("[AI] %s xSPI2 model image ready.\r\n",
 			stage->stage_label);
 	return true;
 }
+#endif /* 0 */
 
 static bool AppAI_EnsureXspi2ModelImageReadyForStage(
 		const AppAI_ModelStageSpec *stage) {
@@ -2200,33 +2277,33 @@ static bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage) {
 		return false;
 	}
 
-	(void) DebugConsole_WriteString("[AI] Stage runtime ready start.\r\n");
-	(void) DebugConsole_WriteString(stage->stage_label != NULL
+	AppAI_StatusWrite("[AI] Stage runtime ready start.\r\n");
+	AppAI_StatusWrite(stage->stage_label != NULL
 			&& (strcmp(stage->stage_label, "rectifier") == 0)
 			? "[AI] Stage label: rectifier\r\n"
 			: "[AI] Stage label: scalar\r\n");
 	if (!AppAI_EnsureXspi2ModelImageReadyForStage(stage)) {
-		(void) DebugConsole_WriteString(
+		AppAI_StatusWrite(
 				"[AI] Stage runtime ready failed during xSPI2 setup.\r\n");
 		return false;
 	}
 
-	(void) DebugConsole_WriteString("[AI] Stage network init start.\r\n");
+	AppAI_StatusWrite("[AI] Stage network init start.\r\n");
 	if ((stage->network_init_fn == NULL) || !stage->network_init_fn()) {
 		AppAI_LogInitFailure(stage->stage_label);
 		return false;
 	}
 
 	LL_ATON_RT_Init_Network(stage->nn_instance);
-	(void) DebugConsole_WriteString("[AI] Stage network init OK.\r\n");
+	AppAI_StatusWrite("[AI] Stage network init OK.\r\n");
 
-	(void) DebugConsole_WriteString("[AI] Stage inference init start.\r\n");
+	AppAI_StatusWrite("[AI] Stage inference init start.\r\n");
 	if ((stage->inference_init_fn == NULL) || !stage->inference_init_fn()) {
 		AppAI_LogInitFailure(stage->stage_label);
 		return false;
 	}
 
-	(void) DebugConsole_WriteString("[AI] Stage inference init OK.\r\n");
+	AppAI_StatusWrite("[AI] Stage inference init OK.\r\n");
 	return true;
 }
 
@@ -2266,6 +2343,7 @@ static bool AppAI_DecodeRectifierCropBox(
 		char rect_log[192];
 		r0.f = output_ptr[0]; r1.f = output_ptr[1];
 		r2.f = output_ptr[2]; r3.f = output_ptr[3];
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 		(void) snprintf(rect_log, sizeof(rect_log),
 				"[AI] Rect out: cx=%ld cy=%ld w=%ld h=%ld "
 				"bits=[%08lX %08lX %08lX %08lX]\r\n",
@@ -2276,6 +2354,7 @@ static bool AppAI_DecodeRectifierCropBox(
 				(unsigned long) r0.u, (unsigned long) r1.u,
 				(unsigned long) r2.u, (unsigned long) r3.u);
 		(void) DebugConsole_WriteString(rect_log);
+#endif
 	}
 
 	center_x = AppAI_ClampNormalizedFloat(output_ptr[0]);
@@ -2302,6 +2381,7 @@ static bool AppAI_DecodeRectifierCropBox(
 			|| (box_h > APP_AI_RECTIFIER_FALLBACK_MAX_BOX_RATIO)) {
 		{
 			char fb_log[96];
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 			(void) snprintf(fb_log, sizeof(fb_log),
 					"[AI] Rect fallback: cx=%ld cy=%ld w=%ld h=%ld lim=[%ld..%ld]\r\n",
 					(long) (center_x * 1000.0f), (long) (center_y * 1000.0f),
@@ -2309,6 +2389,7 @@ static bool AppAI_DecodeRectifierCropBox(
 					(long) (APP_AI_RECTIFIER_FALLBACK_MIN_BOX_RATIO * 1000.0f),
 					(long) (APP_AI_RECTIFIER_FALLBACK_MAX_BOX_RATIO * 1000.0f));
 			(void) DebugConsole_WriteString(fb_log);
+#endif
 		}
 		use_fixed_training_crop = true;
 	}
@@ -2396,6 +2477,111 @@ static bool AppAI_DecodeRectifierCropBox(
 	return true;
 }
 
+#if !APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
+static void AppAI_LogXspi2PrefixBytes(const char *label,
+		const uint8_t *bytes) {
+	(void) label;
+	(void) bytes;
+}
+
+static void AppAI_LogFrameSignature(const uint8_t *frame_bytes,
+		size_t frame_size) {
+	(void) frame_bytes;
+	(void) frame_size;
+}
+
+static void AppAI_LogInputSignature(const float *input_buffer,
+		size_t input_float_count) {
+	(void) input_buffer;
+	(void) input_float_count;
+}
+
+static void AppAI_LogInputTensorWindow(const float *input_buffer,
+		size_t input_float_count) {
+	(void) input_buffer;
+	(void) input_float_count;
+}
+
+static void AppAI_LogInputProbeSummary(const float *input_buffer,
+		size_t input_float_count) {
+	(void) input_buffer;
+	(void) input_float_count;
+}
+
+static void AppAI_LogTensorRowSamples(const char *label,
+		const float *input_buffer, size_t tensor_width, size_t y,
+		size_t x_min, size_t x_max) {
+	(void) label;
+	(void) input_buffer;
+	(void) tensor_width;
+	(void) y;
+	(void) x_min;
+	(void) x_max;
+}
+
+static void AppAI_LogSourcePatch(const char *label, const uint8_t *frame_bytes,
+		size_t frame_width_pixels, size_t center_x, size_t center_y,
+		size_t radius_pixels) {
+	(void) label;
+	(void) frame_bytes;
+	(void) frame_width_pixels;
+	(void) center_x;
+	(void) center_y;
+	(void) radius_pixels;
+}
+
+static void AppAI_LogTensorPatch(const char *label, const float *input_buffer,
+		size_t tensor_width, size_t center_x, size_t center_y,
+		size_t radius_pixels) {
+	(void) label;
+	(void) input_buffer;
+	(void) tensor_width;
+	(void) center_x;
+	(void) center_y;
+	(void) radius_pixels;
+}
+
+static void AppAI_LogSourceCropWindow(const uint8_t *frame_bytes,
+		size_t frame_size, size_t frame_width_pixels, size_t frame_height_pixels,
+		size_t crop_x_min, size_t crop_y_min, size_t crop_width,
+		size_t crop_height) {
+	(void) frame_bytes;
+	(void) frame_size;
+	(void) frame_width_pixels;
+	(void) frame_height_pixels;
+	(void) crop_x_min;
+	(void) crop_y_min;
+	(void) crop_width;
+	(void) crop_height;
+}
+
+static void AppAI_LogInt8BufferSignature(const char *label,
+		const int8_t *buffer_ptr, size_t buffer_len_bytes) {
+	(void) label;
+	(void) buffer_ptr;
+	(void) buffer_len_bytes;
+}
+
+static void AppAI_LogRawBufferSignature(const char *label,
+		const uint8_t *buffer_ptr, size_t buffer_len_bytes) {
+	(void) label;
+	(void) buffer_ptr;
+	(void) buffer_len_bytes;
+}
+
+static const char *AppAI_BufferTypeName(const LL_Buffer_InfoTypeDef *buffer_info) {
+	(void) buffer_info;
+	return "OTHER";
+}
+
+static void AppAI_LogBufferInfoAndSignature(const char *label,
+		const LL_Buffer_InfoTypeDef *buffer_info) {
+	(void) label;
+	(void) buffer_info;
+}
+#endif /* !APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
+
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 static void AppAI_LogRectifierResult(
 		const LL_Buffer_InfoTypeDef *output_buffer_info,
 		const AppAI_RectifierBox *rectifier_box) {
@@ -2414,6 +2600,14 @@ static void AppAI_LogRectifierResult(
 			rectifier_box->center_x, rectifier_box->center_y,
 			rectifier_box->box_w, rectifier_box->box_h);
 }
+#else
+static void AppAI_LogRectifierResult(
+		const LL_Buffer_InfoTypeDef *output_buffer_info,
+		const AppAI_RectifierBox *rectifier_box) {
+	(void) output_buffer_info;
+	(void) rectifier_box;
+}
+#endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
 
 static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		const uint8_t *frame_bytes, size_t frame_size,
@@ -2432,10 +2626,6 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	}
 
 	(void) DebugConsole_WriteString("[AI] Stage inference request.\r\n");
-	(void) DebugConsole_WriteString(stage->stage_label != NULL
-			&& (strcmp(stage->stage_label, "rectifier") == 0)
-			? "[AI] Stage inference request label: rectifier\r\n"
-			: "[AI] Stage inference request label: scalar\r\n");
 	if (!AppAI_EnsureStageRuntimeReady(stage)) {
 		(void) DebugConsole_WriteString(
 				"[AI] Stage inference aborted before preprocess.\r\n");
@@ -2462,15 +2652,17 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		AppAI_ClearForcedCrop();
 	}
 
-	DebugConsole_Printf(
-			"[AI] Run stage=%s frame_ptr=%p frame_size=%lu input=%s addr=%p len=%lu output=%s addr=%p len=%lu\r\n",
-			stage->stage_label, (const void *) frame_bytes,
-			(unsigned long) frame_size,
-			(input_info->name != NULL) ? input_info->name : "(unnamed)",
-			(void *) input_ptr, (unsigned long) input_len_bytes,
-			(output_info->name != NULL) ? output_info->name : "(unnamed)",
-			(void *) LL_Buffer_addr_start(output_info),
-			(unsigned long) LL_Buffer_len(output_info));
+	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		DebugConsole_Printf(
+				"[AI] Run stage=%s frame_ptr=%p frame_size=%lu input=%s addr=%p len=%lu output=%s addr=%p len=%lu\r\n",
+				stage->stage_label, (const void *) frame_bytes,
+				(unsigned long) frame_size,
+				(input_info->name != NULL) ? input_info->name : "(unnamed)",
+				(void *) input_ptr, (unsigned long) input_len_bytes,
+				(output_info->name != NULL) ? output_info->name : "(unnamed)",
+				(void *) LL_Buffer_addr_start(output_info),
+				(unsigned long) LL_Buffer_len(output_info));
+	}
 
 	if (!AppAI_PreprocessYuv422FrameToFloatInput(frame_bytes, frame_size,
 			input_ptr, input_float_count)) {
@@ -2478,16 +2670,19 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		return false;
 	}
 
-	DebugConsole_Printf("[AI] %s preprocess complete; logging tensor signatures.\r\n",
-			stage->stage_label);
-	AppAI_LogFrameSignature(frame_bytes, frame_size);
-	AppAI_LogInputSignature(input_ptr, input_float_count);
-	AppAI_LogInputTensorWindow(input_ptr, input_float_count);
-	AppAI_LogInputProbeSummary(input_ptr, input_float_count);
-	AppAI_LogTensorPatch("Tensor center", input_ptr,
-			(size_t) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
-			(size_t) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS / 2U,
-			(size_t) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS / 2U, 2U);
+	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		DebugConsole_Printf(
+				"[AI] %s preprocess complete; logging tensor signatures.\r\n",
+				stage->stage_label);
+		AppAI_LogFrameSignature(frame_bytes, frame_size);
+		AppAI_LogInputSignature(input_ptr, input_float_count);
+		AppAI_LogInputTensorWindow(input_ptr, input_float_count);
+		AppAI_LogInputProbeSummary(input_ptr, input_float_count);
+		AppAI_LogTensorPatch("Tensor center", input_ptr,
+				(size_t) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
+				(size_t) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS / 2U,
+				(size_t) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS / 2U, 2U);
+	}
 
 	(void) mcu_cache_clean_range((uint32_t) (uintptr_t) input_ptr,
 			(uint32_t) ((uintptr_t) input_ptr + input_len_bytes));
@@ -2525,6 +2720,7 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		const uint8_t *ob = (const uint8_t *) output_ptr;
 		const size_t on = (output_len_bytes < 16U) ? output_len_bytes : 16U;
 		char olog[128];
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 		(void) snprintf(olog, sizeof(olog),
 				"[AI] %s out addr=%p len=%lu bytes=[%02X%02X%02X%02X%02X%02X%02X%02X"
 				"%02X%02X%02X%02X%02X%02X%02X%02X]\r\n",
@@ -2539,6 +2735,7 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 				(on>12U)?ob[12]:0U,(on>13U)?ob[13]:0U,
 				(on>14U)?ob[14]:0U,(on>15U)?ob[15]:0U);
 		(void) DebugConsole_WriteString(olog);
+#endif
 	}
 
 	if (output_info_out != NULL) {
@@ -2564,6 +2761,7 @@ static bool AppAI_WaitForFileXMediaReady(uint32_t timeout_ms) {
 	return true;
 }
 
+#if 0
 static bool AppAI_EnsureXspi2ModelImageReady(void) {
 	if (app_ai_xspi2_initialized) {
 		return true;
@@ -2613,6 +2811,7 @@ static bool AppAI_EnsureXspi2ModelImageReady(void) {
 	DebugConsole_Printf("[AI] xSPI2 model image ready.\r\n");
 	return true;
 }
+#endif /* 0 */
 
 bool App_AI_Model_Init(void) {
 	if (app_ai_runtime_initialized) {
@@ -2635,6 +2834,7 @@ bool App_AI_Model_Init(void) {
 	return true;
 }
 
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 static void AppAI_LogInitFailure(const char *step) {
 	if (step != NULL) {
 		DebugConsole_Printf("[AI] Model runtime init failed at %s.\r\n", step);
@@ -2688,7 +2888,31 @@ static void AppAI_LogXspi2FlashStatus(const char *label) {
 			(unsigned int) Xspi_Nor_Ctx[0U].TransferRate);
 	(void) DebugConsole_WriteString(msg);
 }
+#else
+static void AppAI_LogInitFailure(const char *step) {
+	(void) step;
+}
 
+static void AppAI_LogXspi2LoadFailure(const char *step, UINT fx_status,
+		int32_t bsp_status) {
+	(void) step;
+	(void) fx_status;
+	(void) bsp_status;
+}
+
+static void AppAI_LogXspi2ProgramChunkProgress(ULONG chunk_index,
+		ULONG flash_offset, ULONG chunk_size) {
+	(void) chunk_index;
+	(void) flash_offset;
+	(void) chunk_size;
+}
+
+static void AppAI_LogXspi2FlashStatus(const char *label) {
+	(void) label;
+}
+#endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
+
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 static void AppAI_LogXspi2FlashPrefix(void) {
 	uint8_t flash_bytes[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
 
@@ -2791,9 +3015,10 @@ static void AppAI_LogFloatApprox(const char *label, float value) {
 		magnitude_frac -= 1000000U;
 	}
 
-	DebugConsole_Printf("%s%s%lu.%06lu\r\n", label, sign,
+DebugConsole_Printf("%s%s%lu.%06lu\r\n", label, sign,
 			magnitude_whole, magnitude_frac);
 }
+#endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
 
 static bool AppAI_RuntimeInitStepwise(void) {
 	uint32_t t = 0U;
@@ -2827,6 +3052,22 @@ static bool AppAI_RuntimeInitStepwise(void) {
 	(void) DebugConsole_WriteString("[AI] ATON runtime init OK.\r\n");
 	return true;
 }
+
+#if !APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
+static void AppAI_LogXspi2FlashPrefix(void) {
+}
+
+static void AppAI_LogXspi2MappedScaleBytes(void) {
+}
+
+static void AppAI_LogXspi2IndirectAndMappedPrefix(void) {
+}
+
+static void AppAI_LogFloatApprox(const char *label, float value) {
+	(void) label;
+	(void) value;
+}
+#endif /* !APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
 
 static void AppAI_ConfigureNpuAccessControl(void) {
 	RIMC_MasterConfig_t npu_master = { 0 };
@@ -3017,7 +3258,9 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		return false;
 	}
 
-	AppAI_LogRectifierResult(rectifier_output_info, &rectifier_box);
+	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		AppAI_LogRectifierResult(rectifier_output_info, &rectifier_box);
+	}
 	DebugConsole_Printf(
 			"[AI] Rectifier crop: x=%lu y=%lu w=%lu h=%lu\r\n",
 			(unsigned long) scalar_crop.x_min,
@@ -3042,8 +3285,8 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 
 static const LL_Buffer_InfoTypeDef *AppAI_GetInputBufferInfo(void) {
 	const LL_Buffer_InfoTypeDef *input_info =
-			LL_ATON_Input_Buffers_Info(
-					&NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8);
+			NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8.network
+					->input_buffers_info();
 
 	if ((input_info == NULL) || (input_info->name == NULL)) {
 		return NULL;
@@ -3054,8 +3297,8 @@ static const LL_Buffer_InfoTypeDef *AppAI_GetInputBufferInfo(void) {
 
 static const LL_Buffer_InfoTypeDef *AppAI_GetOutputBufferInfo(void) {
 	const LL_Buffer_InfoTypeDef *output_info =
-			LL_ATON_Output_Buffers_Info(
-					&NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8);
+			NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8.network
+					->output_buffers_info();
 
 	if ((output_info == NULL) || (output_info->name == NULL)) {
 		return NULL;
@@ -3099,6 +3342,7 @@ static const LL_Buffer_InfoTypeDef *AppAI_FindFirstBufferInfoByNames(
 	return NULL;
 }
 
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 static void AppAI_LogInferenceResult(
 		const LL_Buffer_InfoTypeDef *output_buffer_info) {
 	const LL_Buffer_InfoTypeDef *internal_buffers = NULL;
@@ -3186,16 +3430,20 @@ static void AppAI_LogInferenceResult(
 			zero_point_names, sizeof(zero_point_names) / sizeof(
 					zero_point_names[0]));
 
-	AppAI_LogBufferInfoAndSignature("input tensor", quantize_output_info);
-	AppAI_LogBufferInfoAndSignature("preprocess output", sub_output_info);
-	AppAI_LogBufferInfoAndSignature("first conv", conv1_output_info);
-	AppAI_LogBufferInfoAndSignature("raw head", raw_output_info);
-	AppAI_LogBufferInfoAndSignature("network output", output_buffer_info);
+	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		AppAI_LogBufferInfoAndSignature("input tensor", quantize_output_info);
+		AppAI_LogBufferInfoAndSignature("preprocess output", sub_output_info);
+		AppAI_LogBufferInfoAndSignature("first conv", conv1_output_info);
+		AppAI_LogBufferInfoAndSignature("raw head", raw_output_info);
+		AppAI_LogBufferInfoAndSignature("network output", output_buffer_info);
+	}
 
 	/* Dump the first 16 raw bytes of both the head output and the final network
 	 * output so we can tell whether the inference engine wrote anything at all
 	 * and whether the int8 value being read is actually at offset 0. */
-	if ((raw_output_info != NULL) && (LL_Buffer_addr_start(raw_output_info) != NULL)) {
+	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
+			&& (raw_output_info != NULL)
+			&& (LL_Buffer_addr_start(raw_output_info) != NULL)) {
 		const uint8_t *p = (const uint8_t *) LL_Buffer_addr_start(raw_output_info);
 		const size_t n = LL_Buffer_len(raw_output_info);
 		DebugConsole_Printf(
@@ -3212,7 +3460,9 @@ static void AppAI_LogInferenceResult(
 				(n > 12U) ? p[12] : 0U, (n > 13U) ? p[13] : 0U,
 				(n > 14U) ? p[14] : 0U, (n > 15U) ? p[15] : 0U);
 	}
-	if ((output_buffer_info != NULL) && (LL_Buffer_addr_start(output_buffer_info) != NULL)) {
+	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
+			&& (output_buffer_info != NULL)
+			&& (LL_Buffer_addr_start(output_buffer_info) != NULL)) {
 		const uint8_t *p = (const uint8_t *) LL_Buffer_addr_start(output_buffer_info);
 		const size_t n = LL_Buffer_len(output_buffer_info);
 		DebugConsole_Printf(
@@ -3297,15 +3547,43 @@ static void AppAI_LogInferenceResult(
 			(int) head_zero_point,
 			(unsigned long) output_bits.u,
 			(int) output_zero_point);
-	AppAI_LogFloatApprox("[AI] head_scale: ", head_scale);
-	AppAI_LogFloatApprox("[AI] head_dequant: ", head_dequant_value);
-	AppAI_LogFloatApprox("[AI] output_scale: ", output_dequant_scale);
-	AppAI_LogFloatApprox("[AI] output_zero_point: ", (float) output_zero_point);
-	AppAI_LogFloatApprox("[AI] Inference output value: ", output_value);
+	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		AppAI_LogFloatApprox("[AI] head_scale: ", head_scale);
+		AppAI_LogFloatApprox("[AI] head_dequant: ", head_dequant_value);
+		AppAI_LogFloatApprox("[AI] output_scale: ", output_dequant_scale);
+		AppAI_LogFloatApprox("[AI] output_zero_point: ",
+				(float) output_zero_point);
+		AppAI_LogFloatApprox("[AI] Inference output value: ", output_value);
+	}
 
 	app_ai_last_inference_value = output_value;
 	app_ai_last_inference_valid = true;
 }
+#else
+static void AppAI_LogInferenceResult(
+		const LL_Buffer_InfoTypeDef *output_buffer_info) {
+	float output_value = 0.0f;
+	char line[64] = { 0 };
+
+	if ((output_buffer_info == NULL)
+			|| (LL_Buffer_addr_start(output_buffer_info) == NULL)
+			|| (LL_Buffer_len(output_buffer_info) < sizeof(output_value))) {
+		return;
+	}
+
+	(void) memcpy(&output_value, LL_Buffer_addr_start(output_buffer_info),
+			sizeof(output_value));
+	output_value = AppInferenceCalibration_Apply(output_value);
+	output_value = AppAI_FilterInferenceValue(output_value);
+
+	AppInferenceLog_FormatFloatMicros(line, sizeof(line),
+			"[AI] Inference value: ", output_value);
+	AppAI_StatusWrite(line);
+
+	app_ai_last_inference_value = output_value;
+	app_ai_last_inference_valid = true;
+}
+#endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
 
 /**
  * @brief Smooth the user-facing inference value across captures.
@@ -3425,11 +3703,13 @@ static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
 				crop_label,
 				(unsigned long) crop_x_min, (unsigned long) crop_y_min,
 				(unsigned long) crop_width, (unsigned long) crop_height);
-		DebugConsole_WriteString(crop_line);
+		AppAI_StatusWrite(crop_line);
 	}
 
-	AppAI_LogSourceCropWindow(frame_bytes, frame_size, source_width,
-			source_height, crop_x_min, crop_y_min, crop_width, crop_height);
+	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+		AppAI_LogSourceCropWindow(frame_bytes, frame_size, source_width,
+				source_height, crop_x_min, crop_y_min, crop_width, crop_height);
+	}
 
 	(void) memset(input_ptr, 0, input_float_count * sizeof(float));
 
@@ -3448,6 +3728,7 @@ static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
 				((output_height - scaled_height) / 2U) : 0U;
 		const size_t crop_x_max_index = (crop_width > 0U) ? (crop_width - 1U) : 0U;
 		const size_t crop_y_max_index = (crop_height > 0U) ? (crop_height - 1U) : 0U;
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 		const size_t probe_x = (pad_x + (scaled_width / 2U) < output_width) ?
 				(pad_x + (scaled_width / 2U)) : (output_width - 1U);
 		const size_t probe_top_y = (pad_y + (scaled_height / 4U) < output_height) ?
@@ -3724,11 +4005,13 @@ static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
 								(unsigned int) quad11[2], (unsigned int) quad11[3]);
 					}
 
-					AppAI_LogSourcePatch("Probe mid source", frame_bytes,
-							source_width, crop_x_min + crop_x0,
-							crop_y_min + crop_y0, 2U);
-					AppAI_LogTensorPatch("Probe mid tensor", input_ptr,
-							output_width, out_x, out_y, 2U);
+					if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+						AppAI_LogSourcePatch("Probe mid source", frame_bytes,
+								source_width, crop_x_min + crop_x0,
+								crop_y_min + crop_y0, 2U);
+						AppAI_LogTensorPatch("Probe mid tensor", input_ptr,
+								output_width, out_x, out_y, 2U);
+					}
 				}
 
 				if ((out_x == probe_x) && (out_y == probe_bottom_y)) {
@@ -3835,6 +4118,7 @@ static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
 					(unsigned long) ((input_ptr[6U] * 1000.0f) + 0.5f),
 					(unsigned long) ((input_ptr[7U] * 1000.0f) + 0.5f));
 		}
+#endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
 	}
 
 	return true;

@@ -50,7 +50,7 @@ bool DebugConsole_WriteString(const char *null_terminated_string_pointer);
  * and message literals do not end up in ROM.
  */
 #ifndef DEBUG_CONSOLE_ENABLE_LOGS
-#define DEBUG_CONSOLE_ENABLE_LOGS 0
+#define DEBUG_CONSOLE_ENABLE_LOGS 1
 #endif
 
 #if !DEBUG_CONSOLE_ENABLE_LOGS

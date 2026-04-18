@@ -12,11 +12,8 @@ USER_OBJS += \
 ../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ecloader.o \
 ../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton.o \
 ../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton_cipher.o \
-../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton_dbgtrc.o \
-../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton_debug.o \
 ../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton_lib.o \
 ../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton_lib_sw_operators.o \
-../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton_profiler.o \
 ../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton_reloc_callbacks.o \
 ../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton_reloc_network.o \
 ../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton_rt_main.o \
