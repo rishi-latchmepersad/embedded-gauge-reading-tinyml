@@ -31,30 +31,11 @@
 #include "stm32n6xx_hal.h"
 
 /*
- * Keep the very noisy tensor and patch dumps behind a toggle, but leave the
- * normal AI status logs enabled so the USART console still shows boot and
- * inference progress by default.
+ * Keep the very noisy tensor and patch dumps behind a toggle so the normal
+ * AI status logs still use the shared debug console directly.
  */
 #ifndef APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 #define APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS 0
-#endif
-
-static void AppAI_StatusWrite(const char *message) {
-	if (message != NULL) {
-		(void) DebugConsole_WriteString(message);
-	}
-}
-
-/*
- * When verbose AI logging is off, keep the high-volume printf-style traces
- * out of the image, but leave the short status writes alone so the USART still
- * shows the normal boot and stage progress messages.
- */
-#if !APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
-#undef DebugConsole_Printf
-#define DebugConsole_Printf(...) ((void) 0)
-#undef DebugConsole_WriteString
-#define DebugConsole_WriteString(...) ((void) 0)
 #endif
 /* USER CODE END Includes */
 
@@ -120,10 +101,11 @@ static void AppAI_StatusWrite(const char *message) {
  * below a tiny fraction of the canvas, or the scalar stage degenerates to a
  * 1x1 crop. */
 #define APP_AI_RECTIFIER_MIN_BOX_RATIO     0.05f
-/* Rectifier crops outside this band are usually unhelpful on live board
- * captures, so fall back to the stable training crop instead of trusting them. */
-#define APP_AI_RECTIFIER_FALLBACK_MIN_BOX_RATIO  0.25f
-#define APP_AI_RECTIFIER_FALLBACK_MAX_BOX_RATIO  0.95f
+/* Force fixed training crop unconditionally — rectifier is not yet trained on
+ * close-up framing so its box is unreliable. Setting min > max means every box
+ * fails the check and falls back to the stable training crop. */
+#define APP_AI_RECTIFIER_FALLBACK_MIN_BOX_RATIO  1.1f
+#define APP_AI_RECTIFIER_FALLBACK_MAX_BOX_RATIO  0.0f
 /* Temporarily disable EMA smoothing so the board exposes the raw model value
  * directly while we validate the current crop and exposure tuning. */
 #define APP_AI_INFERENCE_SMOOTHING_ALPHA   1.0f
@@ -136,8 +118,8 @@ static void AppAI_StatusWrite(const char *message) {
 #define APP_AI_XSPI2_SCALAR_CHIP_OFFSET   (APP_AI_XSPI2_SCALAR_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
 /* Rectifier model: immediately after scalar region (aligned to next 64 KB).
  * Must match FLASH_RECTIFIER address in flash_boot.bat.
- * Size: ~118 KB → occupies 0x70520000–0x7053FFFF (2 × 64 KB blocks). */
-#define APP_AI_XSPI2_RECTIFIER_BASE_ADDR  0x70520000UL
+ * Size: ~118 KB → occupies 0x70600000–0x7053FFFF (2 × 64 KB blocks). */
+#define APP_AI_XSPI2_RECTIFIER_BASE_ADDR  0x70600000UL
 #define APP_AI_XSPI2_RECTIFIER_CHIP_OFFSET (APP_AI_XSPI2_RECTIFIER_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
 /* Legacy alias used by the single-stage logging helpers; points to scalar. */
 #define APP_AI_XSPI2_MODEL_BASE_ADDR      APP_AI_XSPI2_SCALAR_BASE_ADDR
@@ -173,7 +155,7 @@ uint8_t _mem_pool_xSPI2_scalar_full_finetune_from_best_piecewise_calibrated_int8
 	0U,
 };
 /* Rectifier pool placed in its own section so the linker script can map it to
- * the rectifier flash region at 0x70520000 — matching FLASH_RECTIFIER in
+ * the rectifier flash region at 0x70600000 — matching FLASH_RECTIFIER in
  * flash_boot.bat.  The NPU resolves all weight addresses as:
  *   _mem_pool_xSPI2_mobilenetv2_rectifier_hardcase_finetune + internal_offset
  * so this symbol MUST live at the base of the flashed blob. */
@@ -338,6 +320,8 @@ static void AppAI_LogRawBufferSignature(const char *label,
 static const char *AppAI_BufferTypeName(const LL_Buffer_InfoTypeDef *buffer_info);
 static void AppAI_LogBufferInfoAndSignature(const char *label,
 		const LL_Buffer_InfoTypeDef *buffer_info);
+static void AppAI_LogBufferPreview(const char *label,
+		const LL_Buffer_InfoTypeDef *buffer_info);
 #if APP_AI_USE_ADAPTIVE_GAUGE_CROP
 static bool AppAI_EstimateGaugeCropBoxFromYuv422(const uint8_t *frame_bytes,
 		size_t frame_size, size_t frame_width_pixels, size_t frame_height_pixels,
@@ -484,8 +468,7 @@ static bool AppAI_ReconfigureXspi2ForRuntime(void) {
 	(void) DebugConsole_WriteString(
 			"[AI] xSPI2 runtime reconfigure: clock config start.\r\n");
 	if (HAL_RCCEx_PeriphCLKConfig(&periph_clk) != HAL_OK) {
-		(void) DebugConsole_WriteString(
-				"[AI] xSPI2 runtime reconfigure: clock config failed.\r\n");
+		DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: clock config failed.\r\n");
 		return false;
 	}
 	(void) DebugConsole_WriteString(
@@ -500,13 +483,11 @@ static bool AppAI_ReconfigureXspi2ForRuntime(void) {
 	(void) DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: init start.\r\n");
 	bsp_status = BSP_XSPI_NOR_Init(0U, &flash);
 	if (bsp_status != BSP_ERROR_NONE) {
-#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 		char msg[96];
 		(void) snprintf(msg, sizeof(msg),
 				"[AI] xSPI2 runtime reconfigure: init failed: %ld\r\n",
 				(long) bsp_status);
-		(void) DebugConsole_WriteString(msg);
-#endif
+		DebugConsole_WriteString(msg);
 		return false;
 	}
 	(void) DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: init OK.\r\n");
@@ -1399,7 +1380,86 @@ static void AppAI_LogBufferInfoAndSignature(const char *label,
 	}
 }
 
+/**
+ * @brief Print a tiny raw preview for the active tensor buffers.
+ *
+ * This is intentionally always-on and lightweight so we can see whether the
+ * actual stage input and output buffers are changing, even when the verbose
+ * tensor dumps stay disabled to protect ROM size.
+ */
 #endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
+
+/**
+ * @brief Print a tiny raw preview for the active tensor buffers.
+ *
+ * This is intentionally always-on and lightweight so we can see whether the
+ * actual stage input and output buffers are changing, even when the verbose
+ * tensor dumps stay disabled to protect ROM size.
+ *
+ * The hash and middle/tail windows help us avoid a false "everything is zero"
+ * conclusion when the tensor origin is padded or naturally blank.
+ */
+static void AppAI_LogBufferPreview(const char *label,
+		const LL_Buffer_InfoTypeDef *buffer_info) {
+	const uint8_t *buffer_bytes = NULL;
+	size_t buffer_len = 0U;
+	uint8_t first_bytes[8U] = { 0U };
+	uint8_t mid_bytes[8U] = { 0U };
+	uint8_t last_bytes[8U] = { 0U };
+	uint32_t hash = 2166136261UL;
+	size_t preview_len = 0U;
+	size_t mid_offset = 0U;
+	size_t last_offset = 0U;
+
+	if ((label == NULL) || (buffer_info == NULL)) {
+		return;
+	}
+
+	buffer_bytes = (const uint8_t *) LL_Buffer_addr_start(buffer_info);
+	buffer_len = (size_t) LL_Buffer_len(buffer_info);
+	if ((buffer_bytes == NULL) || (buffer_len == 0U)) {
+		DebugConsole_Printf("[AI] %s probe skipped: empty buffer.\r\n", label);
+		return;
+	}
+
+	preview_len = (buffer_len < sizeof(first_bytes)) ? buffer_len
+			: sizeof(first_bytes);
+	mid_offset = (buffer_len > preview_len) ? (buffer_len / 2U) : 0U;
+	if ((mid_offset + preview_len) > buffer_len) {
+		mid_offset = buffer_len - preview_len;
+	}
+	last_offset = (buffer_len > preview_len) ? (buffer_len - preview_len) : 0U;
+
+	for (size_t index = 0U; index < preview_len; ++index) {
+		first_bytes[index] = buffer_bytes[index];
+		mid_bytes[index] = buffer_bytes[mid_offset + index];
+		last_bytes[index] = buffer_bytes[last_offset + index];
+	}
+
+	for (size_t index = 0U; index < buffer_len; ++index) {
+		hash ^= buffer_bytes[index];
+		hash *= 16777619UL;
+	}
+
+	DebugConsole_Printf(
+			"[AI] %s probe: name=%s addr=%p len=%lu hash=0x%08lX first8=[%02X %02X %02X %02X %02X %02X %02X %02X] mid8=[%02X %02X %02X %02X %02X %02X %02X %02X] last8=[%02X %02X %02X %02X %02X %02X %02X %02X]\r\n",
+			label,
+			(buffer_info->name != NULL) ? buffer_info->name : "(unnamed)",
+			(const void *) buffer_bytes, (unsigned long) buffer_len,
+			(unsigned long) hash,
+			(unsigned int) first_bytes[0], (unsigned int) first_bytes[1],
+			(unsigned int) first_bytes[2], (unsigned int) first_bytes[3],
+			(unsigned int) first_bytes[4], (unsigned int) first_bytes[5],
+			(unsigned int) first_bytes[6], (unsigned int) first_bytes[7],
+			(unsigned int) mid_bytes[0], (unsigned int) mid_bytes[1],
+			(unsigned int) mid_bytes[2], (unsigned int) mid_bytes[3],
+			(unsigned int) mid_bytes[4], (unsigned int) mid_bytes[5],
+			(unsigned int) mid_bytes[6], (unsigned int) mid_bytes[7],
+			(unsigned int) last_bytes[0], (unsigned int) last_bytes[1],
+			(unsigned int) last_bytes[2], (unsigned int) last_bytes[3],
+			(unsigned int) last_bytes[4], (unsigned int) last_bytes[5],
+			(unsigned int) last_bytes[6], (unsigned int) last_bytes[7]);
+}
 
 /**
  * @brief Estimate a gauge crop from bright pixels in the Y channel.
@@ -1670,26 +1730,15 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 		/* Log the actual flash bytes so stale hardcoded signatures can be updated. */
 		{
 			uint8_t actual[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
-			char vlog[128];
-			(void) BSP_XSPI_NOR_Read(0U, actual,
+			char vlog[160];
+			int32_t read_status = BSP_XSPI_NOR_Read(0U, actual,
 					stage->xspi2_chip_offset, APP_AI_XSPI2_PROBE_BYTES);
-#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 			(void) snprintf(vlog, sizeof(vlog),
-					"[AI] %s verify fail: flash=[%02X%02X%02X%02X%02X%02X%02X%02X"
-					"%02X%02X%02X%02X%02X%02X%02X%02X] "
-					"expected=[%02X%02X%02X%02X%02X%02X%02X%02X"
-					"%02X%02X%02X%02X%02X%02X%02X%02X]\r\n",
-					stage->stage_label,
+					"[AI] %s mismatch rc=%ld bytes=[%02X%02X%02X%02X%02X%02X%02X%02X]\r\n",
+					stage->stage_label, (long) read_status,
 					actual[0],actual[1],actual[2],actual[3],
-					actual[4],actual[5],actual[6],actual[7],
-					actual[8],actual[9],actual[10],actual[11],
-					actual[12],actual[13],actual[14],actual[15],
-					sig_start[0],sig_start[1],sig_start[2],sig_start[3],
-					sig_start[4],sig_start[5],sig_start[6],sig_start[7],
-					sig_start[8],sig_start[9],sig_start[10],sig_start[11],
-					sig_start[12],sig_start[13],sig_start[14],sig_start[15]);
-			(void) DebugConsole_WriteString(vlog);
-#endif
+					actual[4],actual[5],actual[6],actual[7]);
+			DebugConsole_WriteString(vlog);
 		}
 		return false;
 	}
@@ -2242,14 +2291,12 @@ static bool AppAI_EnsureXspi2ModelImageReadyForStage(
 	/* Each stage now has its own flash region, so we can verify whether the
 	 * stage's bytes are already present without disturbing the other stage.
 	 * Switch to indirect mode first (needed for BSP_XSPI_NOR_Read). */
-	(void) DebugConsole_WriteString("[AI] xSPI2 stage mapped verify start.\r\n");
-	(void) DebugConsole_WriteString("[AI] xSPI2 stage reconfigure start.\r\n");
+	DebugConsole_WriteString("[AI] xSPI2 stage reconfigure start.\r\n");
 	if (!AppAI_ReconfigureXspi2ForRuntime()) {
-		AppAI_LogXspi2LoadFailure("runtime reconfigure", FX_SUCCESS,
-				BSP_ERROR_COMPONENT_FAILURE);
+		DebugConsole_WriteString("[AI] xSPI2 stage reconfigure FAILED.\r\n");
 		return false;
 	}
-	(void) DebugConsole_WriteString("[AI] xSPI2 stage reconfigure OK.\r\n");
+	DebugConsole_WriteString("[AI] xSPI2 stage reconfigure OK.\r\n");
 
 	if (AppAI_Xspi2ModelImageMatchesMappedFlashForStage(stage)) {
 		(void) DebugConsole_WriteString(
@@ -2277,33 +2324,33 @@ static bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage) {
 		return false;
 	}
 
-	AppAI_StatusWrite("[AI] Stage runtime ready start.\r\n");
-	AppAI_StatusWrite(stage->stage_label != NULL
+	DebugConsole_WriteString("[AI] Stage runtime ready start.\r\n");
+	DebugConsole_WriteString(stage->stage_label != NULL
 			&& (strcmp(stage->stage_label, "rectifier") == 0)
 			? "[AI] Stage label: rectifier\r\n"
 			: "[AI] Stage label: scalar\r\n");
 	if (!AppAI_EnsureXspi2ModelImageReadyForStage(stage)) {
-		AppAI_StatusWrite(
+		DebugConsole_WriteString(
 				"[AI] Stage runtime ready failed during xSPI2 setup.\r\n");
 		return false;
 	}
 
-	AppAI_StatusWrite("[AI] Stage network init start.\r\n");
+	DebugConsole_WriteString("[AI] Stage network init start.\r\n");
 	if ((stage->network_init_fn == NULL) || !stage->network_init_fn()) {
 		AppAI_LogInitFailure(stage->stage_label);
 		return false;
 	}
 
 	LL_ATON_RT_Init_Network(stage->nn_instance);
-	AppAI_StatusWrite("[AI] Stage network init OK.\r\n");
+	DebugConsole_WriteString("[AI] Stage network init OK.\r\n");
 
-	AppAI_StatusWrite("[AI] Stage inference init start.\r\n");
+	DebugConsole_WriteString("[AI] Stage inference init start.\r\n");
 	if ((stage->inference_init_fn == NULL) || !stage->inference_init_fn()) {
 		AppAI_LogInitFailure(stage->stage_label);
 		return false;
 	}
 
-	AppAI_StatusWrite("[AI] Stage inference init OK.\r\n");
+	DebugConsole_WriteString("[AI] Stage inference init OK.\r\n");
 	return true;
 }
 
@@ -2684,6 +2731,8 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 				(size_t) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS / 2U, 2U);
 	}
 
+	AppAI_LogBufferPreview("Stage input", input_info);
+
 	(void) mcu_cache_clean_range((uint32_t) (uintptr_t) input_ptr,
 			(uint32_t) ((uintptr_t) input_ptr + input_len_bytes));
 
@@ -2713,6 +2762,8 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 
 	(void) mcu_cache_invalidate_range((uint32_t) (uintptr_t) output_ptr,
 			(uint32_t) ((uintptr_t) output_ptr + output_len_bytes));
+
+	AppAI_LogBufferPreview("Stage output", output_info);
 
 	/* Log raw output bytes immediately after cache invalidate so we can tell
 	 * whether the inference engine populated the buffer at all. */
@@ -3366,32 +3417,26 @@ static void AppAI_LogInferenceResult(
 	int8_t head_zero_point = 0;
 	int8_t output_zero_point = 0;
 	static const char *const quantize_output_names[] = {
-		"Quantize_5_out_0",
-		"Quantize_17_out_0",
+		"Sub_24_out_0",
+		"Conv2D_25_zero_off_out_25",
 	};
 	static const char *const sub_output_names[] = {
-		"Sub_13_out_0",
-		"Sub_25_out_0",
+		"Conv2D_25_zero_off_out_25",
+		"Conv2D_30_zero_off_out_34",
 	};
 	static const char *const conv1_output_names[] = {
-			"Conv2D_19_zero_off_out_22",
-			"Conv2D_19_zero_off_out_28",
-			"Conv2D_31_zero_off_out_34",
+			"Conv2D_34_zero_off_out_43",
+			"Conv2D_42_zero_off_out_61",
+			"Conv2D_46_zero_off_out_70",
 	};
 	static const char *const raw_output_names[] = {
-		"Gemm_259_out_0",
-		"Gemm_260_out_0",
-		"Gemm_322_out_0",
+		"Gemm_271_out_0",
 	};
 	static const char *const scale_names[] = {
-		"Dequantize_261_x_scale",
-		"Dequantize_262_x_scale",
-		"Dequantize_324_x_scale",
+		"Dequantize_319_x_scale",
 	};
 	static const char *const zero_point_names[] = {
-		"Dequantize_261_x_zero_point",
-		"Dequantize_262_x_zero_point",
-		"Dequantize_324_x_zero_point",
+		"Dequantize_319_x_zero_point",
 	};
 
 	if (output_buffer_info == NULL) {
@@ -3578,7 +3623,7 @@ static void AppAI_LogInferenceResult(
 
 	AppInferenceLog_FormatFloatMicros(line, sizeof(line),
 			"[AI] Inference value: ", output_value);
-	AppAI_StatusWrite(line);
+	DebugConsole_WriteString(line);
 
 	app_ai_last_inference_value = output_value;
 	app_ai_last_inference_valid = true;
@@ -3703,7 +3748,7 @@ static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
 				crop_label,
 				(unsigned long) crop_x_min, (unsigned long) crop_y_min,
 				(unsigned long) crop_width, (unsigned long) crop_height);
-		AppAI_StatusWrite(crop_line);
+		DebugConsole_WriteString(crop_line);
 	}
 
 	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
@@ -3728,9 +3773,6 @@ static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
 				((output_height - scaled_height) / 2U) : 0U;
 		const size_t crop_x_max_index = (crop_width > 0U) ? (crop_width - 1U) : 0U;
 		const size_t crop_y_max_index = (crop_height > 0U) ? (crop_height - 1U) : 0U;
-#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
-		const size_t probe_x = (pad_x + (scaled_width / 2U) < output_width) ?
-				(pad_x + (scaled_width / 2U)) : (output_width - 1U);
 		const size_t probe_top_y = (pad_y + (scaled_height / 4U) < output_height) ?
 				(pad_y + (scaled_height / 4U)) : (output_height - 1U);
 		const size_t probe_mid_y = (pad_y + (scaled_height / 2U) < output_height) ?
@@ -3740,6 +3782,7 @@ static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
 				: (output_height - 1U);
 		size_t nonzero_write_count = 0U;
 
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 		DebugConsole_Printf(
 				"[AI] Resize plan: output=%lux%lu scale=%lu.%03lu scaled=%lux%lu pad=(%lu,%lu) crop_max=(%lu,%lu) probes=(%lu,%lu,%lu)\r\n",
 				(unsigned long) output_width, (unsigned long) output_height,
@@ -3750,6 +3793,7 @@ static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
 				(unsigned long) crop_x_max_index, (unsigned long) crop_y_max_index,
 				(unsigned long) probe_top_y, (unsigned long) probe_mid_y,
 				(unsigned long) probe_bottom_y);
+#endif
 
 		for (size_t out_y = 0U; out_y < output_height; out_y++) {
 			if ((out_y < pad_y) || (out_y >= (pad_y + scaled_height))) {
@@ -3846,278 +3890,13 @@ static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
 					nonzero_write_count++;
 				}
 
-				/* Sample a few pixels at write time so we can tell whether the
-				 * preprocessing math is producing values or whether the tensor is
-				 * being cleared somewhere else after the write. */
-				if ((out_x == probe_x) && (out_y == probe_top_y)) {
-					const size_t dest_base = dest_pixel_index * 3U;
-					const uint8_t src_luma00 = AppAI_ReadYuv422Luma(frame_bytes,
-							source_width, crop_x_min + crop_x0, crop_y_min + crop_y0);
-					const uint8_t src_luma10 = AppAI_ReadYuv422Luma(frame_bytes,
-							source_width, crop_x_min + crop_x1, crop_y_min + crop_y0);
-					const uint8_t src_luma01 = AppAI_ReadYuv422Luma(frame_bytes,
-							source_width, crop_x_min + crop_x0, crop_y_min + crop_y1);
-					const uint8_t src_luma11 = AppAI_ReadYuv422Luma(frame_bytes,
-							source_width, crop_x_min + crop_x1, crop_y_min + crop_y1);
-					const unsigned long calc_r_milli =
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_r)
-									* 1000.0f) + 0.5f);
-					const unsigned long calc_g_milli =
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_g)
-									* 1000.0f) + 0.5f);
-					const unsigned long calc_b_milli =
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_b)
-									* 1000.0f) + 0.5f);
-					const unsigned long stored_r_milli =
-							(unsigned long) ((input_ptr[dest_base + 0U] * 1000.0f)
-									+ 0.5f);
-					const unsigned long stored_g_milli =
-							(unsigned long) ((input_ptr[dest_base + 1U] * 1000.0f)
-									+ 0.5f);
-					const unsigned long stored_b_milli =
-							(unsigned long) ((input_ptr[dest_base + 2U] * 1000.0f)
-									+ 0.5f);
-
-					DebugConsole_Printf(
-							"[AI] Write probe top: out=(%lu,%lu) crop0=(%lu,%lu) crop1=(%lu,%lu) frac=[%lu %lu] src_luma=[%u %u %u %u] r00g00b00=[%lu %lu %lu] r10g10b10=[%lu %lu %lu] r01g01b01=[%lu %lu %lu] r11g11b11=[%lu %lu %lu] top=[%lu %lu %lu] bottom=[%lu %lu %lu] out=[%lu %lu %lu] calc=[%lu %lu %lu] stored_milli=[%lu %lu %lu]\r\n",
-							(unsigned long) out_x, (unsigned long) out_y,
-							(unsigned long) (crop_x_min + crop_x0),
-							(unsigned long) (crop_y_min + crop_y0),
-							(unsigned long) (crop_x_min + crop_x1),
-							(unsigned long) (crop_y_min + crop_y1),
-							(unsigned long) ((crop_x_frac * 1000.0f) + 0.5f),
-							(unsigned long) ((crop_y_frac * 1000.0f) + 0.5f),
-							(unsigned int) src_luma00, (unsigned int) src_luma10,
-							(unsigned int) src_luma01, (unsigned int) src_luma11,
-							(unsigned long) ((AppAI_ClampNormalizedFloat(r00) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(g00) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(b00) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(r10) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(g10) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(b10) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(r01) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(g01) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(b01) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(r11) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(g11) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(b11) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(top_r) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(top_g) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(top_b) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_r) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_g) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_b) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_r) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_g) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_b) * 1000.0f) + 0.5f),
-							calc_r_milli, calc_g_milli, calc_b_milli,
-							stored_r_milli, stored_g_milli, stored_b_milli);
-				}
-
-				if ((out_x == probe_x) && (out_y == probe_mid_y)) {
-					const size_t dest_base = dest_pixel_index * 3U;
-					const uint8_t src_luma00 = AppAI_ReadYuv422Luma(frame_bytes,
-							source_width, crop_x_min + crop_x0, crop_y_min + crop_y0);
-					const uint8_t src_luma10 = AppAI_ReadYuv422Luma(frame_bytes,
-							source_width, crop_x_min + crop_x1, crop_y_min + crop_y0);
-					const uint8_t src_luma01 = AppAI_ReadYuv422Luma(frame_bytes,
-							source_width, crop_x_min + crop_x0, crop_y_min + crop_y1);
-					const uint8_t src_luma11 = AppAI_ReadYuv422Luma(frame_bytes,
-							source_width, crop_x_min + crop_x1, crop_y_min + crop_y1);
-					const unsigned long calc_r_milli =
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_r)
-									* 1000.0f) + 0.5f);
-					const unsigned long calc_g_milli =
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_g)
-									* 1000.0f) + 0.5f);
-					const unsigned long calc_b_milli =
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_b)
-									* 1000.0f) + 0.5f);
-					const unsigned long stored_r_milli =
-							(unsigned long) ((input_ptr[dest_base + 0U] * 1000.0f)
-									+ 0.5f);
-					const unsigned long stored_g_milli =
-							(unsigned long) ((input_ptr[dest_base + 1U] * 1000.0f)
-									+ 0.5f);
-					const unsigned long stored_b_milli =
-							(unsigned long) ((input_ptr[dest_base + 2U] * 1000.0f)
-									+ 0.5f);
-
-					DebugConsole_Printf(
-							"[AI] Write probe mid: out=(%lu,%lu) crop0=(%lu,%lu) crop1=(%lu,%lu) frac=[%lu %lu] src_luma=[%u %u %u %u] r00g00b00=[%lu %lu %lu] r10g10b10=[%lu %lu %lu] r01g01b01=[%lu %lu %lu] r11g11b11=[%lu %lu %lu] top=[%lu %lu %lu] bottom=[%lu %lu %lu] out=[%lu %lu %lu] calc=[%lu %lu %lu] stored_milli=[%lu %lu %lu]\r\n",
-							(unsigned long) out_x, (unsigned long) out_y,
-							(unsigned long) (crop_x_min + crop_x0),
-							(unsigned long) (crop_y_min + crop_y0),
-							(unsigned long) (crop_x_min + crop_x1),
-							(unsigned long) (crop_y_min + crop_y1),
-							(unsigned long) ((crop_x_frac * 1000.0f) + 0.5f),
-							(unsigned long) ((crop_y_frac * 1000.0f) + 0.5f),
-							(unsigned int) src_luma00, (unsigned int) src_luma10,
-							(unsigned int) src_luma01, (unsigned int) src_luma11,
-							(unsigned long) ((AppAI_ClampNormalizedFloat(r00) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(g00) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(b00) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(r10) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(g10) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(b10) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(r01) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(g01) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(b01) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(r11) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(g11) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(b11) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(top_r) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(top_g) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(top_b) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_r) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_g) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_b) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_r) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_g) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_b) * 1000.0f) + 0.5f),
-							calc_r_milli, calc_g_milli, calc_b_milli,
-							stored_r_milli, stored_g_milli, stored_b_milli);
-
-					{
-						uint8_t quad00[4U] = { 0U };
-						uint8_t quad10[4U] = { 0U };
-						uint8_t quad01[4U] = { 0U };
-						uint8_t quad11[4U] = { 0U };
-
-						AppAI_ReadYuv422Quartet(frame_bytes, source_width,
-								crop_x_min + crop_x0, crop_y_min + crop_y0, quad00);
-						AppAI_ReadYuv422Quartet(frame_bytes, source_width,
-								crop_x_min + crop_x1, crop_y_min + crop_y0, quad10);
-						AppAI_ReadYuv422Quartet(frame_bytes, source_width,
-								crop_x_min + crop_x0, crop_y_min + crop_y1, quad01);
-						AppAI_ReadYuv422Quartet(frame_bytes, source_width,
-								crop_x_min + crop_x1, crop_y_min + crop_y1, quad11);
-
-						DebugConsole_Printf(
-								"[AI] Probe mid raw quartets: q00=[%u %u %u %u] q10=[%u %u %u %u] q01=[%u %u %u %u] q11=[%u %u %u %u]\r\n",
-								(unsigned int) quad00[0], (unsigned int) quad00[1],
-								(unsigned int) quad00[2], (unsigned int) quad00[3],
-								(unsigned int) quad10[0], (unsigned int) quad10[1],
-								(unsigned int) quad10[2], (unsigned int) quad10[3],
-								(unsigned int) quad01[0], (unsigned int) quad01[1],
-								(unsigned int) quad01[2], (unsigned int) quad01[3],
-								(unsigned int) quad11[0], (unsigned int) quad11[1],
-								(unsigned int) quad11[2], (unsigned int) quad11[3]);
-					}
-
-					if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
-						AppAI_LogSourcePatch("Probe mid source", frame_bytes,
-								source_width, crop_x_min + crop_x0,
-								crop_y_min + crop_y0, 2U);
-						AppAI_LogTensorPatch("Probe mid tensor", input_ptr,
-								output_width, out_x, out_y, 2U);
-					}
-				}
-
-				if ((out_x == probe_x) && (out_y == probe_bottom_y)) {
-					const size_t dest_base = dest_pixel_index * 3U;
-					const uint8_t src_luma00 = AppAI_ReadYuv422Luma(frame_bytes,
-							source_width, crop_x_min + crop_x0, crop_y_min + crop_y0);
-					const uint8_t src_luma10 = AppAI_ReadYuv422Luma(frame_bytes,
-							source_width, crop_x_min + crop_x1, crop_y_min + crop_y0);
-					const uint8_t src_luma01 = AppAI_ReadYuv422Luma(frame_bytes,
-							source_width, crop_x_min + crop_x0, crop_y_min + crop_y1);
-					const uint8_t src_luma11 = AppAI_ReadYuv422Luma(frame_bytes,
-							source_width, crop_x_min + crop_x1, crop_y_min + crop_y1);
-					const unsigned long calc_r_milli =
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_r)
-									* 1000.0f) + 0.5f);
-					const unsigned long calc_g_milli =
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_g)
-									* 1000.0f) + 0.5f);
-					const unsigned long calc_b_milli =
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_b)
-									* 1000.0f) + 0.5f);
-					const unsigned long stored_r_milli =
-							(unsigned long) ((input_ptr[dest_base + 0U] * 1000.0f)
-									+ 0.5f);
-					const unsigned long stored_g_milli =
-							(unsigned long) ((input_ptr[dest_base + 1U] * 1000.0f)
-									+ 0.5f);
-					const unsigned long stored_b_milli =
-							(unsigned long) ((input_ptr[dest_base + 2U] * 1000.0f)
-									+ 0.5f);
-
-					DebugConsole_Printf(
-							"[AI] Write probe bottom: out=(%lu,%lu) crop0=(%lu,%lu) crop1=(%lu,%lu) frac=[%lu %lu] src_luma=[%u %u %u %u] r00g00b00=[%lu %lu %lu] r10g10b10=[%lu %lu %lu] r01g01b01=[%lu %lu %lu] r11g11b11=[%lu %lu %lu] top=[%lu %lu %lu] bottom=[%lu %lu %lu] out=[%lu %lu %lu] calc=[%lu %lu %lu] stored_milli=[%lu %lu %lu]\r\n",
-							(unsigned long) out_x, (unsigned long) out_y,
-							(unsigned long) (crop_x_min + crop_x0),
-							(unsigned long) (crop_y_min + crop_y0),
-							(unsigned long) (crop_x_min + crop_x1),
-							(unsigned long) (crop_y_min + crop_y1),
-							(unsigned long) ((crop_x_frac * 1000.0f) + 0.5f),
-							(unsigned long) ((crop_y_frac * 1000.0f) + 0.5f),
-							(unsigned int) src_luma00, (unsigned int) src_luma10,
-							(unsigned int) src_luma01, (unsigned int) src_luma11,
-							(unsigned long) ((AppAI_ClampNormalizedFloat(r00) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(g00) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(b00) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(r10) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(g10) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(b10) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(r01) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(g01) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(b01) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(r11) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(g11) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(b11) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(top_r) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(top_g) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(top_b) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_r) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_g) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(bottom_b) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_r) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_g) * 1000.0f) + 0.5f),
-							(unsigned long) ((AppAI_ClampNormalizedFloat(out_b) * 1000.0f) + 0.5f),
-							calc_r_milli, calc_g_milli, calc_b_milli,
-							stored_r_milli, stored_g_milli, stored_b_milli);
-				}
 			}
 		}
 
+	#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 		DebugConsole_Printf(
 				"[AI] Preprocess write summary: nonzero_pixels=%lu\r\n",
 				(unsigned long) nonzero_write_count);
-
-		{
-			const size_t tensor_center_index =
-					(((APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS / 2U)
-							* APP_AI_CAPTURE_FRAME_WIDTH_PIXELS)
-							+ (APP_AI_CAPTURE_FRAME_WIDTH_PIXELS / 2U)) * 3U;
-			const size_t tensor_q1_index =
-					(((APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS / 4U)
-							* APP_AI_CAPTURE_FRAME_WIDTH_PIXELS)
-							+ (APP_AI_CAPTURE_FRAME_WIDTH_PIXELS / 4U)) * 3U;
-			const size_t tensor_q3_index =
-					((((APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * 3U) / 4U)
-							* APP_AI_CAPTURE_FRAME_WIDTH_PIXELS)
-							+ ((APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * 3U) / 4U)) * 3U;
-			DebugConsole_Printf(
-					"[AI] Preprocess post-write probes: center=[%lu %lu %lu] q1=[%lu %lu %lu] q3=[%lu %lu %lu] base=[%lu %lu %lu %lu %lu %lu %lu %lu]\r\n",
-					(unsigned long) ((input_ptr[tensor_center_index + 0U] * 1000.0f) + 0.5f),
-					(unsigned long) ((input_ptr[tensor_center_index + 1U] * 1000.0f) + 0.5f),
-					(unsigned long) ((input_ptr[tensor_center_index + 2U] * 1000.0f) + 0.5f),
-					(unsigned long) ((input_ptr[tensor_q1_index + 0U] * 1000.0f) + 0.5f),
-					(unsigned long) ((input_ptr[tensor_q1_index + 1U] * 1000.0f) + 0.5f),
-					(unsigned long) ((input_ptr[tensor_q1_index + 2U] * 1000.0f) + 0.5f),
-					(unsigned long) ((input_ptr[tensor_q3_index + 0U] * 1000.0f) + 0.5f),
-					(unsigned long) ((input_ptr[tensor_q3_index + 1U] * 1000.0f) + 0.5f),
-					(unsigned long) ((input_ptr[tensor_q3_index + 2U] * 1000.0f) + 0.5f),
-					(unsigned long) ((input_ptr[0U] * 1000.0f) + 0.5f),
-					(unsigned long) ((input_ptr[1U] * 1000.0f) + 0.5f),
-					(unsigned long) ((input_ptr[2U] * 1000.0f) + 0.5f),
-					(unsigned long) ((input_ptr[3U] * 1000.0f) + 0.5f),
-					(unsigned long) ((input_ptr[4U] * 1000.0f) + 0.5f),
-					(unsigned long) ((input_ptr[5U] * 1000.0f) + 0.5f),
-					(unsigned long) ((input_ptr[6U] * 1000.0f) + 0.5f),
-					(unsigned long) ((input_ptr[7U] * 1000.0f) + 0.5f));
-		}
 #endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
 	}
 

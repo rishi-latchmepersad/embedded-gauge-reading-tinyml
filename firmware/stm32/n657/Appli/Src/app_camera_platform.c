@@ -125,7 +125,6 @@ static bool CameraPlatform_InitializeImx335Sensor(void) {
 	CMW_Advanced_Config_t camera_advanced_config = { 0 };
 	int32_t cmw_status = CMW_ERROR_NONE;
 
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: mw-defaults\r\n");
 	camera_advanced_config.selected_sensor = CMW_IMX335_Sensor;
 	cmw_status = CMW_CAMERA_SetDefaultSensorValues(&camera_advanced_config);
 	if (cmw_status != CMW_ERROR_NONE) {
@@ -140,7 +139,6 @@ static bool CameraPlatform_InitializeImx335Sensor(void) {
 	camera_init.fps = IMX335_CAPTURE_FRAMERATE_FPS;
 	camera_init.mirror_flip = CMW_MIRRORFLIP_NONE;
 
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: mw-init\r\n");
 	cmw_status = CMW_CAMERA_Init(&camera_init, &camera_advanced_config);
 	if (cmw_status != CMW_ERROR_NONE) {
 		DebugConsole_Printf(
@@ -151,7 +149,6 @@ static bool CameraPlatform_InitializeImx335Sensor(void) {
 
 	CameraPlatform_LogCsiDphySettle();
 
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: mw-test-pattern\r\n");
 	cmw_status = CMW_CAMERA_SetTestPattern(IMX335_TEST_PATTERN_MODE);
 	if (cmw_status != CMW_ERROR_NONE) {
 		DebugConsole_Printf(
@@ -169,24 +166,19 @@ static bool CameraPlatform_InitializeImx335Sensor(void) {
 	if (!CameraPlatform_SeedImx335ExposureGain()) {
 		return false;
 	}
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: seed-done\r\n");
-
 #if CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC
 	camera_capture_use_cmw_pipeline = false;
 	DebugConsole_Printf("[CAMERA][PROBE] RAW diagnostic capture enabled.\r\n");
 #else
 	camera_capture_use_cmw_pipeline = true;
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: ae-start\r\n");
 	if (!CameraPlatform_EnableImx335AutoExposure()) {
 		return false;
 	}
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: ae-done\r\n");
 	DebugConsole_Printf("[CAMERA][PROBE] Using CMW/ISP capture path.\r\n");
 #endif
 
 	camera_cmw_initialized = true;
 	camera_stream_started = false;
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: sensor-ready\r\n");
 
 	return true;
 }
@@ -205,7 +197,6 @@ bool CameraPlatform_SeedImx335ExposureGain(void) {
 	int32_t seed_gain_mdb = 0;
 	int32_t cmw_status = CMW_ERROR_NONE;
 
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: seed-start\r\n");
 	cmw_status = CMW_CAMERA_GetSensorInfo(&sensor_info);
 	if (cmw_status != CMW_ERROR_NONE) {
 		DebugConsole_Printf(
@@ -413,7 +404,6 @@ bool CameraPlatform_AdjustImx335ExposureGain(bool brighten) {
 bool CameraPlatform_EnableImx335AutoExposure(void) {
 	uint8_t aec_enabled = 0U;
 
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: ae-call\r\n");
 	if (ISP_SetAECState(&camera_sensor.hIsp, 1U) != ISP_OK) {
 		DebugConsole_Printf(
 				"[CAMERA][PROBE]   - Failed to enable IMX335 ISP auto exposure.\r\n");
@@ -433,7 +423,6 @@ bool CameraPlatform_EnableImx335AutoExposure(void) {
  * @retval true when the ISP accepted the AEC disable request.
  */
 bool CameraPlatform_DisableImx335AutoExposure(void) {
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: ae-lock\r\n");
 	if (ISP_SetAECState(&camera_sensor.hIsp, 0U) != ISP_OK) {
 		DebugConsole_Printf(
 				"[CAMERA][PROBE]   - Failed to disable IMX335 ISP auto exposure.\r\n");
@@ -641,10 +630,8 @@ UINT CameraPlatform_ProbeBCamsImx(void) {
 	uint8_t chip_id = 0U;
 
 	DebugConsole_Printf("[CAMERA][PROBE] Probing camera stack...\r\n");
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: reset\r\n");
 	CameraPlatform_ResetImx335Module();
 
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: i2c-ack\r\n");
 	probe_status = HAL_I2C_IsDeviceReady(&hi2c2, BCAMS_IMX_I2C_ADDRESS_HAL,
 			BCAMS_IMX_I2C_PROBE_TRIALS, BCAMS_IMX_I2C_PROBE_TIMEOUT_MS);
 	if (probe_status != HAL_OK) {
@@ -657,7 +644,6 @@ UINT CameraPlatform_ProbeBCamsImx(void) {
 	DebugConsole_Printf(
 			"[CAMERA][PROBE]   - Sensor ACKed on I2C2 at 7-bit address 0x%02X.\r\n",
 			(unsigned int) BCAMS_IMX_I2C_ADDRESS_7BIT);
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: chip-id\r\n");
 	if (CameraPlatform_ReadImx335ChipId(&chip_id) != HAL_OK) {
 		DebugConsole_Printf(
 				"[CAMERA][PROBE]   - Failed to read IMX335 ID register.\r\n");
@@ -667,7 +653,6 @@ UINT CameraPlatform_ProbeBCamsImx(void) {
 	DebugConsole_Printf(
 			"[CAMERA][PROBE]   - IMX335 ID register 0x3912 = 0x%02X.\r\n",
 			(unsigned int) chip_id);
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: sensor-init\r\n");
 	if (!CameraPlatform_InitializeImx335Sensor()) {
 		return TX_NOT_AVAILABLE;
 	}
@@ -681,11 +666,9 @@ UINT CameraPlatform_ProbeBCamsImx(void) {
  * @brief Apply the MB1854 enable/reset sequence used by ST's camera middleware.
  */
 void CameraPlatform_ResetImx335Module(void) {
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: power-on\r\n");
 	HAL_GPIO_WritePin(CAM1_GPIO_Port, CAM1_Pin, GPIO_PIN_SET);
 	DelayMilliseconds_ThreadX(BCAMS_IMX_POWER_SETTLE_DELAY_MS);
 
-	(void) DebugConsole_WriteString("[CAMERA][PROBE] step: reset-pulse\r\n");
 	HAL_GPIO_WritePin(CAM_NRST_GPIO_Port, CAM_NRST_Pin, GPIO_PIN_RESET);
 	DelayMilliseconds_ThreadX(BCAMS_IMX_RESET_ASSERT_DELAY_MS);
 	HAL_GPIO_WritePin(CAM_NRST_GPIO_Port, CAM_NRST_Pin, GPIO_PIN_SET);

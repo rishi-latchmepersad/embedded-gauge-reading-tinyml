@@ -1,5 +1,11 @@
 # embedded-gauge-reading-tinyml — Project Notes for Claude
 
+## AI Session Memory
+
+**Always read `docs/ai-memory.md` at the start of every session** — it contains accumulated cross-session learnings: hardware quirks, recurring bugs, confirmed working configurations, model deployment state, and hard-won debugging lessons. Do not rely solely on git history or code inspection; many critical invariants (e.g. `DUMMY_CYCLES_READ_OCTAL = 20U`) are only documented there.
+
+**Always write current session findings to `docs/ai-memory.md` before ending a session** — any new bug fixed, hardware quirk discovered, configuration confirmed working, or decision made that would save time in a future session belongs there.
+
 ## Flashing firmware to the STM32N657 (boot from flash)
 
 ### Prerequisites
@@ -72,7 +78,7 @@ Before jumping to the app the FSBL:
 ### Neural network models
 Both models are permanently flashed to separate regions — no SD card needed at runtime.
 - Scalar model: `st_ai_output/atonbuf.xSPI2.raw` → flashed at `0x70200000` (~3.07 MB, ends ~`0x7051FFFF`)
-- Rectifier model: `st_ai_output/atonbuf.rectifier.xSPI2.raw` → flashed at `0x70520000` (~118 KB)
+- Rectifier model: `st_ai_output/atonbuf.rectifier.xSPI2.raw` → flashed at `0x70600000` (~118 KB)
 - Flash both with `flash_boot.bat` (set `FLASH_MODEL=1`)
 - WSL must be restarted before running any Python/ML scripts
 

@@ -48,10 +48,10 @@ MEMORY
   RAM    (xrw)    : ORIGIN = 0x34080000,   LENGTH = 1536K
   /* Scalar model blob at 0x70200000 (matches FLASH_SCALAR in flash_boot.bat). */
   EXTRAM (rw)           : ORIGIN = 0x70200000,   LENGTH = 3200K
-  /* Rectifier model blob at 0x70520000 (matches FLASH_RECTIFIER in flash_boot.bat).
+  /* Rectifier model blob at 0x70600000 (matches FLASH_RECTIFIER in flash_boot.bat).
    * The rectifier pool symbol must live here so the NPU reads weights from the
    * correct flash region. */
-  EXTRAM_RECTIFIER (rw) : ORIGIN = 0x70520000,   LENGTH = 256K
+  EXTRAM_RECTIFIER (rw) : ORIGIN = 0x70600000,   LENGTH = 256K
   /* Non-secure alias A/B test — DCMIPP with MSEC=1 writes to 0x24xxxxxx.
    * Placed at top of AXISRAM1 non-secure alias, away from code/data. */
   RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 128K
@@ -110,7 +110,7 @@ SECTIONS
     . = ALIGN(32);
   } >EXTRAM
 
-  /* Rectifier model pool: placed at the rectifier flash region (0x70520000).
+  /* Rectifier model pool: placed at the rectifier flash region (0x70600000).
    * Separating this from .xspi2_pool ensures _mem_pool_xSPI2_mobilenetv2_rectifier_*
    * resolves to the correct flash address so the NPU reads weights from there. */
   .xspi2_rectifier_pool (NOLOAD) :

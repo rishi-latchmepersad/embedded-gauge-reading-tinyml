@@ -322,6 +322,73 @@ The BSP's `XSPI_NOR_EnterSOPIMode` writes `MX25UM51245G_CR2_DC_20_CYCLES` (0x00)
 
 **How to identify this bug class in future:** BSP flash calls return `BSP_ERROR_NONE` but `BSP_XSPI_NOR_Read` returns a fixed garbage pattern (not 0xFF erased, not actual data, repeating across calls). Erases and writes appear to do nothing because the post-write probe also reads garbage. Check whether `DUMMY_CYCLES_READ_OCTAL` in `mx25um51245g_conf.h` matches what `EnterSOPIMode` / `EnterDOPIMode` programs into CR2_REG3.
 
+## Two-Stage Pipeline: Full Working Validation (2026-04-18)
+
+**Both stages confirmed working on board.** `DUMMY_CYCLES_READ_OCTAL` mismatch recurred and was fixed again (see below). Rectifier flash address permanently moved to `0x70600000`.
+
+### DUMMY_CYCLES_READ_OCTAL = 20U is a recurring bug — treat it as a canary
+
+During the 2026-04-18 refactoring session, `DUMMY_CYCLES_READ_OCTAL` was silently reverted to `6U` (the pack default). This caused all the same symptoms as the 2026-04-17 session: BSP reads return `BSP_ERROR_NONE` but fill the buffer with garbage → signature verify fails → `[AI] Stage runtime ready failed during xSPI2 setup.`. Fixed again by setting `DUMMY_CYCLES_READ_OCTAL 20U` in `firmware/stm32/n657/Appli/Inc/mx25um51245g_conf.h`.
+
+**This value has now been reverted twice.** Before any refactoring session, check this value first. It must be `20U`. It must not drift. The BSP hardcodes CR2_REG3 = 0x00 (20 cycles) regardless of what `mx25um51245g_conf.h` says, so a mismatch is always silent.
+
+### Rectifier flash address: permanently 0x70600000
+
+CubeProgrammer appeared to silently fail to program sectors 82-83 (0x70520000). Post-program reads returned all zeros while `BSP_XSPI_NOR_Write` reported success. Root cause was actually the dummy-cycles bug making all reads return zeros (the write likely succeeded), but the rectifier was moved to `0x70600000` as a precaution and kept there. All three locations have been updated:
+
+- `app_ai.c`: `APP_AI_XSPI2_RECTIFIER_BASE_ADDR = 0x70600000UL`, `APP_AI_XSPI2_RECTIFIER_CHIP_OFFSET = 0x00600000UL`
+- `flash_boot.bat`: `FLASH_RECTIFIER` address = `0x70600000`
+- `STM32N657X0HXQ_LRUN.ld`: `EXTRAM_RECTIFIER ORIGIN = 0x70600000`
+- `CLAUDE.md`: model section updated
+
+### Binary/flash timing race — verify timestamp before flashing
+
+`flash_boot.bat` runs in seconds. CubeIDE clean build takes 60–90s. If you flash immediately after triggering the build, you silently flash the old binary. Always check that the `.bin` file timestamp has updated before running `flash_boot.bat`.
+
+### Confirmed working UART log (2026-04-18)
+
+```text
+[AI] Stage network init OK.     ← rectifier
+[AI] Stage network init OK.     ← scalar
+[AI] Rectifier raw output: cx=... cy=... w=... h=...
+[AI] Scalar crop: x=52 y=48 w=115 h=94
+[AI] Inference value: -8.168633
+[AI] Inference value: -8.2
+Inference bits=0xc102b2b8        ← valid float, not 0x80000000
+```
+
+### Open question resolved — -8.2°C is WRONG, board stuck at constant output
+
+The gauge was at 14°C and then 35°C, board always reported -8.168633°C (`bits=0xc102b2b8`). This is a **constant output** — the NPU is not reading the input frame. Linker map confirms scalar pool at `0x70200000` and rectifier pool at `0x70600000` (correct). Root cause not yet isolated as of 2026-04-18 session end.
+
+## Constant -8.168633°C Output Bug (2026-04-18, OPEN)
+
+**Symptom:** Board always outputs exactly `-8.168633°C` (`Inference bits=0xc102b2b8`) regardless of gauge position or camera input. The input frame bytes change (`first8` vary between captures) but inference output is identical every time.
+
+**What was ruled out:**
+
+- Crop is correct: `Crop scalar: x=23 y=57 w=155 h=123` matches the fixed training crop ratios from `app_ai.c`
+- Fixed training crop was forced by setting `APP_AI_RECTIFIER_FALLBACK_MIN_BOX_RATIO 1.1f` / `APP_AI_RECTIFIER_FALLBACK_MAX_BOX_RATIO 0.0f` — didn't change output
+- Linker symbols confirmed correct: `_mem_pool_xSPI2_scalar_*` at `0x70200000`, rectifier at `0x70600000`
+- Offline eval confirmed model is correct: fixed training crop on `capture_2026-04-18_14-51-12.yuv422` (35°C gauge) → `pred=35.29°C`
+- Brightness is fine: `first8=[68 80 6B 80 6A 80 73 80]` = luma ~103, not underexposed
+
+**What was NOT yet checked:**
+
+- Whether the scalar model blob in flash actually matches `st_ai_output/atonbuf.xSPI2.raw` — the xSPI2 signature check log line `[AI] xSPI2 stage image already present.` was NOT seen in the boot log, meaning the firmware may be skipping the verify step or the verify is not logging
+- The `#include` path in `ai_network_mobilenetv2_scalar_hardcase_warmstart_int8.c` — if it still points to a stale package, the compiled-in quantization constants are wrong and the model always outputs a fixed value (this was bug #3 from prior sessions)
+- `makefile.targets` USER_OBJS paths — if stale `.o` files from a different model are linked, the NPU program is wrong
+
+**Most likely root cause:** The three-file sync is broken — `ai_network_mobilenetv2_scalar_hardcase_warmstart_int8.c` `#include` or `makefile.targets` paths still point to a different package than `st_ai_output/atonbuf.xSPI2.raw`. This exact bug was documented in the "Model Update Process" section and produces a constant non-zero output regardless of input.
+
+**Next step:** Check the `#include` path in `firmware/stm32/n657/Appli/Src/ai_network_mobilenetv2_scalar_hardcase_warmstart_int8.c` — it must point to `scalar_full_finetune_from_best_piecewise_calibrated_int8`. Then check all 15 USER_OBJS paths in `makefile.targets`. Then verify the scalar blob signature matches the hardcoded start bytes in `app_ai.c`.
+
+**Update after inspection:** the scalar wrapper include, `makefile.targets`, and the `st_ai_output/atonbuf.xSPI2.raw` start/tail signatures all matched the current `scalar_full_finetune_from_best_piecewise_calibrated_int8` package. That makes stale package wiring much less likely as the root cause; the remaining suspect is the runtime xSPI2/load path or stale on-board flash state.
+
+**Update after model-metadata inspection:** the current generated scalar package reports `Input_14_out_0` as the single input tensor and `Dequantize_319_out_0` as the single output tensor. The verbose tensor-name probes in `app_ai.c` still search for older names such as `Gemm_322_out_0` and `Dequantize_324_*`, so those diagnostics are stale even though the final output path still uses the correct declared output buffer.
+
+**Update after app-side probe cleanup:** `app_ai.c` now logs compact always-on previews for the actual stage input and output buffers, so future debugging should compare those probes first before chasing internal tensor-name logs.
+
 ## Current Refactor Direction
 
 - Keep peeling `app_threadx.c` into smaller modules.
@@ -464,3 +531,55 @@ Update these vars in the script when the scalar model name changes.
 - AI inference should not collapse to zero on valid captures; the next model should produce meaningful nonzero values again.
 - FileX logging still writes inference rows.
 - The build must stay small enough to fit the current linker layout until we intentionally expand it.
+- `app_ai.c` now uses `DebugConsole_Printf()` / `DebugConsole_WriteString()` directly for the normal AI status path. There is no local `DebugConsole_*` macro override anymore, so future probes can use the shared debug console API directly.
+
+## Logging Convention Note 2026-04-18
+
+- Prefer `DebugConsole_Printf()` and `DebugConsole_WriteString()` as the normal application logging API.
+- Treat `printf()` in `main.c` as libc retargeting support, not the preferred app-level logger.
+- Keep the AI-side logging thin. Prefer the shared debug console API directly instead of adding another wrapper layer.
+
+## Probe Result Note 2026-04-18
+
+- The always-on stage probes are now visible in the boot log.
+- The initial `first8` bytes at the tensor origin were not enough to diagnose the pipeline, because that region can be padded or naturally blank.
+- The next probe version should read a tensor hash plus middle and tail windows so we can tell whether the full stage input changes between captures.
+- `Stage output probe` for the scalar stage is still stable at `first8=[B8 B2 02 C1 C3 C1 C1 C1]`, which matches the constant `-8.168633` output.
+
+## Preprocess Guard Bug 2026-04-18
+
+- Root cause of the all-zero stage input: the resize/write loop in `AppAI_PreprocessYuv422FrameToFloatInput()` was accidentally placed under `#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS`.
+- With verbose logs off, the function zeroed `input_ptr` and returned without writing any pixels.
+- The fix is to keep only the diagnostics under the verbose guard and always compile the actual pixel write loop.
+- After this fix, the next boot should show non-zero hashes and middle/tail windows for the stage input tensor if preprocessing is working.
+
+## Log Cleanup Note 2026-04-18
+
+- The camera probe output was trimmed down by removing the `step:` breadcrumbs from `app_camera_platform.c`.
+- The AI preprocessing output was trimmed by removing the write-time top/mid/bottom probes and the raw quartet dump.
+- Keep the stage input/output hash probes and final inference line, because those are the ones that still answer the real debugging question.
+- If we need deeper visibility later, add a short targeted probe instead of turning the old breadcrumb stream back on.
+
+## ROM Fit Lesson 2026-04-18
+
+- The last ROM overflow was not the app-side `DebugConsole` logs anymore.
+- The working fix was to keep the generated ST AI wrapper sources in release-like mode:
+  - define `NDEBUG`
+  - define `LL_ATON_DBG_BUFFER_INFO_EXCLUDED=1`
+- I applied that in:
+  - `firmware/stm32/n657/Appli/Src/ai_network_mobilenetv2_scalar_hardcase_warmstart_int8.c`
+  - `firmware/stm32/n657/Appli/Src/ai_network_mobilenetv2_rectifier_hardcase_finetune.c`
+  - the custom `ll_aton.c` build rule in `firmware/stm32/n657/Appli/makefile.targets`
+- After that change, `n657_Appli.elf` built successfully again.
+
+## CubeIDE Build Graph Fix 2026-04-18
+
+- STM32CubeIDE can regenerate `Debug/makefile` and leave the build graph out of sync with the repo's durable make fragments.
+- The real fix for the stalled Debug build was committed in `3c0b897` (`Fix CubeIDE object graph regeneration`).
+- `firmware/stm32/n657/Appli/makefile.targets` now owns the durable repair:
+  - `-include` the HAL, BSP, ThreadX, and FileX `subdir.mk` fragments
+  - force `objects.list` to regenerate every build
+  - make `n657_Appli.elf` depend on the regenerated object graph
+  - keep `Drivers/STM32N6xx_HAL_Driver/stm32n6xx_hal_cacheaxi.o` as an explicit user object/rule
+- The key lesson is that a successful build can still depend on stale IDE-generated files; prefer putting the fix in `makefile.targets`, not in the generated `Debug/makefile`.
+- The successful verification was `make -j8 all` from the Debug directory, followed by a clean link with no RWX warning.

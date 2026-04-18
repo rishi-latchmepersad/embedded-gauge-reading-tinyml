@@ -11,10 +11,6 @@ RM := rm -rf
 -include sources.mk
 -include Startup/subdir.mk
 -include Src/subdir.mk
--include Drivers/STM32N6xx_HAL_Driver/subdir.mk
--include Drivers/BSP/STM32N6xx_Nucleo/subdir.mk
--include Middlewares/ST/threadx/Core/subdir.mk
--include Middlewares/ST/Core/subdir.mk
 -include objects.mk
 
 ifneq ($(MAKECMDGOALS),clean)
@@ -67,7 +63,7 @@ main-build: n657_Appli.elf secondary-outputs
 
 # Tool invocations
 n657_Appli.elf n657_Appli.map: $(OBJS) $(USER_OBJS) D:\Projects\embedded-gauge-reading-tinyml\firmware\stm32\n657\Appli\STM32N657X0HXQ_LRUN.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "n657_Appli.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m55 -T"D:\Projects\embedded-gauge-reading-tinyml\firmware\stm32\n657\Appli\STM32N657X0HXQ_LRUN.ld" --specs=nosys.specs -Wl,-Map="n657_Appli.map" -Wl,--gc-sections -Wl,-z,separate-code -static -Wl,--cmse-implib -Wl,--out-implib=./secure_nsclib.o --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+	arm-none-eabi-gcc -o "n657_Appli.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m55 -T"D:\Projects\embedded-gauge-reading-tinyml\firmware\stm32\n657\Appli\STM32N657X0HXQ_LRUN.ld" --specs=nosys.specs -Wl,-Map="n657_Appli.map" -Wl,--gc-sections -static -Wl,--cmse-implib -Wl,--out-implib=./secure_nsclib.o --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
@@ -85,11 +81,6 @@ n657_Appli.bin: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
 	arm-none-eabi-objcopy  -O binary $(EXECUTABLES) "n657_Appli.bin"
 	@echo 'Finished building: $@'
 	@echo ' '
-
-# Regenerate the link response file from the active object list so stale entries
-# do not hide newly-included HAL, BSP, or middleware objects.
-objects.list: $(OBJS) $(USER_OBJS) makefile
-	$(file >$@,$(strip $(OBJS)))
 
 # Other Targets
 clean:

@@ -92,18 +92,18 @@ if "%FLASH_MODEL%"=="1" (
     )
     echo Scalar model flashed at 0x70200000.
 
-    echo === Step 4b: Flash rectifier model at 0x70520000 ===
+    echo === Step 4b: Flash rectifier model at 0x70600000 ===
     copy /y "%RECTIFIER_RAW%" "%RECTIFIER_BIN%" >nul
     if errorlevel 1 (
         echo ERROR: Could not stage rectifier model as .bin.
         exit /b 1
     )
-    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%RECTIFIER_BIN%" 0x70520000
+    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%RECTIFIER_BIN%" 0x70600000
     if errorlevel 1 (
         echo ERROR: Rectifier model flash failed.
         exit /b 1
     )
-    echo Rectifier model flashed at 0x70520000.
+    echo Rectifier model flashed at 0x70600000.
 ) else (
     echo === Step 4: Skipping model image flash (FLASH_MODEL not set) ===
 )

@@ -331,10 +331,8 @@ static int CMW_CAMERA_Probe_Sensor(CMW_Sensor_Init_t *initValues, CMW_Sensor_Nam
     return ret;
   }
 #endif
-  else
-  {
-    return CMW_ERROR_UNKNOWN_COMPONENT;
-  }
+
+  return CMW_ERROR_UNKNOWN_COMPONENT;
 }
 
 
