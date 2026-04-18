@@ -9,6 +9,7 @@
 # Only include the runtime support objects here; the project already builds
 # its own startup, main, syscalls, sysmem, and model wrapper objects.
 USER_OBJS += \
+Drivers/STM32N6xx_HAL_Driver/stm32n6xx_hal_cacheaxi.o \
 ../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ecloader.o \
 ../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton.o \
 ../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton_cipher.o \
@@ -20,8 +21,7 @@ USER_OBJS += \
 ../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton_runtime.o \
 ../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton_util.o \
 ../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_sw_float.o \
-../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_sw_integer.o \
-Drivers/STM32N6xx_HAL_Driver/stm32n6xx_hal_cacheaxi.o
+../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_sw_integer.o
 
 # Link the generated runtime archive as well.
 LIBS += \
@@ -36,15 +36,42 @@ n657_Appli.elf: \
 ./Src/stm32n6xx_nucleo_xspi.o \
 ../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton.o
 
+# CubeIDE regenerates the Debug makefile, so we include the generated driver and
+# RTOS fragments here instead of editing the generated file directly.
+-include Drivers/STM32N6xx_HAL_Driver/subdir.mk
+-include Drivers/BSP/STM32N6xx_Nucleo/subdir.mk
+-include Middlewares/ST/threadx/Core/subdir.mk
+-include Middlewares/ST/Core/subdir.mk
+
+# The generated link rule is emitted before this file is included, so we add
+# the regenerated object graph again here to make the final link wait for the
+# HAL, BSP, ThreadX, and FileX objects that CubeIDE would otherwise omit.
+n657_Appli.elf n657_Appli.map: $(OBJS) $(USER_OBJS)
+
+# Rebuild the response file from the active object graph so the regenerated
+# Debug makefile always links the current HAL, BSP, and RTOS objects.
+#
+# CubeIDE rewrites the Debug makefiles, so this response file must be
+# regenerated on every build from the current object graph.
+objects.list: FORCE
+	$(file >$@,$(strip $(OBJS)))
+
+clean: clean-user-managed-objects
+
+clean-user-managed-objects:
+	-$(RM) ./Drivers/STM32N6xx_HAL_Driver/stm32n6xx_hal_cacheaxi.cyclo ./Drivers/STM32N6xx_HAL_Driver/stm32n6xx_hal_cacheaxi.d ./Drivers/STM32N6xx_HAL_Driver/stm32n6xx_hal_cacheaxi.o ./Drivers/STM32N6xx_HAL_Driver/stm32n6xx_hal_cacheaxi.su
+
+.PHONY: clean-user-managed-objects
+
 # Rebuild the pack-provided ATON core with the STM32N6 platform macros so it
 # picks up the secure NPU base address instead of the generic fallback.
 FORCE:
 
+Drivers/STM32N6xx_HAL_Driver/stm32n6xx_hal_cacheaxi.o: D:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_cacheaxi.c
+	arm-none-eabi-gcc "$<" -mcpu=cortex-m55 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32N657xx -DUSE_NUCLEO_64 -DTX_INCLUDE_USER_DEFINE_FILE -DTX_SINGLE_MODE_SECURE=1 -DFX_INCLUDE_USER_DEFINE_FILE -DAPP_HAS_PARALLEL_NETWORKS=0 -c -I../Inc -I../../Secure_nsclib -I../../Drivers/STM32N6xx_HAL_Driver/Inc -I../../Drivers/CMSIS/Device/ST/STM32N6xx/Include -I../../Drivers/STM32N6xx_HAL_Driver/Inc/Legacy -I../../Drivers/BSP/STM32N6xx_Nucleo -I../../Drivers/CMSIS/Include -I../../Middlewares/ST/threadx/common/inc -I../../Middlewares/ST/threadx/ports/cortex_m55/gnu/inc -I../../Middlewares/ST/filex/common/inc -I../../Middlewares/ST/filex/ports/generic/inc -IC:/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Middlewares/ST/AI/Npu/ll_aton -IC:/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Middlewares/ST/AI/Npu/Devices/STM32N6XX -Os -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -mcmse -MMD -MP -MF"$(@:%.o=%.d)" -MT"$@" --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -o "$@"
+
 ../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton.o: FORCE
 	arm-none-eabi-gcc "C:/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Middlewares/ST/AI/Npu/ll_aton/ll_aton.c" -mcpu=cortex-m55 -std=gnu11 -g3 -DNDEBUG -DUSE_HAL_DRIVER -DSTM32N657xx -DUSE_NUCLEO_64 -DTX_INCLUDE_USER_DEFINE_FILE -DTX_SINGLE_MODE_SECURE=1 -DFX_INCLUDE_USER_DEFINE_FILE -DAPP_HAS_PARALLEL_NETWORKS=0 -DLL_ATON_PLATFORM=LL_ATON_PLAT_STM32N6 -DLL_ATON_OSAL=LL_ATON_OSAL_THREADX -DLL_ATON_DBG_BUFFER_INFO_EXCLUDED=1 -c -I../Inc -I../../Secure_nsclib -I../../Drivers/STM32N6xx_HAL_Driver/Inc -I../../Drivers/CMSIS/Device/ST/STM32N6xx/Include -I../../Drivers/STM32N6xx_HAL_Driver/Inc/Legacy -I../../Drivers/BSP/STM32N6xx_Nucleo -I../../Drivers/CMSIS/Include -I../../Middlewares/ST/threadx/common/inc -I../../Middlewares/ST/threadx/ports/cortex_m55/gnu/inc -I../../Middlewares/ST/filex/common/inc -I../../Middlewares/ST/filex/ports/generic/inc -IC:/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Middlewares/ST/AI/Npu/ll_aton -IC:/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Middlewares/ST/AI/Npu/Devices/STM32N6XX -Os -ffunction-sections -fdata-sections -Wall -mcmse --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -o "../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/ll_aton.o"
-
-Drivers/STM32N6xx_HAL_Driver/stm32n6xx_hal_cacheaxi.o: FORCE
-	arm-none-eabi-gcc "../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_cacheaxi.c" -mcpu=cortex-m55 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32N657xx -DUSE_NUCLEO_64 -DTX_INCLUDE_USER_DEFINE_FILE -DTX_SINGLE_MODE_SECURE=1 -DFX_INCLUDE_USER_DEFINE_FILE -DAPP_HAS_PARALLEL_NETWORKS=0 -c -I../Inc -I../../Secure_nsclib -I../../Drivers/STM32N6xx_HAL_Driver/Inc -I../../Drivers/CMSIS/Device/ST/STM32N6xx/Include -I../../Drivers/STM32N6xx_HAL_Driver/Inc/Legacy -I../../Drivers/BSP/STM32N6xx_Nucleo -I../../Drivers/CMSIS/Include -I../../Middlewares/ST/threadx/common/inc -I../../Middlewares/ST/threadx/ports/cortex_m55/gnu/inc -I../../Middlewares/ST/filex/common/inc -I../../Middlewares/ST/filex/ports/generic/inc -IC:/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Middlewares/ST/AI/Npu/ll_aton -IC:/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Middlewares/ST/AI/Npu/Devices/STM32N6XX -Os -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -mcmse -MMD -MP -MF"Drivers/STM32N6xx_HAL_Driver/stm32n6xx_hal_cacheaxi.d" -MT"Drivers/STM32N6xx_HAL_Driver/stm32n6xx_hal_cacheaxi.o" --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -o "Drivers/STM32N6xx_HAL_Driver/stm32n6xx_hal_cacheaxi.o"
 
 ./Src/aton_osal_threadx.o: ../Src/aton_osal_threadx.c
 	arm-none-eabi-gcc "$<" -mcpu=cortex-m55 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32N657xx -DUSE_NUCLEO_64 -DTX_INCLUDE_USER_DEFINE_FILE -DTX_SINGLE_MODE_SECURE=1 -DFX_INCLUDE_USER_DEFINE_FILE -DAPP_HAS_PARALLEL_NETWORKS=0 -c -I../Inc -I../../Secure_nsclib -I../../Drivers/STM32N6xx_HAL_Driver/Inc -I../../Drivers/CMSIS/Device/ST/STM32N6xx/Include -I../../Drivers/STM32N6xx_HAL_Driver/Inc/Legacy -I../../Drivers/BSP/STM32N6xx_Nucleo -I../../Drivers/CMSIS/Include -I../../Middlewares/ST/threadx/common/inc -I../../Middlewares/ST/threadx/ports/cortex_m55/gnu/inc -I../../Middlewares/ST/filex/common/inc -I../../Middlewares/ST/filex/ports/generic/inc -IC:/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Middlewares/ST/AI/Npu/ll_aton -IC:/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Middlewares/ST/AI/Npu/Devices/STM32N6XX -Os -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -mcmse -MMD -MP -MF"Src/aton_osal_threadx.d" -MT"./Src/aton_osal_threadx.o" --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -o "./Src/aton_osal_threadx.o"
