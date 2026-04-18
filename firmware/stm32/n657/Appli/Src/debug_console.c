@@ -4,6 +4,7 @@
  *  Created on: 10 Feb 2026
  *      Author: rishi_latchmepersad
  */
+#define DEBUG_CONSOLE_IMPLEMENTATION
 #include "debug_console.h"
 
 #include <stdarg.h>

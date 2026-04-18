@@ -756,17 +756,31 @@ def _predict_rectifier_crop_box(
     center_y: float = float(np.clip(rectifier_box[1], 0.0, 1.0))
     box_w: float = min(1.0, float(np.clip(rectifier_box[2], 0.05, 1.0)) * rectifier_crop_scale)
     box_h: float = min(1.0, float(np.clip(rectifier_box[3], 0.05, 1.0)) * rectifier_crop_scale)
-
     canvas_w: float = float(image_size)
     canvas_h: float = float(image_size)
-    x_min: float = max(0.0, (center_x - 0.5 * box_w) * canvas_w)
-    y_min: float = max(0.0, (center_y - 0.5 * box_h) * canvas_h)
-    x_max: float = min(canvas_w, (center_x + 0.5 * box_w) * canvas_w)
-    y_max: float = min(canvas_h, (center_y + 0.5 * box_h) * canvas_h)
-    if x_max <= x_min + 1.0:
-        x_max = min(canvas_w, x_min + 1.0)
-    if y_max <= y_min + 1.0:
-        y_max = min(canvas_h, y_min + 1.0)
+
+    use_fixed_training_crop: bool = (
+        (box_w < 0.25)
+        or (box_h < 0.25)
+        or (box_w > 0.95)
+        or (box_h > 0.95)
+    )
+    if use_fixed_training_crop:
+        # Keep the scalar head on the same stable crop used by the board's
+        # baseline training pipeline when the rectifier box looks implausible.
+        x_min = 0.1027 * canvas_w
+        y_min = 0.2573 * canvas_h
+        x_max = 0.7987 * canvas_w
+        y_max = 0.8071 * canvas_h
+    else:
+        x_min = max(0.0, (center_x - 0.5 * box_w) * canvas_w)
+        y_min = max(0.0, (center_y - 0.5 * box_h) * canvas_h)
+        x_max = min(canvas_w, (center_x + 0.5 * box_w) * canvas_w)
+        y_max = min(canvas_h, (center_y + 0.5 * box_h) * canvas_h)
+        if x_max <= x_min + 1.0:
+            x_max = min(canvas_w, x_min + 1.0)
+        if y_max <= y_min + 1.0:
+            y_max = min(canvas_h, y_min + 1.0)
     scale: float = min(canvas_w / float(orig_width), canvas_h / float(orig_height))
     scaled_width: float = float(orig_width) * scale
     scaled_height: float = float(orig_height) * scale

@@ -69,9 +69,11 @@ Before jumping to the app the FSBL:
 - **VDDIO3_HSLV fuse is NOT required** on the NUCLEO-N657X0-Q at 3.3V I/O
 - Do not burn OTP fuses unless you have a specific hardware reason (they are permanent)
 
-### Neural network model
-- Model blob: `st_ai_output/atonbuf.xSPI2.raw`
-- Flashed at `0x70200000` (after the app region) — adjust `FLASH_MODEL` address if needed
+### Neural network models
+Both models are permanently flashed to separate regions — no SD card needed at runtime.
+- Scalar model: `st_ai_output/atonbuf.xSPI2.raw` → flashed at `0x70200000` (~3.07 MB, ends ~`0x7051FFFF`)
+- Rectifier model: `st_ai_output/atonbuf.rectifier.xSPI2.raw` → flashed at `0x70520000` (~118 KB)
+- Flash both with `flash_boot.bat` (set `FLASH_MODEL=1`)
 - WSL must be restarted before running any Python/ML scripts
 
 ### UART debug output

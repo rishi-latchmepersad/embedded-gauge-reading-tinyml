@@ -160,14 +160,22 @@ def _predict_capture(
 
     canvas_w = float(image_size)
     canvas_h = float(image_size)
-    x_min = max(0.0, (center_x - 0.5 * box_w) * canvas_w)
-    y_min = max(0.0, (center_y - 0.5 * box_h) * canvas_h)
-    x_max = min(canvas_w, (center_x + 0.5 * box_w) * canvas_w)
-    y_max = min(canvas_h, (center_y + 0.5 * box_h) * canvas_h)
-    if x_max <= x_min + 1.0:
-        x_max = min(canvas_w, x_min + 1.0)
-    if y_max <= y_min + 1.0:
-        y_max = min(canvas_h, y_min + 1.0)
+    if (box_w < 0.25) or (box_h < 0.25) or (box_w > 0.95) or (box_h > 0.95):
+        # Keep live replay aligned with the board fallback when the rectifier
+        # predicts a box that is too tiny or too close to full-frame.
+        x_min = 0.1027 * canvas_w
+        y_min = 0.2573 * canvas_h
+        x_max = 0.7987 * canvas_w
+        y_max = 0.8071 * canvas_h
+    else:
+        x_min = max(0.0, (center_x - 0.5 * box_w) * canvas_w)
+        y_min = max(0.0, (center_y - 0.5 * box_h) * canvas_h)
+        x_max = min(canvas_w, (center_x + 0.5 * box_w) * canvas_w)
+        y_max = min(canvas_h, (center_y + 0.5 * box_h) * canvas_h)
+        if x_max <= x_min + 1.0:
+            x_max = min(canvas_w, x_min + 1.0)
+        if y_max <= y_min + 1.0:
+            y_max = min(canvas_h, y_min + 1.0)
 
     crop = resize_with_pad_rgb(
         full_frame,

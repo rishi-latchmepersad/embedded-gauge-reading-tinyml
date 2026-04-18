@@ -21,8 +21,11 @@ set "ELDR=%CUBE%\ExternalLoader\MX25UM51245G_STM32N6570-NUCLEO.stldr"
 set SCRIPT_DIR=%~dp0
 set "FSBL_BIN=%SCRIPT_DIR%FSBL\Debug\n657_FSBL.bin"
 set "FSBL_TRUSTED=%SCRIPT_DIR%FSBL\Debug\FSBL_trusted.bin"
-set "MODEL_RAW=%SCRIPT_DIR%..\..\..\st_ai_output\atonbuf.rectifier.xSPI2.raw"
-set "MODEL_BIN=%TEMP%\atonbuf.xSPI2.flash.bin"
+set "SCALAR_RAW=%SCRIPT_DIR%..\..\..\st_ai_output\atonbuf.xSPI2.raw"
+set "RECTIFIER_RAW=%SCRIPT_DIR%..\..\..\st_ai_output\atonbuf.rectifier.xSPI2.raw"
+REM CubeProgrammer v2.21 does not accept .raw extension with -w; stage as .bin
+set "SCALAR_BIN=%SCRIPT_DIR%Appli\Debug\scalar_model_stage.bin"
+set "RECTIFIER_BIN=%SCRIPT_DIR%Appli\Debug\rectifier_model_stage.bin"
 set "APP_BIN=%SCRIPT_DIR%Appli\Debug\n657_Appli.bin"
 set "APP_SIGN=%SCRIPT_DIR%Appli\Debug\n657_Appli_sign_new.bin"
 set "FLASH_MODEL=1"
@@ -48,6 +51,14 @@ if "%FLASH_APP%"=="1" if not exist "%APP_BIN%" (
     echo ERROR: Application binary not found: "%APP_BIN%"
     exit /b 1
 )
+if "%FLASH_MODEL%"=="1" if not exist "%SCALAR_RAW%" (
+    echo ERROR: Scalar model not found: "%SCALAR_RAW%"
+    exit /b 1
+)
+if "%FLASH_MODEL%"=="1" if not exist "%RECTIFIER_RAW%" (
+    echo ERROR: Rectifier model not found: "%RECTIFIER_RAW%"
+    exit /b 1
+)
 
 echo.
 echo === Step 2: Sign FSBL binary ===
@@ -68,22 +79,31 @@ if errorlevel 1 (
 
 echo.
 if "%FLASH_MODEL%"=="1" (
-    if not exist "%MODEL_RAW%" (
-        echo ERROR: Model image not found: "%MODEL_RAW%"
-        exit /b 1
-    )
-    echo === Step 4: Flash model image at 0x70200000 ===
-    copy /b "%MODEL_RAW%" "%MODEL_BIN%" >nul
+    echo === Step 4a: Flash scalar model at 0x70200000 ===
+    copy /y "%SCALAR_RAW%" "%SCALAR_BIN%" >nul
     if errorlevel 1 (
-        echo ERROR: Failed to stage model image as "%MODEL_BIN%"
+        echo ERROR: Could not stage scalar model as .bin.
         exit /b 1
     )
-    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%MODEL_BIN%" 0x70200000
+    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%SCALAR_BIN%" 0x70200000
     if errorlevel 1 (
-        echo ERROR: Model flash failed.
+        echo ERROR: Scalar model flash failed.
         exit /b 1
     )
-    echo Model image flashed at 0x70200000.
+    echo Scalar model flashed at 0x70200000.
+
+    echo === Step 4b: Flash rectifier model at 0x70520000 ===
+    copy /y "%RECTIFIER_RAW%" "%RECTIFIER_BIN%" >nul
+    if errorlevel 1 (
+        echo ERROR: Could not stage rectifier model as .bin.
+        exit /b 1
+    )
+    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%RECTIFIER_BIN%" 0x70520000
+    if errorlevel 1 (
+        echo ERROR: Rectifier model flash failed.
+        exit /b 1
+    )
+    echo Rectifier model flashed at 0x70520000.
 ) else (
     echo === Step 4: Skipping model image flash (FLASH_MODEL not set) ===
 )
@@ -116,6 +136,3 @@ echo === Done! ===
 echo Now set flash-boot mode (BOOT0=0, BOOT1=0) and power-cycle the board.
 echo.
 
-if "%FLASH_MODEL%"=="1" (
-    del /q "%MODEL_BIN%" >nul 2>&1
-)

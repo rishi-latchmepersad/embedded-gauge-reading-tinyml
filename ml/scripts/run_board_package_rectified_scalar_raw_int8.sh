@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Package the rectified scalar int8 model and refresh the canonical xSPI2 blob.
+# Package the scalar int8 model and refresh the canonical xSPI2 blob.
+# Default model: scalar_full_finetune_from_best_piecewise_calibrated_int8
+# (switched from mobilenetv2_rectified_scalar_finetune_v2_int8 — the piecewise
+# calibrated checkpoint is significantly more accurate on the labeled captures:
+# m30→-30.7, m10→-11.4, p10→9.1, p35→35.6, p50→49.0 vs the v2 fine-tune
+# which degraded to m30→-25.1, p35→26.9, p50→39.4)
 REPO_ROOT="/mnt/d/Projects/embedded-gauge-reading-tinyml/ml"
 LOG_DIR="${REPO_ROOT}/artifacts/training_logs"
 LOG_FILE="${LOG_DIR}/mobilenetv2_rectified_scalar_raw_int8_board_package.log"
-MODEL_IN="${MODEL_IN:-artifacts/deployment/mobilenetv2_rectified_scalar_finetune_v2_int8/model_int8.tflite}"
-OUTPUT_DIR="${OUTPUT_DIR:-artifacts/runtime/mobilenetv2_rectified_scalar_finetune_v2_reloc}"
-WORKSPACE_DIR="${WORKSPACE_DIR:-../st_ai_output/packages/mobilenetv2_rectified_scalar_finetune_v2/st_ai_ws}"
-STAI_OUTPUT_DIR="${STAI_OUTPUT_DIR:-../st_ai_output/packages/mobilenetv2_rectified_scalar_finetune_v2/st_ai_output}"
+MODEL_IN="${MODEL_IN:-artifacts/deployment/scalar_full_finetune_from_best_piecewise_calibrated_int8/model_int8.tflite}"
+OUTPUT_DIR="${OUTPUT_DIR:-artifacts/runtime/scalar_full_finetune_from_best_piecewise_calibrated_int8_reloc}"
+WORKSPACE_DIR="${WORKSPACE_DIR:-../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_ws}"
+STAI_OUTPUT_DIR="${STAI_OUTPUT_DIR:-../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_output}"
 WORK_ROOT="${WORK_ROOT:-${HOME}/mobilenetv2_rectified_scalar_raw_int8_board_package}"
 BASE_MODEL_LOCAL="${WORK_ROOT}/model_int8.tflite"
 
@@ -32,7 +37,7 @@ cp "${REPO_ROOT}/${MODEL_IN}" "${BASE_MODEL_LOCAL}"
 
 cd "${REPO_ROOT}"
 
-echo "[WRAPPER] Starting board package for rectified scalar v2."
+echo "[WRAPPER] Starting board package for scalar_full_finetune_from_best_piecewise_calibrated_int8."
 echo "[WRAPPER] Model: ${BASE_MODEL_LOCAL}"
 echo "[WRAPPER] Output dir: ${OUTPUT_DIR}"
 echo "[WRAPPER] Workspace: ${WORKSPACE_DIR}"

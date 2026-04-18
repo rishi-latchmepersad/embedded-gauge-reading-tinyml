@@ -43,6 +43,26 @@ bool DebugConsole_VPrintf(const char *format_string_pointer,
 /* Convenience: write a C string (no formatting) */
 bool DebugConsole_WriteString(const char *null_terminated_string_pointer);
 
+#ifndef DEBUG_CONSOLE_IMPLEMENTATION
+/*
+ * Keep the logging API easy to disable in size-constrained builds.
+ * When enabled, the callsites compile out entirely so their format strings
+ * and message literals do not end up in ROM.
+ */
+#ifndef DEBUG_CONSOLE_ENABLE_LOGS
+#define DEBUG_CONSOLE_ENABLE_LOGS 0
+#endif
+
+#if !DEBUG_CONSOLE_ENABLE_LOGS
+#undef DebugConsole_Printf
+#define DebugConsole_Printf(...) ((void) 0)
+#undef DebugConsole_VPrintf
+#define DebugConsole_VPrintf(...) ((void) 0)
+#undef DebugConsole_WriteString
+#define DebugConsole_WriteString(...) ((void) 0)
+#endif
+#endif
+
 #ifdef __cplusplus
 }
 #endif

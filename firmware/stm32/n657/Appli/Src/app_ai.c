@@ -42,6 +42,8 @@
 #if !APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 #undef DebugConsole_Printf
 #define DebugConsole_Printf(...) ((void) 0)
+#undef DebugConsole_WriteString
+#define DebugConsole_WriteString(...) ((void) 0)
 #endif
 /* USER CODE END Includes */
 
@@ -77,10 +79,10 @@
 #define APP_AI_GAUGE_CROP_HEIGHT_SCALE_DENOMINATOR 20U
 #define APP_AI_GAUGE_CROP_CENTER_X_BIAS_PIXELS      24U
 #define APP_AI_GAUGE_CROP_CENTER_Y_BIAS_PIXELS       0U
-/* The live board path is most stable when it uses the same crop geometry that
- * the MobileNetV2 regressor was trained on. Keep the adaptive detector around
- * for experiments, but default to the fixed training crop on-device. */
-#define APP_AI_USE_ADAPTIVE_GAUGE_CROP      1U
+/* The current close-up board captures drift too far downward with the
+ * adaptive rectifier and miss the needle on low temperatures. Use the stable
+ * training crop on-device until we retrain on the closer framing. */
+#define APP_AI_USE_ADAPTIVE_GAUGE_CROP      0U
 /* Feed the model a stable grayscale tensor from Y luma only.
  * The RGB reconstruction path was collapsing to a green-only tensor on board,
  * which is a worse mismatch than replicated luminance for this gauge task. */
@@ -103,15 +105,32 @@
 /* Keep the rectifier crop slightly larger than the raw box so the scalar head
  * still sees the needle and a bit of surrounding dial context. */
 #define APP_AI_RECTIFIER_CROP_SCALE        1.25f
+/* Match the Python rectifier evaluator: never let the predicted box collapse
+ * below a tiny fraction of the canvas, or the scalar stage degenerates to a
+ * 1x1 crop. */
+#define APP_AI_RECTIFIER_MIN_BOX_RATIO     0.05f
+/* Rectifier crops outside this band are usually unhelpful on live board
+ * captures, so fall back to the stable training crop instead of trusting them. */
+#define APP_AI_RECTIFIER_FALLBACK_MIN_BOX_RATIO  0.25f
+#define APP_AI_RECTIFIER_FALLBACK_MAX_BOX_RATIO  0.95f
 /* Temporarily disable EMA smoothing so the board exposes the raw model value
  * directly while we validate the current crop and exposure tuning. */
 #define APP_AI_INFERENCE_SMOOTHING_ALPHA   1.0f
-/* Model blob sits after the FSBL (0x70000000) and signed app (0x70100000).
- * Must match FLASH_MODEL address in flash_boot.bat and EXTRAM origin in the
- * linker script. The chip offset is the model base minus the xSPI2 window base. */
-#define APP_AI_XSPI2_MODEL_BASE_ADDR      0x70200000UL
+/* xSPI2 window base address (chip address 0). */
 #define APP_AI_XSPI2_CHIP_BASE_ADDR       0x70000000UL
-#define APP_AI_XSPI2_MODEL_CHIP_OFFSET    (APP_AI_XSPI2_MODEL_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
+/* Scalar model: immediately after FSBL (0x70000000) + App (0x70100000, 1 MB
+ * window). Must match FLASH_SCALAR address in flash_boot.bat.
+ * Size: ~3.07 MB → occupies 0x70200000–0x7051FFFF (50 × 64 KB blocks). */
+#define APP_AI_XSPI2_SCALAR_BASE_ADDR     0x70200000UL
+#define APP_AI_XSPI2_SCALAR_CHIP_OFFSET   (APP_AI_XSPI2_SCALAR_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
+/* Rectifier model: immediately after scalar region (aligned to next 64 KB).
+ * Must match FLASH_RECTIFIER address in flash_boot.bat.
+ * Size: ~118 KB → occupies 0x70520000–0x7053FFFF (2 × 64 KB blocks). */
+#define APP_AI_XSPI2_RECTIFIER_BASE_ADDR  0x70520000UL
+#define APP_AI_XSPI2_RECTIFIER_CHIP_OFFSET (APP_AI_XSPI2_RECTIFIER_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
+/* Legacy alias used by the single-stage logging helpers; points to scalar. */
+#define APP_AI_XSPI2_MODEL_BASE_ADDR      APP_AI_XSPI2_SCALAR_BASE_ADDR
+#define APP_AI_XSPI2_MODEL_CHIP_OFFSET    APP_AI_XSPI2_SCALAR_CHIP_OFFSET
 /* FileX can take a while to recover from card init retries or media errors.
  * Give the loader a longer window so we do not give up just before the stack
  * settles. */
@@ -142,7 +161,12 @@ __attribute__((section(".xspi2_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
 uint8_t _mem_pool_xSPI2_scalar_full_finetune_from_best_piecewise_calibrated_int8[32U] = {
 	0U,
 };
-__attribute__((section(".xspi2_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
+/* Rectifier pool placed in its own section so the linker script can map it to
+ * the rectifier flash region at 0x70520000 — matching FLASH_RECTIFIER in
+ * flash_boot.bat.  The NPU resolves all weight addresses as:
+ *   _mem_pool_xSPI2_mobilenetv2_rectifier_hardcase_finetune + internal_offset
+ * so this symbol MUST live at the base of the flashed blob. */
+__attribute__((section(".xspi2_rectifier_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
 uint8_t _mem_pool_xSPI2_mobilenetv2_rectifier_hardcase_finetune[32U] = {
 	0U,
 };
@@ -154,16 +178,44 @@ static uint8_t app_ai_xspi2_program_buffer[APP_AI_XSPI2_PROGRAM_CHUNK_BYTES];
  *     print('start:', bytes(d[:16]).hex())
  *     print('tail: ', bytes(d[-16:]).hex())" */
 static const uint8_t app_ai_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0xEFU, 0x1BU, 0x2BU, 0xE0U, 0xD7U, 0xE5U, 0xECU, 0x07U,
-	0x04U, 0x00U, 0x34U, 0xECU, 0x1AU, 0xDDU, 0x14U, 0x05U,
+	0xEFU, 0x1BU, 0x2BU, 0xE0U, 0xD7U, 0xE6U, 0xECU, 0x06U,
+	0x05U, 0x00U, 0x34U, 0xECU, 0x1AU, 0xDDU, 0x14U, 0x05U,
 };
 static const uint8_t app_ai_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
-	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0xDCU,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0xE6U,
 };
-/* Size of the model image last programmed to xSPI2. Set during provisioning,
- * used by the verify functions for the tail probe offset. */
+/* Rectifier v3 xSPI2 signatures used when the board boots with the rectifier
+ * blob already flashed at 0x70200000. */
+static const uint8_t app_ai_rectifier_xspi2_signature_start[
+		APP_AI_XSPI2_PROBE_BYTES] = {
+	0x0FU, 0x11U, 0xF8U, 0x10U, 0xD0U, 0xD8U, 0x0EU, 0x28U,
+	0x99U, 0xCDU, 0x98U, 0x7DU, 0xBCU, 0x43U, 0x5EU, 0xF2U,
+};
+static const uint8_t app_ai_rectifier_xspi2_signature_tail[
+		APP_AI_XSPI2_PROBE_BYTES] = {
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x80U,
+};
+/* Per-stage programmed sizes. Set during provisioning and used by the verify
+ * functions for the tail probe offset. Keeping them separate prevents the
+ * scalar tail check from using the rectifier's file size (or vice-versa) when
+ * stages alternate. */
+static ULONG app_ai_scalar_programmed_size = 0UL;
+static ULONG app_ai_rectifier_programmed_size = 0UL;
+/* Legacy alias kept so existing references still compile; points to the scalar
+ * size which was the only stage before the rectifier was added. */
 static ULONG app_ai_xspi2_programmed_size = 0UL;
+
+/* Per-stage signature caches populated from the SD file during provisioning.
+ * Using SD-sourced bytes means verify never goes stale when the model blob is
+ * replaced, regardless of what the hardcoded fallback constants say. */
+static uint8_t app_ai_scalar_sig_start[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
+static uint8_t app_ai_scalar_sig_tail[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
+static bool    app_ai_scalar_sig_valid = false;
+static uint8_t app_ai_rectifier_sig_start[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
+static uint8_t app_ai_rectifier_sig_tail[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
+static bool    app_ai_rectifier_sig_valid = false;
 
 /* Declare the generated NN instance locally so the dry-run helper can run the
  * AtoNN runtime on the exact network produced by Cube.AI. */
@@ -181,6 +233,8 @@ struct AppAI_ModelStageSpec {
 	bool (*network_init_fn)(void);
 	bool (*inference_init_fn)(void);
 	bool uses_rectifier_box;
+	uint32_t xspi2_chip_offset; /* byte offset from chip base (0x70000000) */
+	uint32_t xspi2_base_addr;   /* mapped window address for this stage */
 };
 
 typedef struct {
@@ -206,6 +260,8 @@ static const AppAI_ModelStageSpec app_ai_scalar_stage = {
 	.inference_init_fn =
 			LL_ATON_EC_Inference_Init_scalar_full_finetune_from_best_piecewise_calibrated_int8,
 	.uses_rectifier_box = false,
+	.xspi2_chip_offset = APP_AI_XSPI2_SCALAR_CHIP_OFFSET,
+	.xspi2_base_addr   = APP_AI_XSPI2_SCALAR_BASE_ADDR,
 };
 
 static const AppAI_ModelStageSpec app_ai_rectifier_stage = {
@@ -217,6 +273,8 @@ static const AppAI_ModelStageSpec app_ai_rectifier_stage = {
 	.inference_init_fn =
 			LL_ATON_EC_Inference_Init_mobilenetv2_rectifier_hardcase_finetune,
 	.uses_rectifier_box = true,
+	.xspi2_chip_offset = APP_AI_XSPI2_RECTIFIER_CHIP_OFFSET,
+	.xspi2_base_addr   = APP_AI_XSPI2_RECTIFIER_BASE_ADDR,
 };
 /* USER CODE END PV */
 
@@ -234,6 +292,7 @@ static void AppAI_LogXspi2LoadFailure(const char *step, UINT fx_status,
 		int32_t bsp_status);
 static void AppAI_LogXspi2ProgramChunkProgress(ULONG chunk_index,
 		ULONG flash_offset, ULONG chunk_size);
+static void AppAI_LogXspi2FlashStatus(const char *label);
 static void AppAI_LogXspi2PrefixBytes(const char *label,
 		const uint8_t *bytes);
 static void AppAI_LogFrameSignature(const uint8_t *frame_bytes,
@@ -327,6 +386,7 @@ static bool AppAI_EnsureNpuHardwareReady(void) {
 		return true;
 	}
 
+	(void) DebugConsole_WriteString("[AI] NPU hardware bring-up start.\r\n");
 	__HAL_RCC_NPU_CLK_ENABLE();
 	__HAL_RCC_NPU_FORCE_RESET();
 	__HAL_RCC_NPU_RELEASE_RESET();
@@ -346,6 +406,7 @@ static bool AppAI_EnsureNpuHardwareReady(void) {
 	AppAI_ConfigureNpuRisafDefaults();
 
 	app_ai_npu_hw_initialized = true;
+	(void) DebugConsole_WriteString("[AI] NPU hardware bring-up OK.\r\n");
 	return true;
 }
 
@@ -358,14 +419,16 @@ static bool AppAI_EnsureXspi2MemoryReady(void) {
 		return true;
 	}
 
+	(void) DebugConsole_WriteString("[AI] XSPI2 memory bring-up start.\r\n");
 	/* If a prior verify attempt left the flash in memory-mapped mode, erase and
 	 * write commands will fail.  Take it back to indirect mode first. DeInit
 	 * handles this cleanly regardless of the current BSP context state. */
 	(void) BSP_XSPI_NOR_DeInit(0U);
 
 	periph_clk.PeriphClockSelection = RCC_PERIPHCLK_XSPI2;
-	periph_clk.Xspi2ClockSelection = RCC_XSPI2CLKSOURCE_HCLK;
+	periph_clk.Xspi2ClockSelection = RCC_XSPI2CLKSOURCE_IC3;
 	if (HAL_RCCEx_PeriphCLKConfig(&periph_clk) != HAL_OK) {
+		(void) DebugConsole_WriteString("[AI] XSPI2 clock config failed.\r\n");
 		return false;
 	}
 
@@ -373,37 +436,84 @@ static bool AppAI_EnsureXspi2MemoryReady(void) {
 	flash.TransferRate = BSP_XSPI_NOR_STR_TRANSFER;
 	bsp_status = BSP_XSPI_NOR_Init(0U, &flash);
 	if (bsp_status != BSP_ERROR_NONE) {
-		DebugConsole_Printf("[AI] BSP_XSPI_NOR_Init for provisioning failed: %ld\r\n",
+		char msg[96];
+		(void) snprintf(msg, sizeof(msg),
+				"[AI] BSP_XSPI_NOR_Init for provisioning failed: %ld\r\n",
 				(long) bsp_status);
+		(void) DebugConsole_WriteString(msg);
 		return false;
 	}
 
+	(void) DebugConsole_WriteString("[AI] XSPI2 memory bring-up OK.\r\n");
 	return true;
 }
 
 static bool AppAI_ReconfigureXspi2ForRuntime(void) {
 	BSP_XSPI_NOR_Init_t flash = { 0 };
+	RCC_PeriphCLKInitTypeDef periph_clk = { 0 };
 	int32_t bsp_status = BSP_ERROR_NONE;
 
-	/* Drop out of memory-mapped mode before changing the flash transfer rate. */
+	/* Drop out of memory-mapped mode before changing the flash transfer rate.
+	 * Clear the provisioning-mode guard so EnsureXspi2MemoryReady will
+	 * re-initialize the peripheral into indirect/write mode if provisioning
+	 * is needed again after this reconfigure. */
+	app_ai_xspi2_initialized = false;
+	(void) DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: disable MM start.\r\n");
 	(void) BSP_XSPI_NOR_DisableMemoryMappedMode(0U);
+	(void) DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: disable MM OK.\r\n");
+	(void) DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: deinit start.\r\n");
 	(void) BSP_XSPI_NOR_DeInit(0U);
+	(void) DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: deinit OK.\r\n");
+
+	periph_clk.PeriphClockSelection = RCC_PERIPHCLK_XSPI2;
+	periph_clk.Xspi2ClockSelection = RCC_XSPI2CLKSOURCE_IC3;
+	(void) DebugConsole_WriteString(
+			"[AI] xSPI2 runtime reconfigure: clock config start.\r\n");
+	if (HAL_RCCEx_PeriphCLKConfig(&periph_clk) != HAL_OK) {
+		(void) DebugConsole_WriteString(
+				"[AI] xSPI2 runtime reconfigure: clock config failed.\r\n");
+		return false;
+	}
+	(void) DebugConsole_WriteString(
+			"[AI] xSPI2 runtime reconfigure: clock config OK.\r\n");
 
 	flash.InterfaceMode = BSP_XSPI_NOR_OPI_MODE;
-	flash.TransferRate = BSP_XSPI_NOR_DTR_TRANSFER;
+	/* Keep the runtime in STR mode for now. The board already initializes and
+	 * programs the xSPI2 NOR successfully in STR, while the DTR reconfigure
+	 * path was failing during BSP_XSPI_NOR_Init() with -5. We only need the
+	 * mapped window to be valid for the stage runtime. */
+	flash.TransferRate = BSP_XSPI_NOR_STR_TRANSFER;
+	(void) DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: init start.\r\n");
 	bsp_status = BSP_XSPI_NOR_Init(0U, &flash);
 	if (bsp_status != BSP_ERROR_NONE) {
+		char msg[96];
+		(void) snprintf(msg, sizeof(msg),
+				"[AI] xSPI2 runtime reconfigure: init failed: %ld\r\n",
+				(long) bsp_status);
+		(void) DebugConsole_WriteString(msg);
 		return false;
 	}
+	(void) DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: init OK.\r\n");
 
-	if (BSP_XSPI_NOR_EnableMemoryMappedMode(0U) != BSP_ERROR_NONE) {
-		return false;
-	}
-
+	/* Leave the peripheral in indirect mode so callers that need to probe flash
+	 * via BSP_XSPI_NOR_Read can do so immediately.  Callers that need the
+	 * memory-mapped window must call BSP_XSPI_NOR_EnableMemoryMappedMode()
+	 * themselves after this function returns. */
 	return true;
 }
 
-static bool AppAI_Xspi2ReadFlashProbe(const uint32_t flash_offset,
+static bool AppAI_Xspi2EnableMemoryMappedMode(void) {
+	(void) DebugConsole_WriteString("[AI] xSPI2 enable MM start.\r\n");
+	if (BSP_XSPI_NOR_EnableMemoryMappedMode(0U) != BSP_ERROR_NONE) {
+		(void) DebugConsole_WriteString("[AI] xSPI2 enable MM failed.\r\n");
+		return false;
+	}
+	(void) DebugConsole_WriteString("[AI] xSPI2 enable MM OK.\r\n");
+	return true;
+}
+
+static bool AppAI_Xspi2ReadFlashProbe(const uint32_t chip_base_offset,
+		const uint32_t flash_offset,
 		const uint8_t *expected_bytes, const size_t expected_length) {
 	uint8_t flash_bytes[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
 
@@ -413,7 +523,7 @@ static bool AppAI_Xspi2ReadFlashProbe(const uint32_t flash_offset,
 	}
 
 	if (BSP_XSPI_NOR_Read(0U, flash_bytes,
-			APP_AI_XSPI2_MODEL_CHIP_OFFSET + flash_offset,
+			chip_base_offset + flash_offset,
 			(uint32_t) expected_length) != BSP_ERROR_NONE) {
 		return false;
 	}
@@ -1419,14 +1529,15 @@ static bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr) {
 }
 
 static bool AppAI_Xspi2ModelImageMatchesFlash(void) {
-	if (!AppAI_Xspi2ReadFlashProbe(0U, app_ai_xspi2_signature_start,
+	if (!AppAI_Xspi2ReadFlashProbe(APP_AI_XSPI2_SCALAR_CHIP_OFFSET, 0U,
+			app_ai_xspi2_signature_start,
 			sizeof(app_ai_xspi2_signature_start))) {
 		DebugConsole_Printf("[AI] xSPI2 verify failed at start signature.\r\n");
 		return false;
 	}
 
 	if ((app_ai_xspi2_programmed_size >= APP_AI_XSPI2_PROBE_BYTES)
-			&& !AppAI_Xspi2ReadFlashProbe(
+			&& !AppAI_Xspi2ReadFlashProbe(APP_AI_XSPI2_SCALAR_CHIP_OFFSET,
 					app_ai_xspi2_programmed_size - APP_AI_XSPI2_PROBE_BYTES,
 					app_ai_xspi2_signature_tail,
 					sizeof(app_ai_xspi2_signature_tail))) {
@@ -1452,6 +1563,87 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlash(void) {
 					sizeof(app_ai_xspi2_signature_tail))) {
 		DebugConsole_Printf(
 				"[AI] xSPI2 mapped verify failed at tail signature.\r\n");
+		return false;
+	}
+
+	return true;
+}
+
+static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
+		const AppAI_ModelStageSpec *stage) {
+	bool is_rectifier;
+	const uint8_t *sig_start;
+	const uint8_t *sig_tail;
+	bool sig_valid;
+	ULONG programmed_size;
+
+	if (stage == NULL) {
+		return false;
+	}
+
+	is_rectifier = (strcmp(stage->stage_label, "rectifier") == 0);
+
+	if (is_rectifier) {
+		/* Prefer the SD-sourced signature cached during the last provisioning.
+		 * Fall back to the hardcoded constant only when no provisioning has
+		 * happened yet this boot (cache is zeroed at startup). */
+		sig_start      = app_ai_rectifier_sig_valid
+				? app_ai_rectifier_sig_start
+				: app_ai_rectifier_xspi2_signature_start;
+		sig_tail       = app_ai_rectifier_sig_valid
+				? app_ai_rectifier_sig_tail
+				: app_ai_rectifier_xspi2_signature_tail;
+		sig_valid      = app_ai_rectifier_sig_valid;
+		programmed_size = app_ai_rectifier_programmed_size;
+	} else {
+		sig_start      = app_ai_scalar_sig_valid
+				? app_ai_scalar_sig_start
+				: app_ai_xspi2_signature_start;
+		sig_tail       = app_ai_scalar_sig_valid
+				? app_ai_scalar_sig_tail
+				: app_ai_xspi2_signature_tail;
+		sig_valid      = app_ai_scalar_sig_valid;
+		programmed_size = app_ai_scalar_programmed_size;
+	}
+
+	if (!AppAI_Xspi2ReadFlashProbe(stage->xspi2_chip_offset, 0U,
+			sig_start, APP_AI_XSPI2_PROBE_BYTES)) {
+		/* Log the actual flash bytes so stale hardcoded signatures can be updated. */
+		{
+			uint8_t actual[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
+			char vlog[128];
+			(void) BSP_XSPI_NOR_Read(0U, actual,
+					stage->xspi2_chip_offset, APP_AI_XSPI2_PROBE_BYTES);
+			(void) snprintf(vlog, sizeof(vlog),
+					"[AI] %s verify fail: flash=[%02X%02X%02X%02X%02X%02X%02X%02X"
+					"%02X%02X%02X%02X%02X%02X%02X%02X] "
+					"expected=[%02X%02X%02X%02X%02X%02X%02X%02X"
+					"%02X%02X%02X%02X%02X%02X%02X%02X]\r\n",
+					stage->stage_label,
+					actual[0],actual[1],actual[2],actual[3],
+					actual[4],actual[5],actual[6],actual[7],
+					actual[8],actual[9],actual[10],actual[11],
+					actual[12],actual[13],actual[14],actual[15],
+					sig_start[0],sig_start[1],sig_start[2],sig_start[3],
+					sig_start[4],sig_start[5],sig_start[6],sig_start[7],
+					sig_start[8],sig_start[9],sig_start[10],sig_start[11],
+					sig_start[12],sig_start[13],sig_start[14],sig_start[15]);
+			(void) DebugConsole_WriteString(vlog);
+		}
+		return false;
+	}
+
+	if (sig_valid && (programmed_size >= APP_AI_XSPI2_PROBE_BYTES)
+			&& !AppAI_Xspi2ReadFlashProbe(stage->xspi2_chip_offset,
+					programmed_size - APP_AI_XSPI2_PROBE_BYTES,
+					sig_tail, APP_AI_XSPI2_PROBE_BYTES)) {
+		{
+			char vlog[64];
+			(void) snprintf(vlog, sizeof(vlog),
+					"[AI] %s flash verify: tail mismatch.\r\n",
+					stage->stage_label);
+			(void) DebugConsole_WriteString(vlog);
+		}
 		return false;
 	}
 
@@ -1536,6 +1728,9 @@ static bool AppAI_ProgramXspi2ModelImageFromSd(void) {
 
 	for (ULONG erase_addr = 0U; erase_addr < file_size;
 			erase_addr += APP_AI_XSPI2_ERASE_BLOCK_BYTES) {
+		if (erase_addr == 0U) {
+			(void) DebugConsole_WriteString("[AI] xSPI2 stage erase begin.\r\n");
+		}
 		bsp_status = BSP_XSPI_NOR_Erase_Block(0U,
 				APP_AI_XSPI2_MODEL_CHIP_OFFSET + erase_addr,
 				BSP_XSPI_NOR_ERASE_64K);
@@ -1575,6 +1770,12 @@ static bool AppAI_ProgramXspi2ModelImageFromSd(void) {
 			return false;
 		}
 
+		/* Keep the flash writer honest: the staging buffer is cacheable RAM, so
+		 * clean it before BSP_XSPI_NOR_Write() consumes the bytes. */
+		(void) mcu_cache_clean_range((uint32_t) (uintptr_t) app_ai_xspi2_program_buffer,
+				(uint32_t) (uintptr_t) app_ai_xspi2_program_buffer
+						+ (uint32_t) chunk_size);
+
 		bsp_status = BSP_XSPI_NOR_Write(0U, app_ai_xspi2_program_buffer,
 				APP_AI_XSPI2_MODEL_CHIP_OFFSET + flash_offset,
 				(uint32_t) chunk_size);
@@ -1597,9 +1798,15 @@ static bool AppAI_ProgramXspi2ModelImageFromSd(void) {
 	AppFileX_ReleaseMediaLock();
 
 	app_ai_xspi2_programmed_size = file_size;
+	AppAI_LogXspi2FlashStatus("legacy stage write complete");
 
 	if (!AppAI_ReconfigureXspi2ForRuntime()) {
 		AppAI_LogXspi2LoadFailure("runtime reconfigure", FX_SUCCESS,
+				BSP_ERROR_COMPONENT_FAILURE);
+		return false;
+	}
+	if (!AppAI_Xspi2EnableMemoryMappedMode()) {
+		AppAI_LogXspi2LoadFailure("enable MM after provision", FX_SUCCESS,
 				BSP_ERROR_COMPONENT_FAILURE);
 		return false;
 	}
@@ -1739,12 +1946,14 @@ static bool AppAI_ProgramXspi2ModelImageFromSdForStage(
 		return false;
 	}
 
+	(void) DebugConsole_WriteString("[AI] xSPI2 stage acquire media lock start.\r\n");
 	tx_status = AppFileX_AcquireMediaLock();
 	if (tx_status != TX_SUCCESS) {
 		AppAI_LogXspi2LoadFailure(stage->stage_label, (UINT) tx_status,
 				BSP_ERROR_NONE);
 		return false;
 	}
+	(void) DebugConsole_WriteString("[AI] xSPI2 stage acquire media lock OK.\r\n");
 
 	media_ptr = AppFileX_GetMediaHandle();
 	if (media_ptr == NULL) {
@@ -1754,13 +1963,16 @@ static bool AppAI_ProgramXspi2ModelImageFromSdForStage(
 		return false;
 	}
 
+	(void) DebugConsole_WriteString("[AI] xSPI2 stage media handle OK.\r\n");
 	if (fx_directory_default_set(media_ptr, FX_NULL) != FX_SUCCESS) {
 		AppFileX_ReleaseMediaLock();
 		AppAI_LogXspi2LoadFailure(stage->stage_label, FX_SUCCESS,
 				BSP_ERROR_NONE);
 		return false;
 	}
+	(void) DebugConsole_WriteString("[AI] xSPI2 stage directory reset OK.\r\n");
 
+	(void) DebugConsole_WriteString("[AI] xSPI2 stage file open start.\r\n");
 	fx_status = fx_file_open(media_ptr, &model_file,
 			(CHAR *) stage->model_image_path, FX_OPEN_FOR_READ);
 	if (fx_status != FX_SUCCESS) {
@@ -1769,6 +1981,7 @@ static bool AppAI_ProgramXspi2ModelImageFromSdForStage(
 		AppAI_LogXspi2LoadFailure(stage->stage_label, fx_status, BSP_ERROR_NONE);
 		return false;
 	}
+	(void) DebugConsole_WriteString("[AI] xSPI2 stage file open OK.\r\n");
 
 	file_size = model_file.fx_file_current_file_size;
 	if (file_size == 0U) {
@@ -1782,6 +1995,7 @@ static bool AppAI_ProgramXspi2ModelImageFromSdForStage(
 	DebugConsole_Printf("[AI] %s model file size: %lu bytes.\r\n",
 			stage->stage_label, (unsigned long) file_size);
 
+	(void) DebugConsole_WriteString("[AI] xSPI2 stage source probes start.\r\n");
 	if (!AppAI_ReadXspi2ModelSourceProbes(&model_file, file_size,
 			source_prefix, source_tail, &has_tail_probe)) {
 		(void) fx_file_close(&model_file);
@@ -1791,11 +2005,12 @@ static bool AppAI_ProgramXspi2ModelImageFromSdForStage(
 				BSP_ERROR_COMPONENT_FAILURE);
 		return false;
 	}
+	(void) DebugConsole_WriteString("[AI] xSPI2 stage source probes OK.\r\n");
 
 	for (ULONG erase_addr = 0U; erase_addr < file_size;
 			erase_addr += APP_AI_XSPI2_ERASE_BLOCK_BYTES) {
 		bsp_status = BSP_XSPI_NOR_Erase_Block(0U,
-				APP_AI_XSPI2_MODEL_CHIP_OFFSET + erase_addr,
+				stage->xspi2_chip_offset + erase_addr,
 				BSP_XSPI_NOR_ERASE_64K);
 		if (bsp_status != BSP_ERROR_NONE) {
 			(void) fx_file_close(&model_file);
@@ -1811,12 +2026,17 @@ static bool AppAI_ProgramXspi2ModelImageFromSdForStage(
 	flash_offset = 0U;
 	{
 		ULONG chunk_index = 0U;
+		(void) DebugConsole_WriteString("[AI] xSPI2 stage write begin.\r\n");
 
 		while (bytes_remaining > 0U) {
 			const ULONG chunk_size = (bytes_remaining > APP_AI_XSPI2_PROGRAM_CHUNK_BYTES)
 					? APP_AI_XSPI2_PROGRAM_CHUNK_BYTES
 					: bytes_remaining;
 
+			if (chunk_index == 0U) {
+				(void) DebugConsole_WriteString(
+						"[AI] xSPI2 stage first chunk write start.\r\n");
+			}
 			if ((flash_offset == 0U)
 					|| ((flash_offset % APP_AI_XSPI2_ERASE_BLOCK_BYTES) == 0U)) {
 				AppAI_LogXspi2ProgramChunkProgress(chunk_index, flash_offset,
@@ -1835,8 +2055,14 @@ static bool AppAI_ProgramXspi2ModelImageFromSdForStage(
 				return false;
 			}
 
+			/* Keep the flash writer honest: clean the staging buffer cache lines
+			 * before BSP_XSPI_NOR_Write() reads the fresh file contents. */
+			(void) mcu_cache_clean_range((uint32_t) (uintptr_t) app_ai_xspi2_program_buffer,
+					(uint32_t) (uintptr_t) app_ai_xspi2_program_buffer
+							+ (uint32_t) chunk_size);
+
 			bsp_status = BSP_XSPI_NOR_Write(0U, app_ai_xspi2_program_buffer,
-					APP_AI_XSPI2_MODEL_CHIP_OFFSET + flash_offset,
+					stage->xspi2_chip_offset + flash_offset,
 					(uint32_t) chunk_size);
 			if (bsp_status != BSP_ERROR_NONE) {
 				(void) fx_file_close(&model_file);
@@ -1852,34 +2078,69 @@ static bool AppAI_ProgramXspi2ModelImageFromSdForStage(
 			chunk_index++;
 		}
 	}
+	(void) DebugConsole_WriteString("[AI] xSPI2 stage write complete.\r\n");
+	AppAI_LogXspi2FlashStatus("rectifier stage write complete");
+
+	/* Probe the first 16 bytes back from flash immediately after write (still in
+	 * indirect/write mode) to confirm the data landed at the expected address. */
+	{
+		uint8_t post_write[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
+		char pwlog[128];
+		(void) BSP_XSPI_NOR_Read(0U, post_write,
+				stage->xspi2_chip_offset, APP_AI_XSPI2_PROBE_BYTES);
+		(void) snprintf(pwlog, sizeof(pwlog),
+				"[AI] %s post-write probe: [%02X%02X%02X%02X%02X%02X%02X%02X"
+				"%02X%02X%02X%02X%02X%02X%02X%02X] "
+				"src=[%02X%02X%02X%02X%02X%02X%02X%02X"
+				"%02X%02X%02X%02X%02X%02X%02X%02X]\r\n",
+				stage->stage_label,
+				post_write[0],post_write[1],post_write[2],post_write[3],
+				post_write[4],post_write[5],post_write[6],post_write[7],
+				post_write[8],post_write[9],post_write[10],post_write[11],
+				post_write[12],post_write[13],post_write[14],post_write[15],
+				source_prefix[0],source_prefix[1],source_prefix[2],source_prefix[3],
+				source_prefix[4],source_prefix[5],source_prefix[6],source_prefix[7],
+				source_prefix[8],source_prefix[9],source_prefix[10],source_prefix[11],
+				source_prefix[12],source_prefix[13],source_prefix[14],source_prefix[15]);
+		(void) DebugConsole_WriteString(pwlog);
+	}
 
 	(void) fx_file_close(&model_file);
 	(void) fx_directory_default_set(media_ptr, FX_NULL);
 	AppFileX_ReleaseMediaLock();
 
 	app_ai_xspi2_programmed_size = file_size;
+	/* Update the per-stage size so the verify tail-probe uses the right offset
+	 * regardless of which stage was provisioned last. */
+	if (strcmp(stage->stage_label, "rectifier") == 0) {
+		app_ai_rectifier_programmed_size = file_size;
+		(void) memcpy(app_ai_rectifier_sig_start, source_prefix,
+				APP_AI_XSPI2_PROBE_BYTES);
+		(void) memcpy(app_ai_rectifier_sig_tail, source_tail,
+				APP_AI_XSPI2_PROBE_BYTES);
+		app_ai_rectifier_sig_valid = has_tail_probe;
+	} else {
+		app_ai_scalar_programmed_size = file_size;
+		(void) memcpy(app_ai_scalar_sig_start, source_prefix,
+				APP_AI_XSPI2_PROBE_BYTES);
+		(void) memcpy(app_ai_scalar_sig_tail, source_tail,
+				APP_AI_XSPI2_PROBE_BYTES);
+		app_ai_scalar_sig_valid = has_tail_probe;
+	}
 
 	if (!AppAI_ReconfigureXspi2ForRuntime()) {
 		AppAI_LogXspi2LoadFailure(stage->stage_label, FX_SUCCESS,
 				BSP_ERROR_COMPONENT_FAILURE);
 		return false;
 	}
-
-	if (!AppAI_Xspi2ReadMappedProbe(0U, source_prefix, APP_AI_XSPI2_PROBE_BYTES)) {
-		DebugConsole_Printf("[AI] %s mapped prefix verify failed.\r\n",
-				stage->stage_label);
+	if (!AppAI_Xspi2EnableMemoryMappedMode()) {
+		AppAI_LogXspi2LoadFailure("enable MM after provision", FX_SUCCESS,
+				BSP_ERROR_COMPONENT_FAILURE);
 		return false;
 	}
 
-	if (has_tail_probe && (file_size >= APP_AI_XSPI2_PROBE_BYTES)) {
-		if (!AppAI_Xspi2ReadMappedProbe(file_size - APP_AI_XSPI2_PROBE_BYTES,
-				source_tail, APP_AI_XSPI2_PROBE_BYTES)) {
-			DebugConsole_Printf("[AI] %s mapped tail verify failed.\r\n",
-					stage->stage_label);
-			return false;
-		}
-	}
-
+	(void) DebugConsole_WriteString(
+			"[AI] xSPI2 stage provisioning complete; verify skipped.\r\n");
 	AppAI_LogXspi2IndirectAndMappedPrefix();
 	AppAI_LogXspi2MappedScaleBytes();
 	app_ai_loaded_xspi2_stage = stage;
@@ -1894,21 +2155,44 @@ static bool AppAI_EnsureXspi2ModelImageReadyForStage(
 		return false;
 	}
 
+	/* Fast path: pointer equality means this stage is already in its flash
+	 * region and the peripheral is already in mapped mode for it. */
 	if (app_ai_loaded_xspi2_stage == stage) {
+		(void) DebugConsole_WriteString("[AI] xSPI2 stage already loaded.\r\n");
 		return true;
 	}
 
-	if (!AppAI_EnsureXspi2MemoryReady()) {
-		AppAI_LogXspi2LoadFailure(stage->stage_label, FX_SUCCESS,
+	/* Each stage now has its own flash region, so we can verify whether the
+	 * stage's bytes are already present without disturbing the other stage.
+	 * Switch to indirect mode first (needed for BSP_XSPI_NOR_Read). */
+	(void) DebugConsole_WriteString("[AI] xSPI2 stage mapped verify start.\r\n");
+	(void) DebugConsole_WriteString("[AI] xSPI2 stage reconfigure start.\r\n");
+	if (!AppAI_ReconfigureXspi2ForRuntime()) {
+		AppAI_LogXspi2LoadFailure("runtime reconfigure", FX_SUCCESS,
 				BSP_ERROR_COMPONENT_FAILURE);
 		return false;
 	}
+	(void) DebugConsole_WriteString("[AI] xSPI2 stage reconfigure OK.\r\n");
 
-	if (!AppAI_ProgramXspi2ModelImageFromSdForStage(stage)) {
-		return false;
+	if (AppAI_Xspi2ModelImageMatchesMappedFlashForStage(stage)) {
+		(void) DebugConsole_WriteString(
+				"[AI] xSPI2 stage image already present.\r\n");
+		if (!AppAI_Xspi2EnableMemoryMappedMode()) {
+			AppAI_LogXspi2LoadFailure("enable MM after verify", FX_SUCCESS,
+					BSP_ERROR_COMPONENT_FAILURE);
+			return false;
+		}
+		app_ai_loaded_xspi2_stage = stage;
+		return true;
 	}
 
-	return true;
+	/* Models are permanently flashed via flash_boot.bat — SD provisioning is
+	 * disabled. A signature mismatch means the wrong binary is in flash; use
+	 * flash_boot.bat with FLASH_MODEL=1 to update. */
+	DebugConsole_Printf(
+			"[AI] xSPI2 stage '%s' signature mismatch — reflash with flash_boot.bat FLASH_MODEL=1.\r\n",
+			stage->stage_label);
+	return false;
 }
 
 static bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage) {
@@ -1916,22 +2200,33 @@ static bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage) {
 		return false;
 	}
 
+	(void) DebugConsole_WriteString("[AI] Stage runtime ready start.\r\n");
+	(void) DebugConsole_WriteString(stage->stage_label != NULL
+			&& (strcmp(stage->stage_label, "rectifier") == 0)
+			? "[AI] Stage label: rectifier\r\n"
+			: "[AI] Stage label: scalar\r\n");
 	if (!AppAI_EnsureXspi2ModelImageReadyForStage(stage)) {
+		(void) DebugConsole_WriteString(
+				"[AI] Stage runtime ready failed during xSPI2 setup.\r\n");
 		return false;
 	}
 
+	(void) DebugConsole_WriteString("[AI] Stage network init start.\r\n");
 	if ((stage->network_init_fn == NULL) || !stage->network_init_fn()) {
 		AppAI_LogInitFailure(stage->stage_label);
 		return false;
 	}
 
 	LL_ATON_RT_Init_Network(stage->nn_instance);
+	(void) DebugConsole_WriteString("[AI] Stage network init OK.\r\n");
 
+	(void) DebugConsole_WriteString("[AI] Stage inference init start.\r\n");
 	if ((stage->inference_init_fn == NULL) || !stage->inference_init_fn()) {
 		AppAI_LogInitFailure(stage->stage_label);
 		return false;
 	}
 
+	(void) DebugConsole_WriteString("[AI] Stage inference init OK.\r\n");
 	return true;
 }
 
@@ -1950,6 +2245,7 @@ static bool AppAI_DecodeRectifierCropBox(
 	float crop_y_min_f = 0.0f;
 	float crop_width_f = 0.0f;
 	float crop_height_f = 0.0f;
+	bool use_fixed_training_crop = false;
 
 	if ((output_buffer_info == NULL) || (crop_out == NULL)) {
 		return false;
@@ -1960,16 +2256,87 @@ static bool AppAI_DecodeRectifierCropBox(
 		return false;
 	}
 
+	/* Log the raw rectifier output before any clamping so we can distinguish
+	 * between the model producing a plausible box that the fallback rejects,
+	 * a near-zero output (model not running / zero-init), or an out-of-range
+	 * value (wrong output format / normalization mismatch).
+	 * Use WriteString+snprintf so this survives APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS=0. */
+	{
+		union { float f; uint32_t u; } r0, r1, r2, r3;
+		char rect_log[192];
+		r0.f = output_ptr[0]; r1.f = output_ptr[1];
+		r2.f = output_ptr[2]; r3.f = output_ptr[3];
+		(void) snprintf(rect_log, sizeof(rect_log),
+				"[AI] Rect out: cx=%ld cy=%ld w=%ld h=%ld "
+				"bits=[%08lX %08lX %08lX %08lX]\r\n",
+				(long) (output_ptr[0] * 1000.0f),
+				(long) (output_ptr[1] * 1000.0f),
+				(long) (output_ptr[2] * 1000.0f),
+				(long) (output_ptr[3] * 1000.0f),
+				(unsigned long) r0.u, (unsigned long) r1.u,
+				(unsigned long) r2.u, (unsigned long) r3.u);
+		(void) DebugConsole_WriteString(rect_log);
+	}
+
 	center_x = AppAI_ClampNormalizedFloat(output_ptr[0]);
 	center_y = AppAI_ClampNormalizedFloat(output_ptr[1]);
 	box_w = AppAI_ClampNormalizedFloat(output_ptr[2]);
 	box_h = AppAI_ClampNormalizedFloat(output_ptr[3]);
+	if (box_w < APP_AI_RECTIFIER_MIN_BOX_RATIO) {
+		box_w = APP_AI_RECTIFIER_MIN_BOX_RATIO;
+	}
+	if (box_h < APP_AI_RECTIFIER_MIN_BOX_RATIO) {
+		box_h = APP_AI_RECTIFIER_MIN_BOX_RATIO;
+	}
 
 	if (rectifier_box_out != NULL) {
 		rectifier_box_out->center_x = center_x;
 		rectifier_box_out->center_y = center_y;
 		rectifier_box_out->box_w = box_w;
 		rectifier_box_out->box_h = box_h;
+	}
+
+	if ((box_w < APP_AI_RECTIFIER_FALLBACK_MIN_BOX_RATIO)
+			|| (box_h < APP_AI_RECTIFIER_FALLBACK_MIN_BOX_RATIO)
+			|| (box_w > APP_AI_RECTIFIER_FALLBACK_MAX_BOX_RATIO)
+			|| (box_h > APP_AI_RECTIFIER_FALLBACK_MAX_BOX_RATIO)) {
+		{
+			char fb_log[96];
+			(void) snprintf(fb_log, sizeof(fb_log),
+					"[AI] Rect fallback: cx=%ld cy=%ld w=%ld h=%ld lim=[%ld..%ld]\r\n",
+					(long) (center_x * 1000.0f), (long) (center_y * 1000.0f),
+					(long) (box_w * 1000.0f), (long) (box_h * 1000.0f),
+					(long) (APP_AI_RECTIFIER_FALLBACK_MIN_BOX_RATIO * 1000.0f),
+					(long) (APP_AI_RECTIFIER_FALLBACK_MAX_BOX_RATIO * 1000.0f));
+			(void) DebugConsole_WriteString(fb_log);
+		}
+		use_fixed_training_crop = true;
+	}
+
+	if (use_fixed_training_crop) {
+		/* Keep the scalar reader on the same stable crop that the offline
+		 * training/evaluation path uses when the rectifier output is implausible.
+		 * That avoids 1x1/tiny crops and avoids treating full-frame predictions
+		 * as if they were useful dial boxes. */
+		crop_out->x_min = (size_t) ((float) source_width
+				* APP_AI_TRAINING_CROP_X_MIN_RATIO);
+		crop_out->y_min = (size_t) ((float) source_height
+				* APP_AI_TRAINING_CROP_Y_MIN_RATIO);
+		crop_out->width = (size_t) ((float) source_width
+				* (APP_AI_TRAINING_CROP_X_MAX_RATIO
+				- APP_AI_TRAINING_CROP_X_MIN_RATIO));
+		crop_out->height = (size_t) ((float) source_height
+				* (APP_AI_TRAINING_CROP_Y_MAX_RATIO
+				- APP_AI_TRAINING_CROP_Y_MIN_RATIO));
+		if (crop_out->width == 0U) {
+			crop_out->width = 1U;
+		}
+		if (crop_out->height == 0U) {
+			crop_out->height = 1U;
+		}
+		DebugConsole_WriteString(
+				"[AI] Rectifier crop fallback: using fixed training crop.\r\n");
+		return true;
 	}
 
 	crop_width_f = ((float) source_width) * box_w * APP_AI_RECTIFIER_CROP_SCALE;
@@ -2064,7 +2431,14 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		return false;
 	}
 
+	(void) DebugConsole_WriteString("[AI] Stage inference request.\r\n");
+	(void) DebugConsole_WriteString(stage->stage_label != NULL
+			&& (strcmp(stage->stage_label, "rectifier") == 0)
+			? "[AI] Stage inference request label: rectifier\r\n"
+			: "[AI] Stage inference request label: scalar\r\n");
 	if (!AppAI_EnsureStageRuntimeReady(stage)) {
+		(void) DebugConsole_WriteString(
+				"[AI] Stage inference aborted before preprocess.\r\n");
 		return false;
 	}
 
@@ -2145,6 +2519,28 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	(void) mcu_cache_invalidate_range((uint32_t) (uintptr_t) output_ptr,
 			(uint32_t) ((uintptr_t) output_ptr + output_len_bytes));
 
+	/* Log raw output bytes immediately after cache invalidate so we can tell
+	 * whether the inference engine populated the buffer at all. */
+	{
+		const uint8_t *ob = (const uint8_t *) output_ptr;
+		const size_t on = (output_len_bytes < 16U) ? output_len_bytes : 16U;
+		char olog[128];
+		(void) snprintf(olog, sizeof(olog),
+				"[AI] %s out addr=%p len=%lu bytes=[%02X%02X%02X%02X%02X%02X%02X%02X"
+				"%02X%02X%02X%02X%02X%02X%02X%02X]\r\n",
+				stage->stage_label, (const void *) output_ptr,
+				(unsigned long) output_len_bytes,
+				(on>0U)?ob[0]:0U,(on>1U)?ob[1]:0U,
+				(on>2U)?ob[2]:0U,(on>3U)?ob[3]:0U,
+				(on>4U)?ob[4]:0U,(on>5U)?ob[5]:0U,
+				(on>6U)?ob[6]:0U,(on>7U)?ob[7]:0U,
+				(on>8U)?ob[8]:0U,(on>9U)?ob[9]:0U,
+				(on>10U)?ob[10]:0U,(on>11U)?ob[11]:0U,
+				(on>12U)?ob[12]:0U,(on>13U)?ob[13]:0U,
+				(on>14U)?ob[14]:0U,(on>15U)?ob[15]:0U);
+		(void) DebugConsole_WriteString(olog);
+	}
+
 	if (output_info_out != NULL) {
 		*output_info_out = output_info;
 	}
@@ -2178,6 +2574,11 @@ static bool AppAI_EnsureXspi2ModelImageReady(void) {
 	 * state even when the programmed image is still present. */
 	if (!AppAI_ReconfigureXspi2ForRuntime()) {
 		AppAI_LogXspi2LoadFailure("runtime reconfigure", FX_SUCCESS,
+				BSP_ERROR_COMPONENT_FAILURE);
+		return false;
+	}
+	if (!AppAI_Xspi2EnableMemoryMappedMode()) {
+		AppAI_LogXspi2LoadFailure("enable MM for verify", FX_SUCCESS,
 				BSP_ERROR_COMPONENT_FAILURE);
 		return false;
 	}
@@ -2218,13 +2619,9 @@ bool App_AI_Model_Init(void) {
 		return true;
 	}
 
+	(void) DebugConsole_WriteString("[AI] Model runtime init start.\r\n");
 	if (!AppAI_EnsureNpuHardwareReady()) {
 		AppAI_LogInitFailure("NPU hardware");
-		return false;
-	}
-
-	if (!AppAI_EnsureXspi2MemoryReady()) {
-		AppAI_LogInitFailure("XSPI2 memory");
 		return false;
 	}
 
@@ -2261,6 +2658,35 @@ static void AppAI_LogXspi2ProgramChunkProgress(ULONG chunk_index,
 			(unsigned long) chunk_index,
 			(unsigned long) flash_offset,
 			(unsigned long) chunk_size);
+}
+
+static void AppAI_LogXspi2FlashStatus(const char *label) {
+	/* Read both the generic BSP status and the raw security/status bytes so we
+	 * can distinguish write protection, suspend state, and a plain readback bug. */
+	uint8_t security_reg = 0U;
+	uint8_t status_reg = 0U;
+	int32_t bsp_status = BSP_XSPI_NOR_GetStatus(0U);
+	int32_t security_status = MX25UM51245G_ReadSecurityRegister(&hxspi_nor[0U],
+			Xspi_Nor_Ctx[0U].InterfaceMode, Xspi_Nor_Ctx[0U].TransferRate,
+			&security_reg);
+	int32_t status_reg_status = MX25UM51245G_ReadStatusRegister(&hxspi_nor[0U],
+			Xspi_Nor_Ctx[0U].InterfaceMode, Xspi_Nor_Ctx[0U].TransferRate,
+			&status_reg);
+	char msg[192];
+
+	(void) snprintf(
+			msg,
+			sizeof(msg),
+			"[AI] %s flash status=%ld sec=%ld sec_reg=0x%02X sr=%ld sr_reg=0x%02X mode=%u rate=%u.\r\n",
+			(label != NULL) ? label : "xSPI2",
+			(long) bsp_status,
+			(long) security_status,
+			(unsigned int) security_reg,
+			(long) status_reg_status,
+			(unsigned int) status_reg,
+			(unsigned int) Xspi_Nor_Ctx[0U].InterfaceMode,
+			(unsigned int) Xspi_Nor_Ctx[0U].TransferRate);
+	(void) DebugConsole_WriteString(msg);
 }
 
 static void AppAI_LogXspi2FlashPrefix(void) {
@@ -2374,7 +2800,10 @@ static bool AppAI_RuntimeInitStepwise(void) {
 
 	/* Let the vendor runtime perform the low-level ATON bring-up and version
 	 * compatibility checks. Our wrapper only handles the OSAL and IRQ setup. */
+	(void) DebugConsole_WriteString("[AI] ATON runtime init start.\r\n");
 	if (LL_ATON_Init() != LL_ATON_OK) {
+		(void) DebugConsole_WriteString(
+				"[AI] ATON runtime init failed in LL_ATON_Init().\r\n");
 		return false;
 	}
 
@@ -2395,6 +2824,7 @@ static bool AppAI_RuntimeInitStepwise(void) {
 	LL_ATON_OSAL_DISABLE_IRQ(3U);
 
 	LL_ATON_OSAL_ENABLE_IRQ(ATON_STD_IRQ_LINE);
+	(void) DebugConsole_WriteString("[AI] ATON runtime init OK.\r\n");
 	return true;
 }
 
@@ -2568,12 +2998,17 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		(size_t) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS };
 	AppAI_SourceCrop scalar_crop = { 0U, 0U, 0U, 0U };
 
+	(void) DebugConsole_WriteString("[AI] Dry-run entry.\r\n");
 	if (!App_AI_Model_Init()) {
+		(void) DebugConsole_WriteString("[AI] Dry-run entry aborted during model init.\r\n");
 		return false;
 	}
 
+	(void) DebugConsole_WriteString("[AI] Dry-run model init OK; launching rectifier stage.\r\n");
+
 	if (!AppAI_RunStageInference(&app_ai_rectifier_stage, frame_bytes,
 			frame_size, &rectifier_crop, &rectifier_output_info)) {
+		(void) DebugConsole_WriteString("[AI] Dry-run entry aborted during rectifier stage.\r\n");
 		return false;
 	}
 
@@ -2592,6 +3027,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 
 	if (!AppAI_RunStageInference(&app_ai_scalar_stage, frame_bytes, frame_size,
 			&scalar_crop, &scalar_output_info)) {
+		(void) DebugConsole_WriteString("[AI] Dry-run entry aborted during scalar stage.\r\n");
 		return false;
 	}
 
@@ -2755,6 +3191,44 @@ static void AppAI_LogInferenceResult(
 	AppAI_LogBufferInfoAndSignature("first conv", conv1_output_info);
 	AppAI_LogBufferInfoAndSignature("raw head", raw_output_info);
 	AppAI_LogBufferInfoAndSignature("network output", output_buffer_info);
+
+	/* Dump the first 16 raw bytes of both the head output and the final network
+	 * output so we can tell whether the inference engine wrote anything at all
+	 * and whether the int8 value being read is actually at offset 0. */
+	if ((raw_output_info != NULL) && (LL_Buffer_addr_start(raw_output_info) != NULL)) {
+		const uint8_t *p = (const uint8_t *) LL_Buffer_addr_start(raw_output_info);
+		const size_t n = LL_Buffer_len(raw_output_info);
+		DebugConsole_Printf(
+				"[AI] Scalar raw-head bytes (len=%lu): "
+				"[%02X %02X %02X %02X %02X %02X %02X %02X "
+				"%02X %02X %02X %02X %02X %02X %02X %02X]\r\n",
+				(unsigned long) n,
+				(n >  0U) ? p[0]  : 0U, (n >  1U) ? p[1]  : 0U,
+				(n >  2U) ? p[2]  : 0U, (n >  3U) ? p[3]  : 0U,
+				(n >  4U) ? p[4]  : 0U, (n >  5U) ? p[5]  : 0U,
+				(n >  6U) ? p[6]  : 0U, (n >  7U) ? p[7]  : 0U,
+				(n >  8U) ? p[8]  : 0U, (n >  9U) ? p[9]  : 0U,
+				(n > 10U) ? p[10] : 0U, (n > 11U) ? p[11] : 0U,
+				(n > 12U) ? p[12] : 0U, (n > 13U) ? p[13] : 0U,
+				(n > 14U) ? p[14] : 0U, (n > 15U) ? p[15] : 0U);
+	}
+	if ((output_buffer_info != NULL) && (LL_Buffer_addr_start(output_buffer_info) != NULL)) {
+		const uint8_t *p = (const uint8_t *) LL_Buffer_addr_start(output_buffer_info);
+		const size_t n = LL_Buffer_len(output_buffer_info);
+		DebugConsole_Printf(
+				"[AI] Scalar network-output bytes (len=%lu): "
+				"[%02X %02X %02X %02X %02X %02X %02X %02X "
+				"%02X %02X %02X %02X %02X %02X %02X %02X]\r\n",
+				(unsigned long) n,
+				(n >  0U) ? p[0]  : 0U, (n >  1U) ? p[1]  : 0U,
+				(n >  2U) ? p[2]  : 0U, (n >  3U) ? p[3]  : 0U,
+				(n >  4U) ? p[4]  : 0U, (n >  5U) ? p[5]  : 0U,
+				(n >  6U) ? p[6]  : 0U, (n >  7U) ? p[7]  : 0U,
+				(n >  8U) ? p[8]  : 0U, (n >  9U) ? p[9]  : 0U,
+				(n > 10U) ? p[10] : 0U, (n > 11U) ? p[11] : 0U,
+				(n > 12U) ? p[12] : 0U, (n > 13U) ? p[13] : 0U,
+				(n > 14U) ? p[14] : 0U, (n > 15U) ? p[15] : 0U);
+	}
 
 	if ((raw_output_info != NULL) && (LL_Buffer_addr_start(raw_output_info) != NULL)) {
 		raw_output_value = *(const int8_t *) LL_Buffer_addr_start(raw_output_info);

@@ -54,6 +54,7 @@ Already split out:
 - The linker `ROM` region is separate from general-purpose RAM.
 - The current board image is constrained more by executable `.text` and `.rodata` size than by total SRAM availability.
 - Large AI runtime tables and generated kernels are the main ROM consumers.
+- Verbose AI bring-up and debug logging strings can also tip the `ROM` image over the limit; if the linker overflows by only a few kilobytes, check whether `app_ai.c` and other log-heavy modules are compiling their console strings in.
 - The capture path uses large frame buffers and snapshots, so memory ownership must stay explicit.
 - The board has a secure/noncacheable memory story, so DMA/capture buffers must be placed deliberately.
 
@@ -251,6 +252,7 @@ Already split out:
 - The Python board-capture comparison helper now mirrors the same tighter, left-biased crop so future offline checks stay in sync with the firmware path instead of validating stale geometry.
 - The current prod board path is now running without the piecewise output calibration so we can trust the raw scalar from the model directly while we validate the new crop/exposure behavior. The old calibration curve was fit to a different live distribution and was over-correcting the already-useful raw output on the board.
 - The inference EMA smoothing is temporarily disabled by setting the alpha to `1.0` so the board exposes the raw scalar immediately instead of blending across frames. This is just a diagnostic step while we validate the current crop and exposure tuning.
+- On the current close-up board captures, the adaptive rectifier crop drifts too far downward and misses the needle on low temperatures like `10C`. Until we retrain on close-up framing, the firmware should stay on the fixed training crop for the scalar stage instead of trusting the adaptive crop.
 - There is now a dedicated board-style offline eval path in `ml/scripts/eval_board_style_tflite_on_manifest.py` that applies the firmware crop heuristic, resizes with pad, and quantizes inputs before scoring the TFLite model. Use that instead of generic image loading when you want the closest offline proxy to the STM32 board.
 - I added a focused weak-case training recipe at `ml/data/board_weak_focus.csv` plus `ml/scripts/run_scalar_head_finetune_from_best_board_weak_focus.sh`. It starts from the current prod checkpoint and upweights only the worst board-style misses so we can improve the large-error edge cases without disturbing the live board path too much.
 - For long-running WSL jobs, treat the Windows `VMmem` process as the liveness signal. If its CPU usage stays below 2%, assume the command is effectively stuck or idle and stop waiting on it.
@@ -279,6 +281,46 @@ Already split out:
 - Sweeping the rectifier crop scale showed that `1.50` is the best setting so far for the current rectifier family. On `hard_cases_plus_board30_valid_with_new5.csv`, the current rectifier model at `1.50` scored `mean_abs_err=9.0643` before the hard-case-focused fine-tune and `mean_abs_err=8.5139` after the v2 hard-case fine-tune. On `hard_cases.csv`, the same family at `1.50` scored `mean_abs_err=8.4842` before the v2 retrain and `mean_abs_err=8.5296` after it. The v2 fine-tune therefore helps the broader board-style mix but still does not beat `prod_model_v0.2_raw_int8` overall.
 - The current best offline candidate is the rectifier v3 + rectified-scalar v2 int8 chain. Using `mobilenetv2_rectifier_hardcase_finetune_v3` with `mobilenetv2_rectified_scalar_finetune_v2_int8` and a `1.50` rectifier crop scale, the chain scored `mean_abs_err=5.0344` / `max_abs_err=14.1923` on `hard_cases.csv` and `mean_abs_err=4.3508` / `max_abs_err=14.1923` on `hard_cases_plus_board30_valid_with_new5.csv`. That beats `prod_model_v0.2_raw_int8` on both the original hard-case set and the broader board-style manifest, so the rectifier+scalar path is now the benchmark offline candidate even though it still needs a true two-stage board loader before it can replace the STM32 single-model runtime.
 - The rectifier v3 and rectified-scalar v2 board assets are now packaged and aligned for the board runtime. The rectifier export/package flow refreshed `st_ai_output/atonbuf.rectifier.xSPI2.raw`, and the rectified-scalar package flow refreshed `st_ai_output/atonbuf.xSPI2.raw`. The firmware include paths and makefile targets already point at `mobilenetv2_rectifier_hardcase_finetune_v3` and `mobilenetv2_rectified_scalar_finetune_v2`, so the two-stage STM32 path now has matching packaged assets on disk.
+- The stage-specific xSPI2 loader was rewriting the models because the staging buffer was cacheable RAM and we were not cleaning D-cache before `BSP_XSPI_NOR_Write()`. I patched both the generic and stage-specific xSPI2 write loops in `app_ai.c` to clean `app_ai_xspi2_program_buffer` before each flash write. This should stop the loader from seeing stale/partial bytes after provisioning and should let the per-stage flash verify succeed on the next boot.
+- The scalar reader itself is not inherently a zero-output model: an offline probe on `captured_images/capture_2026-04-15_14-10-06.yuv422` using the fixed training crop returned `raw=42` and `pred=23.245598` from `prod_model_v0.2_raw_int8/model_int8.tflite`. So the board-side `0.0` is likely coming from the runtime/load path or from a capture mismatch, not from the scalar model always predicting zero on that crop.
+- The board-facing `st_ai_output/atonbuf.xSPI2.raw` scalar blob had drifted from the current `prod_model_v0.2_raw_int8` package. I synced the root scalar blob back to `st_ai_output/packages/prod_model_v0.2_raw_int8/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8_atonbuf.xSPI2.raw`, which matches the hardcoded scalar signature again. The rectifier root blob already matched its package.
+- The two-stage board firmware path is now fully implemented in `app_ai.c`. The scalar model lives at `0x70200000` and the rectifier lives at a separate region `0x70520000` in xSPI2 flash, so both models are permanently resident. The `flash_boot.bat` script was updated to flash both blobs (`FLASH_MODEL=1` flashes scalar at `0x70200000` and rectifier at `0x70520000`).
+- Three root causes of the xSPI2 re-provisioning-every-cycle bug were fixed: (1) scalar verify used a memory-mapped read while xSPI2 was in indirect mode — switched to `AppAI_Xspi2ReadFlashProbe`; (2) a single shared `app_ai_xspi2_programmed_size` global caused wrong tail-check offset for the non-last-provisioned stage — replaced with per-stage size globals; (3) `app_ai_xspi2_initialized` flag was not cleared in `AppAI_ReconfigureXspi2ForRuntime` so `EnsureXspi2MemoryReady` skipped re-init into write mode. With separate flash regions and all three fixes in place, verify-on-startup should persist across inference cycles without SD card reads.
+- The brightness gate was also fixed: `CAMERA_CAPTURE_BRIGHTNESS_RETRY_LIMIT` raised from 8 to 16, `CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_DENOMINATOR` from 32 to 16, and `CAMERA_IMX335_SEED_GAIN_FRACTION_DENOMINATOR` from 8 to 4. These changes are in `app_camera_config.h`.
+- All the above firmware changes are in the source tree but not yet built or flashed as of 2026-04-16. The new binary needs a fresh STM32CubeIDE build followed by `flash_boot.bat FLASH_MODEL=1 FLASH_APP=1`.
+- Diagnostic logs were added to `AppAI_DecodeRectifierCropBox` and `AppAI_LogInferenceResult` to expose the raw rectifier box values and the scalar dequantization path. After flashing the new binary, look for `[AI] Rectifier raw output: cx=... cy=... w=... h=...` and `[AI] raw=%d head_zp=%d output_bits=0x%08lx` in the UART log to diagnose why rectifier falls back and why scalar reports 0.0. The most likely scalar-zero cause is `raw_output_value=0` with `head_zero_point>0`, producing a negative dequant value that becomes `-0.0f` (bits=`0x80000000`).
+
+## xSPI2 Dummy Cycle Root Cause (2026-04-17) — MUST READ before touching flash code
+
+**Root cause of all flash read failures, re-provisioning every cycle, and NPU inference zeros**: `DUMMY_CYCLES_READ_OCTAL` mismatch between the chip's CR2_REG3 register and the BSP conf file.
+
+The BSP's `XSPI_NOR_EnterSOPIMode` writes `MX25UM51245G_CR2_DC_20_CYCLES` (0x00) to CR2_REG3 before enabling OPI mode, leaving the chip configured for **20 dummy cycles** on all data read commands (0xEC13 OCTA_READ). But the pack-default `mx25um51245g_conf.h` sets `DUMMY_CYCLES_READ_OCTAL = 6`. The controller sends 6 dummy cycles; the chip expects 20. The chip outputs garbage from the wrong data window — but `HAL_XSPI_Receive` returns `HAL_OK` regardless because it just clocks bytes without validating content.
+
+**Consequences of this bug:**
+
+- `BSP_XSPI_NOR_Read` returns `BSP_ERROR_NONE` but fills the buffer with a fixed garbage pattern → verify always fails → re-provisioning every inference cycle
+- `BSP_XSPI_NOR_Write` / `Erase_Block`: erase and page-program commands have **zero dummy cycles** — completely unaffected. These were working all along. The write was landing in flash correctly; the post-write read probe was just reading it back wrong.
+- `BSP_XSPI_NOR_EnableMemoryMappedMode`: sets up the MM read command with 6 dummy cycles → NPU reads weights from the wrong phase → all-zero model outputs
+
+**Status-register reads are unaffected** — `DUMMY_CYCLES_REG_OCTAL = 4` is correct for RDSR in OPI STR mode, independent of CR2_REG3. This is why `AutoPollingMemReady`, `WriteEnable`, `PageProgram`, and `Erase_Block` all return success.
+
+**The fix** (`firmware/stm32/n657/Appli/Inc/mx25um51245g_conf.h` — new file, 2026-04-17):
+
+- Project-local override placed in `Appli/Inc/` which appears first in the `-I` search path (`-I../Inc` before the pack directory)
+- Sets `DUMMY_CYCLES_READ_OCTAL 20U` and `DUMMY_CYCLES_READ_OCTAL_DTR 20U` to match CR2_REG3 = 0x00 (20 cycles)
+- Keeps `DUMMY_CYCLES_REG_OCTAL 4U` and `DUMMY_CYCLES_REG_OCTAL_DTR 5U` unchanged
+- Applies to both `mx25um51245g.c` wrapper and both BSP thin-wrapper files since they all include via the same search path
+
+**Confirmed working (2026-04-17):**
+
+- `[AI] xSPI2 stage image already present.` on first verify — no more re-provisioning every cycle
+- Rectifier outputs non-zero and stable: `cx=523 cy=609 w=527 h=472` (milli-units, 0-1000 scale)
+- Scalar output buffer `bytes=[8180003D...]` = little-endian float `0x3D008081` = 0.031373°C. This IS the model's dequantized float output stored directly in the output buffer — the `Dequantize` node writes a float, not an int8
+- `Inference bits=0x80000000` gone; pipeline is fully functional
+- `[AI] Raw output int8: 0` comes from `raw_output_info` (an intermediate int8 tensor lookup by name) which may not be found — it is a diagnostic path and does not affect inference correctness
+- The `Model output before calibration` float IS the true model output; `Inference value: 0.0` is calibrated+filtered at one decimal — 0.031°C → 0.0 after truncation
+
+**How to identify this bug class in future:** BSP flash calls return `BSP_ERROR_NONE` but `BSP_XSPI_NOR_Read` returns a fixed garbage pattern (not 0xFF erased, not actual data, repeating across calls). Erases and writes appear to do nothing because the post-write probe also reads garbage. Check whether `DUMMY_CYCLES_READ_OCTAL` in `mx25um51245g_conf.h` matches what `EnterSOPIMode` / `EnterDOPIMode` programs into CR2_REG3.
 
 ## Current Refactor Direction
 
@@ -292,6 +334,128 @@ Already split out:
 
 - Roadmap: `PLANS.md`
 - Repo working rules: `AGENTS.md`
+
+## Current Model Deployment State (2026-04-18)
+
+### Two-stage pipeline (active on board)
+
+- **Rectifier**: `mobilenetv2_rectifier_hardcase_finetune_v3`
+  - Keras: `ml/artifacts/training/mobilenetv2_rectifier_hardcase_finetune_v3/model.keras`
+  - Int8 TFLite: `ml/artifacts/deployment/mobilenetv2_rectifier_hardcase_finetune_v3_int8/model_int8.tflite`
+  - Packaged blob: `st_ai_output/atonbuf.rectifier.xSPI2.raw` (~121 KB, flashed at `0x70520000`)
+  - Repackage script: `ml/scripts/run_board_package_rectifier_raw_int8.sh`
+- **Scalar**: `scalar_full_finetune_from_best_piecewise_calibrated_int8` ← **updated 2026-04-18**
+  - Int8 TFLite: `ml/artifacts/deployment/scalar_full_finetune_from_best_piecewise_calibrated_int8/model_int8.tflite` (2886096 bytes)
+  - Packaged blob: `st_ai_output/atonbuf.xSPI2.raw` (~3.07 MB, flashed at `0x70200000`) — freshly regenerated 2026-04-18 06:52
+  - Repackage script: `ml/scripts/run_board_package_rectified_scalar_raw_int8.sh`
+  - ST Edge AI package dir: `st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/`
+
+### Why this scalar was chosen
+
+`mobilenetv2_rectified_scalar_finetune_v2_int8` was previously compiled into the blob (wrong model — same `--name` flag, different source file). The v2 fine-tune on rectifier crops actually degraded accuracy: m30→-25.1, p35→26.9, p50→39.4 vs the piecewise calibrated model: m30→-30.7, p35→35.6, p50→49.0. The rectifier-crop fine-tune introduced noise rather than helping.
+
+### Offline eval command (Python, for reference)
+
+```bash
+cd ml
+python3 -u scripts/eval_rectified_scalar_on_captures.py \
+  --rectifier-model artifacts/training/mobilenetv2_rectifier_hardcase_finetune_v3/model.keras \
+  --scalar-model artifacts/deployment/scalar_full_finetune_from_best_piecewise_calibrated_int8/model_int8.tflite \
+  --rectifier-crop-scale 1.25
+```
+
+### Repackaging workflow (WSL)
+
+Always use the **Ubuntu-24.04** distro — Docker Desktop's Alpine distro (`wsl -e sh`) has path issues and no bash.
+
+```bash
+wsl -d Ubuntu-24.04 -e bash -c "cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml && python3 -u scripts/package_scalar_model_for_n6.py --model ... --canonical-raw-path /mnt/d/Projects/embedded-gauge-reading-tinyml/st_ai_output/atonbuf.xSPI2.raw ..."
+```
+
+Or use the wrapper script (now defaults to the correct model):
+
+```bash
+wsl -d Ubuntu-24.04 -e bash -c "cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml && bash scripts/run_board_package_rectified_scalar_raw_int8.sh"
+```
+
+Poetry is not installed in Ubuntu-24.04 WSL — call `python3` directly.
+
+### RTC (DS3231) reset procedure
+
+Set `DS3231_ENABLE_BUILD_TIME_SEED 1` in `firmware/stm32/n657/Appli/Src/ds3231_clock.c`, build + flash, boot once (RTC gets written from `__DATE__`/`__TIME__`), then set back to `0` and reflash.
+
+### SD card provisioning — REMOVED (2026-04-18)
+
+The SD card model provisioning path in `app_ai.c` has been disabled. Models are now permanently flashed via `flash_boot.bat` and the SD card plays no role in model loading. If the xSPI2 flash signature does not match on boot, the board logs an error and aborts rather than falling back to SD. To update models: repackage, update signatures in `app_ai.c`, copy blob to SD (no longer needed), and reflash with `flash_boot.bat FLASH_MODEL=1`. The dead-code legacy single-stage path (`AppAI_EnsureXspi2ModelImageReady`, `AppAI_ProgramXspi2ModelImageFromSd`) was already unreachable and left in place.
+
+### Known accuracy issue (camera distance)
+
+The current captures show the gauge filling most of the 224×224 frame (close camera). The rectifier crops to ~right-center of the dial, missing the needle for temperatures in the 0–20°C range. Labeled captures (`p10c`, `p35c`, etc.) were taken farther away and work well. Fix: move camera back to match training distribution, or add close-up labeled captures to retrain.
+
+## Model Update Process — Root Causes Found (2026-04-18) and Required Steps
+
+Every time we repackage a scalar model for the board, **all three of these must be updated together** or inference will silently produce wrong results. They have caused bugs in three separate sessions.
+
+### The three files that must be kept in sync
+
+1. **`st_ai_output/atonbuf.xSPI2.raw`** — the flash blob (regenerated by the wrapper script)
+2. **`firmware/stm32/n657/Appli/Src/ai_network_mobilenetv2_scalar_hardcase_warmstart_int8.c`** — the `#include` path pointing to the generated `.c` file in the ST Edge AI package
+3. **`firmware/stm32/n657/Appli/makefile.targets`** — all `USER_OBJS` and FORCE-rule paths pointing to the pre-built runtime `.o` files in the package `st_ai_ws/build_*/` directory
+
+### Bug: wrong `#include` path
+
+`ai_network_mobilenetv2_scalar_hardcase_warmstart_int8.c` contains a single `#include` that wraps the generated model C file. When the package directory changes (e.g. `mobilenetv2_rectified_scalar_finetune_v2` → `scalar_full_finetune_from_best_piecewise_calibrated_int8`), this include still points at the old package. The firmware compiles the old model's C code but links the new blob — so the xSPI2 offset constants for scale/zero_point in the Dequantize node are wrong. The result is a plausible-looking float output that is actually reading garbage bytes from the wrong flash address.
+
+**Symptom:** output is a fixed non-zero float like `-0.133333` that never changes regardless of the gauge position.
+
+### Bug: wrong `makefile.targets` paths
+
+The 15 runtime `.o` files in `USER_OBJS` and the FORCE rebuild rule all hardcode the `st_ai_ws` directory of the old package. Linking old `.o` against a new (possibly larger) model C file causes a ROM overflow or section overlap. The linker error says `.rodata will not fit in region 'ROM'`.
+
+**Symptom:** `region 'ROM' overflowed by N bytes` linker error.
+
+### Correct update procedure (scalar model)
+
+```text
+1. wsl -d Ubuntu-24.04 -e bash -c "cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml && bash scripts/run_board_package_rectified_scalar_raw_int8.sh"
+   → refreshes st_ai_output/atonbuf.xSPI2.raw
+   → refreshes st_ai_output/packages/<model_name>/st_ai_output/<model_name>.c
+   → refreshes st_ai_output/packages/<model_name>/st_ai_ws/build_<model_name>/*.o
+
+2. Update #include in ai_network_mobilenetv2_scalar_hardcase_warmstart_int8.c:
+   #include "../../../../../st_ai_output/packages/<new_model_name>/st_ai_output/<new_model_name>.c"
+
+3. Update all paths in makefile.targets:
+   Replace old package/st_ai_ws/build_* prefix with new package/st_ai_ws/build_* prefix
+   (affects ~15 USER_OBJS lines + the elf dependency line + the FORCE rule)
+
+4. Update hardcoded start/tail signatures in app_ai.c if the blob changed:
+   python3 -c "d=open('st_ai_output/atonbuf.xSPI2.raw','rb').read(); print('start:', bytes(d[:16]).hex()); print('tail: ', bytes(d[-16:]).hex())"
+   Update app_ai_xspi2_signature_start and app_ai_xspi2_signature_tail in app_ai.c
+
+5. Rebuild in STM32CubeIDE
+
+6. flash_boot.bat FLASH_MODEL=1  (from firmware/stm32/n657/ in dev/programming mode)
+```
+
+### How to verify the correct model is running
+
+After boot, the UART log will show:
+
+- `[AI] xSPI2 stage image already present.` — signature matched (start bytes checked)
+- `[AI] scalar out addr=... bytes=[...]` — first 4 bytes are the output float
+
+If board float ≈ Python TFLite prediction on the same crop, all three files are in sync. If board float is a fixed value regardless of gauge position, the `#include` path or `makefile.targets` is still stale.
+
+### Wrapper script defaults (as of 2026-04-18)
+
+`ml/scripts/run_board_package_rectified_scalar_raw_int8.sh` defaults to:
+
+- `MODEL_IN`: `artifacts/deployment/scalar_full_finetune_from_best_piecewise_calibrated_int8/model_int8.tflite`
+- `OUTPUT_DIR`: `artifacts/runtime/scalar_full_finetune_from_best_piecewise_calibrated_int8_reloc`
+- Package dir: `st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/`
+
+Update these vars in the script when the scalar model name changes.
 
 ## Things To Preserve
 

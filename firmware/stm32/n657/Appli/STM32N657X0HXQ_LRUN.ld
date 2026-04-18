@@ -46,10 +46,12 @@ MEMORY
 {
   ROM    (xrw)    : ORIGIN = 0x34000400,   LENGTH = 511K
   RAM    (xrw)    : ORIGIN = 0x34080000,   LENGTH = 1536K
-  /* Model blob starts after the FSBL (0x70000000, ~1MB) and the signed app
-   * (0x70100000, ~1MB). 0x70200000 is the first free region and matches the
-   * FLASH_MODEL address in flash_boot.bat. */
-  EXTRAM (rw)     : ORIGIN = 0x70200000,   LENGTH = 62M
+  /* Scalar model blob at 0x70200000 (matches FLASH_SCALAR in flash_boot.bat). */
+  EXTRAM (rw)           : ORIGIN = 0x70200000,   LENGTH = 3200K
+  /* Rectifier model blob at 0x70520000 (matches FLASH_RECTIFIER in flash_boot.bat).
+   * The rectifier pool symbol must live here so the NPU reads weights from the
+   * correct flash region. */
+  EXTRAM_RECTIFIER (rw) : ORIGIN = 0x70520000,   LENGTH = 256K
   /* Non-secure alias A/B test — DCMIPP with MSEC=1 writes to 0x24xxxxxx.
    * Placed at top of AXISRAM1 non-secure alias, away from code/data. */
   RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 128K
@@ -94,12 +96,23 @@ SECTIONS
     . = ALIGN(4);
   } >ROM
 
+  /* Scalar model pool: placed at the scalar flash region (0x70200000). */
   .xspi2_pool (NOLOAD) :
   {
     . = ALIGN(32);
     KEEP(*(.xspi2_pool))
     . = ALIGN(32);
   } >EXTRAM
+
+  /* Rectifier model pool: placed at the rectifier flash region (0x70520000).
+   * Separating this from .xspi2_pool ensures _mem_pool_xSPI2_mobilenetv2_rectifier_*
+   * resolves to the correct flash address so the NPU reads weights from there. */
+  .xspi2_rectifier_pool (NOLOAD) :
+  {
+    . = ALIGN(32);
+    KEEP(*(.xspi2_rectifier_pool))
+    . = ALIGN(32);
+  } >EXTRAM_RECTIFIER
 
   .ARM.extab   : {
     . = ALIGN(4);
