@@ -44,7 +44,7 @@ _Min_Stack_Size = 0x4000; /* required amount of stack (16KB — printf needs hea
 /* Memories definition */
 MEMORY
 {
-  ROM    (xrw)    : ORIGIN = 0x34000400,   LENGTH = 511K
+  ROM    (rx)     : ORIGIN = 0x34000400,   LENGTH = 511K
   RAM    (xrw)    : ORIGIN = 0x34080000,   LENGTH = 1536K
   /* Scalar model blob at 0x70200000 (matches FLASH_SCALAR in flash_boot.bat). */
   EXTRAM (rw)           : ORIGIN = 0x70200000,   LENGTH = 3200K
@@ -57,6 +57,12 @@ MEMORY
   RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 128K
 }
 
+PHDRS
+{
+  text PT_LOAD FLAGS(5);
+  data PT_LOAD FLAGS(6);
+}
+
 /* Sections */
 SECTIONS
 {
@@ -66,7 +72,7 @@ SECTIONS
     . = ALIGN(4);
     KEEP(*(.isr_vector)) /* Startup code */
     . = ALIGN(4);
-  } >ROM
+  } >ROM :text
 
   /* The program code and other data into "ROM" Rom type memory */
   .text :
@@ -85,7 +91,7 @@ SECTIONS
 
     . = ALIGN(4);
     _etext = .;        /* define a global symbols at end of code */
-  } >ROM
+  } >ROM :text
 
   /* Constant data into "ROM" Rom type memory */
   .rodata :
@@ -94,7 +100,7 @@ SECTIONS
     *(.rodata)         /* .rodata sections (constants, strings, etc.) */
     *(.rodata*)        /* .rodata* sections (constants, strings, etc.) */
     . = ALIGN(4);
-  } >ROM
+  } >ROM :text
 
   /* Scalar model pool: placed at the scalar flash region (0x70200000). */
   .xspi2_pool (NOLOAD) :
@@ -118,7 +124,7 @@ SECTIONS
     . = ALIGN(4);
     *(.ARM.extab* .gnu.linkonce.armextab.*)
     . = ALIGN(4);
-  } >ROM
+  } >ROM :text
 
   .ARM : {
     . = ALIGN(4);
@@ -126,7 +132,7 @@ SECTIONS
     *(.ARM.exidx*)
     __exidx_end = .;
     . = ALIGN(4);
-  } >ROM
+  } >ROM :text
 
   .preinit_array     :
   {
@@ -135,7 +141,7 @@ SECTIONS
     KEEP (*(.preinit_array*))
     PROVIDE_HIDDEN (__preinit_array_end = .);
     . = ALIGN(4);
-  } >ROM
+  } >ROM :text
 
   .init_array :
   {
@@ -145,7 +151,7 @@ SECTIONS
     KEEP (*(.init_array*))
     PROVIDE_HIDDEN (__init_array_end = .);
     . = ALIGN(4);
-  } >ROM
+  } >ROM :text
 
   .fini_array :
   {
@@ -155,7 +161,7 @@ SECTIONS
     KEEP (*(.fini_array*))
     PROVIDE_HIDDEN (__fini_array_end = .);
     . = ALIGN(4);
-  } >ROM
+  } >ROM :text
 
   /* Used by the startup to initialize data */
   _sidata = LOADADDR(.data);
@@ -171,7 +177,7 @@ SECTIONS
     . = ALIGN(4);
     _edata = .;        /* define a global symbol at data end */
 
-  } >RAM AT> ROM
+  } >RAM AT> ROM :data
 
   .noncacheable (NOLOAD) :
   {
@@ -189,7 +195,7 @@ SECTIONS
     . = ALIGN(4);
     *(.gnu.sgstubs*)   /* Secure Gateway stubs */
     . = ALIGN(4);
-  } >ROM
+  } >ROM :text
   _eNSCVeneer = .;
 
   /* Uninitialized data section into "RAM" Ram type memory */
@@ -206,7 +212,7 @@ SECTIONS
     . = ALIGN(4);
     _ebss = .;         /* define a global symbol at bss end */
     __bss_end__ = _ebss;
-  } >RAM
+  } >RAM :data
 
   /* User_heap_stack section, used to check that there is enough "RAM" Ram  type memory left */
   ._user_heap_stack :
@@ -217,7 +223,7 @@ SECTIONS
     . = . + _Min_Heap_Size;
     . = . + _Min_Stack_Size;
     . = ALIGN(8);
-  } >RAM
+  } >RAM :data
 
   /* Remove information from the compiler libraries */
   /DISCARD/ :
