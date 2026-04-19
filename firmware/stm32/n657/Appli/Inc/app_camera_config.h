@@ -34,16 +34,38 @@ extern "C" {
 #define CAMERA_CAPTURE_TARGET_FRAME_COUNT   4U
 /* Brightness gate: reject frames that are still too dim for the gauge face or
  * blown out, then nudge the sensor before trying again.
- * Keep the window a touch wider and the nudges a bit smaller so the capture
- * loop can settle instead of bouncing between dark and bright extremes. */
-#define CAMERA_CAPTURE_BRIGHTNESS_GATE_ROI_SIZE_PIXELS      32U
-#define CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD     130U
+ *
+ * Step size history: 1/12 caused a hard oscillation between two exposure
+ * values that had no stable midpoint — the step was larger than the gap
+ * between the dark threshold and the bright threshold at that scene.
+ * Reduced to 1/20 so the loop can converge instead of bouncing.
+ *
+ * BRIGHT_MIN_THRESHOLD lowered from 80 to 40: at borderline exposures the
+ * dial face center is bright (mean ~200) but there are always some dim pixels
+ * in the crop from the needle and dial markings.  A min of 80 rejected frames
+ * that were genuinely usable for inference.
+ *
+ * BRIGHT_MEAN_THRESHOLD raised from 200 to 210: gives a small guard band
+ * above the dark limit so a borderline mean=200 frame is accepted as OK
+ * rather than being right on the too-bright edge.
+ *
+ * Brightness gate now measures the full training crop (155x123 = ~19k pixels)
+ * rather than a small centre ROI.  A specular reflection on the gauge glass
+ * at frame centre was making the old 32x32 ROI read as "bright enough" while
+ * the rest of the dial face was still underexposed, causing systematic
+ * under-reading.  Crop-mean thresholds are calibrated from captured frames:
+ * good frames (13:xx session, model reading ~31C) had crop mean 97-156;
+ * bad frames (18:xx, model reading 14-20C) had crop mean 43-87.
+ * DARK threshold=100 rejects the dim frames; BRIGHT threshold=200 with
+ * min=20 catches blown-out overexposure (min=20 because the needle and
+ * markings will always produce some dark pixels in the crop). */
+#define CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD     100U
 #define CAMERA_CAPTURE_BRIGHTNESS_DARK_MAX_THRESHOLD      240U
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD   200U
-#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MIN_THRESHOLD     80U
+#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MIN_THRESHOLD     20U
 #define CAMERA_CAPTURE_BRIGHTNESS_RETRY_LIMIT              16U
 #define CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_NUMERATOR   1U
-#define CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_DENOMINATOR 12U
+#define CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_DENOMINATOR 20U
 #define CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_NUMERATOR       1U
 #define CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_DENOMINATOR     16U
 #define CAMERA_CAPTURE_BRIGHTNESS_SETTLE_DELAY_MS         250U
@@ -84,10 +106,12 @@ extern "C" {
 #define IMX335_CAPTURE_FRAMERATE_FPS        10
 #define CAMERA_CAPTURE_FILE_NAME_LENGTH     64U
 #define CAMERA_STORAGE_READY_EVENT_FLAG     0x00000001U
-/* Seed IMX335 with a moderately brighter starting point so the stable manual
- * capture path does not begin too far under-exposed on the live gauge scene. */
-#define CAMERA_IMX335_SEED_EXPOSURE_FRACTION_NUMERATOR    9U
-#define CAMERA_IMX335_SEED_EXPOSURE_FRACTION_DENOMINATOR  10U
+/* Seed IMX335 at ~2/3 of the exposure range (~22177 us at max=33266 us).
+ * The 1/5 seed (6659 us) required 10+ nudge steps to reach the crop-mean
+ * threshold of 100 for dimmer evening/indoor scenes.  2/3 overshoots for
+ * bright scenes but the brightness gate will descend quickly from there. */
+#define CAMERA_IMX335_SEED_EXPOSURE_FRACTION_NUMERATOR    2U
+#define CAMERA_IMX335_SEED_EXPOSURE_FRACTION_DENOMINATOR  3U
 #define CAMERA_IMX335_SEED_GAIN_FRACTION_NUMERATOR        1U
 #define CAMERA_IMX335_SEED_GAIN_FRACTION_DENOMINATOR      2U
 /* Match ST's IMX335 middleware and upstream Linux driver ID check. */

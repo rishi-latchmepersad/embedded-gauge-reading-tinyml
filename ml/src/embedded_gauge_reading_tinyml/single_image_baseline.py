@@ -16,8 +16,10 @@ import cv2
 import numpy as np
 
 from embedded_gauge_reading_tinyml.baseline_classical_cv import (
+    GeometryCandidate,
     NeedleDetection,
     detect_needle_unit_vector,
+    detect_needle_unit_vector_with_geometry_fallback,
     needle_vector_to_value,
 )
 from embedded_gauge_reading_tinyml.gauge.processing import GaugeSpec, load_gauge_specs
@@ -69,7 +71,9 @@ def _estimate_dial_geometry(image_bgr: np.ndarray) -> tuple[tuple[float, float],
 
     height, width = gray.shape[:2]
     min_radius: int = max(8, int(min(height, width) * 0.18))
-    max_radius: int = max(min_radius + 1, int(min(height, width) * 0.48))
+    # Allow up to 65% of the shorter dimension so close-up frames where the
+    # dial fills most of the image are not rejected by a too-tight upper bound.
+    max_radius: int = max(min_radius + 1, int(min(height, width) * 0.65))
     circles = cv2.HoughCircles(
         blurred,
         cv2.HOUGH_GRADIENT,
@@ -262,12 +266,34 @@ def run_single_image_baseline(
         else:
             dial_radius_px = estimated[1]
 
-    detection: NeedleDetection | None = detect_needle_unit_vector(
-        image_bgr,
-        center_xy=center_xy,
-        dial_radius_px=dial_radius_px,
-        gauge_spec=spec,
-    )
+    detection: NeedleDetection | None
+    if config.center_x is None and config.center_y is None and config.dial_radius_px is None:
+        # When geometry is auto-estimated, keep a simple image-center fallback
+        # in reserve in case the Hough circle is a weak match for the frame.
+        height, width = image_bgr.shape[:2]
+        primary = GeometryCandidate(
+            label="hough",
+            center_xy=center_xy,
+            dial_radius_px=dial_radius_px,
+        )
+        secondary = GeometryCandidate(
+            label="image_center",
+            center_xy=(0.5 * width, 0.5 * height),
+            dial_radius_px=0.45 * float(min(height, width)),
+        )
+        detection = detect_needle_unit_vector_with_geometry_fallback(
+            image_bgr,
+            primary=primary,
+            secondary=secondary,
+            gauge_spec=spec,
+        )
+    else:
+        detection = detect_needle_unit_vector(
+            image_bgr,
+            center_xy=center_xy,
+            dial_radius_px=dial_radius_px,
+            gauge_spec=spec,
+        )
     predicted_value: float | None = None
     if detection is not None:
         predicted_value = needle_vector_to_value(

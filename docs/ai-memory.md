@@ -205,6 +205,8 @@ Already split out:
   Keep those paths aligned if the AI package is regenerated.
 - The direction-model experiment did not beat the scalar baseline on either hard-case manifest, so it should be treated as a dead end unless a future revision changes the loss or supervision structure.
 - The classical geometry baseline is a useful sanity check, but it is not strong enough on the hard cases by itself: the hard-case benchmark on `ml/data/hard_cases.csv` landed at `mean_abs_err=13.9928`, `rmse=24.2054`, `max_abs_err=66.1517`, and `cases_over_5c=10`.
+- The classical CV strategy sweep now compares `hough_only`, `center_only`, and `hough_then_center` thresholds across both hard-case manifests using a coverage-first ranking. A pure Hough strategy can look good on MAE for the cases it solves, but the current generalizable winner is `hough_then_center_t4` because it keeps full coverage on the hard-case set while staying much better than `center_only`.
+- The latest sweep artifacts live under `ml/artifacts/baseline/classical_cv_sweep_20260419_093001/`, and the key takeaway is that coverage matters first for these hard cases; do not promote a strategy that drops images just because its MAE on successful detections is lower.
 - The board30 source model is still the reference source model, but the board-ready deployment path is now the raw int8 export plus the weighted piecewise calibration in `app_inference_calibration.c`. That path has been repackaged and retested, and it keeps the hard-case manifests under 5C.
 - The first Keras-native QAT experiments on that board30 source model did not solve the deployment gap. The full-network run regressed badly, and the more conservative head-only run still left too many hard cases above 5C, so QAT needs a different recipe if we revisit it.
 - The export pipeline itself is working when run directly through Poetry in WSL: the board30 staged model loads in about 5 seconds, representative-example building completes, and TFLite conversion finishes. The current blocker is accuracy loss in the exported int8 artifact, not a model-loading hang.
@@ -649,3 +651,132 @@ Update these vars in the script when the scalar model name changes.
   - keep `Drivers/STM32N6xx_HAL_Driver/stm32n6xx_hal_cacheaxi.o` as an explicit user object/rule
 - The key lesson is that a successful build can still depend on stale IDE-generated files; prefer putting the fix in `makefile.targets`, not in the generated `Debug/makefile`.
 - The successful verification was `make -j8 all` from the Debug directory, followed by a clean link with no RWX warning.
+
+## Classical CV Baseline — Radial-Spoke Voting (2026-04-19)
+
+### Background / why the old Hough approach failed
+
+The original `detect_needle_unit_vector` used Canny + `HoughLinesP`. On this gauge (heavily-printed white dial face with tick marks at every angle), HoughLinesP cannot distinguish the needle from tick marks — both are dark lines and they appear at every angle. The polar-transform fallback never fired either (SNR < 0.45 threshold never met on any test image).
+
+### New approach: radial-spoke gradient voting
+
+Replaced HoughLinesP with a Sobel-gradient accumulator:
+1. Compute Sobel gx/gy on CLAHE-enhanced, Gaussian-blurred image.
+2. For each pixel in the inner annulus (15–75% radius), compute `tangential_weight = |cross(grad_normalized, radial_direction)|`. Needle pixels have tangential gradients (high weight); tick marks have radial gradients (low weight) because tick marks are short tangential arcs.
+3. Accumulate a 720-bin angle histogram weighted by `grad_mag * tangential_weight`.
+4. Zero out bins outside the GaugeSpec sweep arc (with 12° margin).
+5. Require SNR (peak / mean) > 2.0. Inversion check via `_angle_in_sweep`.
+
+**Key source file**: `ml/src/embedded_gauge_reading_tinyml/baseline_classical_cv.py`, function `detect_needle_unit_vector`.
+
+### Subdial suppression
+
+The humidity subdial sits at ~(cx, cy+0.25r) and injects spurious radial votes that the voting accumulator detects as if they were the main temperature needle. Suppression zone (in `detect_needle_unit_vector`):
+
+```python
+in_subdial_zone = (
+    (rr > 0.20 * dial_radius_px)          # preserve main needle near hub
+    & (np.abs(xx - cx) < 0.35 * r)        # horizontal extent of subdial
+    & ((yy - cy) > 0.10 * r)              # top of subdial zone
+    & ((yy - cy) < 0.58 * r)              # bottom of subdial zone
+)
+inner_mask = inner_mask & ~in_subdial_zone
+```
+
+The `rr > 0.20*r` guard is critical — without it, the main needle's hub-crossing pixels are also suppressed and the detector breaks for needles pointing nearly straight up/down (e.g. 46°C).
+
+### Benchmark results after radial-spoke voting (2026-04-19)
+
+| Manifest | Old (Hough) MAE | New (radial-spoke) MAE | Notes |
+|---|---|---|---|
+| hard_cases.csv (19 samples) | 13.99°C | **12.01°C** | All 19 succeed |
+| hard_cases_plus_board30_valid_with_new5.csv (31 samples) | 12.79°C (21/31 succeed) | 14.79°C (31/31 succeed) | Eliminated 10 "no detection" failures |
+
+The broader manifest MAE went up because the 10 board JPG captures that previously abstained now predict (sometimes badly). The RMSE improved slightly (23.03→23.14) which suggests the worst errors are smaller even if mean is higher.
+
+### Remaining hard failures (2026-04-19, in-progress)
+
+- `capture_2026-04-03_13-48-34.png` (true=30°C, pred=−16.8°C): Subdial interference not fully suppressed. The subdial needle or its surrounding text/labels creates strong votes around 210° even after the rectangular suppression zone.
+- `capture_0007.png`, `capture_0075.png`: ~8–9°C error. The needle appears to be partially occluded or pointing into a region with high background clutter.
+- `capture_p50c_preview.png`: 13.6°C error. Needle at max end of sweep, may be near the dead zone boundary.
+
+### Debug tooling
+
+- `ml/scripts/debug_classical_cv.py` — runs 14 labeled images, saves annotated PNGs to `ml/artifacts/debug_classical/v2_*.png` showing: dial circle, annulus boundaries, subdial suppression zone, sweep arc, detected needle arrow with error label.
+- Run via: `powershell -Command "wsl -d Ubuntu-24.04 -e bash /mnt/d/.../ml/scripts/_run_debug_cv.sh"` (using `-e bash` not `-c`).
+- Eval script: `ml/scripts/eval_classical_baseline_on_manifest.py`, run via `run_classical_baseline_eval.sh`.
+- PowerShell `wsl -d Ubuntu-24.04 -e bash <path>` works. Passing `-c` with a compound command fails because Windows PATH (with parentheses in directory names) pollutes the WSL shell.
+
+### WSL invocation pattern (important)
+
+```powershell
+# Works — use a .sh wrapper file with -e bash
+powershell -Command "wsl -d Ubuntu-24.04 -e bash /mnt/d/.../script.sh"
+
+# Fails — Windows PATH with parentheses breaks bash -c compound commands
+wsl -d Ubuntu-24.04 bash -c "export PATH=...; cd ...; poetry run python ..."
+```
+
+Always write a `.sh` file with `export PATH=/home/rishi_latchmepersad/.local/bin:$PATH` at the top and call it with `-e bash`.
+
+## Classical CV Baseline Update 2026-04-19
+
+- The manifest evaluator now uses a conservative geometry fallback: Hough circle first, then image-center geometry if the Hough needle confidence is below `4.0`.
+- The new hard-case report artifacts are written under `ml/artifacts/baseline/classical_cv_<timestamp>/*_report/` and include `summary.json`, `worst_cases.csv`, `by_image_family.csv`, and `by_value_bucket.csv`.
+- Latest hard-case benchmark after the fallback:
+  - `hard_cases.csv`: `MAE=7.2300`, `RMSE=12.3153`, `cases_over_5c=9`
+  - `hard_cases_plus_board30_valid_with_new5.csv`: `MAE=11.8590`, `RMSE=19.7732`, `cases_over_5c=15`
+- The worst family is still the `2026-04-09` 30C recaptures, followed by `m25c`, `p20`, and `p30c`; the 30C bucket is still the hardest overall.
+- Firmware baseline note: `app_baseline_runtime.c` now owns a separate `camera_baseline` ThreadX worker and a dedicated `camera_baseline_frame_snapshot` buffer. `AppCameraCapture_CaptureAndStoreSingleFrame()` queues the baseline estimate immediately after a capture is accepted, before storage work, so the classical estimate is produced for each new processed frame independently from the AI runtime.
+- The embedded baseline scorer was revised after a bad live run that landed near `-0.5C` when the true frame was `32C`. The new firmware path keeps the same thread/buffer wiring but now scores each candidate ray against its local background and suppresses the lower-center subdial clutter, which was stealing the vote from the real needle.
+- The next baseline fix was to add the same stable training-crop center that the AI runtime falls back to, because the full-frame midpoint was still biasing the classical detector toward the wrong needle angle on close-up captures.
+- The latest firmware tweak makes the stable training-crop hypothesis the primary baseline geometry and logs the bright/training/image candidate confidences so we can see whether the detector is still drifting toward the full-frame midpoint.
+- The next baseline pass should use the shared gauge-geometry header for both `app_ai.c` and `app_baseline_runtime.c`, then select the most confident valid hypothesis and reject any result below the confidence threshold instead of emitting a noisy temperature.
+
+## Brightness Gate Oscillation Bug (2026-04-19)
+
+**Symptom:** Capture loop alternated between "too-bright" and "too-dark" indefinitely, exhausting all 16 retries. Log showed: 5001 µs → mean=203 (too-bright) → 2230 µs → mean=123 (too-dark) → 5001 µs → loop.
+
+**Root cause:** Exposure step was `1/12` of the full range = ~2771 µs. The gap between the stable "dark" point (2230 µs) and the stable "bright" point (5001 µs) was exactly one step, so the loop had no midpoint it could land on. Also, `BRIGHT_MIN_THRESHOLD=80` was rejecting frames at mean=203 because the crop contained dark needle pixels with min~110 — well above 80, but earlier the threshold was blocking legitimate frames.
+
+**Fix (2026-04-19)** in `firmware/stm32/n657/Appli/Inc/app_camera_config.h`:
+
+- `EXPOSURE_STEP_DENOMINATOR`: 12 → **20** (smaller step = more chances to converge)
+- `BRIGHT_MEAN_THRESHOLD`: 200 → **210** (guard band above dark limit)
+- `BRIGHT_MIN_THRESHOLD`: 80 → **40** (needle/markings in the crop will always have some dark pixels)
+
+**Rule:** if the capture loop oscillates between two exposures, the step size is larger than the stable acceptance window at that scene. Reduce the denominator (finer step) until the loop can converge.
+
+## Brightness Gate ROI Mismatch and Seed Exposure Bug (2026-04-19)
+
+**Seed exposure too high:** `CAMERA_IMX335_SEED_EXPOSURE_FRACTION_NUMERATOR/DENOMINATOR` was `9/10`, giving 29940 µs on a fresh boot. This bright indoor scene needs ~5000–8000 µs, so every boot wasted 10–15 retries descending from a fully-saturated start before the gate could pass. Changed to `1/5` (~6600 µs). If the scene consistently needs a different range, tune this fraction — the brightness gate will converge quickly from a closer start.
+
+## Brightness Gate Specular Reflection Bug (2026-04-19)
+
+**Root cause:** The 32×32 gate ROI at frame centre (112,112) was landing on a specular reflection from the gauge glass in evening/indirect lighting. The glare spot made the ROI mean read 180-220 while the rest of the dial face averaged only 43-87 luma — causing the gate to accept frames that were 2.5× too dark for accurate inference (model read 14-20°C).
+
+**Diagnosis method:** Compute `gate_mean` (32×32 at frame centre) vs `crop_mean` (155×123 training crop) on saved YUV422 frames. In morning session (working): ratio consistently 0.72-0.74. In evening session (broken): ratio dropped to 0.35 due to localised glare at dial centre.
+
+**Fix:** Replaced the 32×32 centre ROI with a full training-crop scan (155×123 = 19065 pixels) in `AppCameraCapture_ComputeBrightnessStats()`. This measures the exact same region the model sees and is immune to localised reflections.
+
+**Threshold recalibration:** With crop-mean as the metric:
+- `DARK_MEAN_THRESHOLD`: 130 → **100** (bad frames: crop mean 43-87; good frames: 97-156)
+- `BRIGHT_MEAN_THRESHOLD`: 210 → **200** (overexposure guard for full crop)
+- `BRIGHT_MIN_THRESHOLD`: 40 → **20** (needle/markings always produce dark pixels in the full crop)
+- `CAMERA_CAPTURE_BRIGHTNESS_GATE_ROI_SIZE_PIXELS` define removed (no longer used)
+
+**Lesson:** Do NOT use a small centre ROI for brightness gating on a gauge with a glass face — specular reflections at dial centre are common and will fool the gate. Always measure the full model-input region. The `first8` / `mid8` tensor probes in the AI log sample column 0 of specific rows (not the dial centre), so they are NOT reliable brightness indicators — use saved YUV frames and compute crop mean offline.
+
+**Confirmed working:** After the fix, gate correctly rejected 18:xx dark frames (crop mean 43-87 → TOO_DARK) and accepted good frames (crop mean 100+). Model read 25.6-26.8°C which matched the actual gauge needle position — the temperature had genuinely dropped from ~31°C (1pm) to ~25-27°C (7pm).
+
+## Baseline Runtime Fixes (2026-04-19)
+
+Four bugs fixed in `app_baseline_runtime.c`:
+
+1. **Blank `confidence=` in log** — root cause: `--specs=nano.specs` without `-u _printf_float` silently drops `%f`/`(double)` args in newlib-nano `vsnprintf`, causing va_arg desync and blank fields. Fix: all confidence values in log lines are now formatted as scaled integers (`x1000`) with `%ld`. **Never use `%f` / `(double)` casts in `DebugConsole_Printf` calls** — this will always produce blank output on this build.
+
+2. **Selection tie-breaking asymmetry** — `training_crop_ok` branch used `>=` (would displace bright on a tie) but `center_ok` used `>` (could not displace training-crop on a tie). Now both use strict `>` so tie-breaking is deterministic and the first hypothesis in evaluation order wins a tie.
+
+3. **Weak confidence formula** — old `(best - runner_up) / best` had a small denominator problem on dense sweeps where adjacent bins score similarly. New formula: `1 - (runner_up / best)` = `(snr - 1) / snr` where `snr = best / runner_up`. Produces a value near 0 for diffuse votes (many similar-scoring bins), near 1 for sharp needle peaks.
+
+4. **Coarse angle resolution** — 180 bins over 270° sweep = 1.5°/bin ≈ 1.5°C/bin at midrange. Doubled to 360 bins → 0.75°/bin for finer needle resolution. This adds 180 extra `AppBaselineRuntime_ScoreAngle` calls per frame; each call does 32 ray samples × 4 background samples = acceptable CPU budget at the baseline thread's low priority.

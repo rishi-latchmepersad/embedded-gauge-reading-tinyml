@@ -19,6 +19,7 @@
 #include "debug_console.h"
 #include "app_inference_calibration.h"
 #include "app_inference_log_utils.h"
+#include "app_gauge_geometry.h"
 #define LL_ATON_PLATFORM LL_ATON_PLAT_STM32N6
 #define LL_ATON_OSAL LL_ATON_OSAL_THREADX
 #include "tx_api.h"
@@ -79,11 +80,6 @@
  * The RGB reconstruction path was collapsing to a green-only tensor on board,
  * which is a worse mismatch than replicated luminance for this gauge task. */
 #define APP_AI_YUV422_INPUT_LUMA_ONLY      1U
-/* Dataset-wide mean dial crop from the CVAT boxes used during training. */
-#define APP_AI_TRAINING_CROP_X_MIN_RATIO   0.1027f
-#define APP_AI_TRAINING_CROP_Y_MIN_RATIO   0.2573f
-#define APP_AI_TRAINING_CROP_X_MAX_RATIO   0.7987f
-#define APP_AI_TRAINING_CROP_Y_MAX_RATIO   0.8071f
 #define APP_AI_MODEL_INPUT_FLOAT_BYTES \
 		(APP_AI_MODEL_INPUT_FLOAT_COUNT * sizeof(float))
 #define APP_AI_MODEL_OUTPUT_FLOAT_BYTES   sizeof(float)

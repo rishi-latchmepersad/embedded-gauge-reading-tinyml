@@ -19,6 +19,7 @@ extern "C" {
 #define CAMERA_ISP_THREAD_PRIORITY          11U
 #define CAMERA_HEARTBEAT_THREAD_PRIORITY    10U
 #define CAMERA_AI_THREAD_PRIORITY           13U
+#define BASELINE_RUNTIME_THREAD_PRIORITY    15U
 
 /* Heartbeat timing --------------------------------------------------------- */
 #define CAMERA_HEARTBEAT_PERIOD_MS          5000U

@@ -32,6 +32,7 @@
 #include "app_camera_buffers.h"
 #include "app_camera_capture.h"
 #include "app_camera_platform.h"
+#include "app_baseline_runtime.h"
 #include "app_inference_runtime.h"
 #include "app_storage.h"
 #include "app_threadx_config.h"
@@ -225,6 +226,16 @@ UINT App_ThreadX_Start(void) {
 					"[AI] Failed to start inference runtime, status=%lu\r\n",
 					(unsigned long) runtime_start_status);
 			return runtime_start_status;
+		}
+	}
+
+	{
+		const UINT baseline_start_status = AppBaselineRuntime_Start();
+		if (baseline_start_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[BASELINE] Failed to start classical baseline runtime, status=%lu\r\n",
+					(unsigned long) baseline_start_status);
+			return baseline_start_status;
 		}
 	}
 

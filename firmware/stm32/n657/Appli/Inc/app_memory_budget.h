@@ -24,6 +24,7 @@ extern "C" {
 #define CAMERA_ISP_THREAD_STACK_SIZE_BYTES      4096U
 #define CAMERA_HEARTBEAT_THREAD_STACK_SIZE_BYTES 1024U
 #define CAMERA_AI_THREAD_STACK_SIZE_BYTES       16384U
+#define BASELINE_RUNTIME_THREAD_STACK_SIZE_BYTES 8192U
 
 /* Capture geometry --------------------------------------------------------- */
 /* Use the same 224x224 frame budget everywhere so the pipeline stays simple. */

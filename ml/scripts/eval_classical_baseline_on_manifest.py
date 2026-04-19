@@ -12,22 +12,22 @@ import csv
 from pathlib import Path
 import sys
 
-import cv2
-import numpy as np
-
 # Make the package importable when this script is run from the ml/ directory.
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
 SRC_DIR: Path = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from embedded_gauge_reading_tinyml.baseline_classical_cv import (  # noqa: E402
-    ClassicalPrediction,
-    detect_needle_unit_vector,
-    needle_vector_to_value,
+from embedded_gauge_reading_tinyml.baseline_classical_cv import ClassicalPrediction  # noqa: E402
+from embedded_gauge_reading_tinyml.baseline_report import (  # noqa: E402
+    write_failure_report,
+)
+from embedded_gauge_reading_tinyml.baseline_manifest_eval import (  # noqa: E402
+    GeometryEvaluationConfig,
+    ManifestEvaluationResult,
+    evaluate_manifest,
 )
 from embedded_gauge_reading_tinyml.gauge.processing import GaugeSpec, load_gauge_specs
-from embedded_gauge_reading_tinyml.single_image_baseline import estimate_dial_geometry
 
 
 def _parse_args() -> argparse.Namespace:
@@ -53,20 +53,32 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Optional path for per-sample predictions.",
     )
+    parser.add_argument(
+        "--report-dir",
+        type=Path,
+        default=None,
+        help="Optional output directory for ranked failure-analysis artifacts.",
+    )
+    parser.add_argument(
+        "--geometry-confidence-threshold",
+        type=float,
+        default=4.0,
+        help="Prefer the Hough geometry unless its detection confidence is below this value.",
+    )
+    parser.add_argument(
+        "--geometry-mode",
+        type=str,
+        default="hough_then_center",
+        choices=("hough_only", "hough_then_center", "center_only"),
+        help="Geometry strategy to use for this manifest run.",
+    )
+    parser.add_argument(
+        "--center-radius-scale",
+        type=float,
+        default=0.45,
+        help="Radius scale for the image-center fallback geometry.",
+    )
     return parser.parse_args()
-
-
-def _resolve_image_path(raw_path: str) -> Path:
-    """Resolve a manifest path relative to the repository root."""
-    path = Path(raw_path)
-    if path.is_absolute():
-        return path
-    return PROJECT_ROOT.parent / path
-
-
-def _load_image(path: Path) -> np.ndarray | None:
-    """Load one BGR image for classical CV inference."""
-    return cv2.imread(str(path), cv2.IMREAD_COLOR)
 
 
 def _write_predictions_csv(predictions_path: Path, rows: list[ClassicalPrediction]) -> None:
@@ -101,81 +113,29 @@ def main() -> None:
         raise ValueError(f"Unknown gauge_id '{args.gauge_id}'. Available: {list(specs)}")
     spec: GaugeSpec = specs[args.gauge_id]
 
-    predictions: list[ClassicalPrediction] = []
-    attempted: int = 0
-
-    with args.manifest.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames is None:
-            raise ValueError(f"Manifest has no header: {args.manifest}")
-        required_columns = {"image_path", "value"}
-        if not required_columns.issubset(reader.fieldnames):
-            raise ValueError("Manifest must include image_path and value columns.")
-
-        for row in reader:
-            if args.max_samples is not None and attempted >= args.max_samples:
-                break
-            attempted += 1
-
-            image_path = _resolve_image_path(row["image_path"])
-            true_value = float(row["value"])
-            print(f"[BASELINE] Predicting {image_path.name}...", flush=True)
-
-            image_bgr = _load_image(image_path)
-            if image_bgr is None:
-                print(f"[BASELINE] Skipping unreadable image: {image_path}", flush=True)
-                continue
-
-            estimated = estimate_dial_geometry(image_bgr)
-            if estimated is None:
-                height, width = image_bgr.shape[:2]
-                center_xy = (0.5 * float(width), 0.5 * float(height))
-                dial_radius_px = 0.45 * float(min(height, width))
-            else:
-                center_xy, dial_radius_px = estimated
-
-            detection = detect_needle_unit_vector(
-                image_bgr,
-                center_xy=center_xy,
-                dial_radius_px=dial_radius_px,
-                gauge_spec=spec,
-            )
-            if detection is None:
-                print(f"[BASELINE] No needle detected for {image_path.name}.", flush=True)
-                continue
-
-            predicted_value = needle_vector_to_value(
-                detection.unit_dx,
-                detection.unit_dy,
-                spec,
-            )
-            abs_error = abs(predicted_value - true_value)
-            predictions.append(
-                ClassicalPrediction(
-                    image_path=image_path.as_posix(),
-                    true_value=true_value,
-                    predicted_value=predicted_value,
-                    abs_error=abs_error,
-                    confidence=detection.confidence,
-                )
-            )
-            print(
-                f"{image_path.name}: true={true_value:.4f} pred={predicted_value:.4f} "
-                f"abs_err={abs_error:.4f}",
-                flush=True,
-            )
+    manifest_result: ManifestEvaluationResult = evaluate_manifest(
+        args.manifest,
+        spec,
+        config=GeometryEvaluationConfig(
+            mode=args.geometry_mode,
+            confidence_threshold=args.geometry_confidence_threshold,
+            center_radius_scale=args.center_radius_scale,
+        ),
+        repo_root=PROJECT_ROOT.parent,
+        max_samples=args.max_samples,
+    )
+    predictions: list[ClassicalPrediction] = manifest_result.result.predictions
 
     if not predictions:
         raise ValueError("The classical baseline did not produce any predictions.")
 
-    errors = np.array([prediction.abs_error for prediction in predictions], dtype=np.float32)
-    mean_abs_err = float(np.mean(errors))
-    rmse = float(np.sqrt(np.mean(np.square(errors))))
-    max_abs_err = float(np.max(errors))
-    cases_over_5c = int(np.sum(errors > 5.0))
+    mean_abs_err: float = manifest_result.result.mae
+    rmse: float = manifest_result.result.rmse
+    max_abs_err = max(prediction.abs_error for prediction in predictions)
+    cases_over_5c = sum(prediction.abs_error > 5.0 for prediction in predictions)
     worst = max(predictions, key=lambda item: item.abs_error)
 
-    print(f"attempted={attempted}")
+    print(f"attempted={manifest_result.attempted_samples}")
     print(f"successful={len(predictions)}")
     print(f"mean_abs_err={mean_abs_err:.4f}")
     print(f"rmse={rmse:.4f}")
@@ -190,6 +150,20 @@ def main() -> None:
         args.predictions_csv.parent.mkdir(parents=True, exist_ok=True)
         _write_predictions_csv(args.predictions_csv, predictions)
         print(f"[BASELINE] Wrote predictions to {args.predictions_csv}", flush=True)
+
+    if args.report_dir is not None:
+        report = write_failure_report(
+            args.report_dir,
+            predictions,
+            attempted_samples=manifest_result.attempted_samples,
+            top_n=10,
+            value_bucket_size=10.0,
+        )
+        print(
+            f"[BASELINE] Wrote failure report to {args.report_dir} "
+            f"(mae={report.mae:.4f}, rmse={report.rmse:.4f})",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

@@ -49,6 +49,15 @@ class ClassicalBaselineResult:
     predictions: list[ClassicalPrediction]
 
 
+@dataclass(frozen=True)
+class GeometryCandidate:
+    """One candidate dial geometry hypothesis for image-based inference."""
+
+    label: str
+    center_xy: tuple[float, float]
+    dial_radius_px: float
+
+
 def needle_vector_to_value(unit_dx: float, unit_dy: float, spec: GaugeSpec) -> float:
     """Convert a unit direction vector to calibrated gauge value.
 
@@ -220,9 +229,9 @@ def _sample_line_darkness(
         sample_count += 1
         sample_x: float = x1 + float(fraction) * seg_dx
         sample_y: float = y1 + float(fraction) * seg_dy
-        line_px: float = float(
-            gray_image[int(round(sample_y)), int(round(sample_x))]
-        )
+        ix: int = int(round(min(max(sample_x, 0.0), gray_image.shape[1] - 1.0)))
+        iy: int = int(round(min(max(sample_y, 0.0), gray_image.shape[0] - 1.0)))
+        line_px: float = float(gray_image[iy, ix])
 
         neighbor_values: list[float] = []
         for offset_px in (2.0, 4.0):
@@ -249,6 +258,16 @@ def _sample_line_darkness(
     return contrast_mean, dark_fraction
 
 
+def _angle_in_sweep(angle_rad: float, spec: GaugeSpec, *, margin_rad: float = 0.0) -> bool:
+    """Return True if angle_rad falls within the gauge's calibrated sweep arc.
+
+    An optional margin widens the arc on each side to tolerate small detection
+    offsets near the min/max ticks.
+    """
+    shifted: float = (angle_rad - spec.min_angle_rad) % (2.0 * math.pi)
+    return shifted <= (spec.sweep_rad + margin_rad)
+
+
 def detect_needle_unit_vector(
     image_bgr: np.ndarray,
     *,
@@ -256,146 +275,189 @@ def detect_needle_unit_vector(
     dial_radius_px: float,
     gauge_spec: GaugeSpec | None = None,
 ) -> NeedleDetection | None:
-    """Detect needle direction using a line-first classical CV strategy.
+    """Detect needle direction using radial-spoke voting on edge gradients.
 
-    Args:
-        image_bgr: Input color image loaded by OpenCV (BGR).
-        center_xy: Dial center in image pixels.
-        dial_radius_px: Approximate dial radius in pixels.
+    For every dark edge pixel in the inner dial annulus we ask: how well does
+    this pixel's image gradient align with the radial direction toward the dial
+    center?  A needle is a radial stroke, so its edge pixels have gradients that
+    are nearly perpendicular to the radial direction, meaning the pixel itself
+    points radially.  We accumulate a smoothed angular histogram of
+    gradient-weighted radial votes and pick the dominant angle.
 
-    Returns:
-        A center-origin unit vector (dx, dy) and score, or ``None`` if no robust
-        line candidate is found.
+    This is robust to the heavily-printed tick-mark background because tick marks
+    are short tangential arcs: their gradient is radial (perpendicular to the
+    arc), so they vote for *many* angles equally and don't produce a sharp peak.
+    The needle's gradient is tangential to the needle direction and radial to the
+    dial center — it votes strongly for one specific spoke angle.
     """
     if dial_radius_px <= 1.0:
         return None
 
     center_x, center_y = center_xy
 
-    # Normalize local contrast and smooth noise to stabilize edges.
+    # Enhance local contrast and extract Sobel gradients.
     gray: np.ndarray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced: np.ndarray = clahe.apply(gray)
     blurred: np.ndarray = cv2.GaussianBlur(enhanced, (5, 5), 0)
 
-    # Extract edge structure for line detection.
-    edges: np.ndarray = cv2.Canny(blurred, threshold1=50, threshold2=150)
+    gx: np.ndarray = cv2.Sobel(blurred, cv2.CV_32F, 1, 0, ksize=3)
+    gy: np.ndarray = cv2.Sobel(blurred, cv2.CV_32F, 0, 1, ksize=3)
+    grad_mag: np.ndarray = np.sqrt(gx * gx + gy * gy)
 
-    # Keep an annulus: reject center hub and outer frame clutter.
-    yy, xx = np.indices(edges.shape)
-    rr: np.ndarray = np.sqrt((xx - center_x) ** 2 + (yy - center_y) ** 2)
-    annulus_mask: np.ndarray = (rr > 0.15 * dial_radius_px) & (rr < 0.95 * dial_radius_px)
-    masked_edges: np.ndarray = np.where(annulus_mask, edges, 0).astype(np.uint8)
-
-    # Probabilistic Hough gives concrete segment endpoints we can score.
-    lines = cv2.HoughLinesP(
-        masked_edges,
-        rho=1,
-        theta=np.pi / 180.0,
-        threshold=40,
-        minLineLength=int(0.25 * dial_radius_px),
-        maxLineGap=8,
+    # Work only in the inner annulus: exclude the hub and the outer tick band.
+    # Tick marks live at 75–95% radius; the needle crosses all radii from the
+    # hub outward, so restricting to 15–75% eliminates most tick-mark clutter
+    # while keeping the needle's strongest radial portion.
+    h_img, w_img = gray.shape[:2]
+    yy, xx = np.meshgrid(
+        np.arange(h_img, dtype=np.float32),
+        np.arange(w_img, dtype=np.float32),
+        indexing="ij",
     )
-    if lines is None:
-        lines = cv2.HoughLinesP(
-            masked_edges,
-            rho=1,
-            theta=np.pi / 180.0,
-            threshold=28,
-            minLineLength=int(0.18 * dial_radius_px),
-            maxLineGap=12,
-        )
+    dx_from_center: np.ndarray = xx - center_x
+    dy_from_center: np.ndarray = yy - center_y
+    rr: np.ndarray = np.sqrt(dx_from_center ** 2 + dy_from_center ** 2)
 
-    best_score: float = float("-inf")
-    best_unit_vec: tuple[float, float] | None = None
+    inner_mask: np.ndarray = (rr > 0.15 * dial_radius_px) & (rr < 0.75 * dial_radius_px)
 
-    if lines is not None:
-        for line in lines[:, 0, :]:
-            x1_i, y1_i, x2_i, y2_i = line
-            x1: float = float(x1_i)
-            y1: float = float(y1_i)
-            x2: float = float(x2_i)
-            y2: float = float(y2_i)
+    # Suppress the humidity subdial region.
+    # The subdial sits at (cx, cy+0.25r) and its needle sweeps through the
+    # lower-center of the main dial, injecting spurious votes.
+    # We mask pixels that are:
+    #   - far enough from the main hub that they can't be the main needle root
+    #   - within the horizontal and vertical extents of the subdial
+    # The r > 0.20r guard preserves the main needle near the hub regardless of
+    # which direction it points.
+    dx_sub: np.ndarray = np.abs(xx - center_x)
+    dy_sub: np.ndarray = yy - center_y
+    in_subdial_zone: np.ndarray = (
+        (rr > 0.20 * dial_radius_px)
+        & (dx_sub < 0.35 * dial_radius_px)
+        & (dy_sub > 0.10 * dial_radius_px)
+        & (dy_sub < 0.58 * dial_radius_px)
+    )
+    inner_mask = inner_mask & ~in_subdial_zone
 
-            seg_dx: float = x2 - x1
-            seg_dy: float = y2 - y1
-            seg_len: float = math.hypot(seg_dx, seg_dy)
-            if seg_len <= 1e-6:
-                continue
+    # For each pixel, compute the unit radial direction (toward center).
+    rr_safe: np.ndarray = np.where(rr > 0.5, rr, 1.0)
+    radial_x: np.ndarray = -dx_from_center / rr_safe   # points toward center
+    radial_y: np.ndarray = -dy_from_center / rr_safe
 
-            endpoint1_r: float = math.hypot(x1 - center_x, y1 - center_y)
-            endpoint2_r: float = math.hypot(x2 - center_x, y2 - center_y)
-            tail_r: float = min(endpoint1_r, endpoint2_r)
-            tip_r: float = max(endpoint1_r, endpoint2_r)
-            tail_norm: float = tail_r / dial_radius_px
-            tip_norm: float = tip_r / dial_radius_px
-            tip_x: float = x1 if endpoint1_r > endpoint2_r else x2
-            tip_y: float = y1 if endpoint1_r > endpoint2_r else y2
+    # The gradient of a dark needle on a light background is perpendicular to
+    # the needle.  The needle points radially, so its gradient is tangential.
+    # A pixel votes for spoke angle θ = atan2(dy_from_center, dx_from_center)
+    # weighted by how much its gradient is *tangential* to the radial direction,
+    # i.e. how perpendicular the gradient is to the radial direction.
+    # perpendicularity = |grad × radial| / (|grad| * 1) = |cross product|
+    grad_mag_safe: np.ndarray = np.where(grad_mag > 1.0, grad_mag, 1.0)
+    gx_n: np.ndarray = gx / grad_mag_safe
+    gy_n: np.ndarray = gy / grad_mag_safe
+    # 2-D cross product magnitude = |gx*radial_y - gy*radial_x|
+    tangential_weight: np.ndarray = np.abs(gx_n * radial_y - gy_n * radial_x)
 
-            # Needle candidates should originate near the hub and extend outward.
-            if tail_norm > 0.40 or tip_norm < 0.55:
-                continue
+    # Vote weight = gradient magnitude * tangential alignment, inside annulus.
+    vote_weight: np.ndarray = np.where(
+        inner_mask & (grad_mag > 8.0),
+        grad_mag * tangential_weight,
+        0.0,
+    )
 
-            # Favor lines that pass through the dial center and point outward.
-            mid_x: float = 0.5 * (x1 + x2)
-            mid_y: float = 0.5 * (y1 + y2)
-            midpoint_dist_to_center: float = math.hypot(
-                mid_x - center_x,
-                mid_y - center_y,
-            )
-            center_dist: float = _point_to_segment_distance(
-                center_x,
-                center_y,
-                x1,
-                y1,
-                x2,
-                y2,
-            )
-            line_contrast: float = 0.0
-            dark_fraction: float = 0.0
-            line_contrast, dark_fraction = _sample_line_darkness(
-                enhanced,
-                x1=x1,
-                y1=y1,
-                x2=x2,
-                y2=y2,
-            )
-            score: float = (
-                4.0 * (tip_norm - tail_norm)
-                - 3.0 * (center_dist / dial_radius_px)
-                - 0.75 * (midpoint_dist_to_center / dial_radius_px)
-                + 1.6 * max(line_contrast, 0.0)
-                + 0.8 * dark_fraction
-            )
+    # Each pixel's spoke angle: direction *from* center *to* pixel.
+    spoke_angle: np.ndarray = np.arctan2(dy_from_center, dx_from_center)  # (H, W)
 
-            if score > best_score:
-                best_score = score
+    # Accumulate into a 1-D histogram with 720 bins (0.5° resolution).
+    num_bins: int = 720
+    angle_bins: np.ndarray = ((spoke_angle + math.pi) / (2.0 * math.pi) * num_bins).astype(
+        np.int32
+    )
+    angle_bins = np.clip(angle_bins, 0, num_bins - 1)
 
-                tip_dx: float = tip_x - center_x
-                tip_dy: float = tip_y - center_y
-                tip_norm_final: float = math.hypot(tip_dx, tip_dy)
-                if tip_norm_final <= 1e-6:
-                    continue
-                best_unit_vec = (tip_dx / tip_norm_final, tip_dy / tip_norm_final)
+    vote_flat: np.ndarray = vote_weight.ravel()
+    bin_flat: np.ndarray = angle_bins.ravel()
+    histogram: np.ndarray = np.zeros(num_bins, dtype=np.float32)
+    np.add.at(histogram, bin_flat, vote_flat)
 
-    if best_unit_vec is None:
-        # Keep the polar detector only as a conservative fallback when the
-        # line-based detector cannot find a plausible segment.
-        angle_bounds_rad: tuple[float, float] | None = None
-        if gauge_spec is not None:
-            angle_bounds_rad = (gauge_spec.min_angle_rad, gauge_spec.sweep_rad)
-        return _detect_needle_unit_vector_polar(
-            image_bgr,
-            center_xy=center_xy,
-            dial_radius_px=dial_radius_px,
-            angle_bounds_rad=angle_bounds_rad,
-        )
+    # If gauge_spec is provided, zero out bins outside the valid sweep arc so
+    # the subdial region and dead-zone don't compete.
+    if gauge_spec is not None:
+        for b in range(num_bins):
+            angle_rad: float = (b / num_bins) * 2.0 * math.pi - math.pi
+            if not _angle_in_sweep(angle_rad, gauge_spec, margin_rad=math.radians(12.0)):
+                histogram[b] = 0.0
+
+    # Smooth the histogram to merge nearby votes from a slightly curved needle.
+    kernel_width: int = 15  # ~7.5° half-width
+    histogram_smooth: np.ndarray = cv2.GaussianBlur(
+        histogram[np.newaxis, :], (1, kernel_width * 2 + 1), 0
+    ).ravel()
+
+    best_bin: int = int(np.argmax(histogram_smooth))
+    peak_val: float = float(histogram_smooth[best_bin])
+    noise: float = float(np.mean(histogram_smooth)) + 1e-6
+    snr: float = peak_val / noise
+
+    # Require the peak to stand clearly above the background noise level.
+    if snr < 2.0:
+        return None
+
+    best_angle: float = (best_bin / num_bins) * 2.0 * math.pi - math.pi
+    unit_dx: float = math.cos(best_angle)
+    unit_dy: float = math.sin(best_angle)
 
     return NeedleDetection(
-        unit_dx=float(best_unit_vec[0]),
-        unit_dy=float(best_unit_vec[1]),
-        confidence=float(max(best_score, 0.0)),
+        unit_dx=float(unit_dx),
+        unit_dy=float(unit_dy),
+        confidence=float(snr),
     )
+
+
+def detect_needle_unit_vector_with_geometry_fallback(
+    image_bgr: np.ndarray,
+    *,
+    primary: GeometryCandidate,
+    secondary: GeometryCandidate | None = None,
+    gauge_spec: GaugeSpec | None = None,
+    confidence_threshold: float = 4.0,
+) -> NeedleDetection | None:
+    """Run the needle detector with a conservative geometry fallback.
+
+    The Hough-circle estimate is still the preferred geometry. When it produces
+    a weak spoke vote, we try a simpler center-based fallback before giving up.
+    This keeps the hard-case script resilient without changing the core detector
+    logic for callers that already provide trustworthy geometry.
+    """
+    primary_detection: NeedleDetection | None = detect_needle_unit_vector(
+        image_bgr,
+        center_xy=primary.center_xy,
+        dial_radius_px=primary.dial_radius_px,
+        gauge_spec=gauge_spec,
+    )
+    if primary_detection is None:
+        if secondary is None:
+            return None
+        return detect_needle_unit_vector(
+            image_bgr,
+            center_xy=secondary.center_xy,
+            dial_radius_px=secondary.dial_radius_px,
+            gauge_spec=gauge_spec,
+        )
+
+    if primary_detection.confidence >= confidence_threshold:
+        return primary_detection
+
+    if secondary is None:
+        return primary_detection
+
+    secondary_detection: NeedleDetection | None = detect_needle_unit_vector(
+        image_bgr,
+        center_xy=secondary.center_xy,
+        dial_radius_px=secondary.dial_radius_px,
+        gauge_spec=gauge_spec,
+    )
+    if secondary_detection is None:
+        return primary_detection
+    return secondary_detection
 
 
 def evaluate_classical_baseline(

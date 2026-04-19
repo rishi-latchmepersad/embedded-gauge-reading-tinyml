@@ -22,6 +22,8 @@
 #include "app_camera_config.h"
 #include "app_camera_diagnostics.h"
 #include "app_camera_platform.h"
+#include "app_baseline_runtime.h"
+#include "app_gauge_geometry.h"
 #include "app_filex.h"
 #include "app_inference_runtime.h"
 #include "app_storage.h"
@@ -94,22 +96,20 @@ typedef struct {
 } AppCameraCapture_BrightnessStats_t;
 
 /**
- * @brief Measure the luma level of the processed YUV422 frame center ROI.
+ * @brief Measure luma over the full training crop region of a YUV422 frame.
  *
- * The processed capture path stores YUYV-style data, so we treat the first
- * byte in each 2-byte pixel pair as luma and use a centered ROI to avoid
- * edge darkening from the crop.
+ * Sampling the entire training crop (rather than a small centre ROI) avoids
+ * being fooled by specular reflections on the gauge glass, which can make a
+ * small centre ROI read as "bright enough" while the rest of the dial face
+ * is still underexposed.  The model sees exactly this region, so the mean
+ * here directly predicts whether the model input will be well-exposed.
  */
 static bool AppCameraCapture_ComputeBrightnessStats(const uint8_t *buffer_ptr,
 		uint32_t length_bytes, AppCameraCapture_BrightnessStats_t *stats) {
-	const uint32_t roi_size_pixels =
-	CAMERA_CAPTURE_BRIGHTNESS_GATE_ROI_SIZE_PIXELS;
 	const uint32_t frame_width_pixels = CAMERA_CAPTURE_WIDTH_PIXELS;
 	const uint32_t frame_height_lines = CAMERA_CAPTURE_HEIGHT_PIXELS;
 	const uint32_t bytes_per_pixel = CAMERA_CAPTURE_BYTES_PER_PIXEL;
 	const uint32_t stride_bytes = frame_width_pixels * bytes_per_pixel;
-	uint32_t roi_start_x = 0U;
-	uint32_t roi_start_y = 0U;
 	uint64_t sum_y = 0U;
 	uint32_t sample_count = 0U;
 	uint8_t min_y = 0xFFU;
@@ -119,27 +119,24 @@ static bool AppCameraCapture_ComputeBrightnessStats(const uint8_t *buffer_ptr,
 		return false;
 	}
 
-	if ((frame_width_pixels < roi_size_pixels)
-			|| (frame_height_lines < roi_size_pixels)) {
+	const AppGaugeGeometry_Crop_t crop = AppGaugeGeometry_TrainingCrop(
+			(size_t) frame_width_pixels, (size_t) frame_height_lines);
+	const uint32_t x_end = (uint32_t) (crop.x_min + crop.width);
+	const uint32_t y_end = (uint32_t) (crop.y_min + crop.height);
+
+	if ((x_end > frame_width_pixels) || (y_end > frame_height_lines)) {
 		return false;
 	}
 
-	roi_start_x = (frame_width_pixels - roi_size_pixels) / 2U;
-	roi_start_y = (frame_height_lines - roi_size_pixels) / 2U;
+	for (uint32_t row = (uint32_t) crop.y_min; row < y_end; row++) {
+		const uint32_t row_base = row * stride_bytes;
 
-	for (uint32_t row = 0U; row < roi_size_pixels; row++) {
-		const uint32_t src_y = roi_start_y + row;
-		const uint32_t row_base = src_y * stride_bytes;
-
-		if ((row_base + ((roi_start_x + roi_size_pixels) * bytes_per_pixel))
-				> length_bytes) {
+		if ((row_base + (x_end * bytes_per_pixel)) > length_bytes) {
 			return false;
 		}
 
-		for (uint32_t col = 0U; col < roi_size_pixels; col++) {
-			const uint32_t sample_index = row_base
-					+ ((roi_start_x + col) * bytes_per_pixel);
-			const uint8_t y_sample = buffer_ptr[sample_index];
+		for (uint32_t col = (uint32_t) crop.x_min; col < x_end; col++) {
+			const uint8_t y_sample = buffer_ptr[row_base + (col * bytes_per_pixel)];
 
 			if (y_sample < min_y) {
 				min_y = y_sample;
@@ -207,10 +204,9 @@ static void AppCameraCapture_LogBrightnessGateDecision(
 	}
 
 	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] Brightness gate (%s): roi=%ux%u mean=%lu min=%u max=%u thresholds dark<=%u/%u bright>=%u/%u.\r\n",
+			"[CAMERA][CAPTURE] Brightness gate (%s): samples=%lu mean=%lu min=%u max=%u thresholds dark<=%u/%u bright>=%u/%u.\r\n",
 			decision_label,
-			(unsigned int) CAMERA_CAPTURE_BRIGHTNESS_GATE_ROI_SIZE_PIXELS,
-			(unsigned int) CAMERA_CAPTURE_BRIGHTNESS_GATE_ROI_SIZE_PIXELS,
+			(unsigned long) ((stats != NULL) ? stats->sample_count : 0U),
 			(unsigned long) ((stats != NULL) ? stats->mean_y : 0U),
 			(unsigned int) ((stats != NULL) ? stats->min_y : 0U),
 			(unsigned int) ((stats != NULL) ? stats->max_y : 0U),
@@ -811,6 +807,14 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	AppCameraDiagnostics_LogCaptureBufferPreview("ready-to-save", image_ptr,
 			(uint32_t) image_length);
 #endif
+
+	if (camera_capture_use_cmw_pipeline) {
+		if (!AppBaselineRuntime_RequestEstimate((const uint8_t *) image_ptr,
+					(ULONG) image_length)) {
+			DebugConsole_Printf(
+					"[BASELINE] Failed to queue classical baseline estimate.\r\n");
+		}
+	}
 
 	(void) DebugConsole_WriteString("[CAMERA][CAPTURE] step: build-name\r\n");
 	if (!AppStorage_BuildCaptureFileName(capture_file_name,
