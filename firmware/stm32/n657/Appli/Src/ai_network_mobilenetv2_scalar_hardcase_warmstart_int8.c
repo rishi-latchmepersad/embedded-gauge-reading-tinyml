@@ -14,4 +14,4 @@
 #define LL_ATON_DBG_BUFFER_INFO_EXCLUDED 1
 #endif
 
-#include "../../../../../st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8.c"
+#include "../../../../../st_ai_output/packages/prod_model_v0.2_raw_int8/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8.c"

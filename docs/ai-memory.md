@@ -402,24 +402,73 @@ The gauge was at 14°C and then 35°C, board always reported -8.168633°C (`bits
 - Roadmap: `PLANS.md`
 - Repo working rules: `AGENTS.md`
 
-## Current Model Deployment State (2026-04-18)
+## Current Model Deployment State (2026-04-19)
+
+### prod_model_v0.2 — the current best scalar model
+
+**prod_model_v0.2** is the current production scalar model. It generalizes well across camera distances (MAE ~0.62°C on 33°C close-up board captures without any close-up fine-tuning) and should be the baseline for all future comparisons. Do not replace it without a proven offline improvement on both `hard_cases.csv` and `hard_cases_plus_board30_valid_with_new5.csv`.
+
+#### Lineage / how prod_model_v0.2 was created
+
+1. **Source Keras model**: `ml/artifacts/training/scalar_full_finetune_from_best_board30_clean_plus_new5/model.keras`
+   - Full MobileNetV2 backbone fine-tune from the board30 clean + new5 checkpoint
+   - Training manifest: `ml/data/hard_cases_plus_board30_valid_with_new5.csv`
+
+2. **Export to INT8 TFLite**: `ml/scripts/run_board_export_prod_model_v0_2.sh`
+   - Stages model to WSL-local `/home/rishi_latchmepersad/prod_model_v0_2_board_export/model.keras` (avoids TF stall on `/mnt/d`)
+   - Calls `scripts/export_board_artifacts.py` with `--representative-count 64`
+   - Output: `ml/artifacts/deployment/prod_model_v0.2_raw_int8/model_int8.tflite`
+
+3. **ST Edge AI packaging**: `ml/scripts/run_board_package_prod_model_v0_2_raw_int8.sh`
+   - Calls `scripts/package_scalar_model_for_n6.py` with `--name scalar_full_finetune_from_best_piecewise_calibrated_int8`
+   - Output package dir: `st_ai_output/packages/prod_model_v0.2_raw_int8/`
+   - C source: `st_ai_output/packages/prod_model_v0.2_raw_int8/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8.c`
+   - Object files: `st_ai_output/packages/prod_model_v0.2_raw_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/*.o`
+   - xSPI2 blob: `st_ai_output/packages/prod_model_v0.2_raw_int8/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8_atonbuf.xSPI2.raw`
+   - Canonical blob: copied to `st_ai_output/atonbuf.xSPI2.raw`
+
+#### Note on C name vs deployment dir name
+
+The `--name` flag used in packaging is `scalar_full_finetune_from_best_piecewise_calibrated_int8` (not `prod_model_v0.2`). This is the internal C symbol prefix used by the ST Edge AI runtime. The deployment directory is `prod_model_v0.2_raw_int8/`. The firmware three-file sync must use the **package dir** path (`prod_model_v0.2_raw_int8/`), not the C name as a directory.
+
+#### Offline accuracy (2026-04-19)
+
+- **33°C close-up board captures** (capture_2026-04-18_17-xx): Mean=32.89°C, MAE=0.62°C
+- Training manifest `hard_cases_plus_board30_valid_with_new5.csv`: used as quantization calibration set (95 representative examples)
 
 ### Two-stage pipeline (active on board)
 
 - **Rectifier**: `mobilenetv2_rectifier_hardcase_finetune_v3`
   - Keras: `ml/artifacts/training/mobilenetv2_rectifier_hardcase_finetune_v3/model.keras`
   - Int8 TFLite: `ml/artifacts/deployment/mobilenetv2_rectifier_hardcase_finetune_v3_int8/model_int8.tflite`
-  - Packaged blob: `st_ai_output/atonbuf.rectifier.xSPI2.raw` (~121 KB, flashed at `0x70520000`)
+  - Packaged blob: `st_ai_output/atonbuf.rectifier.xSPI2.raw` (~121 KB, flashed at `0x70600000`)
   - Repackage script: `ml/scripts/run_board_package_rectifier_raw_int8.sh`
-- **Scalar**: `scalar_full_finetune_from_best_piecewise_calibrated_int8` ← **updated 2026-04-18**
-  - Int8 TFLite: `ml/artifacts/deployment/scalar_full_finetune_from_best_piecewise_calibrated_int8/model_int8.tflite` (2886096 bytes)
-  - Packaged blob: `st_ai_output/atonbuf.xSPI2.raw` (~3.07 MB, flashed at `0x70200000`) — freshly regenerated 2026-04-18 06:52
-  - Repackage script: `ml/scripts/run_board_package_rectified_scalar_raw_int8.sh`
-  - ST Edge AI package dir: `st_ai_output/packages/scalar_full_finetune_from_best_piecewise_calibrated_int8/`
+- **Scalar**: `prod_model_v0.2_raw_int8` ← **current best, updated 2026-04-19**
+  - Int8 TFLite: `ml/artifacts/deployment/prod_model_v0.2_raw_int8/model_int8.tflite`
+  - Packaged blob: `st_ai_output/atonbuf.xSPI2.raw` (~3.07 MB, flashed at `0x70200000`)
+  - Package dir: `st_ai_output/packages/prod_model_v0.2_raw_int8/`
+  - Repackage script: `ml/scripts/run_board_package_prod_model_v0_2_raw_int8.sh`
 
-### Why this scalar was chosen
+### Three-file sync state (2026-04-19)
 
-`mobilenetv2_rectified_scalar_finetune_v2_int8` was previously compiled into the blob (wrong model — same `--name` flag, different source file). The v2 fine-tune on rectifier crops actually degraded accuracy: m30→-25.1, p35→26.9, p50→39.4 vs the piecewise calibrated model: m30→-30.7, p35→35.6, p50→49.0. The rectifier-crop fine-tune introduced noise rather than helping.
+All three files now point at `prod_model_v0.2_raw_int8`:
+
+1. `firmware/stm32/n657/Appli/Src/ai_network_mobilenetv2_scalar_hardcase_warmstart_int8.c`:
+
+   ```c
+   #include "../../../../../st_ai_output/packages/prod_model_v0.2_raw_int8/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8.c"
+   ```
+
+2. `firmware/stm32/n657/Appli/makefile.targets`: all USER_OBJS point at
+   `../../../../../st_ai_output/packages/prod_model_v0.2_raw_int8/st_ai_ws/build_scalar_full_finetune_from_best_piecewise_calibrated_int8/`
+
+3. `st_ai_output/atonbuf.xSPI2.raw`: copied from `st_ai_output/packages/prod_model_v0.2_raw_int8/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8_atonbuf.xSPI2.raw`
+
+4. `app_ai.c` scalar signatures (updated 2026-04-19):
+   - `app_ai_xspi2_signature_start`: `EF 1B 2B E0 D7 E5 EC 07 04 00 34 EC 1A DD 14 05`
+   - `app_ai_xspi2_signature_tail`: `00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DC`
+
+**Next step**: rebuild App in STM32CubeIDE, then `flash_boot.bat FLASH_MODEL=1`.
 
 ### Offline eval command (Python, for reference)
 
@@ -559,6 +608,11 @@ Update these vars in the script when the scalar model name changes.
 - The AI preprocessing output was trimmed by removing the write-time top/mid/bottom probes and the raw quartet dump.
 - Keep the stage input/output hash probes and final inference line, because those are the ones that still answer the real debugging question.
 - If we need deeper visibility later, add a short targeted probe instead of turning the old breadcrumb stream back on.
+
+## SD Speed Note 2026-04-18
+
+- `SPI5` was raised from `SPI_BAUDRATEPRESCALER_256` to `SPI_BAUDRATEPRESCALER_128` in `firmware/stm32/n657/Appli/Src/main.c` to speed up FileX SD traffic.
+- This is a simple double-speed change; if the card becomes flaky, the first thing to try is stepping back to `256` or making the SD driver switch speed only after init.
 
 ## ROM Fit Lesson 2026-04-18
 

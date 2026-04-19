@@ -70,6 +70,9 @@ def main() -> None:
 
     preds = []
     for cap in captures:
+        if cap.stat().st_size == 0:
+            print(f"  {cap.name}:  SKIP (empty file)")
+            continue
         luma = load_luma(cap)
         img = crop_and_resize(luma, TRAINING_CROP_X_MIN, TRAINING_CROP_Y_MIN, TRAINING_CROP_X_MAX, TRAINING_CROP_Y_MAX)
         q = np.clip(np.round(img / in_scale + in_zp), -128, 127).astype(np.int8)
