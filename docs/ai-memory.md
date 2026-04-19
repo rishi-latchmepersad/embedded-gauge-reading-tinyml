@@ -780,3 +780,13 @@ Four bugs fixed in `app_baseline_runtime.c`:
 3. **Weak confidence formula** — old `(best - runner_up) / best` had a small denominator problem on dense sweeps where adjacent bins score similarly. New formula: `1 - (runner_up / best)` = `(snr - 1) / snr` where `snr = best / runner_up`. Produces a value near 0 for diffuse votes (many similar-scoring bins), near 1 for sharp needle peaks.
 
 4. **Coarse angle resolution** — 180 bins over 270° sweep = 1.5°/bin ≈ 1.5°C/bin at midrange. Doubled to 360 bins → 0.75°/bin for finer needle resolution. This adds 180 extra `AppBaselineRuntime_ScoreAngle` calls per frame; each call does 32 ray samples × 4 background samples = acceptable CPU budget at the baseline thread's low priority.
+
+## Baseline Glare Robustness Fix (2026-04-19)
+
+**Problem:** Specular glare from gauge glass saturates pixels at dial centre. `EstimateCenterFromBrightPixels` centroid was pulled toward the glare blob. `ScoreAngle` rays passing through glare had `local_contrast ≤ 0` (both line and background saturated equally) → samples skipped → valid_sample_count near zero → score near zero → no confident peak → baseline always failed.
+
+**Fix:** Added `APP_BASELINE_SATURATION_THRESHOLD 220` in `app_baseline_runtime.c`:
+- `EstimateCenterFromBrightPixels`: skip pixels with luma > 220 when computing bright centroid.
+- `ScoreAngle`: skip the entire sample if line pixel > 220; skip individual background samples > 220.
+
+**Confidence threshold:** Lowered `APP_BASELINE_CONFIDENCE_THRESHOLD` from 0.15 → 0.04. Glare frames produce confidence 50–110 after the fix, which is sufficient for ±10°C accuracy. Do not go below 0.03 — scores of 4 and 19 seen in the wild represent genuine noise (score ≈ runner_up, no real needle peak). The `score` and `runner_up` raw values in `[BASELINE] details:` are the ground truth; if `score - runner_up < 3`, the estimate is noise regardless of confidence value.
