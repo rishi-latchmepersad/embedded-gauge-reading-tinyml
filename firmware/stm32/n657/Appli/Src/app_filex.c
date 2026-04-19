@@ -459,6 +459,7 @@ static void AppFileX_StateMachine_Step(
 			break;
 		}
 
+		SPI_SD_SetHighSpeed();
 		context_ptr->last_progress_tick = tx_time_get();
 		context_ptr->state = APP_FILEX_STATE_SD_READ_OCR_CMD58;
 		context_ptr->state_entry_tick = context_ptr->last_progress_tick;

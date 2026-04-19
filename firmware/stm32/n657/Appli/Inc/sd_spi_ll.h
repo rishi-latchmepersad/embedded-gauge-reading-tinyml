@@ -23,6 +23,9 @@ typedef struct {
 	uint8_t is_initialized; /* Debug flag for visibility. */
 } Sd_FileX_DriverContext;
 
+/* Switch SPI5 to full data-transfer speed (25 MHz). Call after ACMD41 succeeds. */
+void SPI_SD_SetHighSpeed(void);
+
 /* SD SPI bringup helpers */
 uint8_t SPI_SendCMD0_GetR1(void);
 uint8_t SPI_SendCMD8_ReadR7(uint8_t r7_out[4]);

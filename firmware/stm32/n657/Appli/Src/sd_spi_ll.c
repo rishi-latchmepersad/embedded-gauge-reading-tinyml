@@ -21,6 +21,22 @@
 
 extern SPI_HandleTypeDef hspi5; // Use CubeMX-generated SPI handle, provided by STM32 HAL startup code.
 
+/*==============================================================================
+ * Function: SPI_SD_SetHighSpeed
+ *
+ * Purpose:
+ *   Switch SPI5 to full data-transfer speed after SD card initialization.
+ *   Must be called after ACMD41 succeeds and before any block read/write.
+ *
+ * Notes:
+ *   SPI5 kernel clock = PCLK2 = 100 MHz.
+ *   PRESCALER_4 → 25 MHz, which is the SD SPI mode specification maximum.
+ *==============================================================================*/
+void SPI_SD_SetHighSpeed(void) {
+    hspi5.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
+    (void) HAL_SPI_Init(&hspi5);
+}
+
 /* CMD17 (READ_SINGLE_BLOCK) data token for a valid data block. */
 #define SD_SPI_DATA_START_TOKEN_SINGLE_BLOCK_READ   (0xFEU)   /* 0xFE indicates the next 512 bytes are data. */
 #define SD_SPI_CMD17_STATUS_OK                       (0x00U)  /* Success. */
