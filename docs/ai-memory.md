@@ -290,7 +290,11 @@ Already split out:
 - Three root causes of the xSPI2 re-provisioning-every-cycle bug were fixed: (1) scalar verify used a memory-mapped read while xSPI2 was in indirect mode — switched to `AppAI_Xspi2ReadFlashProbe`; (2) a single shared `app_ai_xspi2_programmed_size` global caused wrong tail-check offset for the non-last-provisioned stage — replaced with per-stage size globals; (3) `app_ai_xspi2_initialized` flag was not cleared in `AppAI_ReconfigureXspi2ForRuntime` so `EnsureXspi2MemoryReady` skipped re-init into write mode. With separate flash regions and all three fixes in place, verify-on-startup should persist across inference cycles without SD card reads.
 - The brightness gate was also fixed: `CAMERA_CAPTURE_BRIGHTNESS_RETRY_LIMIT` raised from 8 to 16, `CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_DENOMINATOR` from 32 to 16, and `CAMERA_IMX335_SEED_GAIN_FRACTION_DENOMINATOR` from 8 to 4. These changes are in `app_camera_config.h`.
 - All the above firmware changes are in the source tree but not yet built or flashed as of 2026-04-16. The new binary needs a fresh STM32CubeIDE build followed by `flash_boot.bat FLASH_MODEL=1 FLASH_APP=1`.
-- Diagnostic logs were added to `AppAI_DecodeRectifierCropBox` and `AppAI_LogInferenceResult` to expose the raw rectifier box values and the scalar dequantization path. After flashing the new binary, look for `[AI] Rectifier raw output: cx=... cy=... w=... h=...` and `[AI] raw=%d head_zp=%d output_bits=0x%08lx` in the UART log to diagnose why rectifier falls back and why scalar reports 0.0. The most likely scalar-zero cause is `raw_output_value=0` with `head_zero_point>0`, producing a negative dequant value that becomes `-0.0f` (bits=`0x80000000`).
+- Rectifier diagnostics are now always-on in `AppAI_DecodeRectifierCropBox` via `APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS=1`. After flashing the new binary, look for `[AI] Rectifier raw: cx=... cy=... w=... h=...`, `[AI] Rectifier fallback -> fixed training crop: ...`, and `[AI] Rectifier box(clamped): ...` in the UART log to diagnose why the rectifier crop is drifting. The most likely scalar-zero cause is still `raw_output_value=0` with `head_zero_point>0`, producing a negative dequant value that becomes `-0.0f` (bits=`0x80000000`).
+- On the 2026-04-22 live board test, the rectifier raw output was numerically plausible (`cx=0.507 cy=0.457 w=0.660 h=0.773`) and decoded to `Crop rectifier: x=36 y=41 w=156 h=123`, but the scalar still read only about `4.2C` when the scene was actually about `28C`. That means the rectifier is not producing garbage, but its centre is still biased enough to move the crop away from the stable training framing. The next rectifier fix should focus on geometry/placement mismatch, not on the scalar head or xSPI2 packaging.
+- We then tightened Path 1 by blending the rectifier centre back toward the stable training-crop centre instead of following it outright. The current experiment uses a 1/5 rectifier blend against the fixed training anchor, so the crop should stay much closer to the scalar's trained framing while still moving a little. This is still untested on board and should be judged against the next UART log, not assumed to be correct yet.
+- The latest board log after the 1/5 blend produced `Rectifier raw: cx=0.496 cy=0.503 w=0.718 h=0.781` and `Crop rectifier: x=24 y=55 w=156 h=123`, which is now almost identical to the fixed training crop (`x≈23 y≈57 w=156 h=123`). The scalar still read about `6.9`, so at this point the crop geometry is mostly behaving and the remaining error is likely coming from something other than gross rectifier placement.
+- A new SD-card import landed a batch of unlabeled board-camera captures in `captured_images/` dated `2026-04-20` and `2026-04-22` (raw `.yuv422` files). These are the current candidate images for rectifier inspection/retraining, but they still need preview generation and label triage before we treat them as trustworthy training data.
 
 ## xSPI2 Dummy Cycle Root Cause (2026-04-17) — MUST READ before touching flash code
 
@@ -781,6 +785,85 @@ Four bugs fixed in `app_baseline_runtime.c`:
 
 4. **Coarse angle resolution** — 180 bins over 270° sweep = 1.5°/bin ≈ 1.5°C/bin at midrange. Doubled to 360 bins → 0.75°/bin for finer needle resolution. This adds 180 extra `AppBaselineRuntime_ScoreAngle` calls per frame; each call does 32 ray samples × 4 background samples = acceptable CPU budget at the baseline thread's low priority.
 
+## Scalar Fine-tune Iteration Round (2026-04-22) — CONCLUDED, prod_v0.2 WINS
+
+### Context
+
+Continued attempt to beat `prod_model_v0.2` (= `scalar_full_finetune_from_best_board30_clean_plus_new5`, hard-case MAE **4.445°C**, max err 13.59°C, 11 cases >5°C). This is the model currently flashed at `0x70200000`. Ran four more iterations on top of the rectified-crop work (v0). All four failed to beat prod.
+
+### Results (eval on `data/hard_cases_plus_board30_valid_with_new5.csv`, 31 hard cases, fixed crop unless noted)
+
+| Run | Approach | Hard-case MAE | Max err | Cases >5°C | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| **prod_v0.2** | clean_plus_new5, fixed crop | **4.445** | **13.59** | **11** | baseline |
+| v1 | rectifier crops, board-only RECTIFY | 7.46 | — | — | worse |
+| v2 | RECTIFY_ALL=1 (all images via rectifier) | 6.42 | — | — | worse |
+| v3 | AUG_HEAVY=1 (gamma/contrast/sat/hue), fixed crop, prod warm-start | 4.532 | 14.43 | 12 | tied/worse |
+| v4 | extreme-value upweighting (\|val\|>=25 ×16 effective), no aug, LR 5e-7 | 4.604 | 14.24 | 12 | tied/worse |
+
+### Why each iteration failed
+
+1. **v1/v2 (rectifier path):** rectifier v4 only has reliable boxes for 10 board-camera images out of 384. Forcing scalar to learn "rectified crop framing" introduced variance the small dataset couldn't absorb. Confirmed dead — do not retry rectifier path without first collecting more board-camera images and retraining the rectifier.
+2. **v3 (heavy aug):** train MAE went to 1.5 but val_mae degraded to 9.15 by epoch 9 → EarlyStopping fired. Heavy hue/saturation distorts dial colour cues the model relies on. Mild aug (±0.15 brightness, glare blobs only) is safe; heavy aug is not. Restored best weights = epoch 1 ≈ prod baseline. v3 marginally improved the April-9 dim images (06:50:28 went 2.04→0.43, 06:51:13 went 4.03→1.76) but regressed elsewhere.
+3. **v4 (extreme upweighting):** val_mae diverged immediately (8.34 → 11.26 across 9 epochs). Extreme-only upweighting overfits the 17 extreme manifest entries while the val set evaluates all 31 hard cases. Best weights = epoch 1, essentially prod with one nudge. Did NOT improve extremes (4.03 vs prod 3.99).
+
+### Key insight
+
+`prod_v0.2` is at a local optimum the warm-start fine-tune approach cannot escape. The remaining hard-case errors (m19c at 13.59°C, capture_2026-04-03_08-20-49 at 10.9°C) are likely **data-quality limited**, not model-capacity limited — both are cases of severe glare/dim where the gauge needle is genuinely ambiguous to a human looking at the cropped image.
+
+### What to try next (if returning to scalar improvement)
+
+- **More extreme-value training data** — current dataset has only ~20 examples at \|val\|≥25. Without more, no fine-tune can refine extremes.
+- **Different model architecture** — MobileNetV2 may be saturating on this dataset; try MobileNetV3-Small or efficient ViT.
+- **Reject-and-retry on board** — use brightness gate + confidence threshold to reject the worst captures rather than try to improve the model on them.
+
+### What NOT to try
+
+- Another warm-start fine-tune from `clean_plus_new5` with new aug/repeat tweaks. Four attempts have shown this converges to prod or worse.
+- Rectifier-based crop boxes for training, until a board-camera-trained rectifier exists.
+- Heavy photometric augmentation (saturation/hue) — confirmed harmful.
+
+### Operational lesson reinforced
+
+WSL on this machine **must** be restarted (`wsl --shutdown && sleep 3`) before EVERY training, eval, or python probe. Failure to restart causes processes to hang in `Dl+` (uninterruptible disk sleep), wasting hours of wall time. This rule is also saved as a feedback memory.
+
+## Rectified-Crop Scalar Fine-tune Experiment (2026-04-21) — CONCLUDED, FAILED
+
+### Goal
+
+Retrain the scalar model using rectifier-predicted crop boxes as training geometry, so the model is invariant to camera placement.
+
+### Approach
+
+1. Precompute rectifier v4 crop boxes for all 384 labeled images CPU-only → save to `ml/data/rectified_crop_boxes_v4_all.csv`
+2. Train scalar with `--precomputed-crop-boxes` flag (no rectifier in GPU memory → avoids OOM on GTX 1650 Ti Max-Q 2242 MB)
+3. Warm-start from `scalar_full_finetune_from_best_board30_clean_plus_new5`
+4. Scripts: `ml/scripts/run_precompute_rectifier_boxes.sh`, `ml/scripts/run_scalar_rectified_crop_finetune_v1.sh`
+5. Eval: `ml/scripts/_run_eval_rectified_v1.sh` — **must** evaluate old model with fixed crop and new model with rectifier crop (not both with rectifier crop — that was a bug that made old model look artificially good)
+
+### Why it failed
+
+The new model had **worse overall MAE** (7.5°C vs 4.4°C old) on the hard-case manifest. Root causes:
+
+1. **Rectifier v4 gives bad crop boxes on board-camera images** — `capture_0075.png`, `capture_p30c.png`, and the 3 April-9 images all got crop boxes that missed the needle. The rectifier was trained on a different image distribution.
+2. **April-9 captures are genuinely pathological** — extremely dark/underexposed (camera hadn't settled AEC). New model had 25–40°C errors on them. Old model got lucky (0.1–4°C errors) because fixed crop happened to work despite the darkness.
+3. **Heavy brightness augmentation (gamma darkening 25% @ gamma=[1,3]) hurt normal images** — forced the model to learn dark-image features that generalized poorly to normal frames.
+
+### Augmentation lessons
+
+- `tf.pow(image, gamma)` with gamma > 1 **will NaN if image has negative pixels** from `tf.image.random_brightness`. Always `tf.clip_by_value(image, 0, 1)` before any power/exp operation.
+- `tf.linspace` with dynamic `num` does not work in TF graph mode. Use `tf.range` + reshape/tile for coordinate grids.
+- Glare blob implementation via `tf.tensor_scatter_nd_update` + `tf.image.resize(bicubic)` works correctly in graph mode.
+- Mild augmentation (±0.15 brightness, 10% darkening gamma≤2, 20% glare blobs) is safe. Heavy augmentation (25% brightness, 25% darkening gamma≤3) degrades normal-image accuracy.
+
+### Conclusion
+
+The adaptive crop approach requires a **better rectifier** that reliably localizes the dial on board-camera images at varying distances. The current rectifier v4 is not reliable enough. `prod_model_v0.2` (fixed crop, `clean_plus_new5`) remains the deployed scalar model. Do not attempt adaptive crop again until the rectifier is validated on a set of board-camera captures specifically.
+
+### NaN training recovery protocol
+
+If a NaN run overwrites `scalar_rectified_crop_finetune_v1/model.keras`, the `$HOME/ml_eval_cache/` copy is also overwritten (script copies it before training starts). Must retrain from the prod base: set `BASE_MODEL_SRC` back to `scalar_full_finetune_from_best_board30_clean_plus_new5/model.keras`.
+
 ## Baseline Glare Robustness Fix (2026-04-19)
 
 **Problem:** Specular glare from gauge glass saturates pixels at dial centre. `EstimateCenterFromBrightPixels` centroid was pulled toward the glare blob. `ScoreAngle` rays passing through glare had `local_contrast ≤ 0` (both line and background saturated equally) → samples skipped → valid_sample_count near zero → score near zero → no confident peak → baseline always failed.
@@ -790,3 +873,235 @@ Four bugs fixed in `app_baseline_runtime.c`:
 - `ScoreAngle`: skip the entire sample if line pixel > 220; skip individual background samples > 220.
 
 **Confidence threshold:** Lowered `APP_BASELINE_CONFIDENCE_THRESHOLD` from 0.15 → 0.04. Glare frames produce confidence 50–110 after the fix, which is sufficient for ±10°C accuracy. Do not go below 0.03 — scores of 4 and 19 seen in the wild represent genuine noise (score ≈ runner_up, no real needle peak). The `score` and `runner_up` raw values in `[BASELINE] details:` are the ground truth; if `score - runner_up < 3`, the estimate is noise regardless of confidence value.
+
+## Baseline Confidence Formula Rework (2026-04-22) — UNTESTED ON BOARD
+
+**Problem observed:** With true temp = 27.6°C, AI inference was excellent (27.7, 27.4, 25.6, 27.7) but baseline oscillated wildly (47.3, 28.6, 46.2, 46.7) across 4 successive frames. All 4 selected the `bright-center` candidate. Score margins were 3, 4, 10, 5 — essentially noise — but the SNR-style confidence formula `1 - 1/snr` floored around 0.09 even for those, sailing past the 0.04 threshold.
+
+**Cause:** SNR formula `confidence = 1 - runner_up/best` is non-linear in margin. score=32 runner_up=29 → snr=1.10 → confidence=0.094. The "noise floor" of the formula was always above the threshold, so any selected candidate passed regardless of actual signal strength. Selection picked max(confidence) — bright-center always won when present, even at noise margins.
+
+**Fix:** Replaced confidence formula in `AppBaselineRuntime_EstimateFromCenterHypothesis` ([app_baseline_runtime.c L545-555](firmware/stm32/n657/Appli/Src/app_baseline_runtime.c)):
+
+```c
+const float margin = ((best_score > runner_up_score) ?
+        (best_score - runner_up_score) : 0.0f);
+estimate_out->confidence = AppBaselineRuntime_ClampFloat(margin / 100.0f, 0.0f, 1.0f);
+```
+
+Threshold `APP_BASELINE_CONFIDENCE_THRESHOLD` was previously raised from 0.04 to **0.08** (= margin >= 8 score units), then relaxed to **0.035** once the camera moved closer and the useful training-crop candidates started landing a little lower on confidence.
+
+**Closer-camera update (2026-04-22):** After moving the camera closer to the gauge, the baseline margins on otherwise useful frames dropped enough that the gate was lowered again to **0.035** so the training-crop candidate can still pass when the framing is tighter. Keep the 0.03 floor in reserve only if the close-up scene remains stable after more board samples.
+
+**Source-selection tweak (2026-04-22):** The baseline now keeps `training-crop` as the default anchor and only lets `bright-center` or `image-center` replace it if they beat it by more than `0.02` confidence. This is specifically to stop close-up frames from flipping to `image-center` on borderline scores like the `0.050` vs `0.068` case that produced `-23.1C`.
+
+**Latest close-up follow-up (2026-04-22):** The source-selection fix worked as intended. On the next close-up frames the baseline stayed on `training-crop` with healthy confidence (`0.058` to `0.126`) instead of flipping to `image-center`, but it still read about `35.1C` while the CNN read about `27C` to `28C`. That means the remaining problem is not candidate selection anymore; the classical baseline geometry / calibration is still biased for the new camera distance.
+
+**Hot-end follow-up (2026-04-22):** On a 50C needle position, the crop stayed stable (`x≈21..28`, `y≈52..58`, `156x123`) and the CNN clustered around `38.9C` to `41.9C`. The baseline was not a reliable correction signal here: one frame selected `bright-center` and jumped to `-26.0C`, while later frames either rejected low-confidence `training-crop` or landed around `38.0C` to `35.1C`. Practical takeaway: the remaining issue is a hot-end under-read in the CNN, not a crop/rectifier instability.
+
+**Cold-end follow-up (2026-04-22):** On a `-30C` needle position, the CNN landed around `-20.8C` to `-21.4C`, so the network is compressing toward the middle at the cold end too. The baseline stayed unstable: one frame picked `image-center` and reported `-21.5C`, while another selected `training-crop` and reported `36.4C`, then later frames rejected low-confidence baseline candidates altogether. Practical takeaway: the current live model is biased toward the middle across both extremes, and the classical baseline is not a dependable rescue path at the cold end either.
+
+**Low-end follow-up (2026-04-22):** On a `-10C` needle position, the first processed frame had the baseline choose `training-crop` and report `-22.4C`, while the CNN reported `1.2C`. A later frame tripped the brightness gate, got nudged darker, and the CNN swung to `22.3C`; another later frame landed at `17.0C` on the CNN and `36.6C` on the baseline. Practical takeaway: the cold end is still badly biased, and brightness-gate retries can shift the live input enough to make both baseline and CNN disagree by tens of degrees on the same nominal needle position.
+
+**Near-zero follow-up (2026-04-22):** On a `+5C` needle position, the brightness gate first flagged the frame as too bright, nudged exposure darker, and the CNN then read `22.3C`. Later frames on the same nominal position landed around `20.2C` and `21.4C`, while the baseline bounced between `36.6C`, `23.4C`, and a rejected `training-crop` candidate. Practical takeaway: the live model is still compressing toward the middle of the range, and the brightness gate is adding extra frame-to-frame variance at the low end without fixing the underlying bias.
+
+**Zero-point follow-up (2026-04-22):** On a true `0C` needle position, the settled CNN reads were about `19.6C` and `18.4C`, so the cold-end compression is still very real. The baseline was not a useful rescue path either: one frame rejected `training-crop` on confidence, another reported `16.6C`, and a later frame reported `18.4C`. Practical takeaway: the model is clustering in the high-teens even at zero, which points to calibration/data coverage rather than crop instability.
+
+**Midrange follow-up (2026-04-22):** On a true `25C` needle position, the settled CNN reads were about `19.9C` and `19.0C`, so the under-read is still present in the middle of the range, not just at the cold end. The baseline was again not helpful: the first frame rejected `training-crop`, and the next frame also rejected `training-crop` at low confidence. Practical takeaway: the current live model is compressed toward the middle across low and mid temperatures, and the baseline confidence gate is now mostly keeping noisy low-confidence frames out rather than supplying a better correction.
+
+**Post-calibration check (2026-04-22):** After enabling the firmware-side affine correction, a later true `25C` capture came back at `31.5C`, `34.0C`, and `36.1C` on three successive scalar reads. The rectifier crop stayed stable (`x=23..26, y=53..57, 156x123`), so the crop geometry is not the problem. The board-facing `Inference value` log is emitted after `AppInferenceCalibration_Apply()` in `app_ai.c`, so these are the final user-facing values, not raw network outputs. Practical takeaway: the current affine correction is still too hot for the closer-camera setup, and the remaining fix needs a fresh Windows-CPU calibration pass rather than more rectifier tuning.
+
+**Calibration swap (2026-04-22):** The affine correction above was too aggressive on the closer-camera board runs. Comparing the same `25C` raw outputs against both fits showed why: raw `27.232969 / 29.282764 / 31.039730` became `31.511239 / 33.961396 / 36.061529` with the affine fit, but only `27.370974 / 29.351145 / 31.048432` with the piecewise spline fit from `scalar_rectified_crop_finetune_v2_20260422_calibrated_spline`. The firmware calibration hook now uses the spline coefficients instead of the affine crop-box line because the piecewise curve keeps the board-side output much closer to the raw model on this close-up setup.
+
+**Fresh CPU refit (2026-04-22):** I reran the crop-domain calibration on Windows CPU against `hard_cases_plus_board30_valid_with_new6.csv`, and the freshly refit spline was not board-safe for the closer-camera live reads. It fit the old manifest poorly (`board_calibrated mean_abs_err=6.2656`) and mapped the live `25C` raw values `27.232969 / 29.282764 / 31.039730` to `-10.681015 / -8.700844 / -7.003556`. Do not use that fresh refit; keep the earlier spline coefficients in firmware until we collect closer-camera calibration data that actually spans the current live setup.
+
+**Replay against 4 logged frames:** 3 of 4 would now be rejected; only frame 3 (margin 10) passes — and it's still wrong (46.2°C). That's acceptable because AI got the right answer on all 4 — rejecting baseline noise costs nothing when AI is healthy.
+
+**Tuning guide:**
+
+- If too many frames rejected entirely → lower to 0.06 (margin >= 6)
+- If wrong answers still leak (single high-margin glare) → raise to 0.12 (margin >= 12)
+- Do NOT go below 0.035 without fresh close-up board data
+
+**Status:** Edited but not yet built/flashed/tested. Next session must verify on board and confirm the rejection log line `[BASELINE] Rejected low-confidence estimate` fires for the noise frames.
+
+## Rectifier+Scalar Plan (2026-04-22) — keep rectifier, beat prod
+
+### Why a plan, not just retraining
+
+Prod scalar (`scalar_full_finetune_from_best_board30_clean_plus_new5`, MAE 4.45°C) was trained on **fixed crop** but firmware feeds it **rectifier crops**. v1/v2 (retrain scalar on rectifier crops) both worsened MAE (7.46, 6.42). Root cause: only ~10 board-cam images in the rectified-boxes CSV; the scalar can't learn invariance to rectifier framing variation from that few samples. Yet the rectifier is desirable because gauge placement under the camera will vary in deployment.
+
+### Three paths considered
+
+**Path 1 — Soft attention (rectifier predicts center, fixed scale crop)**
+Use rectifier output only for `(cx, cy)`; ignore its `(w, h)`. Crop a fixed 168×105 box (= prod's training crop dimensions, in 240×192 frame: that's `(0.7*240, 0.547*192)` ≈ but actually the training crop was `(0.1027*ow→0.7987*ow, 0.2573*oh→0.8071*oh)` = ~167×106 from 240×192). Centre that fixed crop on rectifier's `(cx, cy)`. Scalar input distribution stays exactly within prod's training distribution (fixed scale, fixed aspect), but framing FOLLOWS the gauge wherever the camera puts it. **No retraining required.** Lowest risk, ~1 hour firmware change.
+
+**Path 2 — Distillation from prod onto rectifier crops**
+For each labeled image, run prod on its fixed crop → soft label. Train new scalar on rectifier-cropped image with loss = `α·MSE(pred, prod_soft) + (1-α)·MSE(pred, true)`, α≈0.7. New scalar inherits prod's accuracy in rectifier-crop space. v1/v2 used hard labels only; distillation gives more supervision per example, addressing the small-data limitation. Requires retraining + reflashing.
+
+**Path 3 — Crop-jitter augmentation (no rectifier in training)**
+Train scalar with random ±10% crop perturbations to make it robust to rectifier noise at inference. Cheaper than #2 but doesn't leverage prod knowledge.
+
+### Decision
+
+**Implement Path 1 first** (firmware-only, no retraining).
+
+- If readings stabilize across camera placements → ship it.
+- If still drifting under varying placement → add Path 2 on top (distillation).
+- Path 3 reserved as a generalization booster after #1+#2 settle.
+
+### Path 1 implementation notes (where to make the change)
+
+Need to find where the firmware extracts `(x, y, w, h)` from the rectifier output and uses it as the scalar crop input. From earlier logs:
+
+```text
+[AI] Rectifier crop: x=6 y=12 w=174 h=205
+[AI] Crop scalar: x=6 y=12 w=174 h=205
+```
+
+The scalar `Crop` line copies the rectifier `Crop`. The fix is to compute `cx = x + w/2`, `cy = y + h/2`, then **override** to `x = cx - 84`, `y = cy - 53`, `w = 168`, `h = 105` (clamped to frame). Look in `firmware/stm32/n657/Appli/Src/app_inference_runtime.c` (or app_camera_capture / wherever the per-stage crop is set) for the rectifier→scalar handoff.
+
+The fixed crop dimensions to match prod's training:
+
+- Training crop fractions: `x0=0.1027, x1=0.7987, y0=0.2573, y1=0.8071`
+- On native 240×192 frame: `x_range=[24.6, 191.7], y_range=[49.4, 154.9]` → ~167w × 106h
+- Use `w=168, h=106` (or whatever the firmware crop accepts as a fixed value).
+
+Centring: `crop_x = clamp(cx - w/2, 0, frame_w - w)`, `crop_y = clamp(cy - h/2, 0, frame_h - h)`.
+
+### Risk
+
+If rectifier's `(cx, cy)` is bad, the fixed crop will be off-centre and the scalar may regress. Mitigation: at firmware level, compare rectifier-derived `(cx, cy)` against frame-centre — if rectifier wandered off (>30 px from centre), fall back to fixed-position prod crop.
+
+### Status
+
+Plan recorded 2026-04-22. **Path 1 IMPLEMENTED 2026-04-22** in `firmware/stm32/n657/Appli/Src/app_ai.c`:
+
+- Added `APP_AI_RECTIFIER_FIXED_SCALE_CROP=1` build flag (set to 0 to revert to original rectifier-sized box behaviour).
+- Added centre-validity check `[0.10, 0.90]` (`APP_AI_RECTIFIER_CENTER_MIN_RATIO/MAX_RATIO`) — falls back to fixed training crop if rectifier centre wanders outside the central 80% of the frame.
+- In `AppAI_DecodeRectifierCropBox`, when soft-attention mode is on, the crop dimensions come from `APP_AI_TRAINING_CROP_*_RATIO` (= prod's training crop ≈ 156×124 on 224×224 frame) instead of `box_w * RECTIFIER_CROP_SCALE`. Centring on `(center_x, center_y)` and edge clamping unchanged.
+- Frame is **224×224** (not 240×192 as my earlier note said). Training crop in pixels: `x∈[23, 178], y∈[58, 181]` → 156w × 124h.
+
+Build/flash/test completed on the 2026-04-22 batch.
+
+- The fresh `capture_2026-04-22_07-*.yuv422` set is 26 raw board captures and the previews look like clean close-ups, not unreadable frames.
+- On that same 28C batch, the deployed `prod_model_v0.2_raw_int8` on the fixed training crop is still badly low: mean prediction `8.31C`, MAE `19.69C`.
+- The rectifier + prod-scalar chain is worse on the same batch: mean prediction `3.50C`, MAE `24.50C`. Several rectifier crops swing to near-full-frame or otherwise off-distribution boxes, so the rectifier is currently hurting rather than helping.
+- A later non-prod fine-tuned scalar checkpoint is less bad on the same fixed crop (mean `12.10C`, MAE `15.90C`) but still far from usable.
+- The new captures therefore point to a model/data mismatch as the dominant problem, not just crop placement or firmware plumbing.
+
+## Crop-box calibration result (2026-04-22)
+
+The useful evaluation domain is the **precomputed crop-box path**, not the full-image fixed-crop path. On the combined board manifest `data/hard_cases_plus_board30_valid_with_new6.csv` using `data/rectified_crop_boxes_v5_all.csv`:
+
+- Raw `scalar_rectified_crop_finetune_v2_20260422` crop-box metrics: overall MAE `5.51C`, new `28C` batch MAE `5.04C`, hard-case MAE `5.91C`.
+- An affine calibration fit on those crop-box predictions gave `scale=1.195318` and `bias=-1.040825`.
+- Calibrated crop-box metrics improved to overall MAE `3.77C`, new `28C` batch MAE `2.50C`, hard-case MAE `4.84C`.
+- After int8 export, the board-ready TFLite stayed close: overall MAE `4.23C`, new `28C` batch MAE `3.47C`, hard-case MAE `4.87C`.
+
+The calibrated board artifact is now staged at:
+
+- `ml/artifacts/deployment/scalar_rectified_crop_finetune_v2_20260422_calibrated_cropbox_affine_int8/model_int8.tflite`
+- Canonical STM32 N6 raw blob refreshed at `st_ai_output/atonbuf.xSPI2.raw`
+
+Important takeaway: the earlier fixed-crop and full-image calibration tests were misleading for this model. The crop-box-domain fit is the one that matches the deployed board path.
+
+### Board-side rollback note
+
+After flashing, the affine-calibrated board path produced a non-finite scalar output on the N6 (`Inference bits=0x7fc00000`, logged as `0.0` by the app). The crop itself still looked reasonable (`Rectifier crop: x=27 y=52 w=156 h=123`), so the failure was in the flashed scalar artifact rather than the crop geometry.
+
+To recover a finite board baseline, the canonical blob was rolled back to the raw rectified scalar model:
+
+- `ml/artifacts/deployment/scalar_rectified_crop_finetune_v2_20260422_int8/model_int8.tflite`
+- `st_ai_output/atonbuf.xSPI2.raw`
+
+The rectifier blob remains stale (`st_ai_output/atonbuf.rectifier.xSPI2.raw` last updated 2026-04-20), so the rectifier signature mismatch is still expected until that model is repackaged too.
+
+### Firmware calibration swap (2026-04-22)
+
+The board-side `AppInferenceCalibration_Apply()` hook is now enabled again, but as a firmware postprocess rather than as a calibration layer inside the model graph. The active fit is the crop-box affine calibration from `scalar_rectified_crop_finetune_v2_20260422_calibrated_cropbox_affine`:
+
+- scale `1.1953182220458984`
+- bias `-1.0408254861831665`
+
+This is the board-safe version of the CPU-calibrated correction, because the int8 export path for the in-graph calibration was the thing that produced `NaN` on the board earlier.
+
+### Non-finite output guardrail
+
+The firmware inference path now preserves `NaN`/`Inf` in the shared float formatter and rejects non-finite scalar outputs before they can poison the EMA smoothing state. If the model ever emits a bad output again, the UART log will show it explicitly instead of silently collapsing to `0.0`, and `App_AI_RunDryInferenceFromYuv422()` will return failure for that capture.
+
+### Sweep split sanity (2026-04-22)
+
+We do not need new captures to keep iterating. The broad sweep is already in `ml/data/full_labelled_plus_board30_valid_with_new5.csv` and spans the whole range with 383 samples, while `ml/data/hard_cases_plus_board30_valid_with_new6.csv` is only 57 samples and is heavily skewed toward the new `28C` close-up batch. `ml/data/hard_cases.csv` is even smaller at 19 samples, and `ml/data/board_weak_focus.csv` is just 9 edge cases.
+
+The missing research step is to fit and score against the broad sweep first, then hold out the narrow board-close-up sets for validation. If we keep calibrating on the 28C-heavy slice, we will keep overfitting the current camera placement instead of learning a correction that survives the rest of the temperature range.
+
+### Broad sweep calibration check (2026-04-22)
+
+I ran the broad-sweep-only piecewise fit on `ml/data/full_labelled_plus_board30_valid_with_new5.csv` against the current raw rectified model. It improved the fit set only modestly (`raw MAE 12.1264C` -> `calibrated MAE 10.0344C`) and did not generalize to the held-out close-up batch `ml/data/hard_cases_plus_board30_valid_with_new6.csv` (`raw MAE 14.9329C` -> `calibrated MAE 12.0227C`).
+
+For comparison, the existing crop-box affine board artifact is even worse on that holdout (`15.6321C` MAE), so the problem is not just the calibration family. The close-up board domain still needs either a retrained model or a calibration fit that explicitly includes those closer-camera captures.
+
+### Board probe manifest (2026-04-22)
+
+I added `ml/data/board_rectified_probe_20260422.csv`, which contains 39 `captured_images/_live_rectified_probe/**/board_crop.png` samples. These are the closest thing we have to the deployed scalar input domain because they are already the rectified board crops, not the full raw frames.
+
+That probe set confirmed the current raw rectified scalar model is decent on the close-up crop domain, but the existing crop-box affine calibration is still the best board-safe correction we have:
+
+- Raw crop-domain MAE on the probe set: `4.7584C`
+- Existing crop-box affine calibration on the probe set: `3.2117C`
+- The newer board-probe affine fit was not better than the crop-box affine result, so the firmware should stay on the simpler crop-box affine correction instead of the older piecewise curve.
+
+The firmware calibration hook was switched back to the crop-box affine coefficients:
+
+- scale `1.1953182220458984`
+- bias `-1.0408254861831665`
+
+That means the board now uses the mild affine correction derived from the crop-domain probe set, which is a much better match for the current close-up camera placement than the previous piecewise firmware curve.
+
+### 10C board follow-up (2026-04-22)
+
+On a true `10C` board reading, the calibrated scalar now lands in the right band on at least one frame: `6.309641C` on the first capture and `10.509908C` on the next capture. The rectifier crop stayed stable (`x=21 y=56 w=156 h=123`), so the remaining spread is likely frame-to-frame capture variance rather than gross geometry drift.
+
+The classical baseline was still unreliable on the same setpoint: one frame reported `11.0C` via `bright-center`, while a later frame jumped to `40.0C` on `bright-center`. That reinforces the current conclusion that the baseline should not be used to correct the board-side scalar path on this close-up setup.
+
+### 30C board follow-up (2026-04-22)
+
+On a true `30C` board reading, the calibrated scalar is close and slightly hot: `31.161217C`, `31.511238C`, `31.861261C`, and `32.211285C` across a stable crop (`x=25 y=56..57 w=156 h=123`). This is the first point where the board-side affine correction looks broadly right without any crop instability.
+
+The classical baseline is still not a dependable correction signal on the same setpoint: it either rejects the frame for low confidence or flips to the wrong source, while the calibrated AI path stays near the target band.
+
+### 50C board follow-up (2026-04-22)
+
+On a true `50C` board reading, the calibrated scalar now lands a bit low but still in the right region: `44.812084C`, `45.162106C`, `45.162106C`, and `43.061974C` across a stable crop (`x=30 y=61..63 w=156 h=123`). The crop is still stable, so the remaining error is calibration bias at the hot end rather than a geometry problem.
+
+The classical baseline remained unusable on the same setpoint, either rejecting the frame or settling on an off-target source, so it is still not a good correction signal for the close-up board setup.
+
+### 0C board follow-up (2026-04-22)
+
+On a true `0C` board reading, the calibrated scalar is now close and slightly low: `-1.740870C` and `-1.390848C` across a stable crop (`x=22 y=57..59 w=156 h=123`). That is a much healthier result than the earlier midrange-compressed outputs, and it suggests the affine firmware correction is now tracking the cold end reasonably well.
+
+The classical baseline was still noisy on the same setpoint, reporting `4.5C` and `7.0C` via `bright-center`, so it remains unsuitable as a correction signal on the closer camera setup.
+
+### -25C board follow-up (2026-04-22)
+
+On a true `-25C` board reading, the calibrated scalar stays close to target: `-23.792269C` and `-24.492313C` across a stable crop (`x=27 y=62..63 w=156 h=123`). This is another strong sign that the board-side affine correction is holding up at the cold end instead of collapsing toward the middle.
+
+The classical baseline remained far off on the same setpoint, estimating `42.0C` and `36.6C`, so it still should not be used as a correction signal for this close-up setup.
+
+### Baseline diagnosis (2026-04-22)
+
+The classical baseline is not failing because the angle-to-temperature mapping is wrong. The sweep mapping itself is a fixed `135deg -> -30C` to `405deg -> 50C` linear conversion, and the ray scorer can still produce plausible angles when the center is correct.
+
+What is breaking it on the closer board setup is the *center hypothesis selection* and glare sensitivity:
+
+- `bright-center` often locks onto reflection-heavy pixels and wins by confidence even when its temperature is nonsense.
+- `training-crop` is usually the most stable anchor, but it is often rejected by the confidence gate because the margin is small.
+- `image-center` sometimes sneaks in as a borderline winner even when the geometry is clearly worse than the training crop.
+
+If we want to improve the baseline next, the best move is probably to stop letting bright-center/image-center override the stable training crop unless they are clearly better, or to turn the baseline into a fixed-center sanity check instead of a competing estimator.
+
+### Baseline conservative mode (2026-04-22)
+
+The classical baseline was tightened to favor the stable `training-crop` path and to reject more low-confidence frames rather than surfacing glare-driven outliers. The confidence floor is now higher (`0.055`), and the bright-center/image-center override logic was removed so the training crop stays the production anchor whenever it is available.
+
+This is a deliberate tradeoff: the baseline may report less often, but when it does report it should stay closer to the real reading instead of jumping to nonsense hot/cold values on borderline frames.

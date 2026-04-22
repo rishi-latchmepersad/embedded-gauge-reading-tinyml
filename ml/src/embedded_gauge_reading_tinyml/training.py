@@ -6,6 +6,7 @@ from dataclasses import replace
 import csv
 from dataclasses import dataclass
 import math
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -118,6 +119,7 @@ class TrainConfig:
     edge_focus_strength: float = DEFAULT_EDGE_FOCUS_STRENGTH
     rectifier_model_path: str | None = None
     rectifier_crop_scale: float = 1.5
+    precomputed_crop_boxes_path: str | None = None
     model_family: Literal[
         "compact",
         "compact_direction",
@@ -144,6 +146,7 @@ class TrainConfig:
     mobilenet_head_dropout: float = DEFAULT_MOBILENET_HEAD_DROPOUT
     hard_case_manifest: str | None = None
     hard_case_repeat: int = 0
+    val_manifest: str | None = None
     init_model_path: str | None = None
     monotonic_pair_strength: float = 0.0
     monotonic_pair_margin: float = 0.0
@@ -797,6 +800,91 @@ def _predict_rectifier_crop_box(
     return (x_min_orig, y_min_orig, x_max_orig, y_max_orig)
 
 
+def _is_board_capture(image_path: str) -> bool:
+    """Return True if this image came from the STM32 board camera.
+
+    Board captures are PNG files with 4-digit names (capture_NNNN.png),
+    ISO-timestamp names (capture_2026-*.png), or from today_converted/.
+    Phone photos are .jpg files or PXL_* raw files and should NOT have
+    rectifier boxes applied — the rectifier was trained on board framing.
+    """
+    p = Path(image_path)
+    if p.suffix.lower() != ".png":
+        return False
+    name = p.stem  # e.g. "capture_0007" or "capture_2026-04-03_08-20-49"
+    if "today_converted" in str(image_path):
+        return True
+    # 4-digit numbered captures: capture_NNNN
+    if name.startswith("capture_") and name[8:].isdigit():
+        return True
+    # Timestamp captures: capture_YYYY-MM-DD_HH-MM-SS or capture_YYYY-MM-DD_*
+    import re as _re
+    if _re.match(r"capture_\d{4}-\d{2}-\d{2}", name):
+        return True
+    return False
+
+
+def _apply_precomputed_crop_boxes(
+    examples: list[TrainingExample],
+    *,
+    csv_path: Path,
+) -> list[TrainingExample]:
+    """Replace crop_box_xyxy on board-camera examples using a precomputed CSV lookup.
+
+    Phone photos (.jpg, PXL_*) are left with their original fixed crop so the
+    scalar only learns rectifier-crop framing from the same board-camera domain
+    it will see at inference time.
+    """
+    import csv as _csv
+
+    # Build lookup by both the raw CSV path AND its resolved absolute path so
+    # we match regardless of whether training examples use absolute or relative paths.
+    boxes: dict[str, tuple[float, float, float, float]] = {}
+    with open(csv_path, newline="") as f:
+        for row in _csv.DictReader(f):
+            box = (float(row["x0"]), float(row["y0"]), float(row["x1"]), float(row["y1"]))
+            rel = row["image_path"]
+            boxes[rel] = box
+            abs_path = (ML_ROOT / rel).resolve()
+            boxes[str(abs_path)] = box
+            boxes[Path(rel).name] = box  # filename-only fallback
+
+    # RECTIFY_ALL=1 → apply rectifier boxes to every example with a CSV match
+    # (true 2-stage training: scalar always sees rectifier-crop framing).
+    # Default (RECTIFY_ALL unset) → board captures only (preserves phone-photo fixed crop).
+    rectify_all: bool = os.environ.get("RECTIFY_ALL", "0") == "1"
+
+    out: list[TrainingExample] = []
+    updated = 0
+    skipped_not_board = 0
+    skipped_no_box = 0
+    for ex in examples:
+        if (not rectify_all) and (not _is_board_capture(ex.image_path)):
+            out.append(ex)
+            skipped_not_board += 1
+            continue
+        key = str(Path(ex.image_path))
+        stem = Path(ex.image_path).name
+        if key in boxes:
+            out.append(replace(ex, crop_box_xyxy=boxes[key]))
+            updated += 1
+        elif stem in boxes:
+            out.append(replace(ex, crop_box_xyxy=boxes[stem]))
+            updated += 1
+        else:
+            out.append(ex)
+            skipped_no_box += 1
+
+    print(
+        f"[TRAIN] Precomputed crop boxes applied (rectify_all={rectify_all}): "
+        f"{len(out)} examples, {updated} updated with rectifier box, "
+        f"{skipped_not_board} skipped (not board capture), "
+        f"{skipped_no_box} missing box (kept original crop).",
+        flush=True,
+    )
+    return out
+
+
 def _rectify_examples_for_scalar(
     examples: list[TrainingExample],
     *,
@@ -881,7 +969,84 @@ def _split_examples(
     examples: list[TrainingExample],
     config: TrainConfig,
 ) -> DatasetSplit:
-    """Split examples into train/val/test with a fixed random seed."""
+    """Split examples into train/val/test with a fixed random seed.
+
+    If config.val_manifest is set, the val set is loaded directly from that
+    CSV and all remaining examples go into train/test. This ensures EarlyStopping
+    monitors a representative fixed set rather than a random slice that may not
+    cover both phone and board capture domains.
+    """
+    import csv as _csv
+
+    if config.val_manifest is not None:
+        val_manifest_path = Path(config.val_manifest)
+        if not val_manifest_path.is_absolute():
+            val_manifest_path = ML_ROOT / val_manifest_path
+
+        # Load val examples directly from the manifest (same path resolution as
+        # _load_hard_case_examples: relative paths are resolved against REPO_ROOT
+        # because captured_images/ lives at repo root, not inside ml/).
+        val_examples: list[TrainingExample] = []
+        val_abs_paths: set[str] = set()
+        with open(val_manifest_path, newline="") as f:
+            for row in _csv.DictReader(f):
+                rel = row["image_path"]
+                raw = Path(rel)
+                img_path = raw if raw.is_absolute() else (REPO_ROOT / raw)
+                abs_str = str(img_path.resolve())
+                val_abs_paths.add(abs_str)
+                val_abs_paths.add(img_path.name)
+
+        # Try to match manifest entries against existing examples first (they may
+        # already be in the main dataset).  Any manifest entry not found in
+        # examples will be loaded via _load_hard_case_examples after this split.
+        val_examples = [e for e in examples if
+                        str(Path(e.image_path).resolve()) in val_abs_paths or
+                        Path(e.image_path).name in val_abs_paths]
+
+        # If none matched the main pool, load them directly from the manifest so
+        # the val set is never empty (hard-case manifests are loaded after split).
+        if not val_examples:
+            val_examples = _load_hard_case_examples(
+                val_manifest_path,
+                image_height=config.image_height,
+                image_width=config.image_width,
+            )
+
+        # Exclude any val images from the main pool to avoid train/val leakage.
+        val_names: set[str] = {Path(e.image_path).name for e in val_examples}
+        remaining = [e for e in examples if Path(e.image_path).name not in val_names]
+        print(
+            f"[TRAIN] val_manifest: {len(val_examples)} val examples, {len(remaining)} remaining for train/test",
+            flush=True,
+        )
+
+        if len(val_examples) == 0:
+            raise ValueError(
+                f"val_manifest loaded 0 examples from {val_manifest_path}. "
+                "Check that image files exist and manifest has image_path+value columns."
+            )
+        if len(remaining) < 2:
+            raise ValueError("val_manifest consumed all examples; check manifest paths.")
+
+        remaining_idx = np.arange(len(remaining))
+        test_size = max(1, int(len(remaining) * config.test_fraction))
+        train_idx, test_idx = train_test_split(
+            remaining_idx,
+            test_size=test_size,
+            random_state=config.seed,
+            shuffle=True,
+        )
+        print(
+            f"[TRAIN] val_manifest split: train={len(train_idx)} val={len(val_examples)} test={len(test_idx)}",
+            flush=True,
+        )
+        return DatasetSplit(
+            train_examples=[remaining[i] for i in train_idx],
+            val_examples=val_examples,
+            test_examples=[remaining[i] for i in test_idx],
+        )
+
     if len(examples) < 3:
         raise ValueError("Need at least 3 examples to create train/val/test splits.")
 
@@ -1363,8 +1528,41 @@ def _load_crop_with_geometry_uncertainty_weight(
     return image, targets, sample_weights
 
 
+def _augment_glare_blobs(image: tf.Tensor) -> tf.Tensor:
+    """Stamp 1–3 bright glare blobs via resized gaussian noise. Simulates specular reflections on gauge glass."""
+    # Generate blobs at a fixed small resolution then resize up — avoids dynamic meshgrid entirely.
+    BLOB_RES = 32
+    mask = tf.zeros([BLOB_RES, BLOB_RES, 1], dtype=tf.float32)
+    for _ in range(3):
+        active = tf.cast(tf.random.uniform([]) < 0.5, tf.float32)
+        cx = tf.random.uniform([], 2, BLOB_RES - 2, dtype=tf.float32)
+        cy = tf.random.uniform([], 2, BLOB_RES - 2, dtype=tf.float32)
+        # Draw a single bright pixel at (cy, cx) with strength, then blur via resize
+        brightness = tf.random.uniform([], 0.5, 1.0) * active
+        # Use a small dense gaussian kernel: encode as a 1-pixel impulse scaled by brightness
+        # We approximate the blob by creating a [BLOB_RES, BLOB_RES] tensor with one hot pixel
+        # and relying on bilinear resize to spread it.
+        cy_i = tf.cast(tf.round(cy), tf.int32)
+        cx_i = tf.cast(tf.round(cx), tf.int32)
+        # Scatter a bright spot
+        idx = tf.stack([cy_i, cx_i, 0])
+        spot = tf.tensor_scatter_nd_update(
+            tf.zeros([BLOB_RES, BLOB_RES, 1], dtype=tf.float32),
+            [idx],
+            [brightness],
+        )
+        mask = mask + spot
+
+    # Resize to image size with bicubic to spread the spots into soft blobs
+    image_shape = tf.shape(image)
+    mask = tf.image.resize(mask, [image_shape[0], image_shape[1]], method="bicubic")
+    mask = tf.clip_by_value(mask, 0.0, 1.0)  # [H, W, 1] broadcast across channels
+    image = image + mask * (1.0 - image)
+    return tf.clip_by_value(image, 0.0, 1.0)
+
+
 def _augment_image(image: tf.Tensor) -> tf.Tensor:
-    """Apply light photometric augmentation that preserves gauge geometry."""
+    """Apply photometric augmentation that preserves gauge geometry."""
     image_shape: tf.Tensor = tf.shape(image)
     image_h: tf.Tensor = image_shape[0]
     image_w: tf.Tensor = image_shape[1]
@@ -1380,19 +1578,128 @@ def _augment_image(image: tf.Tensor) -> tf.Tensor:
     image = tf.image.random_crop(image, size=[crop_h, crop_w, 3])
     image = tf.image.resize(image, [image_h, image_w])
 
-    image = tf.image.random_brightness(image, max_delta=0.1)
-    image = tf.image.random_contrast(image, lower=0.85, upper=1.15)
-    image = tf.image.random_saturation(image, lower=0.9, upper=1.1)
+    # AUG_HEAVY=1 → stronger photometric augmentation for board-domain robustness.
+    aug_heavy: bool = os.environ.get("AUG_HEAVY", "0") == "1"
+    if aug_heavy:
+        image = tf.image.random_brightness(image, max_delta=0.25)
+        image = tf.image.random_contrast(image, lower=0.65, upper=1.35)
+        image = tf.image.random_saturation(image, lower=0.80, upper=1.20)
+        image = tf.image.random_hue(image, max_delta=0.04)
+    else:
+        image = tf.image.random_brightness(image, max_delta=0.15)
+        image = tf.image.random_contrast(image, lower=0.80, upper=1.20)
+        image = tf.image.random_saturation(image, lower=0.9, upper=1.1)
+    # Clip to valid range before any pow/exp operations to prevent NaN from negative bases.
+    image = tf.clip_by_value(image, 0.0, 1.0)
+
+    if aug_heavy:
+        # Wider gamma sweep at higher rate: covers under- AND over-exposed captures.
+        gamma_dark: tf.Tensor = tf.random.uniform([], minval=1.0, maxval=2.5, dtype=tf.float32)
+        apply_dark: tf.Tensor = tf.random.uniform([]) < 0.30
+        image = tf.where(apply_dark, tf.pow(image, gamma_dark), image)
+        gamma_bright: tf.Tensor = tf.random.uniform([], minval=0.5, maxval=1.0, dtype=tf.float32)
+        apply_bright: tf.Tensor = tf.random.uniform([]) < 0.15
+        image = tf.where(apply_bright, tf.pow(image, gamma_bright), image)
+    else:
+        gamma: tf.Tensor = tf.random.uniform([], minval=1.0, maxval=2.0, dtype=tf.float32)
+        apply_dark: tf.Tensor = tf.random.uniform([]) < 0.10
+        image = tf.where(apply_dark, tf.pow(image, gamma), image)
+
+    # Simulate specular glare patches on gauge glass (20% chance).
+    apply_glare: tf.Tensor = tf.random.uniform([]) < 0.20
+    image = tf.cond(
+        apply_glare,
+        lambda: _augment_glare_blobs(image),
+        lambda: image,
+    )
 
     noise: tf.Tensor = tf.random.normal(
         shape=tf.shape(image),
         mean=0.0,
-        stddev=0.01,
+        stddev=0.015,
         dtype=tf.float32,
     )
     image = image + noise
     image = tf.clip_by_value(image, 0.0, 1.0)
     return image
+
+
+def _augment_rectifier_image_and_box(
+    image: tf.Tensor,
+    box: tf.Tensor,
+) -> tuple[tf.Tensor, tf.Tensor]:
+    """Geometric + photometric augmentation for the rectifier training path.
+
+    Randomly zooms into a sub-region of the 224x224 padded canvas so the model
+    sees dial sizes ranging from ~30% to 100% of the frame — covering both the
+    far-away phone-photo distribution and close-up board-camera framing.
+
+    The target box (cx, cy, w, h) in [0,1] canvas coords is recomputed to stay
+    consistent with the zoomed view.  If the zoom window clips the dial box we
+    clamp it so the target always describes the visible portion of the dial.
+    """
+    image_shape: tf.Tensor = tf.shape(image)
+    canvas: tf.Tensor = tf.cast(image_shape[0], tf.float32)  # square 224
+
+    # --- random zoom window in canvas pixels ---
+    # zoom_scale in [0.40, 1.0]: 0.40 → 2.5x zoom-in (close-up), 1.0 → full frame
+    zoom_scale: tf.Tensor = tf.random.uniform([], minval=0.40, maxval=1.0)
+    win_size: tf.Tensor = canvas * zoom_scale
+
+    max_offset: tf.Tensor = tf.maximum(canvas - win_size, 0.0)
+    off_x: tf.Tensor = tf.random.uniform([], minval=0.0, maxval=1.0) * max_offset
+    off_y: tf.Tensor = tf.random.uniform([], minval=0.0, maxval=1.0) * max_offset
+
+    # crop then resize back to canvas
+    off_y_i = tf.cast(tf.math.floor(off_y), tf.int32)
+    off_x_i = tf.cast(tf.math.floor(off_x), tf.int32)
+    win_i = tf.cast(tf.math.ceil(win_size), tf.int32)
+    win_i = tf.maximum(win_i, 2)
+    win_i = tf.minimum(win_i, image_shape[0] - off_y_i)
+    win_i_w = tf.minimum(win_i, image_shape[1] - off_x_i)
+    image = tf.image.crop_to_bounding_box(image, off_y_i, off_x_i, win_i, win_i_w)
+    image = tf.image.resize(image, [image_shape[0], image_shape[1]])
+
+    # --- recompute box target in zoomed canvas coords ---
+    # input box: [cx, cy, w, h] all in [0,1] relative to original 224x224
+    cx = box[0] * canvas
+    cy = box[1] * canvas
+    bw = box[2] * canvas
+    bh = box[3] * canvas
+
+    x_min = cx - bw * 0.5
+    y_min = cy - bh * 0.5
+    x_max = cx + bw * 0.5
+    y_max = cy + bh * 0.5
+
+    # map original canvas coords → zoomed canvas coords
+    x_min_z = (x_min - off_x) / win_size * canvas
+    y_min_z = (y_min - off_y) / win_size * canvas
+    x_max_z = (x_max - off_x) / win_size * canvas
+    y_max_z = (y_max - off_y) / win_size * canvas
+
+    # clamp to [0, canvas]
+    x_min_z = tf.clip_by_value(x_min_z, 0.0, canvas)
+    y_min_z = tf.clip_by_value(y_min_z, 0.0, canvas)
+    x_max_z = tf.clip_by_value(x_max_z, 0.0, canvas)
+    y_max_z = tf.clip_by_value(y_max_z, 0.0, canvas)
+
+    new_cx = tf.clip_by_value(((x_min_z + x_max_z) * 0.5) / canvas, 0.0, 1.0)
+    new_cy = tf.clip_by_value(((y_min_z + y_max_z) * 0.5) / canvas, 0.0, 1.0)
+    new_w = tf.clip_by_value((x_max_z - x_min_z) / canvas, 0.0, 1.0)
+    new_h = tf.clip_by_value((y_max_z - y_min_z) / canvas, 0.0, 1.0)
+    new_box = tf.stack([new_cx, new_cy, new_w, new_h])
+
+    # photometric augmentation (same as scalar path)
+    image = tf.image.random_brightness(image, max_delta=0.15)
+    image = tf.image.random_contrast(image, lower=0.80, upper=1.20)
+    image = tf.image.random_saturation(image, lower=0.85, upper=1.15)
+    noise: tf.Tensor = tf.random.normal(
+        shape=tf.shape(image), mean=0.0, stddev=0.01, dtype=tf.float32
+    )
+    image = tf.clip_by_value(image + noise, 0.0, 1.0)
+
+    return image, new_box
 
 
 def _build_tf_dataset(
@@ -1797,6 +2104,11 @@ def _build_tf_dataset(
             ),
             num_parallel_calls=tf.data.AUTOTUNE,
         )
+        if config.augment_training:
+            dataset = dataset.map(
+                lambda img, y, w: (*_augment_rectifier_image_and_box(img, y), w),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
     elif training and target_kind == "ordinal_thresholds":
         if config.mixup_alpha > 0.0:
             raise ValueError(
@@ -2566,7 +2878,7 @@ def _make_training_callbacks(*, monitor: str = "val_mae") -> list[keras.callback
             mode="min",
             factor=0.5,
             patience=3,
-            min_lr=1e-6,
+            min_lr=1e-7,
         ),
     ]
 
@@ -2807,7 +3119,17 @@ def train(config: TrainConfig) -> TrainingResult:
                 f"added={len(repeated_hard_cases)}"
             )
 
-    if config.rectifier_model_path:
+    if config.precomputed_crop_boxes_path:
+        print("[TRAIN] step: apply-precomputed-crop-boxes", flush=True)
+        boxes_path: Path = Path(config.precomputed_crop_boxes_path)
+        if not boxes_path.is_absolute():
+            boxes_path = ML_ROOT / boxes_path
+        split = DatasetSplit(
+            train_examples=_apply_precomputed_crop_boxes(split.train_examples, csv_path=boxes_path),
+            val_examples=_apply_precomputed_crop_boxes(split.val_examples, csv_path=boxes_path),
+            test_examples=_apply_precomputed_crop_boxes(split.test_examples, csv_path=boxes_path),
+        )
+    elif config.rectifier_model_path:
         print("[TRAIN] step: rectified-scalar-preprocess", flush=True)
         rectifier_model_path: Path = Path(config.rectifier_model_path)
         if not rectifier_model_path.is_absolute():

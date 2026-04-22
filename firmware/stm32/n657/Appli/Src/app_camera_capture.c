@@ -772,6 +772,7 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 					CAMERA_CAPTURE_BRIGHTNESS_SETTLE_DELAY_MS);
 					continue;
 				}
+				CameraPlatform_CacheAcceptedExposureGain();
 			}
 
 			break;

@@ -34,7 +34,18 @@
       "Bash(wsl -d Ubuntu-24.04 -e sh -c \"nvidia-smi\")",
       "Bash(wsl -d Ubuntu-24.04 -e sh -c 'export PATH=\"$HOME/.local/bin:$PATH\" && cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml && poetry run python -c \"import tensorflow as tf; import keras; print\\('\\\\''TF:'\\\\'', tf.__version__\\); print\\('\\\\''Keras:'\\\\'', keras.__version__\\)\"')",
       "Bash(wsl -d Ubuntu-24.04 -e sh -c \"ls /mnt/d/Projects/embedded-gauge-reading-tinyml/ml/artifacts/training/scalar_full_finetune_from_best_spline_v2/ 2>&1 && cat /mnt/d/Projects/embedded-gauge-reading-tinyml/ml/artifacts/training/scalar_full_finetune_from_best_spline_v2/metrics.json 2>&1\")",
-      "Bash(wsl -d Ubuntu-24.04 -e sh -c \"echo ready\")"
+      "Bash(wsl -d Ubuntu-24.04 -e sh -c \"echo ready\")",
+      "PowerShell(wsl -d Ubuntu-24.04 bash -c \"cp /tmp/full_frame.png /tmp/fixed_crop.png /mnt/d/Projects/embedded-gauge-reading-tinyml/docs/baseline_step_images/ 2>/dev/null || cp /tmp/full_frame.png /tmp/fixed_crop.png /mnt/d/Projects/embedded-gauge-reading-tinyml/\" 2>&1)",
+      "Read(//d/Projects/embedded-gauge-reading-tinyml/**)",
+      "PowerShell(wsl -d Ubuntu-24.04 bash -c \"cp /tmp/train_crop_15-46-04.png /tmp/train_crop_08-20-49.png /mnt/d/Projects/embedded-gauge-reading-tinyml/\" 2>&1)",
+      "PowerShell(wsl -d Ubuntu-24.04 bash /mnt/d/Projects/embedded-gauge-reading-tinyml/ml/scripts/_run_visualise_rectifier_crop.sh 2>&1)",
+      "PowerShell(wsl -d Ubuntu-24.04 bash -c \"which python3 && python3 -c 'import tensorflow' 2>&1 || echo 'TF not found in default python3'\" 2>&1)",
+      "PowerShell(wsl -d Ubuntu-24.04 bash -c \"export PATH=/home/rishi_latchmepersad/.local/bin:$PATH; which python3 && python3 -c 'import tensorflow; print\\(tensorflow.__version__\\)' 2>&1\" 2>&1)",
+      "PowerShell(wsl -d Ubuntu-24.04 bash /mnt/d/Projects/embedded-gauge-reading-tinyml/ml/scripts/_run_quick_scalar_probe.sh 2>&1)",
+      "PowerShell(head -5)",
+      "PowerShell(wsl -d Ubuntu-24.04 bash -c \"find /home/rishi_latchmepersad -name 'tensorflow' -maxdepth 8 -type d 2>/dev/null | head -5\" 2>&1)",
+      "PowerShell(wsl -d Ubuntu-24.04 bash -c \"/home/rishi_latchmepersad/tmp-tf-gpu-test/bin/pip install Pillow -q 2>&1 | tail -3\" 2>&1)",
+      "PowerShell(wsl --shutdown 2>&1)"
     ]
   }
 }

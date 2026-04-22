@@ -142,6 +142,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional CSV manifest of extra hard board captures to upweight.",
     )
     parser.add_argument(
+        "--val-manifest",
+        type=Path,
+        default=None,
+        help="Optional CSV manifest pinned as the validation set. Overrides random val split.",
+    )
+    parser.add_argument(
         "--hard-case-repeat",
         type=int,
         default=0,
@@ -158,6 +164,13 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Optional rectifier model used to generate rectified scalar crops.",
+    )
+    parser.add_argument(
+        "--precomputed-crop-boxes",
+        type=Path,
+        default=None,
+        help="CSV of precomputed rectifier crop boxes (image_path,value,x0,y0,x1,y1). "
+             "Faster alternative to --rectifier-model-path; skips in-process rectifier inference.",
     )
     parser.add_argument(
         "--rectifier-crop-scale",
@@ -318,6 +331,7 @@ def main() -> None:
         mobilenet_head_dropout=args.mobilenet_head_dropout,
         hard_case_manifest=str(args.hard_case_manifest) if args.hard_case_manifest else None,
         hard_case_repeat=args.hard_case_repeat,
+        val_manifest=str(args.val_manifest) if args.val_manifest else None,
         init_model_path=str(args.init_model) if args.init_model else None,
         strict_labels=args.strict_labels,
         crop_pad_ratio=args.crop_pad_ratio,
@@ -328,6 +342,7 @@ def main() -> None:
         edge_focus_strength=args.edge_focus_strength,
         rectifier_model_path=str(args.rectifier_model_path) if args.rectifier_model_path else None,
         rectifier_crop_scale=args.rectifier_crop_scale,
+        precomputed_crop_boxes_path=str(args.precomputed_crop_boxes) if args.precomputed_crop_boxes else None,
         monotonic_pair_strength=args.monotonic_pair_strength,
         monotonic_pair_margin=args.monotonic_pair_margin,
         mixup_alpha=args.mixup_alpha,

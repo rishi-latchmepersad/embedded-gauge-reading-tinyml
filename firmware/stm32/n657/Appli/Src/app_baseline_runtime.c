@@ -66,7 +66,10 @@ typedef struct {
 #define APP_BASELINE_SUBDIAL_Y_MAX_FRACTION  0.58f
 #define APP_BASELINE_LOCAL_BACKGROUND_OFFSETS 2U
 #define APP_BASELINE_MIN_RADIUS_PIXELS      16U
-#define APP_BASELINE_CONFIDENCE_THRESHOLD    0.04f
+/* The closer camera setup reduced the baseline margin a bit, so keep the gate
+ * permissive enough to accept the still-useful training-crop candidates while
+ * preserving the noise floor guardrails. */
+#define APP_BASELINE_CONFIDENCE_THRESHOLD    0.055f
 /* Scale factor for integer-encoded confidence in log output (avoids %f). */
 #define APP_BASELINE_CONFIDENCE_LOG_SCALE    1000L
 /* USER CODE END PD */
@@ -313,19 +316,14 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 		return false;
 	}
 
-	if (bright_ok) {
-		selected_estimate = &bright_hypothesis;
-	}
-	if (training_crop_ok
-			&& ((selected_estimate == NULL)
-					|| (training_crop_hypothesis.confidence
-							> selected_estimate->confidence))) {
+	/* Prefer the stable training crop whenever it is available. The close-up
+	 * setup makes the glare-prone center heuristics swing around too much, so
+	 * the production baseline only trusts them when the training crop is absent. */
+	if (training_crop_ok) {
 		selected_estimate = &training_crop_hypothesis;
-	}
-	if (center_ok
-			&& ((selected_estimate == NULL)
-					|| (center_hypothesis.confidence
-							> selected_estimate->confidence))) {
+	} else if (bright_ok) {
+		selected_estimate = &bright_hypothesis;
+	} else if (center_ok) {
 		selected_estimate = &center_hypothesis;
 	}
 
@@ -406,6 +404,12 @@ static bool AppBaselineRuntime_EstimateCenterFromBrightPixels(
 	const size_t width_pixels = CAMERA_CAPTURE_WIDTH_PIXELS;
 	const size_t height_pixels = CAMERA_CAPTURE_HEIGHT_PIXELS;
 	const size_t stride_bytes = width_pixels * CAMERA_CAPTURE_BYTES_PER_PIXEL;
+	const AppGaugeGeometry_Crop_t crop = AppGaugeGeometry_TrainingCrop(
+			width_pixels, height_pixels);
+	const size_t scan_x_min = crop.x_min;
+	const size_t scan_x_max = crop.x_min + crop.width;
+	const size_t scan_y_min = crop.y_min;
+	const size_t scan_y_max = crop.y_min + crop.height;
 	size_t bright_x_min = width_pixels;
 	size_t bright_y_min = height_pixels;
 	size_t bright_x_max = 0U;
@@ -423,10 +427,8 @@ static bool AppBaselineRuntime_EstimateCenterFromBrightPixels(
 		return false;
 	}
 
-	for (size_t y = APP_BASELINE_SCAN_BORDER_PIXELS;
-			y < (height_pixels - APP_BASELINE_SCAN_BORDER_PIXELS); ++y) {
-		for (size_t x = APP_BASELINE_SCAN_BORDER_PIXELS;
-				x < (width_pixels - APP_BASELINE_SCAN_BORDER_PIXELS); ++x) {
+	for (size_t y = scan_y_min; y < scan_y_max; ++y) {
+		for (size_t x = scan_x_min; x < scan_x_max; ++x) {
 			const float luma = AppBaselineRuntime_ReadLuma(frame_bytes,
 					width_pixels, x, y);
 
@@ -538,16 +540,16 @@ static bool AppBaselineRuntime_EstimateFromCenterHypothesis(
 	estimate_out->angle_rad = best_angle_rad;
 	estimate_out->temperature_c =
 			AppBaselineRuntime_ConvertAngleToTemperature(best_angle_rad);
-	/* SNR-style confidence: how much the best angle dominates the runner-up.
-	 * (best/runner_up - 1) / (best/runner_up) collapses to
-	 * (best - runner_up) / best, but computing via ratio first makes the
-	 * denominator choice explicit and avoids division-by-zero on runner_up=0. */
+	/* Margin-based confidence: absolute gap between best angle and runner-up,
+	 * normalised to [0,1] by dividing by 100 (typical score range is 0..~50,
+	 * so margin of 8 -> 0.08). SNR-style confidence floored at ~0.04 even
+	 * for noise frames (best=32 runner=29 -> 0.094) and let random bright
+	 * blobs through; raw margin is a cleaner noise gate. */
 	{
-		const float snr = ((runner_up_score > 0.0f) ?
-				(best_score / runner_up_score) : 2.0f);
+		const float margin = ((best_score > runner_up_score) ?
+				(best_score - runner_up_score) : 0.0f);
 		estimate_out->confidence = AppBaselineRuntime_ClampFloat(
-				(snr > 1.0f) ? (1.0f - (1.0f / snr)) : 0.0f,
-				0.0f, 1.0f);
+				margin / 100.0f, 0.0f, 1.0f);
 	}
 	estimate_out->best_score = best_score;
 	estimate_out->runner_up_score = runner_up_score;

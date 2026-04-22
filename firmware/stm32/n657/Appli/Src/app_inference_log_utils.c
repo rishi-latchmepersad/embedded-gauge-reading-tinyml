@@ -8,7 +8,33 @@
 #include "app_inference_log_utils.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
+
+/* Detect IEEE-754 infinities and NaNs so the UART formatter can preserve
+ * their special textual form instead of flattening them into a fake zero. */
+static bool AppInferenceLog_IsSpecialFloat(float value, const char **suffix_out) {
+	union {
+		float f;
+		uint32_t u;
+	} bits = {
+		.f = value
+	};
+
+	if ((bits.u & 0x7F800000U) != 0x7F800000U) {
+		return false;
+	}
+
+	if ((bits.u & 0x007FFFFFU) != 0U) {
+		*suffix_out = "NaN";
+	} else if ((bits.u & 0x80000000U) != 0U) {
+		*suffix_out = "-Inf";
+	} else {
+		*suffix_out = "+Inf";
+	}
+
+	return true;
+}
 
 /**
  * @brief Format a floating-point value with one decimal place.
@@ -21,6 +47,16 @@ void AppInferenceLog_FormatFloatTenths(char *dst, size_t dst_len,
 		const char *prefix, float value) {
 	if ((dst == NULL) || (dst_len == 0U) || (prefix == NULL)) {
 		return;
+	}
+
+	/* Keep non-finite values visible in the UART log instead of collapsing them
+	 * into a misleading numeric zero. */
+	{
+		const char *special = NULL;
+		if (AppInferenceLog_IsSpecialFloat(value, &special)) {
+			(void) snprintf(dst, dst_len, "%s%s\r\n", prefix, special);
+			return;
+		}
 	}
 
 	const bool negative = (value < 0.0f);
@@ -48,6 +84,16 @@ void AppInferenceLog_FormatFloatMicros(char *dst, size_t dst_len,
 		const char *prefix, float value) {
 	if ((dst == NULL) || (dst_len == 0U) || (prefix == NULL)) {
 		return;
+	}
+
+	/* Keep non-finite values visible in the UART log instead of collapsing them
+	 * into a misleading numeric zero. */
+	{
+		const char *special = NULL;
+		if (AppInferenceLog_IsSpecialFloat(value, &special)) {
+			(void) snprintf(dst, dst_len, "%s%s\r\n", prefix, special);
+			return;
+		}
 	}
 
 	const bool negative = (value < 0.0f);

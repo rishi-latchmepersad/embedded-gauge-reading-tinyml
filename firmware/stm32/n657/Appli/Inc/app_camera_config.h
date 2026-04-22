@@ -64,10 +64,12 @@ extern "C" {
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD   200U
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MIN_THRESHOLD     20U
 #define CAMERA_CAPTURE_BRIGHTNESS_RETRY_LIMIT              16U
-#define CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_NUMERATOR   1U
-#define CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_DENOMINATOR 20U
-#define CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_NUMERATOR       1U
-#define CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_DENOMINATOR     16U
+/* Multiplicative step: exposure multiplied/divided by 2 per nudge (1 stop).
+ * Linear steps across the full sensor range (26–33333 µs) are too coarse at
+ * low exposures — a 1/20-range step (1662 µs) straddled the entire acceptable
+ * window and caused infinite bright↔dark oscillation. */
+#define CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_SHIFT       1U   /* right-shift = divide by 2 */
+#define CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_SHIFT           1U
 #define CAMERA_CAPTURE_BRIGHTNESS_SETTLE_DELAY_MS         250U
 /* Capture crop is expressed directly in pixels/lines. */
 #define CAMERA_CAPTURE_CROP_HSTART_PIXELS   0U

@@ -24,6 +24,12 @@ extern bool camera_capture_use_cmw_pipeline;
 extern bool camera_stream_started;
 extern uint8_t *camera_capture_result_buffer;
 
+/* Last exposure value that passed the brightness gate.  Zero means no good
+ * capture has been seen yet and SeedImx335ExposureGain uses the fixed fraction
+ * instead. Written by CameraPlatform_CacheAcceptedExposureGain(). */
+static int32_t camera_cached_exposure_us = 0;
+static int32_t camera_cached_gain_mdb = 0;
+
 /**
  * @brief Read the official IMX335 chip-ID register.
  * @param[out] chip_id Receives the register contents on success.
@@ -184,11 +190,27 @@ static bool CameraPlatform_InitializeImx335Sensor(void) {
 }
 
 /**
+ * @brief Store the exposure/gain that just produced a gate-passing frame.
+ *
+ * Call this once after the brightness gate accepts a frame.  The stored values
+ * are used as the seed for the next capture so the search converges in one
+ * attempt on a static scene.
+ */
+void CameraPlatform_CacheAcceptedExposureGain(void) {
+	int32_t exp_us = 0;
+	int32_t gain_mdb = 0;
+	if ((CMW_CAMERA_GetExposure(&exp_us) == CMW_ERROR_NONE)
+			&& (CMW_CAMERA_GetGain(&gain_mdb) == CMW_ERROR_NONE)) {
+		camera_cached_exposure_us = exp_us;
+		camera_cached_gain_mdb = gain_mdb;
+	}
+}
+
+/**
  * @brief Seed IMX335 exposure and gain with a conservative starting point.
  *
- * ST's middleware initializes the sensor conservatively. We back off the
- * previous maxed-out seed so the live optical path does not clip immediately
- * on bright scenes.
+ * Uses the last accepted exposure/gain if available; otherwise falls back to
+ * the fixed 2/3-range fraction seed so the first-ever capture is not maxed out.
  * @retval true when the middleware accepted the seed settings.
  */
 bool CameraPlatform_SeedImx335ExposureGain(void) {
@@ -205,7 +227,12 @@ bool CameraPlatform_SeedImx335ExposureGain(void) {
 		return false;
 	}
 
-	{
+	if (camera_cached_exposure_us > 0) {
+		/* Reuse the last accepted exposure so the gate passes on the first try
+		 * for a static scene instead of searching from the fixed fraction. */
+		seed_exposure_us = (uint32_t) camera_cached_exposure_us;
+		seed_gain_mdb = camera_cached_gain_mdb;
+	} else {
 		const uint32_t exposure_range =
 				(sensor_info.exposure_max > sensor_info.exposure_min) ?
 						(sensor_info.exposure_max - sensor_info.exposure_min) : 0U;
@@ -213,12 +240,10 @@ bool CameraPlatform_SeedImx335ExposureGain(void) {
 				+ ((exposure_range
 						* CAMERA_IMX335_SEED_EXPOSURE_FRACTION_NUMERATOR)
 						/ CAMERA_IMX335_SEED_EXPOSURE_FRACTION_DENOMINATOR);
-	}
-	if (seed_exposure_us < sensor_info.exposure_min) {
-		seed_exposure_us = sensor_info.exposure_min;
-	}
+		if (seed_exposure_us < sensor_info.exposure_min) {
+			seed_exposure_us = sensor_info.exposure_min;
+		}
 
-	{
 		const int32_t gain_range =
 				(sensor_info.gain_max > sensor_info.gain_min) ?
 						(sensor_info.gain_max - sensor_info.gain_min) : 0;
@@ -226,9 +251,9 @@ bool CameraPlatform_SeedImx335ExposureGain(void) {
 				+ ((gain_range
 						* CAMERA_IMX335_SEED_GAIN_FRACTION_NUMERATOR)
 						/ CAMERA_IMX335_SEED_GAIN_FRACTION_DENOMINATOR);
-	}
-	if (seed_gain_mdb < sensor_info.gain_min) {
-		seed_gain_mdb = sensor_info.gain_min;
+		if (seed_gain_mdb < sensor_info.gain_min) {
+			seed_gain_mdb = sensor_info.gain_min;
+		}
 	}
 
 	cmw_status = CMW_CAMERA_SetExposure((int32_t) seed_exposure_us);
@@ -267,8 +292,6 @@ bool CameraPlatform_AdjustImx335ExposureGain(bool brighten) {
 	ISP_SensorInfoTypeDef sensor_info = { 0 };
 	int32_t current_exposure_us = 0;
 	int32_t current_gain_mdb = 0;
-	int32_t exposure_step_us = 0;
-	int32_t gain_step_mdb = 0;
 	int32_t target_exposure_us = 0;
 	int32_t target_gain_mdb = 0;
 	bool apply_exposure = false;
@@ -299,46 +322,26 @@ bool CameraPlatform_AdjustImx335ExposureGain(bool brighten) {
 		return false;
 	}
 
-	{
-		const int32_t exposure_range =
-				(sensor_info.exposure_max > sensor_info.exposure_min) ?
-						((int32_t) sensor_info.exposure_max
-								- (int32_t) sensor_info.exposure_min) :
-						0;
-		const int32_t gain_range =
-				(sensor_info.gain_max > sensor_info.gain_min) ?
-						(sensor_info.gain_max - sensor_info.gain_min) : 0;
-
-		exposure_step_us = (exposure_range
-				* (int32_t) CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_NUMERATOR)
-				/ (int32_t) CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_DENOMINATOR;
-		gain_step_mdb =
-				(gain_range
-						* (int32_t) CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_NUMERATOR)
-						/ (int32_t) CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_DENOMINATOR;
-	}
-
-	if (exposure_step_us < 1) {
-		exposure_step_us = 1;
-	}
-	if (gain_step_mdb < 1) {
-		gain_step_mdb = 1;
-	}
-
 	/* Walk exposure first so a dim frame does not jump straight from
-	 * under-exposed to heavily over-exposed just because gain moved too. */
+	 * under-exposed to heavily over-exposed just because gain moved too.
+	 * Steps are multiplicative (geometric): multiply/divide by 2 per nudge.
+	 * Linear steps are too coarse across the full sensor range (26–33333 µs):
+	 * a 1/20-range step of 1662 µs straddles the entire acceptable window at
+	 * low exposures, causing perpetual bright↔dark oscillation. */
 	target_exposure_us = current_exposure_us;
 	target_gain_mdb = current_gain_mdb;
 
 	if (brighten) {
 		if (current_exposure_us < (int32_t) sensor_info.exposure_max) {
-			target_exposure_us = current_exposure_us + exposure_step_us;
+			target_exposure_us = current_exposure_us
+					<< CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_SHIFT;
 			if (target_exposure_us > (int32_t) sensor_info.exposure_max) {
 				target_exposure_us = (int32_t) sensor_info.exposure_max;
 			}
 			apply_exposure = (target_exposure_us != current_exposure_us);
 		} else {
-			target_gain_mdb = current_gain_mdb + gain_step_mdb;
+			target_gain_mdb = current_gain_mdb
+					<< CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_SHIFT;
 			if (target_gain_mdb > sensor_info.gain_max) {
 				target_gain_mdb = sensor_info.gain_max;
 			}
@@ -346,13 +349,15 @@ bool CameraPlatform_AdjustImx335ExposureGain(bool brighten) {
 		}
 	} else {
 		if (current_exposure_us > (int32_t) sensor_info.exposure_min) {
-			target_exposure_us = current_exposure_us - exposure_step_us;
+			target_exposure_us = current_exposure_us
+					>> CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_SHIFT;
 			if (target_exposure_us < (int32_t) sensor_info.exposure_min) {
 				target_exposure_us = (int32_t) sensor_info.exposure_min;
 			}
 			apply_exposure = (target_exposure_us != current_exposure_us);
 		} else {
-			target_gain_mdb = current_gain_mdb - gain_step_mdb;
+			target_gain_mdb = current_gain_mdb
+					>> CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_SHIFT;
 			if (target_gain_mdb < sensor_info.gain_min) {
 				target_gain_mdb = sensor_info.gain_min;
 			}

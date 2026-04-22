@@ -17,8 +17,8 @@ extern "C" {
 /**
  * @brief Apply the deploy-time scalar calibration to the model output.
  *
- * The deployed int8 model still benefits from a lightweight post-processing
- * correction derived from the board-ready weighted calibration fit.
+ * The deployed scalar model uses a lightweight affine post-processing
+ * correction derived from the board-crop probe fit.
  *
  * @param raw_value Model output in Celsius before calibration.
  * @return Calibrated output in Celsius.

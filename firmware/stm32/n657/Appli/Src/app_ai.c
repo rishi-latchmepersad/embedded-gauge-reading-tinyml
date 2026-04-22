@@ -38,6 +38,12 @@
 #ifndef APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 #define APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS 0
 #endif
+/* Keep rectifier diagnostics available even when the rest of the verbose
+ * console logging stays off. This is a temporary bring-up aid for crop
+ * debugging and can be flipped back to 0 once the rectifier is stable. */
+#ifndef APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
+#define APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS 1U
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -97,11 +103,31 @@
  * below a tiny fraction of the canvas, or the scalar stage degenerates to a
  * 1x1 crop. */
 #define APP_AI_RECTIFIER_MIN_BOX_RATIO     0.05f
-/* Force fixed training crop unconditionally — rectifier is not yet trained on
- * close-up framing so its box is unreliable. Setting min > max means every box
- * fails the check and falls back to the stable training crop. */
-#define APP_AI_RECTIFIER_FALLBACK_MIN_BOX_RATIO  1.1f
-#define APP_AI_RECTIFIER_FALLBACK_MAX_BOX_RATIO  0.0f
+/* Accept any box where both w and h are in [0.2, 1.5] of the frame dimension.
+ * The rectifier outputs normalised cx/cy/w/h so these limits reject degenerate
+ * (near-zero) or wildly oversized predictions while passing plausible dial
+ * crops at close-up and normal camera distances. */
+#define APP_AI_RECTIFIER_FALLBACK_MIN_BOX_RATIO  0.2f
+#define APP_AI_RECTIFIER_FALLBACK_MAX_BOX_RATIO  1.5f
+/* Path-1 soft-attention mode: ignore rectifier's predicted (w,h), use prod's
+ * fixed training-crop dimensions centred on rectifier's predicted (cx,cy).
+ * Keeps scalar input distribution within prod's training distribution while
+ * letting framing follow the gauge across camera placements. Set to 0 to
+ * restore the original (rectifier-sized box * crop scale) behaviour. */
+#define APP_AI_RECTIFIER_FIXED_SCALE_CROP  1U
+/* Rectifier center is still a little noisy on the current board captures, so
+ * bias the crop center back toward the stable training-crop center instead of
+ * trusting the raw rectifier center outright. This keeps us close to the
+ * scalar's trained framing while still allowing a small amount of movement. */
+#define APP_AI_RECTIFIER_CENTER_BLEND_NUMERATOR    1U
+#define APP_AI_RECTIFIER_CENTER_BLEND_DENOMINATOR   5U
+/* Reject the rectifier's centre prediction if it falls outside the central
+ * 80% of the frame in either axis — that's almost certainly a runaway
+ * prediction and we should fall back to the static training crop instead of
+ * shifting the scalar's framing into the bezel/background. Only used when
+ * APP_AI_RECTIFIER_FIXED_SCALE_CROP is enabled. */
+#define APP_AI_RECTIFIER_CENTER_MIN_RATIO  0.10f
+#define APP_AI_RECTIFIER_CENTER_MAX_RATIO  0.90f
 /* Temporarily disable EMA smoothing so the board exposes the raw model value
  * directly while we validate the current crop and exposure tuning. */
 #define APP_AI_INFERENCE_SMOOTHING_ALPHA   1.0f
@@ -329,6 +355,7 @@ static void AppAI_LogXspi2FlashPrefix(void);
 static void AppAI_LogXspi2MappedScaleBytes(void);
 static void AppAI_LogXspi2IndirectAndMappedPrefix(void);
 static void AppAI_LogFloatApprox(const char *label, float value);
+static bool AppAI_IsFiniteFloat(float value);
 static float AppAI_FilterInferenceValue(float value);
 static void AppAI_LogInferenceResult(
 		const LL_Buffer_InfoTypeDef *output_buffer_info);
@@ -2359,12 +2386,19 @@ static bool AppAI_DecodeRectifierCropBox(
 	float center_x = 0.0f;
 	float center_y = 0.0f;
 	float box_w = 0.0f;
-	float box_h = 0.0f;
-	float crop_x_min_f = 0.0f;
-	float crop_y_min_f = 0.0f;
-	float crop_width_f = 0.0f;
-	float crop_height_f = 0.0f;
-	bool use_fixed_training_crop = false;
+float box_h = 0.0f;
+float crop_x_min_f = 0.0f;
+float crop_y_min_f = 0.0f;
+float crop_width_f = 0.0f;
+float crop_height_f = 0.0f;
+#if APP_AI_RECTIFIER_FIXED_SCALE_CROP
+size_t training_center_x = 0U;
+size_t training_center_y = 0U;
+const float rectifier_center_blend_f =
+		((float) APP_AI_RECTIFIER_CENTER_BLEND_NUMERATOR)
+				/ ((float) APP_AI_RECTIFIER_CENTER_BLEND_DENOMINATOR);
+#endif
+bool use_fixed_training_crop = false;
 
 	if ((output_buffer_info == NULL) || (crop_out == NULL)) {
 		return false;
@@ -2378,16 +2412,15 @@ static bool AppAI_DecodeRectifierCropBox(
 	/* Log the raw rectifier output before any clamping so we can distinguish
 	 * between the model producing a plausible box that the fallback rejects,
 	 * a near-zero output (model not running / zero-init), or an out-of-range
-	 * value (wrong output format / normalization mismatch).
-	 * Use WriteString+snprintf so this survives APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS=0. */
+	 * value (wrong output format / normalization mismatch). */
 	{
 		union { float f; uint32_t u; } r0, r1, r2, r3;
 		char rect_log[192];
 		r0.f = output_ptr[0]; r1.f = output_ptr[1];
 		r2.f = output_ptr[2]; r3.f = output_ptr[3];
-#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
+#if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
 		(void) snprintf(rect_log, sizeof(rect_log),
-				"[AI] Rect out: cx=%ld cy=%ld w=%ld h=%ld "
+				"[AI] Rectifier raw: cx=%ld cy=%ld w=%ld h=%ld "
 				"bits=[%08lX %08lX %08lX %08lX]\r\n",
 				(long) (output_ptr[0] * 1000.0f),
 				(long) (output_ptr[1] * 1000.0f),
@@ -2417,13 +2450,33 @@ static bool AppAI_DecodeRectifierCropBox(
 		rectifier_box_out->box_h = box_h;
 	}
 
+#if APP_AI_RECTIFIER_FIXED_SCALE_CROP
+	/* Soft attention: ignore (box_w, box_h) entirely. Validate centre only. */
+	if ((center_x < APP_AI_RECTIFIER_CENTER_MIN_RATIO)
+			|| (center_x > APP_AI_RECTIFIER_CENTER_MAX_RATIO)
+			|| (center_y < APP_AI_RECTIFIER_CENTER_MIN_RATIO)
+			|| (center_y > APP_AI_RECTIFIER_CENTER_MAX_RATIO)) {
+		{
+			char fb_log[96];
+#if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
+			(void) snprintf(fb_log, sizeof(fb_log),
+					"[AI] Rect fallback (centre out of range): cx=%ld cy=%ld lim=[%ld..%ld]\r\n",
+					(long) (center_x * 1000.0f), (long) (center_y * 1000.0f),
+					(long) (APP_AI_RECTIFIER_CENTER_MIN_RATIO * 1000.0f),
+					(long) (APP_AI_RECTIFIER_CENTER_MAX_RATIO * 1000.0f));
+			(void) DebugConsole_WriteString(fb_log);
+#endif
+		}
+		use_fixed_training_crop = true;
+	}
+#else
 	if ((box_w < APP_AI_RECTIFIER_FALLBACK_MIN_BOX_RATIO)
 			|| (box_h < APP_AI_RECTIFIER_FALLBACK_MIN_BOX_RATIO)
 			|| (box_w > APP_AI_RECTIFIER_FALLBACK_MAX_BOX_RATIO)
 			|| (box_h > APP_AI_RECTIFIER_FALLBACK_MAX_BOX_RATIO)) {
 		{
 			char fb_log[96];
-#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
+#if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
 			(void) snprintf(fb_log, sizeof(fb_log),
 					"[AI] Rect fallback: cx=%ld cy=%ld w=%ld h=%ld lim=[%ld..%ld]\r\n",
 					(long) (center_x * 1000.0f), (long) (center_y * 1000.0f),
@@ -2435,6 +2488,7 @@ static bool AppAI_DecodeRectifierCropBox(
 		}
 		use_fixed_training_crop = true;
 	}
+#endif
 
 	if (use_fixed_training_crop) {
 		/* Keep the scalar reader on the same stable crop that the offline
@@ -2457,13 +2511,41 @@ static bool AppAI_DecodeRectifierCropBox(
 		if (crop_out->height == 0U) {
 			crop_out->height = 1U;
 		}
+#if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
+		{
+			char fb_log[128];
+
+			(void) snprintf(fb_log, sizeof(fb_log),
+					"[AI] Rectifier fallback -> fixed training crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+					(unsigned long) crop_out->x_min,
+					(unsigned long) crop_out->y_min,
+					(unsigned long) crop_out->width,
+					(unsigned long) crop_out->height);
+			(void) DebugConsole_WriteString(fb_log);
+		}
+#else
 		DebugConsole_WriteString(
 				"[AI] Rectifier crop fallback: using fixed training crop.\r\n");
+#endif
 		return true;
 	}
 
+#if APP_AI_RECTIFIER_FIXED_SCALE_CROP
+	/* Soft attention: rectifier provides a nudge, training crop provides the
+	 * base framing. This keeps the scalar input close to the fixed crop that it
+	 * was trained on while still letting the crop track the gauge a little. */
+	AppGaugeGeometry_TrainingCropCenter(source_width, source_height,
+			&training_center_x, &training_center_y);
+	crop_width_f = ((float) source_width)
+			* (APP_AI_TRAINING_CROP_X_MAX_RATIO
+					- APP_AI_TRAINING_CROP_X_MIN_RATIO);
+	crop_height_f = ((float) source_height)
+			* (APP_AI_TRAINING_CROP_Y_MAX_RATIO
+					- APP_AI_TRAINING_CROP_Y_MIN_RATIO);
+#else
 	crop_width_f = ((float) source_width) * box_w * APP_AI_RECTIFIER_CROP_SCALE;
 	crop_height_f = ((float) source_height) * box_h * APP_AI_RECTIFIER_CROP_SCALE;
+#endif
 	if (crop_width_f < 1.0f) {
 		crop_width_f = 1.0f;
 	}
@@ -2471,8 +2553,19 @@ static bool AppAI_DecodeRectifierCropBox(
 		crop_height_f = 1.0f;
 	}
 
+#if APP_AI_RECTIFIER_FIXED_SCALE_CROP
+	crop_x_min_f = ((float) training_center_x)
+			+ ((((float) source_width) * center_x
+					- (float) training_center_x) * rectifier_center_blend_f)
+			- (crop_width_f * 0.5f);
+	crop_y_min_f = ((float) training_center_y)
+			+ ((((float) source_height) * center_y
+					- (float) training_center_y) * rectifier_center_blend_f)
+			- (crop_height_f * 0.5f);
+#else
 	crop_x_min_f = (((float) source_width) * center_x) - (crop_width_f * 0.5f);
 	crop_y_min_f = (((float) source_height) * center_y) - (crop_height_f * 0.5f);
+#endif
 	if (crop_x_min_f < 0.0f) {
 		crop_x_min_f = 0.0f;
 	}
@@ -2623,7 +2716,6 @@ static void AppAI_LogBufferInfoAndSignature(const char *label,
 }
 #endif /* !APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
 
-#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 static void AppAI_LogRectifierResult(
 		const LL_Buffer_InfoTypeDef *output_buffer_info,
 		const AppAI_RectifierBox *rectifier_box) {
@@ -2637,19 +2729,13 @@ static void AppAI_LogRectifierResult(
 					: "(unnamed)",
 			LL_Buffer_addr_start(output_buffer_info),
 			(unsigned long) LL_Buffer_len(output_buffer_info));
+#if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
 	DebugConsole_Printf(
-			"[AI] Rectifier box: cx=%.6f cy=%.6f w=%.6f h=%.6f\r\n",
+			"[AI] Rectifier box(clamped): cx=%.6f cy=%.6f w=%.6f h=%.6f\r\n",
 			rectifier_box->center_x, rectifier_box->center_y,
 			rectifier_box->box_w, rectifier_box->box_h);
+#endif
 }
-#else
-static void AppAI_LogRectifierResult(
-		const LL_Buffer_InfoTypeDef *output_buffer_info,
-		const AppAI_RectifierBox *rectifier_box) {
-	(void) output_buffer_info;
-	(void) rectifier_box;
-}
-#endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
 
 static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		const uint8_t *frame_bytes, size_t frame_size,
@@ -3304,9 +3390,9 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		return false;
 	}
 
-	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
+#if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
 		AppAI_LogRectifierResult(rectifier_output_info, &rectifier_box);
-	}
+#endif
 	DebugConsole_Printf(
 			"[AI] Rectifier crop: x=%lu y=%lu w=%lu h=%lu\r\n",
 			(unsigned long) scalar_crop.x_min,
@@ -3322,7 +3408,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 
 	AppAI_LogInferenceResult(scalar_output_info);
 
-	return true;
+	return app_ai_last_inference_valid;
 }
 
 /* USER CODE END 0 */
@@ -3577,6 +3663,13 @@ static void AppAI_LogInferenceResult(
 		DebugConsole_WriteString(model_output_line);
 	}
 	output_value = AppInferenceCalibration_Apply(output_value);
+	if (!AppAI_IsFiniteFloat(output_value)) {
+		AppAI_LogFloatApprox("[AI] Inference output value: ", output_value);
+		DebugConsole_WriteString(
+				"[AI] Inference result is non-finite; skipping smoothing and last-result update.\r\n");
+		app_ai_last_inference_valid = false;
+		return;
+	}
 	output_value = AppAI_FilterInferenceValue(output_value);
 
 	/* Log both the final float output and the raw int8 tensor so we can spot
@@ -3614,6 +3707,18 @@ static void AppAI_LogInferenceResult(
 	(void) memcpy(&output_value, LL_Buffer_addr_start(output_buffer_info),
 			sizeof(output_value));
 	output_value = AppInferenceCalibration_Apply(output_value);
+	if (!AppAI_IsFiniteFloat(output_value)) {
+		AppInferenceLog_FormatFloatMicros(line, sizeof(line),
+				"[AI] Inference value: ", output_value);
+		DebugConsole_WriteString(line);
+		AppInferenceLog_FormatFloatMicros(line, sizeof(line),
+				"[AI] Inference exact: ", output_value);
+		DebugConsole_WriteString(line);
+		DebugConsole_WriteString(
+				"[AI] Inference result is non-finite; skipping smoothing and last-result update.\r\n");
+		app_ai_last_inference_valid = false;
+		return;
+	}
 	output_value = AppAI_FilterInferenceValue(output_value);
 
 	AppInferenceLog_FormatFloatMicros(line, sizeof(line),
@@ -3633,15 +3738,42 @@ static void AppAI_LogInferenceResult(
  * reading from jumping around while preserving slow changes.
  */
 static float AppAI_FilterInferenceValue(float value) {
+	if (!AppAI_IsFiniteFloat(value)) {
+		if (app_ai_inference_smoothing_initialized
+				&& AppAI_IsFiniteFloat(app_ai_inference_smoothed_value)) {
+			return app_ai_inference_smoothed_value;
+		}
+		return value;
+	}
+
 	if (!app_ai_inference_smoothing_initialized) {
 		app_ai_inference_smoothed_value = value;
 		app_ai_inference_smoothing_initialized = true;
 		return value;
 	}
 
+	if (!AppAI_IsFiniteFloat(app_ai_inference_smoothed_value)) {
+		app_ai_inference_smoothed_value = value;
+		return value;
+	}
+
 	app_ai_inference_smoothed_value += APP_AI_INFERENCE_SMOOTHING_ALPHA
 			* (value - app_ai_inference_smoothed_value);
 	return app_ai_inference_smoothed_value;
+}
+
+/**
+ * @brief Return true only for ordinary finite float values.
+ */
+static bool AppAI_IsFiniteFloat(float value) {
+	union {
+		float f;
+		uint32_t u;
+	} bits = {
+		.f = value
+	};
+
+	return ((bits.u & 0x7F800000U) != 0x7F800000U);
 }
 
 static int AppAI_ApplyCacheRange(uint32_t start_addr, uint32_t end_addr,
@@ -3986,6 +4118,9 @@ bool App_AI_GetLastInferenceResult(float *value_out) {
 		return false;
 	}
 	if (!app_ai_last_inference_valid) {
+		return false;
+	}
+	if (!AppAI_IsFiniteFloat(app_ai_last_inference_value)) {
 		return false;
 	}
 	*value_out = app_ai_last_inference_value;
