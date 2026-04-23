@@ -159,7 +159,7 @@ static VOID AppImageCleanupThread_Entry(ULONG thread_input) {
 		if (!AppStorage_WaitForMediaReady(APP_IMAGE_CLEANUP_MEDIA_READY_TIMEOUT_MS)) {
 			DebugConsole_Printf(
 					"[IMAGE][CLEANUP] Media not ready yet; retrying later.\r\n");
-			DelayMilliseconds_ThreadX(APP_IMAGE_CLEANUP_RETRY_DELAY_MS);
+			DelayMilliseconds_Cooperative(APP_IMAGE_CLEANUP_RETRY_DELAY_MS);
 			continue;
 		}
 
@@ -168,11 +168,11 @@ static VOID AppImageCleanupThread_Entry(ULONG thread_input) {
 			DebugConsole_Printf(
 					"[IMAGE][CLEANUP] Sweep failed with status=%lu; retrying later.\r\n",
 					(unsigned long) sweep_status);
-			DelayMilliseconds_ThreadX(APP_IMAGE_CLEANUP_RETRY_DELAY_MS);
+			DelayMilliseconds_Cooperative(APP_IMAGE_CLEANUP_RETRY_DELAY_MS);
 			continue;
 		}
 
-		DelayMilliseconds_ThreadX(APP_IMAGE_CLEANUP_PERIOD_MS);
+		DelayMilliseconds_Cooperative(APP_IMAGE_CLEANUP_PERIOD_MS);
 	}
 }
 

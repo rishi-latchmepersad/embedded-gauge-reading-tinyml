@@ -2,7 +2,7 @@
 /**
  ******************************************************************************
  * @file    app_baseline_runtime.c
- * @brief   Classical CV baseline worker for gauge temperature estimation.
+ * @brief   Classical Hough-style CV baseline worker for gauge temperature estimation.
  ******************************************************************************
  */
 /* USER CODE END Header */
@@ -126,8 +126,13 @@ static bool AppBaselineRuntime_SelectSmoothedEstimate(
 		AppBaselineRuntime_Estimate_t *estimate_out);
 static float AppBaselineRuntime_ConvertAngleToTemperature(float angle_rad);
 static float AppBaselineRuntime_ConvertAngleToFraction(float angle_rad);
+static bool AppBaselineRuntime_AngleToSweepFraction(float angle_rad,
+		float *fraction_out);
 static float AppBaselineRuntime_ReadLuma(const uint8_t *frame_bytes,
 		size_t frame_width_pixels, size_t x, size_t y);
+static float AppBaselineRuntime_ReadEdgeMagnitude(const uint8_t *frame_bytes,
+		size_t frame_width_pixels, size_t frame_height_pixels, size_t x,
+		size_t y, float *background_luma_out);
 static bool AppBaselineRuntime_IsInSubdialMask(size_t center_x, size_t center_y,
 		size_t x, size_t y, float radius_px);
 static float AppBaselineRuntime_ScoreAngle(const uint8_t *frame_bytes,
@@ -349,9 +354,15 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 
 	/* Prefer the stable training crop whenever it is available. The close-up
 	 * setup makes the glare-prone center heuristics swing around too much, so
-	 * the production baseline only trusts them when the training crop is absent. */
+	 * the production baseline only trusts them when the training crop is absent.
+	 * When we do fall back, choose the stronger of the remaining heuristics
+	 * instead of always preferring glare-heavy bright-center. */
 	if (training_crop_ok) {
 		selected_estimate = &training_crop_hypothesis;
+	} else if (bright_ok && center_ok) {
+		selected_estimate =
+				(bright_hypothesis.confidence >= center_hypothesis.confidence) ?
+						&bright_hypothesis : &center_hypothesis;
 	} else if (bright_ok) {
 		selected_estimate = &bright_hypothesis;
 	} else if (center_ok) {
@@ -407,14 +418,30 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 /**
  * @brief Estimate the needle using the same stable crop that the AI runtime
  * falls back to when the adaptive rectifier is unreliable.
+ *
+ * The classical path now uses a fixed-crop Hough-style edge vote so the paper
+ * baseline is closer to a standard geometry-first comparator.
  */
 static bool AppBaselineRuntime_EstimateFromTrainingCropHypothesis(
 		const uint8_t *frame_bytes, size_t frame_size,
 		AppBaselineRuntime_Estimate_t *estimate_out) {
 	const size_t width_pixels = CAMERA_CAPTURE_WIDTH_PIXELS;
 	const size_t height_pixels = CAMERA_CAPTURE_HEIGHT_PIXELS;
+	const AppGaugeGeometry_Crop_t crop =
+			AppGaugeGeometry_TrainingCrop(width_pixels, height_pixels);
 	size_t center_x = 0U;
 	size_t center_y = 0U;
+	const size_t crop_x_max = crop.x_min + crop.width;
+	const size_t crop_y_max = crop.y_min + crop.height;
+	const size_t crop_x_max_inclusive = crop_x_max - 1U;
+	const size_t crop_y_max_inclusive = crop_y_max - 1U;
+	const float min_angle_rad = APP_BASELINE_MIN_ANGLE_DEG
+			* (APP_BASELINE_PI / 180.0f);
+	const float sweep_rad = APP_BASELINE_SWEEP_DEG * (APP_BASELINE_PI / 180.0f);
+	float angle_votes[APP_BASELINE_ANGLE_BINS] = { 0.0f };
+	float best_score = -1.0f;
+	float runner_up_score = -1.0f;
+	size_t best_bin = 0U;
 
 	if ((estimate_out == NULL) || (frame_bytes == NULL)) {
 		return false;
@@ -423,8 +450,164 @@ static bool AppBaselineRuntime_EstimateFromTrainingCropHypothesis(
 	AppGaugeGeometry_TrainingCropCenter(width_pixels, height_pixels,
 			&center_x, &center_y);
 
-	return AppBaselineRuntime_EstimateFromCenterHypothesis(frame_bytes,
-			frame_size, center_x, center_y, "training-crop", estimate_out);
+	if (crop_x_max <= crop.x_min || crop_y_max <= crop.y_min) {
+		return false;
+	}
+
+	if (frame_size < (width_pixels * height_pixels
+			* CAMERA_CAPTURE_BYTES_PER_PIXEL)) {
+		return false;
+	}
+
+	{
+		const float max_radius_x =
+				(float) (((center_x - crop.x_min)
+						< (crop_x_max_inclusive - center_x)) ?
+						(center_x - crop.x_min)
+						: (crop_x_max_inclusive - center_x));
+		const float max_radius_y =
+				(float) (((center_y - crop.y_min)
+						< (crop_y_max_inclusive - center_y)) ?
+						(center_y - crop.y_min)
+						: (crop_y_max_inclusive - center_y));
+		const float max_radius = (max_radius_x < max_radius_y) ? max_radius_x
+				: max_radius_y;
+		const float search_radius_min =
+				AppBaselineRuntime_ClampFloat(max_radius * 0.18f,
+						(float) APP_BASELINE_MIN_RADIUS_PIXELS, max_radius);
+		const float search_radius_max = max_radius * 0.92f;
+
+		if ((max_radius < (float) APP_BASELINE_MIN_RADIUS_PIXELS)
+				|| (search_radius_max <= search_radius_min)) {
+			return false;
+		}
+
+		for (size_t y = crop.y_min + 1U; y < crop_y_max_inclusive; ++y) {
+			for (size_t x = crop.x_min + 1U; x < crop_x_max_inclusive; ++x) {
+				const float dx = (float) x - (float) center_x;
+				const float dy = (float) y - (float) center_y;
+				const float radius = sqrtf((dx * dx) + (dy * dy));
+				const float luma = AppBaselineRuntime_ReadLuma(frame_bytes,
+						width_pixels, x, y);
+				float background_luma = 0.0f;
+				const float edge_mag = AppBaselineRuntime_ReadEdgeMagnitude(
+						frame_bytes, width_pixels, height_pixels, x, y,
+						&background_luma);
+				float fraction = 0.0f;
+				float vote = 0.0f;
+				size_t bin_index = 0U;
+
+				if ((radius < search_radius_min) || (radius > search_radius_max)) {
+					continue;
+				}
+
+				if (AppBaselineRuntime_IsInSubdialMask(center_x, center_y, x, y,
+						max_radius)) {
+					continue;
+				}
+
+				if ((luma > (float) APP_BASELINE_SATURATION_THRESHOLD)
+						|| (edge_mag <= 0.0f)) {
+					continue;
+				}
+
+				if (!AppBaselineRuntime_AngleToSweepFraction(
+						atan2f(dy, dx), &fraction)) {
+					continue;
+				}
+
+				{
+					const float dark_bonus = background_luma - luma;
+					const float radius_fraction =
+							AppBaselineRuntime_ClampFloat(radius / max_radius,
+									0.0f, 1.0f);
+
+					if (dark_bonus <= 0.0f) {
+						continue;
+					}
+
+					vote = ((dark_bonus * 0.60f) + (edge_mag * 0.40f))
+							* (0.25f + (0.75f * radius_fraction));
+				}
+
+				bin_index = (size_t) AppBaselineRuntime_RoundToLong(
+						fraction * (float) (APP_BASELINE_ANGLE_BINS - 1U));
+
+				if (bin_index >= APP_BASELINE_ANGLE_BINS) {
+					continue;
+				}
+
+				angle_votes[bin_index] += vote;
+				if (bin_index > 0U) {
+					angle_votes[bin_index - 1U] += (vote * 0.50f);
+				}
+				if ((bin_index + 1U) < APP_BASELINE_ANGLE_BINS) {
+					angle_votes[bin_index + 1U] += (vote * 0.50f);
+				}
+			}
+		}
+	}
+
+	for (size_t bin_index = 0U; bin_index < APP_BASELINE_ANGLE_BINS;
+			++bin_index) {
+		const float score = angle_votes[bin_index];
+
+		if (score > best_score) {
+			runner_up_score = best_score;
+			best_score = score;
+			best_bin = bin_index;
+		} else if (score > runner_up_score) {
+			runner_up_score = score;
+		}
+	}
+
+	if (best_score <= 0.0f) {
+		return false;
+	}
+
+	{
+		float weighted_bin_sum = 0.0f;
+		float vote_sum = 0.0f;
+		const size_t bin_start = (best_bin > 0U) ? (best_bin - 1U) : best_bin;
+		const size_t bin_end = ((best_bin + 1U) < APP_BASELINE_ANGLE_BINS) ?
+				(best_bin + 1U) : best_bin;
+		float refined_fraction = (float) best_bin
+				/ (float) (APP_BASELINE_ANGLE_BINS - 1U);
+
+		for (size_t bin_index = bin_start; bin_index <= bin_end; ++bin_index) {
+			const float vote = angle_votes[bin_index];
+
+			weighted_bin_sum += (vote * (float) bin_index);
+			vote_sum += vote;
+		}
+
+		if (vote_sum > 0.0f) {
+			refined_fraction = (weighted_bin_sum / vote_sum)
+					/ (float) (APP_BASELINE_ANGLE_BINS - 1U);
+		}
+
+		estimate_out->valid = true;
+		estimate_out->center_x = center_x;
+		estimate_out->center_y = center_y;
+		estimate_out->angle_rad = min_angle_rad + (refined_fraction * sweep_rad);
+		estimate_out->temperature_c =
+				AppBaselineRuntime_ConvertAngleToTemperature(
+						estimate_out->angle_rad);
+		{
+			const float margin = ((best_score > runner_up_score) ?
+					(best_score - runner_up_score) : 0.0f);
+			const float total_support =
+					((best_score + runner_up_score) > 0.0f) ?
+							(best_score + runner_up_score) : 1.0f;
+			estimate_out->confidence = AppBaselineRuntime_ClampFloat(
+					margin / total_support, 0.0f, 1.0f);
+		}
+		estimate_out->best_score = best_score;
+		estimate_out->runner_up_score = runner_up_score;
+		estimate_out->source_label = "training-crop-hough";
+	}
+
+	return true;
 }
 
 /**
@@ -644,8 +827,9 @@ static void AppBaselineRuntime_PushEstimateHistory(
 /**
  * @brief Return a smoothed estimate from the tiny baseline history.
  *
- * We use a small median filter so the classical baseline stays in the right
- * ballpark even when a single frame latches onto glare or dial clutter.
+ * We use a small median filter so the classical Hough-style baseline stays in
+ * the right ballpark even when a single frame latches onto glare or dial
+ * clutter.
  */
 static bool AppBaselineRuntime_SelectSmoothedEstimate(
 		AppBaselineRuntime_Estimate_t *estimate_out) {
@@ -674,16 +858,16 @@ static bool AppBaselineRuntime_SelectSmoothedEstimate(
 	}
 
 	if (sample_count < APP_BASELINE_ESTIMATE_HISTORY_SIZE) {
-		/* The history is not stable yet, so hold the reading back instead of
-		 * reporting the first noisy warm-up estimate. */
+		/* Emit the provisional reading anyway so the classical benchmark has a
+		 * value from the first accepted frame instead of going silent. */
 		*estimate_out = ordered[sample_count - 1U];
-		estimate_out->valid = false;
-		estimate_out->source_label = "training-crop-warming";
+		estimate_out->valid = true;
+		estimate_out->source_label = "baseline-hough-warming";
 		return true;
 	}
 
 	*estimate_out = ordered[sample_count / 2U];
-	estimate_out->source_label = "training-crop-smoothed";
+	estimate_out->source_label = "baseline-hough-smoothed";
 	estimate_out->valid = true;
 	return true;
 }
@@ -718,6 +902,37 @@ static float AppBaselineRuntime_ConvertAngleToFraction(float angle_rad) {
 }
 
 /**
+ * @brief Convert an angle to a sweep fraction only when it falls inside the
+ * calibrated gauge arc.
+ */
+static bool AppBaselineRuntime_AngleToSweepFraction(float angle_rad,
+		float *fraction_out) {
+	const float min_angle_rad = APP_BASELINE_MIN_ANGLE_DEG
+			* (APP_BASELINE_PI / 180.0f);
+	const float sweep_rad = APP_BASELINE_SWEEP_DEG * (APP_BASELINE_PI / 180.0f);
+	float shifted = angle_rad - min_angle_rad;
+
+	if (fraction_out == NULL) {
+		return false;
+	}
+
+	while (shifted < 0.0f) {
+		shifted += APP_BASELINE_TWO_PI;
+	}
+	while (shifted >= APP_BASELINE_TWO_PI) {
+		shifted -= APP_BASELINE_TWO_PI;
+	}
+
+	if (shifted > sweep_rad) {
+		return false;
+	}
+
+	*fraction_out = AppBaselineRuntime_ClampFloat(shifted / sweep_rad, 0.0f,
+			1.0f);
+	return true;
+}
+
+/**
  * @brief Read the Y component from one packed YUV422 pixel.
  */
 static float AppBaselineRuntime_ReadLuma(const uint8_t *frame_bytes,
@@ -727,6 +942,61 @@ static float AppBaselineRuntime_ReadLuma(const uint8_t *frame_bytes,
 	const size_t y_offset = pair_offset + (((x & 1U) != 0U) ? 2U : 0U);
 
 	return (float) frame_bytes[y_offset];
+}
+
+/**
+ * @brief Measure local edge strength and background brightness around one pixel.
+ *
+ * The Hough-style baseline votes for dark, line-shaped structures using a
+ * Sobel-like edge response and the surrounding luma average.
+ */
+static float AppBaselineRuntime_ReadEdgeMagnitude(const uint8_t *frame_bytes,
+		size_t frame_width_pixels, size_t frame_height_pixels, size_t x, size_t y,
+		float *background_luma_out) {
+	const bool at_border = (x < 1U) || (y < 1U)
+			|| ((x + 1U) >= frame_width_pixels)
+			|| ((y + 1U) >= frame_height_pixels);
+
+	if (background_luma_out != NULL) {
+		*background_luma_out = 0.0f;
+	}
+
+	if (at_border) {
+		return 0.0f;
+	}
+
+	{
+		const float top_left = AppBaselineRuntime_ReadLuma(frame_bytes,
+				frame_width_pixels, x - 1U, y - 1U);
+		const float top_center = AppBaselineRuntime_ReadLuma(frame_bytes,
+				frame_width_pixels, x, y - 1U);
+		const float top_right = AppBaselineRuntime_ReadLuma(frame_bytes,
+				frame_width_pixels, x + 1U, y - 1U);
+		const float mid_left = AppBaselineRuntime_ReadLuma(frame_bytes,
+				frame_width_pixels, x - 1U, y);
+		const float mid_right = AppBaselineRuntime_ReadLuma(frame_bytes,
+				frame_width_pixels, x + 1U, y);
+		const float bottom_left = AppBaselineRuntime_ReadLuma(frame_bytes,
+				frame_width_pixels, x - 1U, y + 1U);
+		const float bottom_center = AppBaselineRuntime_ReadLuma(frame_bytes,
+				frame_width_pixels, x, y + 1U);
+		const float bottom_right = AppBaselineRuntime_ReadLuma(frame_bytes,
+				frame_width_pixels, x + 1U, y + 1U);
+		const float gx = (top_right + (2.0f * mid_right) + bottom_right)
+				- (top_left + (2.0f * mid_left) + bottom_left);
+		const float gy = (bottom_left + (2.0f * bottom_center) + bottom_right)
+				- (top_left + (2.0f * top_center) + top_right);
+		const float background_luma =
+				(top_left + top_center + top_right + mid_left + mid_right
+						+ bottom_left + bottom_center + bottom_right)
+				/ 8.0f;
+
+		if (background_luma_out != NULL) {
+			*background_luma_out = background_luma;
+		}
+
+		return fabsf(gx) + fabsf(gy);
+	}
 }
 
 /**

@@ -25,6 +25,19 @@ extern "C" {
 void DelayMilliseconds_ThreadX(const uint32_t delay_time_milliseconds);
 
 /**
+ * @brief  Delay execution without using the ThreadX timer queue.
+ * @param  delay_time_milliseconds The requested delay duration in milliseconds.
+ * @return None.
+ * @sideeffects Yields the CPU cooperatively while waiting on the HAL tick.
+ * @preconditions ThreadX kernel must be running; must be called from thread context.
+ * @concurrency Safe; affects only the calling thread.
+ * @timing Delay resolution is limited by the HAL tick and thread scheduling.
+ * @notes Use this for long background waits when the timer queue itself is part
+ *        of the thing we are trying to avoid exercising.
+ */
+void DelayMilliseconds_Cooperative(const uint32_t delay_time_milliseconds);
+
+/**
  * @brief  Lock a ThreadX mutex without blocking.
  * @param  mutex_ptr Pointer to the mutex to acquire.
  * @return None.

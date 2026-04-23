@@ -127,6 +127,17 @@ __tx_timer_no_time_slice:
 
     LDR     r1, =_tx_timer_current_ptr              // Pickup current timer pointer address
     LDR     r0, [r1, #0]                            // Pickup current timer
+    CBZ     r0, __tx_timer_current_ptr_null         // Guard against a null timer pointer
+    LDR     r2, =_tx_timer_list_start               // Pickup addr of timer list start
+    LDR     r2, [r2, #0]                            // Pickup timer list start
+    LDR     r3, =_tx_timer_list_end                 // Pickup addr of timer list end
+    LDR     r3, [r3, #0]                            // Pickup timer list end
+    CMP     r0, r2                                  // Is the current pointer below the list?
+    BCC     __tx_timer_current_ptr_recover          // Yes, recover from corruption
+    CMP     r0, r3                                  // Is the current pointer at/after the list end?
+    BCS     __tx_timer_current_ptr_recover          // Yes, recover from corruption
+    TST     r0, #3                                  // Must stay word-aligned
+    BNE     __tx_timer_current_ptr_recover          // Misaligned pointer is corruption too
     LDR     r2, [r0, #0]                            // Pickup timer list entry
     CBZ     r2, __tx_timer_no_timer                 // Is there anything in the list?
                                                     // No, just increment the timer
@@ -167,6 +178,25 @@ __tx_timer_skip_wrap:
 
     STR     r0, [r1, #0]                            // Store new current timer pointer
     // }
+
+__tx_timer_current_ptr_null:
+
+    /* If the timer pointer is unexpectedly null, reinitialize it from the
+       timer list start and skip expiration processing. This keeps the system
+       alive if a prior overwrite zeroed the ThreadX timer state. */
+    LDR     r3, =_tx_timer_list_start               // Pickup addr of timer list start
+    LDR     r0, [r3, #0]                            // Restore current pointer from start
+    STR     r0, [r1, #0]                            // Save the recovered pointer
+    B       __tx_timer_done
+
+__tx_timer_current_ptr_recover:
+
+    /* If the timer pointer is unexpectedly null, reinitialize it from the
+       timer list start and skip expiration processing. This keeps the system
+       alive if a prior overwrite zeroed or corrupted the ThreadX timer state. */
+    LDR     r3, =_tx_timer_list_start               // Pickup addr of timer list start
+    LDR     r0, [r3, #0]                            // Restore current pointer from start
+    STR     r0, [r1, #0]                            // Save the recovered pointer
 
 __tx_timer_done:
 

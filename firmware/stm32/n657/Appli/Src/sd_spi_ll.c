@@ -17,6 +17,7 @@
 #include "threadx_utils.h"
 #include "debug_console.h"
 #include <stdint.h>
+#include <stdio.h>
 #include "sd_spi_protocol.h"
 
 extern SPI_HandleTypeDef hspi5; // Use CubeMX-generated SPI handle, provided by STM32 HAL startup code.
@@ -48,12 +49,19 @@ void SPI_SD_SetHighSpeed(void) {
  * File-scope SD card state.
  *==============================================================================*/
 static uint8_t g_sd_card_is_sdhc = 0U; /* 1 if SDHC or SDXC, 0 if SDSC (byte addressing). */
+static uint8_t g_sd_card_use_hcs = 0U; /* 1 if ACMD41 should request high capacity, 0 otherwise. */
 
 /* Some cards need noticeably longer than the bare minimum to leave IDLE after
  * power-up, especially when the board is doing a lot of other bring-up work at
  * the same time. Keep this generous so the FileX thread is less timing-sensitive. */
 #define SD_SPI_ACMD41_MAX_ATTEMPTS       1500U
 #define SD_SPI_ACMD41_RETRY_DELAY_MS     20U
+
+/* Keep ACMD41 chatter quiet by default. Turn this on locally when the SD
+ * bring-up sequence itself is the thing under investigation. */
+#ifndef SD_SPI_ENABLE_ACMD41_PROGRESS_LOGS
+#define SD_SPI_ENABLE_ACMD41_PROGRESS_LOGS 0
+#endif
 
 /*==============================================================================
  * File-scope shared sector buffer.
@@ -403,7 +411,12 @@ uint8_t SPI_SendCMD8_ReadR7(uint8_t r7_out[4]) {
 
 	if ((r1 != 0xFFU) && ((r1 & 0x04U) == 0U)) /* Only read R7 if we got a response and CMD8 was not illegal. */
 	{
+		g_sd_card_use_hcs = 1U; /* CMD8 succeeded, so this card understands the v2 ACMD41 HCS handshake. */
 		SD_ReadResponseBytes(r7_out, 4U); /* Read the 32-bit R7 payload, voltage and check pattern. */
+	}
+	else
+	{
+		g_sd_card_use_hcs = 0U; /* Legacy or unresponsive cards should not receive the HCS request bit. */
 	}
 
 	SD_Deselect(); /* End transaction after reading R7 or on failure. */
@@ -446,11 +459,18 @@ uint8_t SPI_SendCMD8_ReadR7(uint8_t r7_out[4]) {
 uint8_t SPI_SendACMD41_UntilReady(uint8_t *cmd55_r1_out) {
 	uint8_t r1_cmd55 = 0xFFU; // Hold the most recent CMD55 response for debug purposes.
 	uint8_t r1_acmd41 = 0xFFU; // Hold the most recent ACMD41 response for loop exit condition.
+	const uint32_t acmd41_argument = g_sd_card_use_hcs ? 0x40000000U : 0U;
+	char log_line[96];
 
 	if (cmd55_r1_out != NULL) // Only write output if the caller provided storage.
 	{
 		*cmd55_r1_out = 0xFFU; // Initialize output to 0xFF so "never ran" is obvious.
 	}
+
+	(void) snprintf(log_line, sizeof(log_line),
+			"[SD][ACMD41] polling started (%s HCS).\r\n",
+			g_sd_card_use_hcs ? "with" : "without");
+	DebugConsole_WriteString(log_line);
 
 	for (uint32_t attempt = 0U; attempt < SD_SPI_ACMD41_MAX_ATTEMPTS; attempt++) // Try multiple times because SD card init is allowed to take time.
 			{
@@ -463,7 +483,7 @@ uint8_t SPI_SendACMD41_UntilReady(uint8_t *cmd55_r1_out) {
 		r1_cmd55 = SD_SendCommand(55U, 0U, 0xFFU); // CMD55 indicates that the next command is an application command.
 		(void) SD_SPI_TransferByte(0xFFU); // Provide a small gap that helps some cards respond reliably.
 
-		r1_acmd41 = SD_SendCommand(41U, 0x40000000U, 0xFFU); // ACMD41 asks card to exit IDLE, HCS=1 requests high capacity.
+		r1_acmd41 = SD_SendCommand(41U, acmd41_argument, 0xFFU); // ACMD41 asks card to exit IDLE; HCS only when CMD8 proved v2 support.
 
 		SD_Deselect(); // End transaction so card can progress its internal init state.
 		SD_SendIdleClocks(2U); // Provide trailing clocks after deselect, common SD SPI practice.
@@ -475,12 +495,30 @@ uint8_t SPI_SendACMD41_UntilReady(uint8_t *cmd55_r1_out) {
 
 		if (r1_acmd41 == 0x00U) // R1==0 means the card is ready for data commands.
 				{
+			(void) snprintf(log_line, sizeof(log_line),
+					"[SD][ACMD41] ready after %lu attempts.\r\n",
+					(unsigned long) (attempt + 1U));
+			DebugConsole_WriteString(log_line);
 			return 0x00U; // Return success, card is initialized and out of IDLE.
 		}
 
-		DelayMilliseconds_ThreadX(SD_SPI_ACMD41_RETRY_DELAY_MS); // Delay so we do not hammer the card, and allow internal init to continue.
+#if SD_SPI_ENABLE_ACMD41_PROGRESS_LOGS
+		if ((attempt == 0U) || (((attempt + 1U) % 100U) == 0U)) {
+			(void) snprintf(log_line, sizeof(log_line),
+					"[SD][ACMD41] attempt=%lu CMD55=0x%02X ACMD41=0x%02X\r\n",
+					(unsigned long) (attempt + 1U), (unsigned int) r1_cmd55,
+					(unsigned int) r1_acmd41);
+			DebugConsole_WriteString(log_line);
+		}
+#endif
+
+		DelayMilliseconds_Cooperative(SD_SPI_ACMD41_RETRY_DELAY_MS); // Delay so we do not hammer the card, and allow internal init to continue.
 	}
 
+	(void) snprintf(log_line, sizeof(log_line),
+			"[SD][ACMD41] timed out, last CMD55=0x%02X ACMD41=0x%02X.\r\n",
+			(unsigned int) r1_cmd55, (unsigned int) r1_acmd41);
+	DebugConsole_WriteString(log_line);
 	return r1_acmd41; // Return last response so caller can diagnose why it never became ready.
 }
 

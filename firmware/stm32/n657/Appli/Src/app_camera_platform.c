@@ -407,8 +407,6 @@ bool CameraPlatform_AdjustImx335ExposureGain(bool brighten) {
  * @retval true when the ISP accepted the AEC enable request.
  */
 bool CameraPlatform_EnableImx335AutoExposure(void) {
-	uint8_t aec_enabled = 0U;
-
 	if (ISP_SetAECState(&camera_sensor.hIsp, 1U) != ISP_OK) {
 		DebugConsole_Printf(
 				"[CAMERA][PROBE]   - Failed to enable IMX335 ISP auto exposure.\r\n");

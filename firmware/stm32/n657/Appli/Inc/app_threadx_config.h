@@ -15,7 +15,7 @@ extern "C" {
 #include "stm32n6xx_hal_gpio.h"
 
 /* Thread priorities -------------------------------------------------------- */
-#define CAMERA_INIT_THREAD_PRIORITY         12U
+#define CAMERA_INIT_THREAD_PRIORITY          9U
 #define CAMERA_ISP_THREAD_PRIORITY          11U
 #define CAMERA_HEARTBEAT_THREAD_PRIORITY    10U
 #define CAMERA_AI_THREAD_PRIORITY           13U

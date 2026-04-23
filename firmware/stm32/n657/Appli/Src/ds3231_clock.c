@@ -27,9 +27,13 @@
 #define DS3231_I2C_PROBE_TIMEOUT_MS  50U
 #define DS3231_READ_RETRY_ATTEMPTS    5U
 #define DS3231_READ_RETRY_DELAY_MS   10U
-/* Leave this at 0 for normal boots. Flip it to 1 only when you intentionally
- * want to force a one-time DS3231 update from the firmware build timestamp. */
-#define DS3231_ENABLE_BUILD_TIME_SEED 0
+/* Normal boot policy: only reseed when the DS3231 comes up at year 2000.
+ * Keep the override available, but leave it disabled unless we are doing a
+ * one-off time sync pass.
+ */
+#ifndef DS3231_FORCE_BUILD_TIME_SEED_ON_BOOT
+#define DS3231_FORCE_BUILD_TIME_SEED_ON_BOOT 0
+#endif
 
 /* USER CODE END PD */
 
@@ -54,9 +58,9 @@ static bool DS3231_ReadDateTime(char *buffer, size_t buffer_length);
 static bool DS3231_ReadDateTimeWithRetry(char *buffer, size_t buffer_length);
 static bool DS3231_FormatCaptureTimestamp(const char *rtc_text,
 		char *buffer, uint32_t buffer_length);
-#if DS3231_ENABLE_BUILD_TIME_SEED
-static void DS3231_SetBuildTime(void);
-#endif
+static bool DS3231_SeedBuildTimeIfRtcYear2000(char *rtc_text,
+		size_t rtc_text_length);
+static bool DS3231_SetBuildTime(void);
 
 /* USER CODE END PFP */
 
@@ -240,11 +244,11 @@ static bool DS3231_FormatCaptureTimestamp(const char *rtc_text,
 	return (rtc_text[source_index] == '\0');
 }
 
-#if DS3231_ENABLE_BUILD_TIME_SEED
 /**
  * @brief Write the firmware build timestamp to the DS3231 registers.
+ * @retval true when the write completed successfully.
  */
-static void DS3231_SetBuildTime(void) {
+static bool DS3231_SetBuildTime(void) {
 	static const char *const months = "JanFebMarAprMayJunJulAugSepOctNovDec";
 	char mon_str[4] = { __DATE__[0], __DATE__[1], __DATE__[2], '\0' };
 	uint8_t month = 1U;
@@ -284,8 +288,42 @@ static void DS3231_SetBuildTime(void) {
 				"[RTC] DS3231 set-time write failed (status=%d).\r\n",
 				(int) status);
 	}
+
+	return (status == HAL_OK);
 }
-#endif
+
+/**
+ * @brief Seed the RTC from the firmware build timestamp when it still reads 2000.
+ */
+static bool DS3231_SeedBuildTimeIfRtcYear2000(char *rtc_text,
+		size_t rtc_text_length) {
+	if ((rtc_text == NULL) || (rtc_text_length == 0U)) {
+		return false;
+	}
+
+	if ((DS3231_FORCE_BUILD_TIME_SEED_ON_BOOT == 0)
+			&& (strncmp(rtc_text, "2000-", 5U) != 0)) {
+		return true;
+	}
+
+	if (DS3231_FORCE_BUILD_TIME_SEED_ON_BOOT != 0) {
+		DebugConsole_Printf(
+				"[RTC] Forcing DS3231 seed from firmware build timestamp on boot.\r\n");
+	} else {
+		DebugConsole_Printf(
+				"[RTC] DS3231 year=2000 (power-on default); seeding from firmware build timestamp.\r\n");
+	}
+
+	if (!DS3231_SetBuildTime()) {
+		return false;
+	}
+
+	if (!DS3231_ReadDateTimeWithRetry(rtc_text, rtc_text_length)) {
+		return false;
+	}
+
+	return (strncmp(rtc_text, "2000-", 5U) != 0);
+}
 
 /**
  * @brief Print the DS3231 time once during boot so we can confirm the module.
@@ -293,16 +331,13 @@ static void DS3231_SetBuildTime(void) {
 void DS3231_LogBootTime(void) {
 	char rtc_text[32] = { 0 };
 
-#if DS3231_ENABLE_BUILD_TIME_SEED
-	DebugConsole_Printf(
-			"[RTC] DS3231 build-time seed enabled; writing compile-time timestamp now.\r\n");
-	DS3231_SetBuildTime();
-#endif
-
 	if (DS3231_ReadDateTimeWithRetry(rtc_text, sizeof(rtc_text))) {
-		if (strncmp(rtc_text, "2000-", 5U) == 0) {
-			DebugConsole_Printf(
-					"[RTC] DS3231 year=2000 (power-on default); build-time seed is disabled.\r\n");
+		if (!DS3231_SeedBuildTimeIfRtcYear2000(rtc_text,
+				sizeof(rtc_text))) {
+			if (strncmp(rtc_text, "2000-", 5U) == 0) {
+				DebugConsole_Printf(
+						"[RTC] DS3231 still reports year=2000 after build-time seeding.\r\n");
+			}
 		}
 
 		(void) snprintf(g_ds3231_last_timestamp,

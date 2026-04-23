@@ -39,12 +39,15 @@
 #include "sd_debug_log_service.h"
 
 /*
- * FileX logging is useful, but the Debug image is already close to the ROM
- * ceiling. Keep the file service behavior intact and suppress these console
- * format strings unless someone opts back in locally.
+ * Keep FileX console noise low by default. The thread now emits a small number
+ * of explicit status/error lines, while the detailed state breadcrumbs stay
+ * behind a local opt-in switch for bring-up sessions.
  */
 #ifndef APP_FILEX_ENABLE_VERBOSE_CONSOLE_LOGS
 #define APP_FILEX_ENABLE_VERBOSE_CONSOLE_LOGS 0
+#endif
+#ifndef APP_FILEX_ENABLE_STATE_BREADCRUMBS
+#define APP_FILEX_ENABLE_STATE_BREADCRUMBS 0
 #endif
 #if !APP_FILEX_ENABLE_VERBOSE_CONSOLE_LOGS
 #undef DebugConsole_Printf
@@ -99,8 +102,11 @@ typedef struct {
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
-/* Main thread stack size */
-#define FX_APP_THREAD_STACK_SIZE         2048
+/* Main thread stack size.
+ * The FileX state machine now does enough directory/media work that 2 KB was
+ * too tight on the N6 board. Keep extra headroom here so SD bring-up and file
+ * maintenance do not trip a silent stack overflow. */
+#define FX_APP_THREAD_STACK_SIZE         8192
 /* Main thread priority */
 #define FX_APP_THREAD_PRIO               14
 /* USER CODE BEGIN PD */
@@ -155,6 +161,7 @@ static void AppFileX_UnlockMedia(void);
 static UINT AppFileX_CreateCapturedImagesDirectoryLocked(void);
 static ULONG AppFileX_MillisecondsToTicks(uint32_t timeout_ms);
 static void AppFileX_FlashCaptureSuccessBlue(void);
+static void AppFileX_LogStateMessage(const char *message);
 /* USER CODE END PFP */
 
 /**
@@ -234,9 +241,6 @@ void fx_app_thread_entry(ULONG thread_input)
  {
 
 /* USER CODE BEGIN fx_app_thread_entry 0*/
-	DebugLed_BlinkBlueBlocking(100, 100, 1);
-	DebugLed_BlinkGreenBlocking(100, 100, 1);
-	DebugLed_BlinkRedBlocking(100, 100, 1);
 	(void) DebugConsole_WriteString("[FILEX] thread alive\r\n");
 /* USER CODE END fx_app_thread_entry 0*/
 
@@ -320,6 +324,40 @@ static void AppFileX_StateMachine_Initialize(
 }
 
 /*==============================================================================
+ * Function: AppFileX_LogStateMessage
+ *
+ * Purpose:
+ *   Emit a short FileX state breadcrumb when verbose state logging is enabled.
+ *==============================================================================*/
+static void AppFileX_LogStateMessage(const char *message) {
+#if APP_FILEX_ENABLE_STATE_BREADCRUMBS
+	if (message != NULL) {
+		(void) DebugConsole_WriteString(message);
+	}
+#else
+	(void) message;
+#endif
+}
+
+/*==============================================================================
+ * Function: AppFileX_LogErrorMessage
+ *
+ * Purpose:
+ *   Emit a concise FileX error line even when the verbose printf path is off.
+ *==============================================================================*/
+static void AppFileX_LogErrorMessage(AppFileX_State error_state,
+		UINT error_code) {
+	char error_line[96];
+	const int written = snprintf(error_line, sizeof(error_line),
+			"[FILEX][ERROR] state=%lu code=%lu\r\n",
+			(unsigned long) error_state, (unsigned long) error_code);
+
+	if ((written > 0) && ((size_t) written < sizeof(error_line))) {
+		(void) DebugConsole_WriteString(error_line);
+	}
+}
+
+/*==============================================================================
  * Function: AppFileX_StateMachine_EnterError
  *
  * Purpose:
@@ -351,8 +389,7 @@ static void AppFileX_StateMachine_EnterError(
 	context_ptr->state = APP_FILEX_STATE_ERROR;
 	context_ptr->state_entry_tick = tx_time_get();
 
-	DebugConsole_Printf("FileX state machine ERROR. state=%lu code=%lu\r\n",
-			(ULONG) error_state, (ULONG) error_code);
+	AppFileX_LogErrorMessage(error_state, error_code);
 }
 
 /*==============================================================================
@@ -385,6 +422,7 @@ static void AppFileX_StateMachine_Step(
 
 	switch (context_ptr->state) {
 	case APP_FILEX_STATE_SD_SEND_CMD0: {
+		AppFileX_LogStateMessage("[FILEX][STATE] CMD0\r\n");
 		/**
 		 * Send each of the required SPI SD commands to initialize the SD card
 		 * ie. CMD0->CMD8->ACMD41->CMD58
@@ -408,6 +446,7 @@ static void AppFileX_StateMachine_Step(
 			break;
 		}
 
+		AppFileX_LogStateMessage("[FILEX][STATE] CMD0 OK\r\n");
 		context_ptr->last_progress_tick = tx_time_get();
 		context_ptr->state = APP_FILEX_STATE_SD_SEND_CMD8;
 		context_ptr->state_entry_tick = context_ptr->last_progress_tick;
@@ -415,6 +454,7 @@ static void AppFileX_StateMachine_Step(
 	}
 
 	case APP_FILEX_STATE_SD_SEND_CMD8: {
+		AppFileX_LogStateMessage("[FILEX][STATE] CMD8\r\n");
 		context_ptr->sd_cmd8_r1 = SPI_SendCMD8_ReadR7(context_ptr->r7_response);
 		if ((context_ptr->sd_cmd8_r1 != 0x01U)
 				&& (context_ptr->sd_cmd8_r1 != 0x05U)) {
@@ -433,6 +473,7 @@ static void AppFileX_StateMachine_Step(
 			break;
 		}
 
+		AppFileX_LogStateMessage("[FILEX][STATE] CMD8 OK\r\n");
 		context_ptr->last_progress_tick = tx_time_get();
 		context_ptr->state = APP_FILEX_STATE_SD_WAIT_READY_ACMD41;
 		context_ptr->state_entry_tick = context_ptr->last_progress_tick;
@@ -440,6 +481,7 @@ static void AppFileX_StateMachine_Step(
 	}
 
 	case APP_FILEX_STATE_SD_WAIT_READY_ACMD41: {
+		AppFileX_LogStateMessage("[FILEX][STATE] ACMD41\r\n");
 		/* Blocking helper, acceptable for now. Can be made incremental later. */
 		context_ptr->sd_acmd41_r1 = SPI_SendACMD41_UntilReady(NULL);
 
@@ -459,6 +501,7 @@ static void AppFileX_StateMachine_Step(
 			break;
 		}
 
+		AppFileX_LogStateMessage("[FILEX][STATE] ACMD41 OK\r\n");
 		SPI_SD_SetHighSpeed();
 		context_ptr->last_progress_tick = tx_time_get();
 		context_ptr->state = APP_FILEX_STATE_SD_READ_OCR_CMD58;
@@ -467,10 +510,12 @@ static void AppFileX_StateMachine_Step(
 	}
 
 	case APP_FILEX_STATE_SD_READ_OCR_CMD58: {
+		AppFileX_LogStateMessage("[FILEX][STATE] CMD58\r\n");
 		context_ptr->sd_cmd58_r1 = SPI_SendCMD58_ReadOCR(
 				context_ptr->ocr_response);
 		DebugConsole_Printf(
 				"All SPI commands sent and received successfully.\r\n");
+		AppFileX_LogStateMessage("[FILEX][STATE] CMD58 OK\r\n");
 		context_ptr->last_progress_tick = tx_time_get();
 		context_ptr->state = APP_FILEX_STATE_SD_READ_PARTITION0_INFO;
 		context_ptr->state_entry_tick = context_ptr->last_progress_tick;
@@ -478,6 +523,7 @@ static void AppFileX_StateMachine_Step(
 	}
 
 	case APP_FILEX_STATE_SD_READ_PARTITION0_INFO: {
+		AppFileX_LogStateMessage("[FILEX][STATE] PARTITION\r\n");
 		const ULONG retry_timeout_ticks = AppFileX_MillisecondsToTicks(
 				FILEX_PARTITION_READ_RETRY_TIMEOUT_MS);
 		const UINT partition_status = (UINT) SPI_ReadPartition0Info(
@@ -500,6 +546,7 @@ static void AppFileX_StateMachine_Step(
 			break;
 		}
 
+		AppFileX_LogStateMessage("[FILEX][STATE] PARTITION OK\r\n");
 		g_sd_filex_driver_context.partition_start_lba =
 				context_ptr->partition_start_lba;
 		g_sd_filex_driver_context.partition_sector_count =
@@ -513,6 +560,7 @@ static void AppFileX_StateMachine_Step(
 	}
 
 	case APP_FILEX_STATE_FILEX_MEDIA_OPEN: {
+		AppFileX_LogStateMessage("[FILEX][STATE] MEDIA OPEN\r\n");
 		/**
 		 * Open the SD card for writing
 		 */
@@ -529,6 +577,7 @@ static void AppFileX_StateMachine_Step(
 		}
 
 		context_ptr->filex_media_is_open = 1U;
+		AppFileX_LogStateMessage("[FILEX][STATE] MEDIA OPEN OK\r\n");
 
 		context_ptr->last_progress_tick = tx_time_get();
 		context_ptr->state = APP_FILEX_STATE_LOG_SERVICE_INITIALIZE;
@@ -537,6 +586,7 @@ static void AppFileX_StateMachine_Step(
 	}
 
 	case APP_FILEX_STATE_LOG_SERVICE_INITIALIZE: {
+		AppFileX_LogStateMessage("[FILEX][STATE] LOG SERVICE\r\n");
 		/**
 		 * Start the debug log service
 		 */
@@ -561,6 +611,7 @@ static void AppFileX_StateMachine_Step(
 				"Initialized debug log service in FileX thread.\r\n");
 
 		context_ptr->log_service_is_initialized = 1U;
+		AppFileX_LogStateMessage("[FILEX][STATE] LOG SERVICE OK\r\n");
 
 		context_ptr->last_progress_tick = tx_time_get();
 		context_ptr->state = APP_FILEX_STATE_TEST_FILE_CREATE_OPEN_WRITE_CLOSE;
@@ -569,6 +620,7 @@ static void AppFileX_StateMachine_Step(
 	}
 
 	case APP_FILEX_STATE_TEST_FILE_CREATE_OPEN_WRITE_CLOSE: {
+		AppFileX_LogStateMessage("[FILEX][STATE] TEST FILE\r\n");
 		/**
 		 * Delete and rewrite a test file on the sd card to ensure proper operation
 		 */
@@ -613,6 +665,7 @@ static void AppFileX_StateMachine_Step(
 
 		DebugConsole_Printf(
 				"Successfully wrote test.txt to root of SD card.\r\n");
+		AppFileX_LogStateMessage("[FILEX][STATE] TEST FILE OK\r\n");
 
 		context_ptr->last_progress_tick = tx_time_get();
 		DebugConsole_Printf(
@@ -623,6 +676,7 @@ static void AppFileX_StateMachine_Step(
 	}
 
 	case APP_FILEX_STATE_CAPTURE_DIRECTORY_CREATE: {
+		AppFileX_LogStateMessage("[FILEX][STATE] READY CHECK\r\n");
 		/**
 		 * Create the capture directory. The camera thread opens capture files
 		 * on demand, so we avoid pre-creating a placeholder file here.
@@ -659,9 +713,7 @@ static void AppFileX_StateMachine_Step(
 
 		g_filex_media_ready = true;
 		AppStorage_NotifyMediaReady();
-		DebugConsole_Printf(
-				"Verified /%s directory on SD card.\r\n",
-				CAPTURED_IMAGES_DIRECTORY_NAME);
+		(void) DebugConsole_WriteString("[FILEX] media ready\r\n");
 
 		context_ptr->last_progress_tick = tx_time_get();
 		context_ptr->state = APP_FILEX_STATE_RUNNING;
@@ -683,6 +735,7 @@ static void AppFileX_StateMachine_Step(
 
 	case APP_FILEX_STATE_ERROR: {
 		/* Best effort drain, then blink red 1s on, 1s off, then restart state machine. */
+		AppFileX_LogStateMessage("[FILEX][STATE] ERROR\r\n");
 		if (context_ptr->log_service_is_initialized != 0U) {
 			SdDebugLogService_ServiceQueue(64U);
 		}

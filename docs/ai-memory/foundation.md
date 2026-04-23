@@ -67,6 +67,7 @@ See `archive.md` for the full chronology.
 ## RTC Facts
 
 - The DS3231 is the live time source for retention and cleanup decisions.
+- If the live RTC reports year `2000` during boot, the firmware should seed it from the current build timestamp and then re-read it.
 - If the live RTC reports year `2000`, cleanup logic should not delete anything.
 - RTC failures should bias toward preserving data rather than pruning it.
 

@@ -49,6 +49,10 @@ bool AppStorage_WaitForMediaReady(uint32_t timeout_ms) {
 			+ CameraPlatform_MillisecondsToTicks(timeout_ms);
 	ULONG actual_flags = 0U;
 
+	DebugConsole_Printf(
+			"[STORAGE] Waiting for FileX media readiness (timeout=%lu ms).\r\n",
+			(unsigned long) timeout_ms);
+
 	while (!AppFileX_IsMediaReady()) {
 		if (tx_time_get() >= deadline_tick) {
 			DebugConsole_Printf(
@@ -59,15 +63,15 @@ bool AppStorage_WaitForMediaReady(uint32_t timeout_ms) {
 		if (camera_storage_ready_sync_created) {
 			const UINT flag_status = tx_event_flags_get(
 					&camera_storage_ready_flags,
-					CAMERA_STORAGE_READY_EVENT_FLAG, TX_OR_CLEAR, &actual_flags,
-					CameraPlatform_MillisecondsToTicks(50U));
+					CAMERA_STORAGE_READY_EVENT_FLAG, TX_NO_WAIT, &actual_flags,
+					TX_NO_WAIT);
 			if ((flag_status == TX_SUCCESS)
 					&& ((actual_flags & CAMERA_STORAGE_READY_EVENT_FLAG) != 0U)) {
 				break;
 			}
-		} else {
-			DelayMilliseconds_ThreadX(50U);
 		}
+
+		DelayMilliseconds_Cooperative(50U);
 	}
 
 	return true;

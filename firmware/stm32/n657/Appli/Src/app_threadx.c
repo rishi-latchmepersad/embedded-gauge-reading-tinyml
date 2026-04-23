@@ -92,7 +92,6 @@ bool camera_cmw_initialized = false;
 bool camera_capture_use_cmw_pipeline = false;
 TX_SEMAPHORE camera_capture_done_semaphore;
 TX_SEMAPHORE camera_capture_isp_semaphore;
-static bool camera_heartbeat_gpio_initialized = false;
 static bool camera_capture_sync_created = false;
 bool camera_stream_started = false;
 volatile bool camera_capture_failed = false;
@@ -157,9 +156,9 @@ UINT App_ThreadX_Init(VOID *memory_ptr) {
  */
 UINT App_ThreadX_Start(void) {
 	/* Keep this function idempotent to protect against accidental double-start. */
-	/* Leave the heartbeat LED under the dedicated thread so it reflects liveness
-	 * instead of startup state. */
-	BSP_LED_On(LED_RED);
+	/* Keep the visible LED off until the heartbeat thread takes ownership so a
+	 * solid red LED means fault handling, not normal startup state. */
+	BSP_LED_Off(LED_RED);
 	BSP_LED_Off(LED_BLUE);
 	BSP_LED_Off(LED_GREEN);
 	if (camera_init_thread_created && camera_isp_thread_created
@@ -207,15 +206,6 @@ UINT App_ThreadX_Start(void) {
 			DebugConsole_Printf(
 					"[CAMERA][THREAD] Failed to create storage-ready event flags.\r\n");
 			return storage_init_status;
-		}
-	}
-
-	{
-		const UINT image_cleanup_start_status = AppImageCleanup_Start();
-		if (image_cleanup_start_status != TX_SUCCESS) {
-			DebugConsole_Printf(
-					"[IMAGE][CLEANUP] Failed to start cleanup thread, status=%lu.\r\n",
-					(unsigned long) image_cleanup_start_status);
 		}
 	}
 
@@ -367,7 +357,8 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 	(void) thread_input;
 
 	(void) DebugConsole_WriteString("[CAMERA] thread entry\r\n");
-	DelayMilliseconds_ThreadX(CAMERA_INIT_STARTUP_DELAY_MS);
+	(void) DebugConsole_WriteString(
+			"[CAMERA][THREAD] Camera init startup delay skipped; probing immediately.\r\n");
 	(void) DebugConsole_WriteString("[CAMERA] probe start\r\n");
 	camera_capture_isp_loop_paused = true;
 
@@ -380,18 +371,29 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 		return;
 	}
 
-	if (CameraPlatform_ProbeBCamsImx() == TX_SUCCESS) {
-		if (!CameraPlatform_DisableImx335AutoExposure()) {
+		if (CameraPlatform_ProbeBCamsImx() == TX_SUCCESS) {
+			if (!CameraPlatform_DisableImx335AutoExposure()) {
+				DebugConsole_Printf(
+						"[CAMERA][THREAD] Warning: failed to lock IMX335 exposure after probe.\r\n");
+			}
+			App_ThreadX_UnlockCameraMiddleware();
+			camera_capture_isp_loop_paused = false;
 			DebugConsole_Printf(
-					"[CAMERA][THREAD] Warning: failed to lock IMX335 exposure after probe.\r\n");
-		}
-		App_ThreadX_UnlockCameraMiddleware();
-		camera_capture_isp_loop_paused = false;
-		DebugConsole_Printf(
-				"[CAMERA][THREAD] Camera probe completed successfully.\r\n");
+					"[CAMERA][THREAD] Camera probe completed successfully.\r\n");
 
-		if (!App_AI_Model_Init()) {
-			DebugConsole_Printf(
+			/* Start cleanup only after the camera has proven it can probe and
+			 * capture, so the background sweeper cannot interfere with startup. */
+			{
+				const UINT image_cleanup_start_status = AppImageCleanup_Start();
+				if (image_cleanup_start_status != TX_SUCCESS) {
+					DebugConsole_Printf(
+							"[IMAGE][CLEANUP] Deferred start failed, status=%lu.\r\n",
+							(unsigned long) image_cleanup_start_status);
+				}
+			}
+
+			if (!App_AI_Model_Init()) {
+				DebugConsole_Printf(
 					"[AI] Model runtime init failed; continuing without inference.\r\n");
 		}
 
@@ -399,6 +401,9 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 		DebugConsole_Printf(
 				"[CAMERA][THREAD] Entering capture/inference loop (period=60s)...\r\n");
 		while (1) {
+			const bool storage_ready = AppFileX_IsMediaReady();
+			uint32_t next_delay_ms = 60000U;
+
 			if (AppCameraCapture_CaptureAndStoreSingleFrame()) {
 				DebugConsole_Printf(
 						"[CAMERA][THREAD] Capture and inference completed successfully.\r\n");
@@ -406,7 +411,15 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 				DebugConsole_Printf(
 						"[CAMERA][THREAD] Capture/inference attempt failed.\r\n");
 			}
-			DelayMilliseconds_ThreadX(60000U);
+
+			/* While FileX is still coming up, retry sooner so the board keeps
+			 * producing visible progress instead of looking stalled for a full
+			 * minute between attempts. */
+			if (!storage_ready) {
+				next_delay_ms = 5000U;
+			}
+
+			DelayMilliseconds_Cooperative(next_delay_ms);
 		}
 	}
 
@@ -417,39 +430,22 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 }
 
 /**
- * @brief Low-priority heartbeat thread that toggles the board LED.
+ * @brief Low-priority heartbeat thread that toggles a visible board LED.
  * @param thread_input Unused ThreadX input value.
  */
 static VOID CameraHeartbeatThread_Entry(ULONG thread_input) {
 	(void) thread_input;
 
-	if (!camera_heartbeat_gpio_initialized) {
-		GPIO_InitTypeDef gpio_init = { 0 };
-
-		__HAL_RCC_GPIOG_CLK_ENABLE();
-		HAL_GPIO_WritePin(CAMERA_HEARTBEAT_LED_GPIO_PORT,
-				CAMERA_HEARTBEAT_LED_PIN, GPIO_PIN_SET);
-
-		gpio_init.Pin = CAMERA_HEARTBEAT_LED_PIN;
-		gpio_init.Mode = GPIO_MODE_OUTPUT_PP;
-		gpio_init.Pull = GPIO_NOPULL;
-		gpio_init.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-		HAL_GPIO_Init(CAMERA_HEARTBEAT_LED_GPIO_PORT, &gpio_init);
-
-		camera_heartbeat_gpio_initialized = true;
-	}
-
-	HAL_GPIO_WritePin(CAMERA_HEARTBEAT_LED_GPIO_PORT,
-			CAMERA_HEARTBEAT_LED_PIN, GPIO_PIN_SET);
+	/* Drive the user-visible green LED so the board shows liveness without
+	 * relying on UART traffic or a hidden GPIO. */
+	BSP_LED_Off(LED_GREEN);
 	DebugConsole_Printf("[WATCHDOG] heartbeat thread running.\r\n");
 
 	while (1) {
-		DebugConsole_Printf("[WATCHDOG] pulse\r\n");
-		HAL_GPIO_TogglePin(CAMERA_HEARTBEAT_LED_GPIO_PORT,
-				CAMERA_HEARTBEAT_LED_PIN);
+		BSP_LED_Toggle(LED_GREEN);
+		DebugConsole_WriteString("[WATCHDOG] pulse\r\n");
 		DelayMilliseconds_ThreadX(CAMERA_HEARTBEAT_PULSE_MS);
-		HAL_GPIO_TogglePin(CAMERA_HEARTBEAT_LED_GPIO_PORT,
-				CAMERA_HEARTBEAT_LED_PIN);
+		BSP_LED_Toggle(LED_GREEN);
 		DelayMilliseconds_ThreadX(CAMERA_HEARTBEAT_PERIOD_MS
 				- CAMERA_HEARTBEAT_PULSE_MS);
 	}

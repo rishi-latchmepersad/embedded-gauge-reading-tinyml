@@ -37,6 +37,26 @@ void DelayMilliseconds_ThreadX(const uint32_t delay_time_milliseconds) {
 }
 
 /**
+ * @brief  Delay without entering the ThreadX sleep queue.
+ */
+void DelayMilliseconds_Cooperative(const uint32_t delay_time_milliseconds) {
+	const uint32_t ticks_per_second = (uint32_t) TX_TIMER_TICKS_PER_SECOND;
+	const ULONG start_tick = tx_time_get();
+	uint32_t wait_ticks = (delay_time_milliseconds * ticks_per_second + 999U)
+			/ 1000U;
+
+	if ((delay_time_milliseconds > 0U) && (wait_ticks == 0U)) {
+		wait_ticks = 1U;
+	}
+
+	while ((ULONG) (tx_time_get() - start_tick) < (ULONG) wait_ticks) {
+		/* Sleep for a single tick so lower-priority threads, like the visible
+		 * heartbeat, still get scheduled while we keep the wait bounded. */
+		(void) tx_thread_sleep(1U);
+	}
+}
+
+/**
  * @brief  Lock a ThreadX mutex without blocking the caller.
  * @param  mutex_ptr Pointer to the mutex to acquire.
  * @return None.

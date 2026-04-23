@@ -77,7 +77,14 @@ VOID  _tx_timer_system_deactivate(TX_TIMER_INTERNAL *timer_ptr)
 TX_TIMER_INTERNAL   **list_head;
 TX_TIMER_INTERNAL   *next_timer;
 TX_TIMER_INTERNAL   *previous_timer;
+ULONG                list_head_addr;
 
+
+    /* If the timer control block itself is gone, there is nothing safe to do. */
+    if (timer_ptr == TX_NULL)
+    {
+        return;
+    }
 
     /* Pickup the list head pointer.  */
     list_head =  timer_ptr -> tx_timer_internal_list_head;
@@ -85,6 +92,17 @@ TX_TIMER_INTERNAL   *previous_timer;
     /* Determine if the timer still needs deactivation.  */
     if (list_head != TX_NULL)
     {
+        list_head_addr = (ULONG) TX_TIMER_INDIRECT_TO_VOID_POINTER_CONVERT(list_head);
+
+        /* If the list head has wandered outside the timer list, treat the timer
+           as already detached. This avoids dereferencing a corrupted pointer and
+           keeps the system alive while we hunt the writer. */
+        if ((list_head_addr < (ULONG) TX_TIMER_INDIRECT_TO_VOID_POINTER_CONVERT(_tx_timer_list_start))
+                || (list_head_addr >= (ULONG) TX_TIMER_INDIRECT_TO_VOID_POINTER_CONVERT(_tx_timer_list_end)))
+        {
+            timer_ptr -> tx_timer_internal_list_head =  TX_NULL;
+            return;
+        }
 
         /* Deactivate the timer.  */
 
@@ -131,4 +149,3 @@ TX_TIMER_INTERNAL   *previous_timer;
         timer_ptr -> tx_timer_internal_list_head =  TX_NULL;
     }
 }
-

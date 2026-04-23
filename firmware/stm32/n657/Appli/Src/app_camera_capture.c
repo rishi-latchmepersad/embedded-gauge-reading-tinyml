@@ -703,6 +703,7 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	uint8_t *image_ptr = NULL;
 	ULONG image_length = captured_bytes;
 	bool result = false;
+	const bool storage_ready = AppFileX_IsMediaReady();
 	const CHAR *file_extension = camera_capture_use_cmw_pipeline ? "yuv422"
 			: "raw16";
 	const uint32_t max_capture_attempts =
@@ -713,8 +714,11 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	AppCameraCapture_BrightnessGate_t brightness_gate =
 	APP_CAMERA_CAPTURE_BRIGHTNESS_OK;
 
-	if (!AppStorage_WaitForMediaReady(CAMERA_STORAGE_WAIT_TIMEOUT_MS)) {
-		return false;
+	(void) DebugConsole_WriteString(
+			"[CAMERA][CAPTURE] Begin capture-and-store request.\r\n");
+	if (!storage_ready) {
+		(void) DebugConsole_WriteString(
+				"[CAMERA][CAPTURE] FileX media not ready yet; this capture will skip SD save.\r\n");
 	}
 
 	for (capture_attempt = 0U; capture_attempt < max_capture_attempts;
@@ -752,25 +756,20 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 				if (brightness_gate != APP_CAMERA_CAPTURE_BRIGHTNESS_OK) {
 					AppCameraCapture_LogBrightnessGateDecision(&brightness_stats,
 							brightness_gate);
-					capture_ok = false;
-					if ((capture_attempt + 1U) >= max_capture_attempts) {
-						DebugConsole_Printf(
-								"[CAMERA][CAPTURE] Brightness gate rejected the frame after %lu attempts.\r\n",
-						(unsigned long) max_capture_attempts);
-						break;
-					}
-
+					/* Treat the gate as an exposure hint instead of a hard retry.
+					 * Retrying the same capture in-place was destabilizing the
+					 * camera thread on bright scenes, while the next scheduled
+					 * capture still sees the nudged sensor settings. */
 					if (!CameraPlatform_AdjustImx335ExposureGain(
 							brightness_gate
 									== APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_DARK)) {
 						DebugConsole_Printf(
-								"[CAMERA][CAPTURE] Failed to nudge IMX335 exposure/gain after brightness gate rejection.\r\n");
-						break;
+								"[CAMERA][CAPTURE] Brightness gate hint could not be applied; continuing with the current frame.\r\n");
+					} else {
+						DebugConsole_WriteString(
+								"[CAMERA][CAPTURE] Brightness gate adjustment queued for the next capture cycle.\r\n");
 					}
-
-					DelayMilliseconds_ThreadX(
-					CAMERA_CAPTURE_BRIGHTNESS_SETTLE_DELAY_MS);
-					continue;
+					break;
 				}
 				CameraPlatform_CacheAcceptedExposureGain();
 			}
@@ -817,30 +816,37 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 		}
 	}
 
-	(void) DebugConsole_WriteString("[CAMERA][CAPTURE] step: build-name\r\n");
-	if (!AppStorage_BuildCaptureFileName(capture_file_name,
-			sizeof(capture_file_name), file_extension)) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Failed to build capture filename.\r\n");
-		goto cleanup;
-	}
-	(void) DebugConsole_WriteString("[CAMERA][CAPTURE] step: build-name-done\r\n");
+	if (storage_ready) {
+		(void) DebugConsole_WriteString(
+				"[CAMERA][CAPTURE] step: build-name\r\n");
+		if (!AppStorage_BuildCaptureFileName(capture_file_name,
+				sizeof(capture_file_name), file_extension)) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] Failed to build capture filename.\r\n");
+			goto cleanup;
+		}
+		(void) DebugConsole_WriteString(
+				"[CAMERA][CAPTURE] step: build-name-done\r\n");
 
-	if (camera_capture_use_cmw_pipeline) {
+		if (camera_capture_use_cmw_pipeline) {
 #if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
-		AppCameraCapture_LogCaptureState("processed-capture");
-		AppCameraDiagnostics_LogProcessedFrameDiagnostics("processed-capture",
-				image_ptr, (uint32_t) image_length);
+			AppCameraCapture_LogCaptureState("processed-capture");
+			AppCameraDiagnostics_LogProcessedFrameDiagnostics("processed-capture",
+					image_ptr, (uint32_t) image_length);
 #endif
-	}
+		}
 
-	filex_status = AppFileX_WriteCapturedImage(capture_file_name,
-			image_ptr, image_length);
-	if (filex_status != FX_SUCCESS) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Failed to write image to SD card, status=%lu.\r\n",
-				(unsigned long) filex_status);
-		goto cleanup;
+		filex_status = AppFileX_WriteCapturedImage(capture_file_name,
+				image_ptr, image_length);
+		if (filex_status != FX_SUCCESS) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] Failed to write image to SD card, status=%lu.\r\n",
+					(unsigned long) filex_status);
+			goto cleanup;
+		}
+	} else {
+		(void) DebugConsole_WriteString(
+				"[CAMERA][CAPTURE] step: build-name-skipped\r\n");
 	}
 
 	if (camera_capture_use_cmw_pipeline) {

@@ -58,6 +58,15 @@ extern volatile uint32_t camera_capture_csi_irq_count;
 extern volatile uint32_t camera_capture_dcmipp_irq_count;
 extern void CDNN0_IRQHandler(void);
 
+static void IT_EnterFaultLedState(void)
+{
+  /* Use the visible board LEDs to make fault state obvious even when the UART
+   * console is wedged or the fault happens inside the logger path. */
+  BSP_LED_On(LED_RED);
+  BSP_LED_Off(LED_BLUE);
+  BSP_LED_Off(LED_GREEN);
+}
+
 static void IT_LogFaultSnapshot(const char *fault_name, uint32_t stacked_pc, uint32_t stacked_lr)
 {
   static volatile uint32_t fault_cfsr = 0U;
@@ -116,6 +125,7 @@ void HardFault_Handler_C(uint32_t *stacked_regs, uint32_t exc_lr)
   (void)stacked_psr;
   (void)exc_lr;
 
+  IT_EnterFaultLedState();
   IT_LogFaultSnapshot("HardFault", stacked_pc, stacked_lr);
   __BKPT(0);
   while (1)
@@ -147,6 +157,10 @@ extern TIM_HandleTypeDef htim5;
 
 /* USER CODE BEGIN EV */
 extern DCMIPP_HandleTypeDef hdcmipp;
+/* Count how often the TIM5 timebase handler has to self-heal around a
+ * corrupted handle. If this ever increments, we know we still have an upstream
+ * overwrite to chase. */
+static volatile uint32_t tim5_irq_guard_drop_count = 0U;
 
 /* USER CODE END EV */
 
@@ -189,6 +203,7 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
+  IT_EnterFaultLedState();
   IT_LogFaultSnapshot("MemManage", 0U, 0U);
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
@@ -204,6 +219,7 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
+  IT_EnterFaultLedState();
   IT_LogFaultSnapshot("BusFault", 0U, 0U);
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
@@ -219,6 +235,7 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
+  IT_EnterFaultLedState();
   IT_LogFaultSnapshot("UsageFault", 0U, 0U);
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
@@ -234,6 +251,7 @@ void UsageFault_Handler(void)
 void SecureFault_Handler(void)
 {
   /* USER CODE BEGIN SecureFault_IRQn 0 */
+  IT_EnterFaultLedState();
   IT_LogFaultSnapshot("SecureFault", 0U, 0U);
   /* USER CODE END SecureFault_IRQn 0 */
   while (1)
@@ -285,6 +303,16 @@ void TIM5_IRQHandler(void)
   /* USER CODE BEGIN TIM5_IRQn 0 */
 
   /* USER CODE END TIM5_IRQn 0 */
+  /* Do not let a corrupted handle turn the tick interrupt into a hard fault.
+   * A null or bogus Instance pointer will fault inside HAL_TIM_IRQHandler(),
+   * so clear the update flag directly and keep the board alive for diagnosis. */
+  if ((htim5.Instance == NULL) || (htim5.Instance != TIM5))
+  {
+    tim5_irq_guard_drop_count++;
+    TIM5->SR &= ~TIM_SR_UIF;
+    HAL_IncTick();
+    return;
+  }
   HAL_TIM_IRQHandler(&htim5);
   /* USER CODE BEGIN TIM5_IRQn 1 */
 

@@ -43,6 +43,7 @@ Usage:
   bash scripts/wsl_ml.sh eval-rectified-scalar [rectified eval args...]
   bash scripts/wsl_ml.sh eval-rectified-captures [capture eval args...]
   bash scripts/wsl_ml.sh sweep-rectified-scalar-crop-scale [sweep args...]
+  bash scripts/wsl_ml.sh calibrate-obb-scalar-firmware [calibration args...]
   bash scripts/wsl_ml.sh export-prod-v0-2 [prod v0.2 export args...]
   bash scripts/wsl_ml.sh package-prod-v0-2 [prod v0.2 package args...]
   bash scripts/wsl_ml.sh export-prod-v0-3-obb [prod v0.3 obb export args...]
@@ -193,6 +194,10 @@ case "${cmd}" in
   sweep-rectified-scalar-crop-scale)
     # Sweep rectifier crop expansion factors against the board-style manifest.
     exec bash scripts/sweep_rectified_scalar_crop_scale.sh "$@"
+    ;;
+  calibrate-obb-scalar-firmware)
+    # Fit deploy-time calibration for the prodv0.3 OBB + scalar cascade.
+    exec bash scripts/run_calibrate_obb_scalar_firmware.sh "$@"
     ;;
   export-prod-v0-2)
     # Export the current prod-v0.2 scalar candidate to board-ready TFLite artifacts.

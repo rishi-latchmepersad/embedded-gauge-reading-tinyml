@@ -45,6 +45,12 @@
 #ifndef APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
 #define APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS 1U
 #endif
+/* The ATON runtime has been faulting immediately after the per-frame reset
+ * path, so keep that reset behind a switch while we verify whether the model
+ * can run cleanly with one-shot initialization only. */
+#ifndef APP_AI_RESET_NETWORK_EACH_INFERENCE
+#define APP_AI_RESET_NETWORK_EACH_INFERENCE 0
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -3114,6 +3120,8 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		return false;
 	}
 
+	(void) DebugConsole_WriteString("[AI] Stage preprocess OK.\r\n");
+
 	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
 		DebugConsole_Printf(
 				"[AI] %s preprocess complete; logging tensor signatures.\r\n",
@@ -3130,11 +3138,21 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 
 	AppAI_LogBufferPreview("Stage input", input_info);
 
+	(void) DebugConsole_WriteString("[AI] Stage input cache clean start.\r\n");
 	(void) mcu_cache_clean_range((uint32_t) (uintptr_t) input_ptr,
 			(uint32_t) ((uintptr_t) input_ptr + input_len_bytes));
+	(void) DebugConsole_WriteString("[AI] Stage input cache clean OK.\r\n");
 
-	LL_ATON_RT_Reset_Network(stage->nn_instance);
+	if (APP_AI_RESET_NETWORK_EACH_INFERENCE) {
+		(void) DebugConsole_WriteString("[AI] Stage network reset start.\r\n");
+		LL_ATON_RT_Reset_Network(stage->nn_instance);
+		(void) DebugConsole_WriteString("[AI] Stage network reset OK.\r\n");
+	} else {
+		(void) DebugConsole_WriteString(
+				"[AI] Stage network reset skipped (one-shot runtime).\r\n");
+	}
 
+	(void) DebugConsole_WriteString("[AI] Stage inference run start.\r\n");
 	for (uint32_t epoch_step = 0U;; ++epoch_step) {
 		const LL_ATON_RT_RetValues_t run_status =
 				LL_ATON_RT_RunEpochBlock(stage->nn_instance);
@@ -3149,6 +3167,7 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 			tx_thread_relinquish();
 		}
 	}
+	(void) DebugConsole_WriteString("[AI] Stage inference run OK.\r\n");
 
 	output_ptr = (const float *) LL_Buffer_addr_start(output_info);
 	output_len_bytes = (size_t) LL_Buffer_len(output_info);

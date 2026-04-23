@@ -18,7 +18,7 @@
 static DebugConsole_Configuration_t g_debug_console_configuration;
 static bool g_debug_console_is_initialized = false;
 
-static void DebugConsole_InternalLock(void);
+static bool DebugConsole_InternalLock(void);
 static void DebugConsole_InternalUnlock(void);
 static bool DebugConsole_InternalUartTransmitBlocking(
 		const uint8_t *byte_array_pointer, size_t byte_array_length);
@@ -128,7 +128,11 @@ bool DebugConsole_WriteBytes(const uint8_t *byte_array_pointer,
 		return true;
 	}
 
-	DebugConsole_InternalLock();
+	if (!DebugConsole_InternalLock()) {
+		/* Drop contended log messages instead of spinning and starving a lower-
+		 * priority thread already in the transmit path. */
+		return false;
+	}
 	transmit_successful = DebugConsole_InternalUartTransmitBlocking(
 			byte_array_pointer, byte_array_length);
 	DebugConsole_InternalUnlock();
@@ -236,19 +240,25 @@ bool DebugConsole_VPrintf(const char *format_string_pointer,
 	return DebugConsole_WriteString(formatted_output_buffer);
 }
 
-static void DebugConsole_InternalLock(void) {
+static volatile uint32_t g_uart_busy = 0U;
+
+static bool DebugConsole_InternalLock(void) {
 	if (g_debug_console_configuration.lock_callback != NULL) {
 		g_debug_console_configuration.lock_callback();
+		return true;
 	}
+
+	return !__atomic_test_and_set(&g_uart_busy, __ATOMIC_ACQUIRE);
 }
 
 static void DebugConsole_InternalUnlock(void) {
 	if (g_debug_console_configuration.unlock_callback != NULL) {
 		g_debug_console_configuration.unlock_callback();
+		return;
 	}
-}
 
-static volatile uint32_t g_uart_busy = 0U;
+	__atomic_clear(&g_uart_busy, __ATOMIC_RELEASE);
+}
 
 static bool DebugConsole_InternalUartTransmitBlocking(
 		const uint8_t *byte_array_pointer, size_t byte_array_length) {
@@ -258,24 +268,10 @@ static bool DebugConsole_InternalUartTransmitBlocking(
 		return false;
 	}
 
-	/* Spin-wait until the UART is free.  Uses a simple atomic flag rather
-	 * than disabling interrupts (which would deadlock HAL_UART_Transmit's
-	 * tick-based timeout) or a ThreadX mutex (which is illegal from ISR). */
-	uint32_t spin = 0U;
-	while (__atomic_test_and_set(&g_uart_busy, __ATOMIC_ACQUIRE)) {
-		if (++spin > 200000U) {
-			/* UART appears stuck — clear the flag and try anyway. */
-			__atomic_clear(&g_uart_busy, __ATOMIC_RELEASE);
-			break;
-		}
-	}
-
 	transmit_status = HAL_UART_Transmit(
 			g_debug_console_configuration.uart_handle_pointer,
 			(uint8_t*) byte_array_pointer, (uint16_t) byte_array_length,
 			g_debug_console_configuration.uart_transmit_timeout_milliseconds);
-
-	__atomic_clear(&g_uart_busy, __ATOMIC_RELEASE);
 
 	return (transmit_status == HAL_OK);
 }

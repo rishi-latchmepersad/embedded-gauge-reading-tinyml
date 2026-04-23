@@ -17,14 +17,15 @@ extern "C" {
 /* Shared memory budgets ---------------------------------------------------- */
 /* Keep these in one place so we can tune the app footprint without digging
  * through the thread and capture logic. */
+#define NEWLIB_HEAP_LIMIT_ADDR          0x34110000UL
 #define INFERENCE_LOG_THREAD_STACK_SIZE_BYTES   8192U
 #define INFERENCE_LOG_QUEUE_DEPTH               8U
 
-#define CAMERA_INIT_THREAD_STACK_SIZE_BYTES     8192U
+#define CAMERA_INIT_THREAD_STACK_SIZE_BYTES     16384U
 #define CAMERA_ISP_THREAD_STACK_SIZE_BYTES      4096U
 #define CAMERA_HEARTBEAT_THREAD_STACK_SIZE_BYTES 1024U
-#define CAMERA_AI_THREAD_STACK_SIZE_BYTES       16384U
-#define BASELINE_RUNTIME_THREAD_STACK_SIZE_BYTES 8192U
+#define CAMERA_AI_THREAD_STACK_SIZE_BYTES       32768U
+#define BASELINE_RUNTIME_THREAD_STACK_SIZE_BYTES 16384U
 #define IMAGE_CLEANUP_THREAD_STACK_SIZE_BYTES    4096U
 
 /* Capture geometry --------------------------------------------------------- */
