@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import dataclass
 from pathlib import Path
 import sys
-from typing import Any
+from typing import Any, Literal, cast
 
 import numpy as np
 import tensorflow as tf
@@ -26,6 +27,18 @@ from embedded_gauge_reading_tinyml.models import (  # noqa: E402
     build_mobilenetv2_rectifier_model,
 )
 
+RectifierModelKind = Literal["auto", "keras", "tflite"]
+
+
+@dataclass(slots=True)
+class RectifierSession:
+    """Hold the loaded rectifier backend and its tensor details."""
+
+    kind: Literal["keras", "tflite"]
+    model: tf.keras.Model | tf.lite.Interpreter
+    input_details: dict[str, Any] | None = None
+    output_details: dict[str, Any] | None = None
+
 
 def _parse_args() -> argparse.Namespace:
     """Parse command-line arguments for rectified scalar evaluation."""
@@ -37,6 +50,15 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         required=True,
         help="Path to the saved rectifier Keras model.",
+    )
+    parser.add_argument(
+        "--rectifier-model-kind",
+        choices=["auto", "keras", "tflite"],
+        default="auto",
+        help=(
+            "Rectifier backend to load. 'auto' picks TFLite for .tflite paths "
+            "and Keras otherwise."
+        ),
     )
     parser.add_argument(
         "--scalar-model",
@@ -101,23 +123,71 @@ def _dequantize_output(output_tensor: np.ndarray, output_details: dict[str, Any]
     return float(scale * (int(output_tensor) - zero_point))
 
 
-def _load_rectifier(model_path: Path) -> tf.keras.Model:
-    """Load the rectifier Keras model with the MobileNetV2 custom objects."""
-    print(f"[RECT-EVAL] Loading rectifier model from {model_path}...", flush=True)
-    model = tf.keras.models.load_model(
-        model_path,
-        custom_objects={
-            "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input,
-        },
-        compile=False,
-        safe_mode=False,
+def _dequantize_tensor(
+    tensor: np.ndarray,
+    output_details: dict[str, Any],
+) -> np.ndarray:
+    """Convert a quantized tensor into float values using its tensor metadata."""
+    scale = float(output_details["quantization"][0])
+    zero_point = int(output_details["quantization"][1])
+    return scale * (np.asarray(tensor, dtype=np.float32) - zero_point)
+
+
+def _resolve_rectifier_kind(
+    model_path: Path,
+    model_kind: RectifierModelKind,
+) -> Literal["keras", "tflite"]:
+    """Pick the rectifier backend from the CLI flag or the file suffix."""
+    if model_kind == "auto":
+        return "tflite" if model_path.suffix.lower() == ".tflite" else "keras"
+    return cast(Literal["keras", "tflite"], model_kind)
+
+
+def _load_rectifier(model_path: Path, model_kind: RectifierModelKind) -> RectifierSession:
+    """Load the rectifier backend with the right input/output tensor handling."""
+    resolved_kind = _resolve_rectifier_kind(model_path, model_kind)
+    print(
+        f"[RECT-EVAL] Loading rectifier model from {model_path} "
+        f"as {resolved_kind}...",
+        flush=True,
     )
-    print(f"[RECT-EVAL] Rectifier loaded: {model.name}", flush=True)
-    return model
+    if resolved_kind == "keras":
+        model = tf.keras.models.load_model(
+            model_path,
+            custom_objects={
+                "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input,
+            },
+            compile=False,
+            safe_mode=False,
+        )
+        print(f"[RECT-EVAL] Rectifier loaded: {model.name}", flush=True)
+        return RectifierSession(kind="keras", model=model)
+
+    interpreter = tf.lite.Interpreter(model_path=str(model_path), num_threads=1)
+    interpreter.allocate_tensors()
+    input_details = interpreter.get_input_details()[0]
+    output_details = interpreter.get_output_details()[0]
+    print(f"[RECT-EVAL] Rectifier input details: {input_details}", flush=True)
+    print(f"[RECT-EVAL] Rectifier output details: {output_details}", flush=True)
+    return RectifierSession(
+        kind="tflite",
+        model=interpreter,
+        input_details=input_details,
+        output_details=output_details,
+    )
+
+
+def _extract_rectifier_box(
+    rectifier_pred: np.ndarray | dict[str, np.ndarray],
+) -> np.ndarray:
+    """Flatten the rectifier prediction to the normalized box vector."""
+    if isinstance(rectifier_pred, dict):
+        return np.asarray(rectifier_pred["rectifier_box"]).reshape(-1)
+    return np.asarray(rectifier_pred).reshape(-1)
 
 
 def _predict_rectified_scalar(
-    rectifier: tf.keras.Model,
+    rectifier: RectifierSession,
     scalar_interpreter: tf.lite.Interpreter,
     input_details: dict[str, Any],
     output_details: dict[str, Any],
@@ -139,11 +209,24 @@ def _predict_rectified_scalar(
         image_size=image_size,
     )
     rectifier_batch = np.expand_dims(full_frame.astype(np.float32) / 255.0, axis=0)
-    rectifier_pred = rectifier.predict(rectifier_batch, verbose=0)
-    if isinstance(rectifier_pred, dict):
-        rectifier_box = np.asarray(rectifier_pred["rectifier_box"]).reshape(-1)
+    if rectifier.kind == "keras":
+        rectifier_model = cast(tf.keras.Model, rectifier.model)
+        rectifier_pred = rectifier_model.predict(rectifier_batch, verbose=0)
+        rectifier_box = _extract_rectifier_box(rectifier_pred)
     else:
-        rectifier_box = np.asarray(rectifier_pred).reshape(-1)
+        rectifier_interpreter = cast(tf.lite.Interpreter, rectifier.model)
+        assert rectifier.input_details is not None
+        assert rectifier.output_details is not None
+        rectifier_input = _quantize_input(rectifier_batch, rectifier.input_details)
+        rectifier_interpreter.set_tensor(
+            int(rectifier.input_details["index"]),
+            rectifier_input,
+        )
+        rectifier_interpreter.invoke()
+        rectifier_output = rectifier_interpreter.get_tensor(
+            int(rectifier.output_details["index"])
+        )[0]
+        rectifier_box = _dequantize_tensor(rectifier_output, rectifier.output_details)
 
     center_x = float(np.clip(rectifier_box[0], 0.0, 1.0))
     center_y = float(np.clip(rectifier_box[1], 0.0, 1.0))
@@ -200,7 +283,7 @@ def _predict_rectified_scalar(
 def main() -> None:
     """Run the rectifier + scalar chain on every labeled sample."""
     args = _parse_args()
-    rectifier = _load_rectifier(args.rectifier_model)
+    rectifier = _load_rectifier(args.rectifier_model, args.rectifier_model_kind)
     items = _load_manifest(args.manifest)
 
     print(f"[RECT-EVAL] Loading scalar reader from {args.scalar_model}...", flush=True)

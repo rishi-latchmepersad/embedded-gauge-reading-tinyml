@@ -28,9 +28,12 @@ Usage:
   bash scripts/wsl_ml.sh train-tiny [tiny training args...]
   bash scripts/wsl_ml.sh train-compact-interval [compact interval args...]
   bash scripts/wsl_ml.sh train-compact-geometry [compact geometry args...]
-  bash scripts/wsl_ml.sh train-compact-geometry-cascade-localizer [compact geometry cascade args...]
+  bash scripts/wsl_ml.sh train-compact-geometry-longterm [compact geometry longterm args...]
+    bash scripts/wsl_ml.sh train-compact-geometry-cascade-localizer [compact geometry cascade args...]
+    bash scripts/wsl_ml.sh train-compact-geometry-cascade-localizer-longterm [compact geometry cascade longterm args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-geometry-uncertainty [geometry uncertainty args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-geometry-longterm [geometry longterm args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-geometry-cascade-localizer-longterm [geometry cascade longterm args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-direction-longterm [direction longterm args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectifier [rectifier args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectifier-finetune [rectifier fine-tune args...]
@@ -124,9 +127,21 @@ case "${cmd}" in
       --epochs 60 \
       "$@"
     ;;
+  train-compact-geometry-longterm)
+    # Train the compact CNN localizer with the pinned board-style split.
+    exec bash scripts/run_compact_geometry_longterm.sh "$@"
+    ;;
   train-compact-geometry-cascade-localizer)
     # Fine-tune the compact CNN geometry localizer used by the cascade.
     exec bash scripts/run_compact_geometry_cascade_localizer.sh "$@"
+    ;;
+  train-compact-geometry-cascade-localizer-longterm)
+    # Fine-tune the compact CNN geometry localizer with the pinned board-style split.
+    exec bash scripts/run_compact_geometry_cascade_localizer_longterm.sh "$@"
+    ;;
+  train-mobilenetv2-geometry-cascade-localizer-longterm)
+    # Fine-tune the explicit MobileNetV2 geometry localizer with the pinned board-style split.
+    exec bash scripts/run_mobilenetv2_geometry_cascade_localizer_longterm.sh "$@"
     ;;
   train-mobilenetv2-geometry-uncertainty)
     # Train the uncertainty-aware MobileNetV2 geometry reader on the board mix.

@@ -10,7 +10,7 @@ POETRY_BIN="${POETRY_BIN:-${HOME}/.local/bin/poetry}"
 RECTIFIER_MODEL="${RECTIFIER_MODEL:-artifacts/training/mobilenetv2_rectifier_hardcase_finetune_v3/model.keras}"
 SCALAR_MODEL="${SCALAR_MODEL:-artifacts/deployment/mobilenetv2_rectified_scalar_finetune_v2_int8/model_int8.tflite}"
 MANIFEST="${MANIFEST:-data/hard_cases_plus_board30_valid_with_new5.csv}"
-RECTIFIER_CROP_SCALE="${RECTIFIER_CROP_SCALE:-1.50}"
+RECTIFIER_CROP_SCALE="${RECTIFIER_CROP_SCALE:-1.80}"
 
 if [[ ! -x "${POETRY_BIN}" ]]; then
   POETRY_BIN="$(command -v poetry || true)"

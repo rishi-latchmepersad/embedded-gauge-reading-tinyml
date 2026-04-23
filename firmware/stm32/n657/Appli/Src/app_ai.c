@@ -98,7 +98,7 @@
 #define APP_AI_XSPI2_PROBE_BYTES           16U
 /* Keep the rectifier crop slightly larger than the raw box so the scalar head
  * still sees the needle and a bit of surrounding dial context. */
-#define APP_AI_RECTIFIER_CROP_SCALE        1.25f
+#define APP_AI_RECTIFIER_CROP_SCALE        1.80f
 /* Match the Python rectifier evaluator: never let the predicted box collapse
  * below a tiny fraction of the canvas, or the scalar stage degenerates to a
  * 1x1 crop. */
