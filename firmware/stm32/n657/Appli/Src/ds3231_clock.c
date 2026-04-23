@@ -52,6 +52,8 @@ void DS3231_LogI2c1LineState(void);
 void DS3231_ScanI2C1Bus(void);
 static bool DS3231_ReadDateTime(char *buffer, size_t buffer_length);
 static bool DS3231_ReadDateTimeWithRetry(char *buffer, size_t buffer_length);
+static bool DS3231_FormatCaptureTimestamp(const char *rtc_text,
+		char *buffer, uint32_t buffer_length);
 #if DS3231_ENABLE_BUILD_TIME_SEED
 static void DS3231_SetBuildTime(void);
 #endif
@@ -209,6 +211,35 @@ static bool DS3231_ReadDateTimeWithRetry(char *buffer, size_t buffer_length) {
 	return false;
 }
 
+/**
+ * @brief Reformat a DS3231 timestamp for use in filenames and logs.
+ */
+static bool DS3231_FormatCaptureTimestamp(const char *rtc_text,
+		char *buffer, uint32_t buffer_length) {
+	uint32_t source_index = 0U;
+	uint32_t dest_index = 0U;
+
+	if ((rtc_text == NULL) || (buffer == NULL) || (buffer_length == 0U)) {
+		return false;
+	}
+
+	while ((rtc_text[source_index] != '\0')
+			&& ((dest_index + 1U) < buffer_length)) {
+		char ch = rtc_text[source_index++];
+
+		if (ch == ' ') {
+			ch = '_';
+		} else if (ch == ':') {
+			ch = '-';
+		}
+
+		buffer[dest_index++] = ch;
+	}
+
+	buffer[dest_index] = '\0';
+	return (rtc_text[source_index] == '\0');
+}
+
 #if DS3231_ENABLE_BUILD_TIME_SEED
 /**
  * @brief Write the firmware build timestamp to the DS3231 registers.
@@ -288,11 +319,16 @@ void DS3231_LogBootTime(void) {
  */
 bool App_Clock_GetCaptureTimestamp(char *buffer, uint32_t buffer_length) {
 	char rtc_text[32] = { 0 };
-	uint32_t source_index = 0U;
-	uint32_t dest_index = 0U;
 
 	if ((buffer == NULL) || (buffer_length == 0U)) {
 		return false;
+	}
+
+	if (App_Clock_GetCurrentTimestamp(buffer, buffer_length)) {
+		(void) snprintf(g_ds3231_last_timestamp,
+				sizeof(g_ds3231_last_timestamp), "%s", buffer);
+		g_ds3231_last_timestamp_valid = true;
+		return true;
 	}
 
 	if (!DS3231_ReadDateTimeWithRetry(rtc_text, sizeof(rtc_text))) {
@@ -307,22 +343,24 @@ bool App_Clock_GetCaptureTimestamp(char *buffer, uint32_t buffer_length) {
 	(void) snprintf(g_ds3231_last_timestamp, sizeof(g_ds3231_last_timestamp),
 			"%s", rtc_text);
 	g_ds3231_last_timestamp_valid = true;
+	return DS3231_FormatCaptureTimestamp(rtc_text, buffer, buffer_length);
+}
 
-	while ((rtc_text[source_index] != '\0')
-			&& ((dest_index + 1U) < buffer_length)) {
-		char ch = rtc_text[source_index++];
+/**
+ * @brief Read the live DS3231 timestamp without falling back to the cached value.
+ */
+bool App_Clock_GetCurrentTimestamp(char *buffer, uint32_t buffer_length) {
+	char rtc_text[32] = { 0 };
 
-		if (ch == ' ') {
-			ch = '_';
-		} else if (ch == ':') {
-			ch = '-';
-		}
-
-		buffer[dest_index++] = ch;
+	if ((buffer == NULL) || (buffer_length == 0U)) {
+		return false;
 	}
 
-	buffer[dest_index] = '\0';
-	return (rtc_text[source_index] == '\0');
+	if (!DS3231_ReadDateTimeWithRetry(rtc_text, sizeof(rtc_text))) {
+		return false;
+	}
+
+	return DS3231_FormatCaptureTimestamp(rtc_text, buffer, buffer_length);
 }
 
 /* USER CODE END 0 */

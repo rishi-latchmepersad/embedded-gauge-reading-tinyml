@@ -148,6 +148,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional CSV manifest pinned as the validation set. Overrides random val split.",
     )
     parser.add_argument(
+        "--test-manifest",
+        type=Path,
+        default=None,
+        help="Optional CSV manifest pinned as the test set. Overrides random test split.",
+    )
+    parser.add_argument(
         "--hard-case-repeat",
         type=int,
         default=0,
@@ -332,6 +338,7 @@ def main() -> None:
         hard_case_manifest=str(args.hard_case_manifest) if args.hard_case_manifest else None,
         hard_case_repeat=args.hard_case_repeat,
         val_manifest=str(args.val_manifest) if args.val_manifest else None,
+        test_manifest=str(args.test_manifest) if args.test_manifest else None,
         init_model_path=str(args.init_model) if args.init_model else None,
         strict_labels=args.strict_labels,
         crop_pad_ratio=args.crop_pad_ratio,
@@ -378,6 +385,12 @@ def main() -> None:
         f"head_units={config.mobilenet_head_units} "
         f"head_dropout={config.mobilenet_head_dropout} "
         f"init_model={config.init_model_path}"
+    )
+    print(
+        "[RUN] Manifest inputs: "
+        f"hard_case_manifest={config.hard_case_manifest} "
+        f"val_manifest={config.val_manifest} "
+        f"test_manifest={config.test_manifest}"
     )
     print(
         "[RUN] Monotonic regularizer: "

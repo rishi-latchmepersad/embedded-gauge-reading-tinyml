@@ -128,9 +128,12 @@
  * APP_AI_RECTIFIER_FIXED_SCALE_CROP is enabled. */
 #define APP_AI_RECTIFIER_CENTER_MIN_RATIO  0.10f
 #define APP_AI_RECTIFIER_CENTER_MAX_RATIO  0.90f
-/* Temporarily disable EMA smoothing so the board exposes the raw model value
- * directly while we validate the current crop and exposure tuning. */
-#define APP_AI_INFERENCE_SMOOTHING_ALPHA   1.0f
+/* Use a tiny burst history so the user-facing reading can average across a
+ * few frames instead of reacting to a single noisy capture. */
+#define APP_AI_INFERENCE_BURST_HISTORY_SIZE   3U
+/* If the scene jumps by a lot, drop the burst history and re-lock quickly to
+ * the new setpoint instead of blending two different gauge positions. */
+#define APP_AI_INFERENCE_BURST_RESET_DELTA_C  12.0f
 /* xSPI2 window base address (chip address 0). */
 #define APP_AI_XSPI2_CHIP_BASE_ADDR       0x70000000UL
 /* Scalar model: immediately after FSBL (0x70000000) + App (0x70100000, 1 MB
@@ -161,8 +164,10 @@
 static bool app_ai_runtime_initialized = false;
 static volatile float app_ai_last_inference_value = 0.0f;
 static volatile bool app_ai_last_inference_valid = false;
-static bool app_ai_inference_smoothing_initialized = false;
-static float app_ai_inference_smoothed_value = 0.0f;
+static float app_ai_inference_burst_history
+		[APP_AI_INFERENCE_BURST_HISTORY_SIZE] = { 0.0f };
+static size_t app_ai_inference_burst_history_count = 0U;
+static size_t app_ai_inference_burst_history_next_index = 0U;
 static bool app_ai_npu_hw_initialized = false;
 static bool app_ai_xspi2_initialized = false;
 static const struct AppAI_ModelStageSpec *app_ai_loaded_xspi2_stage = NULL;
@@ -355,6 +360,8 @@ static void AppAI_LogXspi2FlashPrefix(void);
 static void AppAI_LogXspi2MappedScaleBytes(void);
 static void AppAI_LogXspi2IndirectAndMappedPrefix(void);
 static void AppAI_LogFloatApprox(const char *label, float value);
+static float AppAI_TraceAndApplyInferenceCalibration(float raw_value);
+static void AppAI_ResetInferenceBurstHistory(void);
 static bool AppAI_IsFiniteFloat(float value);
 static float AppAI_FilterInferenceValue(float value);
 static void AppAI_LogInferenceResult(
@@ -2962,6 +2969,7 @@ bool App_AI_Model_Init(void) {
 	}
 
 	app_ai_runtime_initialized = true;
+	AppAI_ResetInferenceBurstHistory();
 	DebugConsole_Printf("[AI] Model runtime init OK.\r\n");
 	return true;
 }
@@ -3151,6 +3159,46 @@ DebugConsole_Printf("%s%s%lu.%06lu\r\n", label, sign,
 			magnitude_whole, magnitude_frac);
 }
 #endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
+
+/**
+ * @brief Log the raw inference value and the calibrated board-facing value.
+ *
+ * This trace stays in the board UART log so we can tell whether a miss comes
+ * from the network itself or from the postprocess calibration.
+ */
+static float AppAI_TraceAndApplyInferenceCalibration(float raw_value) {
+	char line[96] = { 0 };
+	const float calibrated_value = AppInferenceCalibration_Apply(raw_value);
+
+	AppInferenceLog_FormatFloatMicros(line, sizeof(line),
+			"[AI] Model output before calibration: ", raw_value);
+	DebugConsole_WriteString(line);
+	AppInferenceLog_FormatFloatMicros(line, sizeof(line),
+			"[AI] Model output after calibration: ", calibrated_value);
+	DebugConsole_WriteString(line);
+
+	if (AppAI_IsFiniteFloat(raw_value) && AppAI_IsFiniteFloat(calibrated_value)) {
+		AppInferenceLog_FormatFloatMicros(line, sizeof(line),
+				"[AI] Calibration delta: ",
+				calibrated_value - raw_value);
+		DebugConsole_WriteString(line);
+	} else {
+		DebugConsole_WriteString(
+				"[AI] Calibration delta: unavailable (non-finite input or output)\r\n");
+	}
+
+	return calibrated_value;
+}
+
+/**
+ * @brief Reset the tiny burst history used to stabilize the AI output.
+ */
+static void AppAI_ResetInferenceBurstHistory(void) {
+	(void) memset(app_ai_inference_burst_history, 0,
+			sizeof(app_ai_inference_burst_history));
+	app_ai_inference_burst_history_count = 0U;
+	app_ai_inference_burst_history_next_index = 0U;
+}
 
 static bool AppAI_RuntimeInitStepwise(void) {
 	uint32_t t = 0U;
@@ -3651,18 +3699,7 @@ static void AppAI_LogInferenceResult(
 		}
 	}
 
-	/* Log the model output before calibration so we can tell whether the
-	 * network itself is changing or whether the postprocess fit is flattening
-	 * the result into the same displayed value. */
-	{
-		char model_output_line[64] = { 0 };
-
-		AppInferenceLog_FormatFloatMicros(model_output_line,
-				sizeof(model_output_line),
-				"[AI] Model output before calibration: ", output_bits.f);
-		DebugConsole_WriteString(model_output_line);
-	}
-	output_value = AppInferenceCalibration_Apply(output_value);
+	output_value = AppAI_TraceAndApplyInferenceCalibration(output_value);
 	if (!AppAI_IsFiniteFloat(output_value)) {
 		AppAI_LogFloatApprox("[AI] Inference output value: ", output_value);
 		DebugConsole_WriteString(
@@ -3706,7 +3743,7 @@ static void AppAI_LogInferenceResult(
 
 	(void) memcpy(&output_value, LL_Buffer_addr_start(output_buffer_info),
 			sizeof(output_value));
-	output_value = AppInferenceCalibration_Apply(output_value);
+	output_value = AppAI_TraceAndApplyInferenceCalibration(output_value);
 	if (!AppAI_IsFiniteFloat(output_value)) {
 		AppInferenceLog_FormatFloatMicros(line, sizeof(line),
 				"[AI] Inference value: ", output_value);
@@ -3733,33 +3770,89 @@ static void AppAI_LogInferenceResult(
 /**
  * @brief Smooth the user-facing inference value across captures.
  *
- * The model already produces a stable underlying scalar, but the live camera
- * path still has a bit of frame-to-frame noise. A light EMA keeps the board
- * reading from jumping around while preserving slow changes.
+ * A 3-frame burst median keeps the live reading from jumping on glare or a
+ * single noisy capture while still tracking slow changes.
  */
 static float AppAI_FilterInferenceValue(float value) {
+	float ordered[APP_AI_INFERENCE_BURST_HISTORY_SIZE] = { 0.0f };
+	size_t sample_count = 0U;
+	size_t start_index = 0U;
+
 	if (!AppAI_IsFiniteFloat(value)) {
-		if (app_ai_inference_smoothing_initialized
-				&& AppAI_IsFiniteFloat(app_ai_inference_smoothed_value)) {
-			return app_ai_inference_smoothed_value;
+		if (app_ai_inference_burst_history_count > 0U) {
+			const size_t last_index =
+					(app_ai_inference_burst_history_next_index
+							+ APP_AI_INFERENCE_BURST_HISTORY_SIZE - 1U)
+					% APP_AI_INFERENCE_BURST_HISTORY_SIZE;
+			const float last_value =
+					app_ai_inference_burst_history[last_index];
+
+			if (AppAI_IsFiniteFloat(last_value)) {
+				return last_value;
+			}
 		}
 		return value;
 	}
 
-	if (!app_ai_inference_smoothing_initialized) {
-		app_ai_inference_smoothed_value = value;
-		app_ai_inference_smoothing_initialized = true;
-		return value;
+	if (app_ai_inference_burst_history_count > 0U) {
+		const size_t last_index =
+				(app_ai_inference_burst_history_next_index
+						+ APP_AI_INFERENCE_BURST_HISTORY_SIZE - 1U)
+				% APP_AI_INFERENCE_BURST_HISTORY_SIZE;
+		float delta = value - app_ai_inference_burst_history[last_index];
+
+		if (delta < 0.0f) {
+			delta = -delta;
+		}
+
+		if (delta > APP_AI_INFERENCE_BURST_RESET_DELTA_C) {
+			AppAI_ResetInferenceBurstHistory();
+		}
 	}
 
-	if (!AppAI_IsFiniteFloat(app_ai_inference_smoothed_value)) {
-		app_ai_inference_smoothed_value = value;
-		return value;
+	app_ai_inference_burst_history[app_ai_inference_burst_history_next_index] =
+			value;
+	if (app_ai_inference_burst_history_count <
+			APP_AI_INFERENCE_BURST_HISTORY_SIZE) {
+		app_ai_inference_burst_history_count++;
+	}
+	app_ai_inference_burst_history_next_index =
+			(app_ai_inference_burst_history_next_index + 1U)
+			% APP_AI_INFERENCE_BURST_HISTORY_SIZE;
+
+	sample_count = app_ai_inference_burst_history_count;
+	start_index = (sample_count < APP_AI_INFERENCE_BURST_HISTORY_SIZE) ? 0U
+			: app_ai_inference_burst_history_next_index;
+
+	for (size_t i = 0U; i < sample_count; ++i) {
+		ordered[i] =
+				app_ai_inference_burst_history[(start_index + i)
+						% APP_AI_INFERENCE_BURST_HISTORY_SIZE];
 	}
 
-	app_ai_inference_smoothed_value += APP_AI_INFERENCE_SMOOTHING_ALPHA
-			* (value - app_ai_inference_smoothed_value);
-	return app_ai_inference_smoothed_value;
+	/* Keep the local copy sorted so we can choose the median for the full
+	 * 3-sample burst and a simple average during warm-up. */
+	for (size_t i = 1U; i < sample_count; ++i) {
+		const float key = ordered[i];
+		size_t j = i;
+
+		while ((j > 0U) && (ordered[j - 1U] > key)) {
+			ordered[j] = ordered[j - 1U];
+			--j;
+		}
+
+		ordered[j] = key;
+	}
+
+	if (sample_count == 1U) {
+		return ordered[0U];
+	}
+
+	if (sample_count == 2U) {
+		return 0.5f * (ordered[0U] + ordered[1U]);
+	}
+
+	return ordered[sample_count / 2U];
 }
 
 /**

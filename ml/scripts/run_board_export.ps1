@@ -8,4 +8,4 @@ if ($Args.Count -gt 0) {
   $wslCommand += ' ' + ($Args -join ' ')
 }
 
-wsl bash -lc $wslCommand
+wsl.exe -d Ubuntu-24.04 --exec /bin/bash -lc $wslCommand

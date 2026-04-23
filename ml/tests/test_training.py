@@ -81,6 +81,14 @@ def _write_test_png(path: Path, *, h: int = 16, w: int = 16) -> None:
     tf.io.write_file(str(path), encoded)
 
 
+def _write_manifest_csv(path: Path, rows: list[tuple[str, float]]) -> None:
+    """Write a tiny image/value manifest for split-routing tests."""
+    lines = ["image_path,value"]
+    for image_path, value in rows:
+        lines.append(f"{image_path},{value}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def test_validate_split_config_accepts_valid_values() -> None:
     """_validate_split_config should not raise for valid fractions."""
     config: training.TrainConfig = training.TrainConfig(
@@ -111,6 +119,7 @@ def test_train_config_defaults_match_strong_mobilenetv2_preset() -> None:
     assert config.geometry_uncertainty_loss_weight == pytest.approx(0.25)
     assert config.geometry_uncertainty_low_quantile == pytest.approx(0.10)
     assert config.geometry_uncertainty_high_quantile == pytest.approx(0.90)
+    assert config.test_manifest is None
     assert config.init_model_path is None
 
 
@@ -584,6 +593,63 @@ def test_split_examples_is_deterministic_and_disjoint() -> None:
     assert train_paths.isdisjoint(val_paths)
     assert train_paths.isdisjoint(test_paths)
     assert val_paths.isdisjoint(test_paths)
+
+
+def test_split_examples_honors_pinned_val_and_test_manifests(
+    tmp_path: Path,
+) -> None:
+    """Pinned val/test manifests should be removed from the training pool."""
+    examples: list[training.TrainingExample] = []
+    for i in range(6):
+        image_path = str(tmp_path / f"img_{i:03d}.jpg")
+        examples.append(
+            training.TrainingExample(
+                image_path=image_path,
+                value=float(i),
+                crop_box_xyxy=(0.0, 0.0, 10.0, 10.0),
+                needle_unit_xy=(1.0, 0.0),
+            )
+        )
+
+    val_manifest = tmp_path / "val.csv"
+    test_manifest = tmp_path / "test.csv"
+    _write_manifest_csv(
+        val_manifest,
+        [
+            (examples[1].image_path, 1.0),
+            (examples[2].image_path, 2.0),
+        ],
+    )
+    _write_manifest_csv(
+        test_manifest,
+        [
+            (examples[3].image_path, 3.0),
+            (examples[4].image_path, 4.0),
+        ],
+    )
+
+    config = training.TrainConfig(
+        seed=123,
+        val_fraction=0.2,
+        test_fraction=0.2,
+        val_manifest=str(val_manifest),
+        test_manifest=str(test_manifest),
+    )
+
+    split: training.DatasetSplit = training._split_examples(examples, config)
+
+    assert [e.image_path for e in split.val_examples] == [
+        examples[1].image_path,
+        examples[2].image_path,
+    ]
+    assert [e.image_path for e in split.test_examples] == [
+        examples[3].image_path,
+        examples[4].image_path,
+    ]
+    assert [e.image_path for e in split.train_examples] == [
+        examples[0].image_path,
+        examples[5].image_path,
+    ]
 
 
 def test_crop_image_with_xyxy_clips_and_returns_nonempty() -> None:

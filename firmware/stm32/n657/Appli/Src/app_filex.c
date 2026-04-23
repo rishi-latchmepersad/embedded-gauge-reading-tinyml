@@ -731,6 +731,17 @@ bool AppFileX_IsMediaReady(void) {
 }
 
 /*==============================================================================
+ * Function: AppFileX_GetCapturedImagesDirectoryName
+ *
+ * Purpose:
+ *   Expose the capture directory name so other modules can scan or clean it
+ *   without duplicating the storage layout string.
+ *==============================================================================*/
+const CHAR *AppFileX_GetCapturedImagesDirectoryName(void) {
+	return CAPTURED_IMAGES_DIRECTORY_NAME;
+}
+
+/*==============================================================================
  * Function: AppFileX_GetMediaHandle
  *
  * Purpose:

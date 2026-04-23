@@ -34,6 +34,7 @@
 #include "app_camera_platform.h"
 #include "app_baseline_runtime.h"
 #include "app_inference_runtime.h"
+#include "app_image_cleanup.h"
 #include "app_storage.h"
 #include "app_threadx_config.h"
 #include "app_memory_budget.h"
@@ -206,6 +207,15 @@ UINT App_ThreadX_Start(void) {
 			DebugConsole_Printf(
 					"[CAMERA][THREAD] Failed to create storage-ready event flags.\r\n");
 			return storage_init_status;
+		}
+	}
+
+	{
+		const UINT image_cleanup_start_status = AppImageCleanup_Start();
+		if (image_cleanup_start_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[IMAGE][CLEANUP] Failed to start cleanup thread, status=%lu.\r\n",
+					(unsigned long) image_cleanup_start_status);
 		}
 	}
 

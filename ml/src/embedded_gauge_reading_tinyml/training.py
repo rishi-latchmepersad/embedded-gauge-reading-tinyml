@@ -147,6 +147,7 @@ class TrainConfig:
     hard_case_manifest: str | None = None
     hard_case_repeat: int = 0
     val_manifest: str | None = None
+    test_manifest: str | None = None
     init_model_path: str | None = None
     monotonic_pair_strength: float = 0.0
     monotonic_pair_margin: float = 0.0
@@ -598,6 +599,53 @@ def _load_hard_case_examples(
     return examples
 
 
+def _load_manifest_examples_for_split(
+    examples: list[TrainingExample],
+    manifest_path: Path,
+    *,
+    image_height: int,
+    image_width: int,
+) -> tuple[list[TrainingExample], set[str]]:
+    """Match a manifest against in-memory examples, or load standalone rows.
+
+    The split helper uses this for validation/test manifests so those sets can
+    be pinned explicitly while still falling back to standalone manifest rows
+    when the examples are not already present in the main dataset pool.
+    """
+    import csv as _csv
+
+    resolved_manifest_path = manifest_path
+    if not resolved_manifest_path.is_absolute():
+        resolved_manifest_path = ML_ROOT / resolved_manifest_path
+
+    manifest_abs_paths: set[str] = set()
+    with open(resolved_manifest_path, newline="") as f:
+        for row in _csv.DictReader(f):
+            rel = row["image_path"]
+            raw = Path(rel)
+            img_path = raw if raw.is_absolute() else (REPO_ROOT / raw)
+            abs_str = str(img_path.resolve())
+            manifest_abs_paths.add(abs_str)
+            manifest_abs_paths.add(img_path.name)
+
+    manifest_examples: list[TrainingExample] = [
+        example
+        for example in examples
+        if str(Path(example.image_path).resolve()) in manifest_abs_paths
+        or Path(example.image_path).name in manifest_abs_paths
+    ]
+
+    if not manifest_examples:
+        manifest_examples = _load_hard_case_examples(
+            resolved_manifest_path,
+            image_height=image_height,
+            image_width=image_width,
+        )
+
+    manifest_names: set[str] = {Path(example.image_path).name for example in manifest_examples}
+    return manifest_examples, manifest_names
+
+
 def _interval_bin_count(
     value_min: float,
     value_max: float,
@@ -971,61 +1019,87 @@ def _split_examples(
 ) -> DatasetSplit:
     """Split examples into train/val/test with a fixed random seed.
 
-    If config.val_manifest is set, the val set is loaded directly from that
-    CSV and all remaining examples go into train/test. This ensures EarlyStopping
-    monitors a representative fixed set rather than a random slice that may not
-    cover both phone and board capture domains.
+    If config.val_manifest and/or config.test_manifest are set, those sets are
+    loaded directly from the requested CSV files and removed from the main pool
+    before the remaining examples are split. This keeps the held-out domains
+    deterministic while still allowing the training pool to be shuffled.
     """
-    import csv as _csv
+    fixed_val_examples: list[TrainingExample] | None = None
+    fixed_test_examples: list[TrainingExample] | None = None
+    reserved_names: set[str] = set()
 
     if config.val_manifest is not None:
         val_manifest_path = Path(config.val_manifest)
-        if not val_manifest_path.is_absolute():
-            val_manifest_path = ML_ROOT / val_manifest_path
-
-        # Load val examples directly from the manifest (same path resolution as
-        # _load_hard_case_examples: relative paths are resolved against REPO_ROOT
-        # because captured_images/ lives at repo root, not inside ml/).
-        val_examples: list[TrainingExample] = []
-        val_abs_paths: set[str] = set()
-        with open(val_manifest_path, newline="") as f:
-            for row in _csv.DictReader(f):
-                rel = row["image_path"]
-                raw = Path(rel)
-                img_path = raw if raw.is_absolute() else (REPO_ROOT / raw)
-                abs_str = str(img_path.resolve())
-                val_abs_paths.add(abs_str)
-                val_abs_paths.add(img_path.name)
-
-        # Try to match manifest entries against existing examples first (they may
-        # already be in the main dataset).  Any manifest entry not found in
-        # examples will be loaded via _load_hard_case_examples after this split.
-        val_examples = [e for e in examples if
-                        str(Path(e.image_path).resolve()) in val_abs_paths or
-                        Path(e.image_path).name in val_abs_paths]
-
-        # If none matched the main pool, load them directly from the manifest so
-        # the val set is never empty (hard-case manifests are loaded after split).
-        if not val_examples:
-            val_examples = _load_hard_case_examples(
-                val_manifest_path,
-                image_height=config.image_height,
-                image_width=config.image_width,
-            )
-
-        # Exclude any val images from the main pool to avoid train/val leakage.
-        val_names: set[str] = {Path(e.image_path).name for e in val_examples}
-        remaining = [e for e in examples if Path(e.image_path).name not in val_names]
-        print(
-            f"[TRAIN] val_manifest: {len(val_examples)} val examples, {len(remaining)} remaining for train/test",
-            flush=True,
+        fixed_val_examples, val_names = _load_manifest_examples_for_split(
+            examples,
+            val_manifest_path,
+            image_height=config.image_height,
+            image_width=config.image_width,
         )
-
-        if len(val_examples) == 0:
+        if len(fixed_val_examples) == 0:
             raise ValueError(
                 f"val_manifest loaded 0 examples from {val_manifest_path}. "
                 "Check that image files exist and manifest has image_path+value columns."
             )
+        reserved_names |= val_names
+        print(
+            f"[TRAIN] val_manifest: {len(fixed_val_examples)} fixed val examples",
+            flush=True,
+        )
+
+    if config.test_manifest is not None:
+        test_manifest_path = Path(config.test_manifest)
+        fixed_test_examples, test_names = _load_manifest_examples_for_split(
+            examples,
+            test_manifest_path,
+            image_height=config.image_height,
+            image_width=config.image_width,
+        )
+        if len(fixed_test_examples) == 0:
+            raise ValueError(
+                f"test_manifest loaded 0 examples from {test_manifest_path}. "
+                "Check that image files exist and manifest has image_path+value columns."
+            )
+        reserved_names |= test_names
+        print(
+            f"[TRAIN] test_manifest: {len(fixed_test_examples)} fixed test examples",
+            flush=True,
+        )
+
+    if fixed_val_examples is not None and fixed_test_examples is not None:
+        val_names = {Path(e.image_path).name for e in fixed_val_examples}
+        test_names = {Path(e.image_path).name for e in fixed_test_examples}
+        overlap = val_names & test_names
+        if overlap:
+            raise ValueError(
+                "val_manifest and test_manifest overlap on image names: "
+                f"{sorted(overlap)[:5]}"
+            )
+
+    remaining = [e for e in examples if Path(e.image_path).name not in reserved_names]
+
+    if fixed_val_examples is not None and fixed_test_examples is not None:
+        if len(remaining) == 0:
+            raise ValueError(
+                "val_manifest and test_manifest consumed all examples; "
+                "check manifest paths."
+            )
+        print(
+            f"[TRAIN] fixed manifest split: train={len(remaining)} val={len(fixed_val_examples)} test={len(fixed_test_examples)}",
+            flush=True,
+        )
+        return DatasetSplit(
+            train_examples=remaining,
+            val_examples=fixed_val_examples,
+            test_examples=fixed_test_examples,
+        )
+
+    if fixed_val_examples is not None:
+        print(
+            f"[TRAIN] val_manifest: {len(fixed_val_examples)} val examples, {len(remaining)} remaining for train/test",
+            flush=True,
+        )
+
         if len(remaining) < 2:
             raise ValueError("val_manifest consumed all examples; check manifest paths.")
 
@@ -1038,13 +1112,40 @@ def _split_examples(
             shuffle=True,
         )
         print(
-            f"[TRAIN] val_manifest split: train={len(train_idx)} val={len(val_examples)} test={len(test_idx)}",
+            f"[TRAIN] val_manifest split: train={len(train_idx)} val={len(fixed_val_examples)} test={len(test_idx)}",
             flush=True,
         )
         return DatasetSplit(
             train_examples=[remaining[i] for i in train_idx],
-            val_examples=val_examples,
+            val_examples=fixed_val_examples,
             test_examples=[remaining[i] for i in test_idx],
+        )
+
+    if fixed_test_examples is not None:
+        print(
+            f"[TRAIN] test_manifest: {len(fixed_test_examples)} test examples, {len(remaining)} remaining for train/val",
+            flush=True,
+        )
+
+        if len(remaining) < 2:
+            raise ValueError("test_manifest consumed all examples; check manifest paths.")
+
+        remaining_idx = np.arange(len(remaining))
+        val_size = max(1, int(len(remaining) * config.val_fraction))
+        train_idx, val_idx = train_test_split(
+            remaining_idx,
+            test_size=val_size,
+            random_state=config.seed,
+            shuffle=True,
+        )
+        print(
+            f"[TRAIN] test_manifest split: train={len(train_idx)} val={len(val_idx)} test={len(fixed_test_examples)}",
+            flush=True,
+        )
+        return DatasetSplit(
+            train_examples=[remaining[i] for i in train_idx],
+            val_examples=[remaining[i] for i in val_idx],
+            test_examples=fixed_test_examples,
         )
 
     if len(examples) < 3:
@@ -3044,6 +3145,10 @@ def train(config: TrainConfig) -> TrainingResult:
     example_lookup: dict[str, TrainingExample] = {
         example.image_path: example for example in examples
     }
+    reserved_names: set[str] = {
+        Path(example.image_path).name
+        for example in split.val_examples + split.test_examples
+    }
 
     if config.hard_case_manifest:
         print("[TRAIN] step: load-hard-cases", flush=True)
@@ -3084,6 +3189,19 @@ def train(config: TrainConfig) -> TrainingResult:
             target_kind=hard_case_target_kind,
             spec=spec if hard_case_target_kind == "needle_unit_xy" else None,
         )
+        filtered_hard_case_examples: list[TrainingExample] = [
+            example
+            for example in hard_case_examples
+            if Path(example.image_path).name not in reserved_names
+        ]
+        if len(filtered_hard_case_examples) != len(hard_case_examples):
+            print(
+                "[TRAIN] Hard-case manifest overlap filtered: "
+                f"kept={len(filtered_hard_case_examples)} "
+                f"dropped={len(hard_case_examples) - len(filtered_hard_case_examples)}",
+                flush=True,
+            )
+        hard_case_examples = filtered_hard_case_examples
         hard_case_repeat: int = max(config.hard_case_repeat, 0)
         if config.model_family == "mobilenet_v2_rectifier" and hard_case_examples:
             # Reuse labeled rectifier boxes from nearby-temperature examples so the

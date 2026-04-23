@@ -20,12 +20,16 @@ extern "C" {
 #define CAMERA_HEARTBEAT_THREAD_PRIORITY    10U
 #define CAMERA_AI_THREAD_PRIORITY           13U
 #define BASELINE_RUNTIME_THREAD_PRIORITY    15U
+#define IMAGE_CLEANUP_THREAD_PRIORITY       16U
 
 /* Heartbeat timing --------------------------------------------------------- */
 #define CAMERA_HEARTBEAT_PERIOD_MS          5000U
 #define CAMERA_HEARTBEAT_PULSE_MS           1000U
 #define CAMERA_HEARTBEAT_LED_GPIO_PORT      GPIOG
 #define CAMERA_HEARTBEAT_LED_PIN            GPIO_PIN_0
+
+/* Storage maintenance timing ---------------------------------------------- */
+#define IMAGE_CLEANUP_PERIOD_MS            600000U
 
 /* Camera middleware coordination ------------------------------------------ */
 #define CAMERA_MIDDLEWARE_LOCK_TIMEOUT_MS    5000U

@@ -30,6 +30,8 @@ Usage:
   bash scripts/wsl_ml.sh train-compact-geometry [compact geometry args...]
   bash scripts/wsl_ml.sh train-compact-geometry-cascade-localizer [compact geometry cascade args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-geometry-uncertainty [geometry uncertainty args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-geometry-longterm [geometry longterm args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-direction-longterm [direction longterm args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectifier [rectifier args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectifier-finetune [rectifier fine-tune args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectifier-hardcase-finetune [rectifier hard-case args...]
@@ -129,6 +131,14 @@ case "${cmd}" in
   train-mobilenetv2-geometry-uncertainty)
     # Train the uncertainty-aware MobileNetV2 geometry reader on the board mix.
     exec bash scripts/run_mobilenetv2_geometry_uncertainty_full_range.sh "$@"
+    ;;
+  train-mobilenetv2-geometry-longterm)
+    # Train the long-term MobileNetV2 geometry model with explicit val/test manifests.
+    exec bash scripts/run_mobilenetv2_geometry_longterm.sh "$@"
+    ;;
+  train-mobilenetv2-direction-longterm)
+    # Train the long-term MobileNetV2 direction model with the same pinned split.
+    exec bash scripts/run_mobilenetv2_direction_longterm.sh "$@"
     ;;
   train-mobilenetv2-rectifier)
     # Train the rectifier-first MobileNetV2 model on the labeled dataset.

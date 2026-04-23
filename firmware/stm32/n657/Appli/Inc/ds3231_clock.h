@@ -18,6 +18,7 @@ extern "C" {
 #include <stdint.h>
 
 bool App_Clock_GetCaptureTimestamp(char *buffer, uint32_t buffer_length);
+bool App_Clock_GetCurrentTimestamp(char *buffer, uint32_t buffer_length);
 void DS3231_LogI2c1LineState(void);
 void DS3231_ScanI2C1Bus(void);
 void DS3231_LogBootTime(void);

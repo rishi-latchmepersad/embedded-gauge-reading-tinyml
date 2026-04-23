@@ -70,6 +70,12 @@ typedef struct {
  * permissive enough to accept the still-useful training-crop candidates while
  * preserving the noise floor guardrails. */
 #define APP_BASELINE_CONFIDENCE_THRESHOLD    0.055f
+/* Keep a tiny history so the baseline can report a stable rough reading
+ * instead of jumping frame-to-frame on glare or digit clutter. */
+#define APP_BASELINE_ESTIMATE_HISTORY_SIZE   3U
+/* If the scene jumps a lot between captures, drop the history and re-lock to
+ * the new setpoint quickly rather than averaging across two different temps. */
+#define APP_BASELINE_HISTORY_RESET_DELTA_C   12.0f
 /* Scale factor for integer-encoded confidence in log output (avoids %f). */
 #define APP_BASELINE_CONFIDENCE_LOG_SCALE    1000L
 /* USER CODE END PD */
@@ -92,6 +98,10 @@ static bool app_baseline_runtime_initialized = false;
 static volatile bool camera_baseline_last_result_valid = false;
 static volatile float camera_baseline_last_temperature_c = 0.0f;
 static volatile float camera_baseline_last_angle_rad = 0.0f;
+static AppBaselineRuntime_Estimate_t camera_baseline_estimate_history
+		[APP_BASELINE_ESTIMATE_HISTORY_SIZE] = { 0 };
+static size_t camera_baseline_estimate_history_count = 0U;
+static size_t camera_baseline_estimate_history_next_index = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -108,6 +118,11 @@ static bool AppBaselineRuntime_EstimateFromTrainingCropHypothesis(
 static bool AppBaselineRuntime_EstimateFromCenterHypothesis(
 		const uint8_t *frame_bytes, size_t frame_size, size_t center_x,
 		size_t center_y, const char *source_label,
+		AppBaselineRuntime_Estimate_t *estimate_out);
+static void AppBaselineRuntime_ResetEstimateHistory(void);
+static void AppBaselineRuntime_PushEstimateHistory(
+		const AppBaselineRuntime_Estimate_t *estimate);
+static bool AppBaselineRuntime_SelectSmoothedEstimate(
 		AppBaselineRuntime_Estimate_t *estimate_out);
 static float AppBaselineRuntime_ConvertAngleToTemperature(float angle_rad);
 static float AppBaselineRuntime_ConvertAngleToFraction(float angle_rad);
@@ -145,6 +160,7 @@ UINT AppBaselineRuntime_Init(void) {
 
 	camera_baseline_sync_created = true;
 	app_baseline_runtime_initialized = true;
+	AppBaselineRuntime_ResetEstimateHistory();
 	return TX_SUCCESS;
 }
 
@@ -268,6 +284,21 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input) {
 			continue;
 		}
 
+		/* Smooth the baseline with a tiny history so single-frame glitches do
+		 * not swing the reported temperature all over the place. We also keep
+		 * the early history quiet until it fills so the first one or two
+		 * accepted frames do not leak a nonsense warm-up estimate. */
+		AppBaselineRuntime_PushEstimateHistory(&estimate);
+		if (!AppBaselineRuntime_SelectSmoothedEstimate(&estimate)) {
+			DebugConsole_Printf(
+					"[BASELINE] Classical baseline smoothing failed unexpectedly.\r\n");
+			continue;
+		}
+
+		if (!estimate.valid) {
+			continue;
+		}
+
 		camera_baseline_last_result_valid = true;
 		camera_baseline_last_temperature_c = estimate.temperature_c;
 		camera_baseline_last_angle_rad = estimate.angle_rad;
@@ -355,7 +386,8 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 				selected_conf_m);
 	}
 
-	if (estimate_out->confidence < APP_BASELINE_CONFIDENCE_THRESHOLD) {
+	if ((selected_estimate != &training_crop_hypothesis)
+			&& (estimate_out->confidence < APP_BASELINE_CONFIDENCE_THRESHOLD)) {
 		const long conf_m      = AppBaselineRuntime_RoundToLong(
 				estimate_out->confidence
 				* (float) APP_BASELINE_CONFIDENCE_LOG_SCALE);
@@ -555,6 +587,104 @@ static bool AppBaselineRuntime_EstimateFromCenterHypothesis(
 	estimate_out->runner_up_score = runner_up_score;
 	estimate_out->source_label = source_label;
 
+	return true;
+}
+
+/**
+ * @brief Clear the small baseline smoothing history.
+ */
+static void AppBaselineRuntime_ResetEstimateHistory(void) {
+	memset(camera_baseline_estimate_history, 0,
+			sizeof(camera_baseline_estimate_history));
+	camera_baseline_estimate_history_count = 0U;
+	camera_baseline_estimate_history_next_index = 0U;
+}
+
+/**
+ * @brief Store one accepted baseline estimate in the tiny smoothing history.
+ */
+static void AppBaselineRuntime_PushEstimateHistory(
+		const AppBaselineRuntime_Estimate_t *estimate) {
+	if (estimate == NULL) {
+		return;
+	}
+
+	if (camera_baseline_estimate_history_count == 0U) {
+		camera_baseline_estimate_history[0U] = *estimate;
+		camera_baseline_estimate_history_count = 1U;
+		camera_baseline_estimate_history_next_index = 1U
+				% APP_BASELINE_ESTIMATE_HISTORY_SIZE;
+		return;
+	}
+
+	if (camera_baseline_estimate_history_count > 0U) {
+		const size_t last_index =
+				(camera_baseline_estimate_history_next_index
+						+ APP_BASELINE_ESTIMATE_HISTORY_SIZE - 1U)
+				% APP_BASELINE_ESTIMATE_HISTORY_SIZE;
+		const float last_temperature_c =
+				camera_baseline_estimate_history[last_index].temperature_c;
+
+		if (fabsf(estimate->temperature_c - last_temperature_c)
+				> APP_BASELINE_HISTORY_RESET_DELTA_C) {
+			AppBaselineRuntime_ResetEstimateHistory();
+		}
+	}
+
+	camera_baseline_estimate_history[camera_baseline_estimate_history_next_index]
+			= *estimate;
+	if (camera_baseline_estimate_history_count < APP_BASELINE_ESTIMATE_HISTORY_SIZE) {
+		camera_baseline_estimate_history_count++;
+	}
+	camera_baseline_estimate_history_next_index =
+			(camera_baseline_estimate_history_next_index + 1U)
+			% APP_BASELINE_ESTIMATE_HISTORY_SIZE;
+}
+
+/**
+ * @brief Return a smoothed estimate from the tiny baseline history.
+ *
+ * We use a small median filter so the classical baseline stays in the right
+ * ballpark even when a single frame latches onto glare or dial clutter.
+ */
+static bool AppBaselineRuntime_SelectSmoothedEstimate(
+		AppBaselineRuntime_Estimate_t *estimate_out) {
+	AppBaselineRuntime_Estimate_t ordered[APP_BASELINE_ESTIMATE_HISTORY_SIZE] = {
+			0 };
+	size_t sample_count = camera_baseline_estimate_history_count;
+
+	if ((estimate_out == NULL) || (sample_count == 0U)) {
+		return false;
+	}
+
+	(void) memcpy(ordered, camera_baseline_estimate_history,
+			sample_count * sizeof(ordered[0]));
+
+	/* Keep the local copy sorted by temperature so the median is easy to pick. */
+	for (size_t i = 1U; i < sample_count; ++i) {
+		AppBaselineRuntime_Estimate_t key = ordered[i];
+		size_t j = i;
+
+		while ((j > 0U) && (ordered[j - 1U].temperature_c > key.temperature_c)) {
+			ordered[j] = ordered[j - 1U];
+			--j;
+		}
+
+		ordered[j] = key;
+	}
+
+	if (sample_count < APP_BASELINE_ESTIMATE_HISTORY_SIZE) {
+		/* The history is not stable yet, so hold the reading back instead of
+		 * reporting the first noisy warm-up estimate. */
+		*estimate_out = ordered[sample_count - 1U];
+		estimate_out->valid = false;
+		estimate_out->source_label = "training-crop-warming";
+		return true;
+	}
+
+	*estimate_out = ordered[sample_count / 2U];
+	estimate_out->source_label = "training-crop-smoothed";
+	estimate_out->valid = true;
 	return true;
 }
 
