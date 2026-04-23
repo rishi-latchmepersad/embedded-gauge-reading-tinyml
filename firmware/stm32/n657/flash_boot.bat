@@ -23,9 +23,11 @@ set "FSBL_BIN=%SCRIPT_DIR%FSBL\Debug\n657_FSBL.bin"
 set "FSBL_TRUSTED=%SCRIPT_DIR%FSBL\Debug\FSBL_trusted.bin"
 set "SCALAR_RAW=%SCRIPT_DIR%..\..\..\st_ai_output\atonbuf.xSPI2.raw"
 set "RECTIFIER_RAW=%SCRIPT_DIR%..\..\..\st_ai_output\atonbuf.rectifier.xSPI2.raw"
+set "OBB_RAW=%SCRIPT_DIR%..\..\..\st_ai_output\atonbuf.obb.xSPI2.raw"
 REM CubeProgrammer v2.21 does not accept .raw extension with -w; stage as .bin
 set "SCALAR_BIN=%SCRIPT_DIR%Appli\Debug\scalar_model_stage.bin"
 set "RECTIFIER_BIN=%SCRIPT_DIR%Appli\Debug\rectifier_model_stage.bin"
+set "OBB_BIN=%SCRIPT_DIR%Appli\Debug\obb_model_stage.bin"
 set "APP_BIN=%SCRIPT_DIR%Appli\Debug\n657_Appli.bin"
 set "APP_SIGN=%SCRIPT_DIR%Appli\Debug\n657_Appli_sign_new.bin"
 set "FLASH_MODEL=1"
@@ -57,6 +59,10 @@ if "%FLASH_MODEL%"=="1" if not exist "%SCALAR_RAW%" (
 )
 if "%FLASH_MODEL%"=="1" if not exist "%RECTIFIER_RAW%" (
     echo ERROR: Rectifier model not found: "%RECTIFIER_RAW%"
+    exit /b 1
+)
+if "%FLASH_MODEL%"=="1" if not exist "%OBB_RAW%" (
+    echo ERROR: OBB model not found: "%OBB_RAW%"
     exit /b 1
 )
 
@@ -104,6 +110,19 @@ if "%FLASH_MODEL%"=="1" (
         exit /b 1
     )
     echo Rectifier model flashed at 0x70600000.
+
+    echo === Step 4c: Flash OBB model at 0x70700000 ===
+    copy /y "%OBB_RAW%" "%OBB_BIN%" >nul
+    if errorlevel 1 (
+        echo ERROR: Could not stage OBB model as .bin.
+        exit /b 1
+    )
+    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%OBB_BIN%" 0x70700000
+    if errorlevel 1 (
+        echo ERROR: OBB model flash failed.
+        exit /b 1
+    )
+    echo OBB model flashed at 0x70700000.
 ) else (
     echo === Step 4: Skipping model image flash (FLASH_MODEL not set) ===
 )

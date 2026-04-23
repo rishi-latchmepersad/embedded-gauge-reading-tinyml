@@ -47,6 +47,8 @@ from embedded_gauge_reading_tinyml.presets import (
     DEFAULT_MODEL_FAMILY,
     DEFAULT_SEED,
     DEFAULT_EDGE_FOCUS_STRENGTH,
+    DEFAULT_TEST_FRACTION,
+    DEFAULT_VAL_FRACTION,
 )
 
 
@@ -75,6 +77,7 @@ def parse_args() -> argparse.Namespace:
             "mobilenet_v2_detector",
             "mobilenet_v2_geometry",
             "mobilenet_v2_geometry_uncertainty",
+            "mobilenet_v2_obb",
             "mobilenet_v2_rectifier",
             "mobilenet_v2_keypoint",
             "mobilenet_v2_interval",
@@ -140,6 +143,18 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Optional CSV manifest of extra hard board captures to upweight.",
+    )
+    parser.add_argument(
+        "--val-fraction",
+        type=float,
+        default=DEFAULT_VAL_FRACTION,
+        help="Fraction of the labeled dataset to reserve for validation when no val manifest is pinned.",
+    )
+    parser.add_argument(
+        "--test-fraction",
+        type=float,
+        default=DEFAULT_TEST_FRACTION,
+        help="Fraction of the labeled dataset to reserve for testing when no test manifest is pinned.",
     )
     parser.add_argument(
         "--val-manifest",
@@ -328,6 +343,8 @@ def main() -> None:
         epochs=args.epochs,
         learning_rate=args.learning_rate,
         seed=args.seed,
+        val_fraction=args.val_fraction,
+        test_fraction=args.test_fraction,
         model_family=args.model_family,
         mobilenet_pretrained=not args.no_mobilenet_pretrained,
         mobilenet_backbone_trainable=args.mobilenet_backbone_trainable,
@@ -389,6 +406,8 @@ def main() -> None:
     print(
         "[RUN] Manifest inputs: "
         f"hard_case_manifest={config.hard_case_manifest} "
+        f"val_fraction={config.val_fraction} "
+        f"test_fraction={config.test_fraction} "
         f"val_manifest={config.val_manifest} "
         f"test_manifest={config.test_manifest}"
     )
@@ -416,25 +435,30 @@ def main() -> None:
         "[RUN] Sweep fraction head: "
         f"loss_weight={config.sweep_fraction_loss_weight}"
     )
-    head_label = (
-        "Rectifier head"
-        if config.model_family == "mobilenet_v2_rectifier"
-        else
-        "Geometry head"
-        if config.model_family in {
-            "mobilenet_v2_detector",
-            "mobilenet_v2_geometry",
-            "mobilenet_v2_geometry_uncertainty",
-        }
-        else "Keypoint head"
-    )
-    print(
-        f"[RUN] {head_label}: "
-        f"heatmap_size={config.keypoint_heatmap_size} "
-        f"heatmap_loss_weight={config.keypoint_heatmap_loss_weight} "
-        f"coord_loss_weight={config.keypoint_coord_loss_weight} "
-        f"value_loss_weight={config.geometry_value_loss_weight}"
-    )
+    if config.model_family == "mobilenet_v2_obb":
+        print(
+            "[RUN] OBB head: "
+            "center_xy + size_wh + angle_sincos"
+        )
+    else:
+        head_label = (
+            "Rectifier head"
+            if config.model_family == "mobilenet_v2_rectifier"
+            else "Geometry head"
+            if config.model_family in {
+                "mobilenet_v2_detector",
+                "mobilenet_v2_geometry",
+                "mobilenet_v2_geometry_uncertainty",
+            }
+            else "Keypoint head"
+        )
+        print(
+            f"[RUN] {head_label}: "
+            f"heatmap_size={config.keypoint_heatmap_size} "
+            f"heatmap_loss_weight={config.keypoint_heatmap_loss_weight} "
+            f"coord_loss_weight={config.keypoint_coord_loss_weight} "
+            f"value_loss_weight={config.geometry_value_loss_weight}"
+        )
     if config.model_family == "mobilenet_v2_geometry_uncertainty":
         print(
             "[RUN] Geometry uncertainty head: "

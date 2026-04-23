@@ -71,6 +71,7 @@ from embedded_gauge_reading_tinyml.models import (
     build_compact_interval_model,
     build_compact_geometry_model,
     build_mobilenetv2_rectifier_model,
+    build_mobilenetv2_obb_model,
     build_mobilenetv2_regression_model,
     build_mobilenetv2_direction_model,
     build_mobilenetv2_fraction_model,
@@ -133,6 +134,7 @@ class TrainConfig:
         "mobilenet_v2_geometry",
         "mobilenet_v2_geometry_uncertainty",
         "mobilenet_v2_keypoint",
+        "mobilenet_v2_obb",
         "mobilenet_v2_interval",
         "mobilenet_v2_ordinal",
     ] = (
@@ -186,6 +188,7 @@ class TrainingExample:
     tip_xy: tuple[float, float] = (0.0, 0.0)
     keypoint_heatmaps: np.ndarray | None = None
     keypoint_coords: np.ndarray | None = None
+    obb_params: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -495,6 +498,33 @@ def _build_training_examples(
             image_height=image_height,
             image_width=image_width,
         )
+        dial_center_xy: tuple[float, float] = _map_point_to_resized_crop_xy(
+            point_xy=(sample.dial.cx, sample.dial.cy),
+            crop_box_xyxy=crop_box,
+            image_height=image_height,
+            image_width=image_width,
+        )
+        crop_w = max(crop_box[2] - crop_box[0], 1.0)
+        crop_h = max(crop_box[3] - crop_box[1], 1.0)
+        scale = min(image_width / crop_w, image_height / crop_h)
+        obb_center_x = float(dial_center_xy[0] / max(image_width, 1))
+        obb_center_y = float(dial_center_xy[1] / max(image_height, 1))
+        obb_width = float((2.0 * sample.dial.rx * scale) / max(image_width, 1))
+        obb_height = float((2.0 * sample.dial.ry * scale) / max(image_height, 1))
+        rotation_rad = math.radians(sample.dial.rotation)
+        obb_angle_cos = math.cos(2.0 * rotation_rad)
+        obb_angle_sin = math.sin(2.0 * rotation_rad)
+        obb_params = np.array(
+            [
+                np.clip(obb_center_x, 0.0, 1.0),
+                np.clip(obb_center_y, 0.0, 1.0),
+                np.clip(obb_width, 0.0, 1.0),
+                np.clip(obb_height, 0.0, 1.0),
+                obb_angle_cos,
+                obb_angle_sin,
+            ],
+            dtype=np.float32,
+        )
         scale_x: float = (keypoint_heatmap_size - 1.0) / max(image_width - 1.0, 1.0)
         scale_y: float = (keypoint_heatmap_size - 1.0) / max(image_height - 1.0, 1.0)
         keypoint_heatmaps: np.ndarray = _make_keypoint_heatmaps(
@@ -520,6 +550,7 @@ def _build_training_examples(
                 tip_xy=tip_xy,
                 keypoint_heatmaps=keypoint_heatmaps,
                 keypoint_coords=keypoint_coords,
+                obb_params=obb_params,
             )
         )
 
@@ -1338,6 +1369,43 @@ def _load_rectifier_with_weight(
     return image, target, weight
 
 
+def _load_crop_with_obb_target(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    obb_params: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
+    """Load/crop one image and attach oriented-box parameters."""
+    image, _scalar_target = _load_crop_and_preprocess_image(
+        image_path, value, crop_box_xyxy, image_height, image_width
+    )
+    obb_target = tf.cast(obb_params, tf.float32)
+    return image, {"obb_params": obb_target}
+
+
+def _load_crop_with_obb_weight(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    obb_params: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+    weight: tf.Tensor,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
+    """Load/crop one image and attach OBB parameters plus a sample weight."""
+    image, target = _load_crop_with_obb_target(
+        image_path,
+        value,
+        obb_params,
+        crop_box_xyxy,
+        image_height,
+        image_width,
+    )
+    return image, target, {"obb_params": tf.cast(weight, tf.float32)}
+
+
 def _load_crop_with_interval_weight(
     image_path: tf.Tensor,
     value: tf.Tensor,
@@ -1818,6 +1886,7 @@ def _build_tf_dataset(
         "geometry",
         "geometry_uncertainty",
         "rectifier_box",
+        "obb",
     ] = "value",
     value_range: tuple[float, float] | None = None,
 ) -> tf.data.Dataset:
@@ -1841,6 +1910,17 @@ def _build_tf_dataset(
         targets = np.array([e.value for e in examples], dtype=np.float32)
     elif target_kind == "rectifier_box":
         targets = np.array([e.crop_box_xyxy for e in examples], dtype=np.float32)
+    elif target_kind == "obb":
+        values = np.array([e.value for e in examples], dtype=np.float32)
+        targets = np.array(
+            [
+                e.obb_params
+                if e.obb_params is not None
+                else np.zeros((6,), dtype=np.float32)
+                for e in examples
+            ],
+            dtype=np.float32,
+        )
     else:
         raise ValueError(f"Unsupported target_kind '{target_kind}'.")
     boxes: np.ndarray = np.array([e.crop_box_xyxy for e in examples], dtype=np.float32)
@@ -2210,6 +2290,35 @@ def _build_tf_dataset(
                 lambda img, y, w: (*_augment_rectifier_image_and_box(img, y), w),
                 num_parallel_calls=tf.data.AUTOTUNE,
             )
+    elif training and target_kind == "obb":
+        if config.mixup_alpha > 0.0:
+            raise ValueError("MixUp is not supported for OBB targets yet.")
+        weights = _compute_edge_weights(examples, config.edge_focus_strength)
+        dataset = tf.data.Dataset.from_tensor_slices(
+            (paths, values, targets, boxes, weights)
+        )
+        dataset = dataset.shuffle(
+            buffer_size=max(len(examples), 1),
+            seed=config.seed,
+            reshuffle_each_iteration=True,
+        )
+        dataset = dataset.map(
+            lambda p, v, y, b, w: _load_crop_with_obb_weight(
+                p,
+                v,
+                y,
+                b,
+                config.image_height,
+                config.image_width,
+                w,
+            ),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+        if config.augment_training:
+            dataset = dataset.map(
+                lambda img, y, w: (_augment_image(img), y, w),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
     elif training and target_kind == "ordinal_thresholds":
         if config.mixup_alpha > 0.0:
             raise ValueError(
@@ -2432,6 +2541,19 @@ def _build_tf_dataset(
             dataset = dataset.map(
                 lambda p, b: _load_rectifier_and_preprocess_image(
                     p,
+                    b,
+                    config.image_height,
+                    config.image_width,
+                ),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+        elif target_kind == "obb":
+            dataset = tf.data.Dataset.from_tensor_slices((paths, values, targets, boxes))
+            dataset = dataset.map(
+                lambda p, v, y, b: _load_crop_with_obb_target(
+                    p,
+                    v,
+                    y,
                     b,
                     config.image_height,
                     config.image_width,
@@ -2865,6 +2987,31 @@ def _compile_rectifier_model(
     )
 
 
+def _compile_obb_model(
+    model: keras.Model,
+    *,
+    learning_rate: float,
+) -> None:
+    """Compile an oriented-box localizer with a compact regression loss."""
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+        learning_rate=learning_rate,
+        clipnorm=1.0,
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss={
+            "obb_params": keras.losses.Huber(delta=0.05),
+        },
+        metrics={
+            "obb_params": [
+                keras.metrics.MeanAbsoluteError(name="obb_params_mae"),
+                keras.metrics.RootMeanSquaredError(name="obb_params_rmse"),
+            ],
+        },
+    )
+
+
 def _compile_interval_model(
     model: keras.Model,
     *,
@@ -3150,6 +3297,12 @@ def train(config: TrainConfig) -> TrainingResult:
         for example in split.val_examples + split.test_examples
     }
 
+    if config.model_family == "mobilenet_v2_obb" and config.hard_case_manifest:
+        raise ValueError(
+            "mobilenet_v2_obb does not support hard_case_manifest. "
+            "Use the labeled dataset split with val/test fractions instead."
+        )
+
     if config.hard_case_manifest:
         print("[TRAIN] step: load-hard-cases", flush=True)
         hard_case_manifest_path: Path = Path(config.hard_case_manifest)
@@ -3306,6 +3459,7 @@ def train(config: TrainConfig) -> TrainingResult:
             "mobilenet_v2_keypoint",
             "mobilenet_v2_detector",
             "mobilenet_v2_geometry",
+            "mobilenet_v2_obb",
         }:
             init_model = _load_init_model(init_model_path)
         else:
@@ -3432,6 +3586,17 @@ def train(config: TrainConfig) -> TrainingResult:
                 head_units=config.mobilenet_head_units,
                 head_dropout=config.mobilenet_head_dropout,
             )
+        elif config.model_family == "mobilenet_v2_obb":
+            print("[TRAIN] Building MobileNetV2 OBB localizer model...")
+            model = build_mobilenetv2_obb_model(
+                config.image_height,
+                config.image_width,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
+            )
         elif config.model_family == "mobilenet_v2_rectifier":
             print("[TRAIN] Building MobileNetV2 rectifier model...")
             model = build_mobilenetv2_rectifier_model(
@@ -3499,6 +3664,7 @@ def train(config: TrainConfig) -> TrainingResult:
         "geometry",
         "geometry_uncertainty",
         "rectifier_box",
+        "obb",
     ] = (
         "needle_unit_xy"
         if config.model_family
@@ -3511,6 +3677,8 @@ def train(config: TrainConfig) -> TrainingResult:
         if config.model_family == "mobilenet_v2_geometry_uncertainty"
         else "rectifier_box"
         if config.model_family == "mobilenet_v2_rectifier"
+        else "obb"
+        if config.model_family == "mobilenet_v2_obb"
         else "geometry"
         if config.model_family in {"mobilenet_v2_geometry", "compact_geometry"}
         else "ordinal_thresholds"
@@ -3535,6 +3703,7 @@ def train(config: TrainConfig) -> TrainingResult:
             "geometry",
             "geometry_uncertainty",
             "rectifier_box",
+            "obb",
         }
         else None,
     )
@@ -3553,6 +3722,7 @@ def train(config: TrainConfig) -> TrainingResult:
             "geometry",
             "geometry_uncertainty",
             "rectifier_box",
+            "obb",
         }
         else None,
     )
@@ -3571,6 +3741,7 @@ def train(config: TrainConfig) -> TrainingResult:
             "geometry",
             "geometry_uncertainty",
             "rectifier_box",
+            "obb",
         }
         else None,
     )
@@ -3598,6 +3769,8 @@ def train(config: TrainConfig) -> TrainingResult:
             "mobilenet_v2_detector",
             "mobilenet_v2_geometry",
         }
+        else "val_obb_params_mae"
+        if config.model_family == "mobilenet_v2_obb"
         else "val_mae"
     )
     callbacks: list[keras.callbacks.Callback] = _make_training_callbacks(
@@ -3614,6 +3787,7 @@ def train(config: TrainConfig) -> TrainingResult:
             "mobilenet_v2_detector",
             "mobilenet_v2_geometry",
             "mobilenet_v2_geometry_uncertainty",
+            "mobilenet_v2_obb",
             "mobilenet_v2_rectifier",
             "mobilenet_v2_keypoint",
             "mobilenet_v2_interval",
@@ -3689,6 +3863,11 @@ def train(config: TrainConfig) -> TrainingResult:
                 uncertainty_loss_weight=config.geometry_uncertainty_loss_weight,
                 low_quantile=config.geometry_uncertainty_low_quantile,
                 high_quantile=config.geometry_uncertainty_high_quantile,
+            )
+        elif config.model_family == "mobilenet_v2_obb":
+            _compile_obb_model(
+                model,
+                learning_rate=config.learning_rate,
             )
         elif config.model_family == "mobilenet_v2_rectifier":
             _compile_rectifier_model(
@@ -3787,6 +3966,11 @@ def train(config: TrainConfig) -> TrainingResult:
                 low_quantile=config.geometry_uncertainty_low_quantile,
                 high_quantile=config.geometry_uncertainty_high_quantile,
             )
+        elif config.model_family == "mobilenet_v2_obb":
+            _compile_obb_model(
+                model,
+                learning_rate=config.learning_rate,
+            )
         elif config.model_family == "mobilenet_v2_rectifier":
             _compile_rectifier_model(
                 model,
@@ -3880,6 +4064,11 @@ def train(config: TrainConfig) -> TrainingResult:
                 uncertainty_loss_weight=config.geometry_uncertainty_loss_weight,
                 low_quantile=config.geometry_uncertainty_low_quantile,
                 high_quantile=config.geometry_uncertainty_high_quantile,
+            )
+        elif config.model_family == "mobilenet_v2_obb":
+            _compile_obb_model(
+                model,
+                learning_rate=config.learning_rate,
             )
         elif config.model_family == "mobilenet_v2_rectifier":
             _compile_rectifier_model(

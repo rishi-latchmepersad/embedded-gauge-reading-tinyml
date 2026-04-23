@@ -19,6 +19,8 @@ See `archive.md` for the full chronology.
 ## Deployment State
 
 - The live board path remains the scalar reader with firmware-side calibration.
+- The current board candidate is `prod_model_v0.3_obb_int8`, wired through the OBB wrapper in `app_ai.c`.
+- The firmware build is currently green with the OBB wrapper linked against the shared scalar runtime bundle.
 - The detailed crop-box and calibration history is archived, but the active rule is to keep the deployed board path conservative and well logged.
 - Model updates still need the generated code, include path, and makefile targets kept in sync.
 

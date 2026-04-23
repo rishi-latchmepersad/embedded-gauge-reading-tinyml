@@ -51,7 +51,7 @@ class ExportConfig:
     model_path: Path
     output_dir: Path
     hard_case_manifest: Path
-    deployment_kind: Literal["scalar", "rectifier"] = "scalar"
+    deployment_kind: Literal["scalar", "rectifier", "obb"] = "scalar"
     representative_count: int = 32
     image_height: int = DEFAULT_IMAGE_HEIGHT
     image_width: int = DEFAULT_IMAGE_WIDTH
@@ -123,13 +123,35 @@ def _select_scalar_deployment_model(model: keras.Model) -> keras.Model:
     return scalar_model
 
 
+def _select_obb_deployment_model(model: keras.Model) -> keras.Model:
+    """Extract the OBB output for deployment as a single-tensor model."""
+    try:
+        obb_output = model.get_layer("obb_params").output
+    except ValueError:
+        return model
+
+    if len(model.outputs) == 1:
+        return model
+
+    obb_model = keras.Model(
+        inputs=model.inputs,
+        outputs=obb_output,
+        name=f"{model.name}_obb",
+    )
+    print(
+        "[EXPORT] Using OBB deployment wrapper around multi-output model.",
+        flush=True,
+    )
+    return obb_model
+
+
 def _build_representative_examples(
     *,
     hard_case_manifest: Path,
     image_height: int,
     image_width: int,
     representative_count: int,
-    deployment_kind: Literal["scalar", "rectifier"],
+    deployment_kind: Literal["scalar", "rectifier", "obb"],
 ) -> list[TrainingExample]:
     """Collect a deterministic slice of labeled images for TFLite calibration."""
     config = TrainConfig(
@@ -183,7 +205,7 @@ def _build_representative_examples(
         rep_train_examples = [
             sorted_train_examples[index] for index in selected_indices
         ]
-    if deployment_kind == "rectifier":
+    if deployment_kind in {"rectifier", "obb"}:
         hard_case_examples = _load_hard_case_examples(
             hard_case_manifest,
             image_height=image_height,
@@ -282,9 +304,26 @@ def build_export_metadata(
     output_zero_point: int,
     representative_examples: int,
     hard_case_manifest: Path,
-    deployment_kind: Literal["scalar", "rectifier"],
+    deployment_kind: Literal["scalar", "rectifier", "obb"],
 ) -> dict[str, Any]:
     """Build a serializable metadata payload for firmware handoff."""
+    if deployment_kind == "scalar":
+        board_notes = (
+            "Use this artifact with the STM32 capture path that already crops to "
+            "224x224 and preserves gauge geometry."
+        )
+    elif deployment_kind == "rectifier":
+        board_notes = (
+            "Use this artifact as the first-stage rectifier on the STM32 "
+            "capture path. It consumes the full frame and predicts a dial crop."
+        )
+    else:
+        board_notes = (
+            "Use this artifact as the first-stage oriented-box localizer on the "
+            "STM32 capture path. It consumes the full frame and predicts a gauge "
+            "crop for the downstream reader."
+        )
+
     return {
         "source_model_path": str(source_model_path),
         "tflite_path": str(tflite_path),
@@ -300,13 +339,7 @@ def build_export_metadata(
             "height": int(input_shape[1]) if len(input_shape) > 1 else None,
             "width": int(input_shape[2]) if len(input_shape) > 2 else None,
         },
-        "board_notes": (
-            "Use this artifact with the STM32 capture path that already crops to "
-            "224x224 and preserves gauge geometry."
-            if deployment_kind == "scalar"
-            else "Use this artifact as the first-stage rectifier on the STM32 "
-            "capture path. It consumes the full frame and predicts a dial crop."
-        ),
+        "board_notes": board_notes,
     }
 
 
@@ -324,6 +357,8 @@ def export_board_tflite_artifacts(config: ExportConfig) -> ExportResult:
         )
         if config.deployment_kind == "scalar":
             model = _select_scalar_deployment_model(model)
+        elif config.deployment_kind == "obb":
+            model = _select_obb_deployment_model(model)
         print(
             f"[EXPORT] Stage: load-model-done elapsed={time.monotonic() - start_time:.1f}s",
             flush=True,
@@ -347,7 +382,7 @@ def export_board_tflite_artifacts(config: ExportConfig) -> ExportResult:
         print("[EXPORT] Converting model to fully quantized int8 TFLite...", flush=True)
         converter = tf.lite.TFLiteConverter.from_keras_model(model)
         converter.optimizations = [tf.lite.Optimize.DEFAULT]
-        if config.deployment_kind == "rectifier":
+        if config.deployment_kind in {"rectifier", "obb"}:
             converter.representative_dataset = lambda: _representative_dataset_rectifier(
                 representative_examples,
                 image_height=config.image_height,

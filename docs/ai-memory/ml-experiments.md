@@ -26,12 +26,23 @@ See `archive.md` for the full chronology.
 - Even that best rectifier chain is still far from board-ready, and it remains worse on many samples than a strong dedicated scalar fit on the same board domain.
 - The rectifier is still the more promising part of the cascade; the reader still needs stronger spatial context or a better downstream geometry target.
 
+## OBB Cascade
+
+- The new MobileNetV2 OBB localizer long-term run trained cleanly on the labeled split and reached `val_mae=0.1435` and `test_mae=0.1786` on the OBB parameters. That makes it the strongest explicit localizer proxy so far.
+- The OBB + scalar board-probe cascade using `mobilenetv2_obb_longterm` and the rectified scalar deployment reached `mean_abs_err=3.6617`, `max_abs_err=11.8603`, and `cases_over_5c=11` at `OBB_CROP_SCALE=1.20`.
+- That beats the best rectifier + scalar board result (`mean_abs_err=6.1574` at `RECTIFIER_CROP_SCALE=1.80`), so the OBB cascade is now the strongest board-probe benchmark we have.
+- The OBB localizer is now wired into the firmware candidate path as `prodv0.3`, and the board project builds successfully with the OBB wrapper plus the shared scalar runtime bundle.
+- The OBB cascade should be the next comparison target for board-style work, while the rectifier chain remains the fallback benchmark.
+
 ## Geometry Experiments
 
 - Geometry-first MobileNetV2 models are wired up in the repo.
 - The long-term geometry run learned too narrow a pose prior and collapsed toward a near-fixed angle.
 - The long-term direction run also collapsed and did not beat a trivial baseline.
 - The detector-first MobileNetV2 geometry run also failed to become a useful reader. On the held-out test split it reached `gauge_value_mae=23.8880` while the baseline mean predictor was `20.1698`, so the detector branch is not yet better than a trivial predictor.
+- The latest `mobilenetv2_detector_geometry` run repeated that failure mode. It finished with `test gauge_value_mae=24.2626` while the baseline mean predictor stayed at `20.1698`, so the detector-style geometry head still does not beat a trivial predictor on the pinned test split.
+- The geometry keypoint-only run improved the spatial branch but still did not beat baseline on temperature. It finished with `test gauge_value_mae=23.1730` against the mean predictor's `20.1698`, while keypoint MAE dropped to `6.6727`.
+- The uncertainty-aware geometry run was the best of the latest geometry variants, but it still only reached `test gauge_value_mae=18.9273` while the baseline mean predictor was `20.1698`. That means the uncertainty head helped some, but it still did not produce a board-ready reader.
 - The compact geometry long-term run is the best tiny-detector-style proxy so far. It reached `gauge_value_mae=7.4751` on the pinned board test split, which beats the mean predictor (`11.2892`), but the geometry branch is still weak with `keypoint_coords_angle_mae_deg=48.0940` and `keypoint_coords_mae=24.2516`.
 - On the rectified-board probe manifest, that same compact geometry checkpoint regressed badly: `mean_abs_err=17.5719` over 39 samples, with the worst `28C` samples down in the single digits and the worst `14C` samples up around `31C`. The angle branch is still collapsing to a narrow, unstable pose prior.
 - The inspection script showed that the keypoint branch is the weak link, not just the final temperature mapping.
@@ -55,6 +66,7 @@ See `archive.md` for the full chronology.
 - Even so, that is still far from board-ready: `cases_over_5c=33` and the worst board probe sample was still off by `18.8867C`.
 - Do not spend more cycles on MobileNetV2 scalar/direction heads unless the geometry target changes materially.
 - The current in-repo proxy for that tiny detector/localizer idea is `compact_geometry_longterm`, which keeps the model small while pinning validation and test against the board split.
+- The OBB long-term launcher now uses explicit `--val-fraction` and `--test-fraction` splits and should stay off the board manifest hard-case path.
 
 ## Active Training Split
 
@@ -70,3 +82,4 @@ See `archive.md` for the full chronology.
 - Keep the pinned split and inspect sample-level predictions before declaring a geometry model viable.
 - Do not treat the detector-first result as a recovery path unless the geometry formulation changes in a meaningful way.
 - A rectifier/localizer remains worthwhile, but the literature suggests it should normalize the scene for a downstream geometry reader instead of being the full reader on its own.
+- The OBB cascade has now shown the strongest board-probe result so far, so future board-style comparisons should start there before trying more scalar-only variants.

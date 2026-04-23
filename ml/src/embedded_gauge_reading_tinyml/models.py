@@ -1134,3 +1134,68 @@ def build_mobilenetv2_rectifier_model(
     )
     setattr(model, "_mobilenet_backbone", None)
     return model
+
+
+def build_mobilenetv2_obb_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a MobileNetV2 localizer that predicts oriented ellipse parameters.
+
+    The head predicts a normalized center and size plus a unit angle vector.
+    That gives us a more explicit detector-style target than the earlier
+    keypoint heatmap proxies while still staying compact enough for embedded
+    experiments.
+    """
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    x = keras.layers.GlobalAveragePooling2D()(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+    x = keras.layers.Dense(head_units, activation="swish")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+
+    center_xy = keras.layers.Dense(
+        2,
+        activation="sigmoid",
+        name="obb_center_xy",
+    )(x)
+    size_wh = keras.layers.Dense(
+        2,
+        activation="sigmoid",
+        name="obb_size_wh",
+    )(x)
+    angle_raw = keras.layers.Dense(
+        2,
+        name="obb_angle_raw",
+    )(x)
+    angle_sincos = keras.layers.UnitNormalization(
+        axis=-1,
+        name="obb_angle_sincos",
+    )(angle_raw)
+    obb_params = keras.layers.Concatenate(name="obb_params")(
+        [center_xy, size_wh, angle_sincos]
+    )
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={"obb_params": obb_params},
+        name=_mobilenetv2_model_name(
+            regression_kind="obb",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model

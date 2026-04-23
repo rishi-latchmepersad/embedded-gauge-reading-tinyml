@@ -16,6 +16,7 @@ from embedded_gauge_reading_tinyml.models import (
     build_compact_geometry_model,
     build_mobilenetv2_direction_model,
     build_mobilenetv2_geometry_uncertainty_model,
+    build_mobilenetv2_obb_model,
     build_mobilenetv2_rectifier_model,
     build_mobilenetv2_regression_model,
 )
@@ -220,6 +221,185 @@ def test_build_mobilenetv2_rectifier_model_outputs_box() -> None:
 
     assert model.name == "mobilenetv2_rectifier_regressor"
     assert outputs["rectifier_box"].shape == (2, 4)
+
+
+def test_build_mobilenetv2_obb_model_outputs_params() -> None:
+    """OBB localizer should emit a compact oriented-box parameter vector."""
+    model = build_mobilenetv2_obb_model(
+        image_height=32,
+        image_width=32,
+        pretrained=False,
+        backbone_trainable=False,
+    )
+    batch: tf.Tensor = tf.zeros((2, 32, 32, 3), dtype=tf.float32)
+    outputs = model(batch)
+
+    assert model.name == "mobilenetv2_obb_regressor"
+    assert outputs["obb_params"].shape == (2, 6)
+
+
+def test_load_crop_with_obb_target_wraps_dicts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OBB crop loaders should return dict targets keyed by obb_params."""
+
+    def _fake_loader(
+        image_path: tf.Tensor,
+        value: tf.Tensor,
+        crop_box_xyxy: tf.Tensor,
+        image_height: int,
+        image_width: int,
+    ) -> tuple[tf.Tensor, tf.Tensor]:
+        _ = (image_path, value, crop_box_xyxy, image_height, image_width)
+        return tf.zeros((4, 4, 3), dtype=tf.float32), tf.constant([0.5], dtype=tf.float32)
+
+    monkeypatch.setattr(
+        training, "_load_crop_and_preprocess_image", _fake_loader
+    )
+
+    image, target = training._load_crop_with_obb_target(
+        tf.constant("a.jpg"),
+        tf.constant(10.0),
+        tf.constant([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=tf.float32),
+        tf.constant([0.0, 0.0, 8.0, 8.0], dtype=tf.float32),
+        32,
+        32,
+    )
+    image_w, target_w, weight = training._load_crop_with_obb_weight(
+        tf.constant("a.jpg"),
+        tf.constant(10.0),
+        tf.constant([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=tf.float32),
+        tf.constant([0.0, 0.0, 8.0, 8.0], dtype=tf.float32),
+        32,
+        32,
+        tf.constant(0.25, dtype=tf.float32),
+    )
+
+    assert image.shape == (4, 4, 3)
+    assert target["obb_params"].shape == (6,)
+    assert image_w.shape == (4, 4, 3)
+    assert target_w["obb_params"].shape == (6,)
+    assert weight["obb_params"].shape == ()
+    assert float(weight["obb_params"]) == pytest.approx(0.25)
+
+
+def test_train_happy_path_with_mobilenetv2_obb_mocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """train should route through the MobileNetV2 OBB family."""
+    spec: GaugeSpec = _make_spec()
+
+    label_summary: LabelSummary = LabelSummary(
+        total_samples=10,
+        in_sweep=9,
+        out_of_sweep=1,
+        min_fraction=0.0,
+        max_fraction=1.0,
+    )
+
+    examples: list[training.TrainingExample] = [
+        training.TrainingExample("a.jpg", 1.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("b.jpg", 2.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("c.jpg", 3.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("d.jpg", 4.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+    ]
+    split: training.DatasetSplit = training.DatasetSplit(
+        train_examples=examples[:2],
+        val_examples=examples[2:3],
+        test_examples=examples[3:],
+    )
+
+    class _FakeHistory:
+        """Small stand-in for keras.callbacks.History."""
+
+        def __init__(self) -> None:
+            self.history: dict[str, list[float]] = {"loss": [1.0], "val_loss": [1.2]}
+
+    class _FakeModel:
+        """Small stand-in for a compiled OBB localizer."""
+
+        def compile(self, **kwargs: Any) -> None:
+            _ = kwargs
+
+        def fit(
+            self,
+            train_ds: Any,
+            validation_data: Any,
+            epochs: int,
+            callbacks: list[Any],
+            verbose: int,
+        ) -> _FakeHistory:
+            assert train_ds is not None
+            assert validation_data is not None
+            assert epochs == 1
+            assert len(callbacks) == 2
+            assert verbose == 2
+            return _FakeHistory()
+
+        def evaluate(
+            self, test_ds: Any, return_dict: bool, verbose: int
+        ) -> dict[str, float]:
+            assert test_ds is not None
+            assert return_dict is True
+            assert verbose == 0
+            return {"loss": 1.0, "mae": 0.5, "rmse": 0.75}
+
+    fake_model = _FakeModel()
+
+    def _build_tf_dataset_stub(
+        examples: list[training.TrainingExample],
+        config: training.TrainConfig,
+        training: bool,
+        target_kind: str = "value",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        assert target_kind == "obb"
+        return {"n": len(examples), "train": training, "target_kind": target_kind}
+
+    monkeypatch.setattr(training, "load_gauge_specs", lambda: {spec.gauge_id: spec})
+    monkeypatch.setattr(
+        training, "load_dataset", lambda labelled_dir, raw_dir: [object()] * 10
+    )
+    monkeypatch.setattr(
+        training, "summarize_label_sweep", lambda samples, spec: label_summary
+    )
+    monkeypatch.setattr(
+        training,
+        "_build_training_examples",
+        lambda samples, spec, **kwargs: (examples, 1),
+    )
+    monkeypatch.setattr(training, "_split_examples", lambda examples, config: split)
+    monkeypatch.setattr(training, "_build_tf_dataset", _build_tf_dataset_stub)
+    monkeypatch.setattr(
+        training,
+        "build_mobilenetv2_obb_model",
+        lambda *args, **kwargs: fake_model,
+    )
+    monkeypatch.setattr(
+        training,
+        "_compute_mean_baseline_mae",
+        lambda train_examples, test_examples: 2.5,
+    )
+
+    result: training.TrainingResult = training.train(
+        training.TrainConfig(
+            epochs=1,
+            model_family="mobilenet_v2_obb",
+            mobilenet_backbone_trainable=False,
+            mobilenet_warmup_epochs=0,
+        )
+    )
+
+    assert result.model is fake_model
+    assert result.label_summary == label_summary
+    assert result.dropped_out_of_sweep == 1
+    assert result.baseline_test_mae == pytest.approx(2.5)
+    assert result.test_metrics == {
+        "loss": 1.0,
+        "mae": 0.5,
+        "rmse": 0.75,
+        "baseline_mae_mean_predictor": 2.5,
+    }
 
 
 def test_train_happy_path_with_mobilenetv2_geometry_uncertainty_mocks(

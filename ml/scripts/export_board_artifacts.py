@@ -21,7 +21,7 @@ from embedded_gauge_reading_tinyml.export import (  # noqa: E402
 def _parse_args() -> argparse.Namespace:
     """Parse CLI arguments for the board export job."""
     parser = argparse.ArgumentParser(
-        description="Export the calibrated scalar CNN to board-ready TFLite artifacts."
+        description="Export a board-ready model to TFLite artifacts."
     )
     parser.add_argument(
         "--model",
@@ -50,7 +50,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--deployment-kind",
-        choices=["scalar", "rectifier"],
+        choices=["scalar", "rectifier", "obb"],
         default="scalar",
         help="Deployment flavor to export for the board.",
     )

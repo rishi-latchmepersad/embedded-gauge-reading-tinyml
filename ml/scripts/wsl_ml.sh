@@ -35,6 +35,7 @@ Usage:
   bash scripts/wsl_ml.sh train-mobilenetv2-geometry-longterm [geometry longterm args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-geometry-cascade-localizer-longterm [geometry cascade longterm args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-direction-longterm [direction longterm args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-obb-longterm [obb longterm args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectifier [rectifier args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectifier-finetune [rectifier fine-tune args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectifier-hardcase-finetune [rectifier hard-case args...]
@@ -44,6 +45,8 @@ Usage:
   bash scripts/wsl_ml.sh sweep-rectified-scalar-crop-scale [sweep args...]
   bash scripts/wsl_ml.sh export-prod-v0-2 [prod v0.2 export args...]
   bash scripts/wsl_ml.sh package-prod-v0-2 [prod v0.2 package args...]
+  bash scripts/wsl_ml.sh export-prod-v0-3-obb [prod v0.3 obb export args...]
+  bash scripts/wsl_ml.sh package-prod-v0-3-obb [prod v0.3 obb package args...]
   bash scripts/wsl_ml.sh export-rectifier [rectifier export args...]
   bash scripts/wsl_ml.sh package-rectifier [rectifier package args...]
   bash scripts/wsl_ml.sh export-rectified-scalar [rectified scalar export args...]
@@ -155,6 +158,10 @@ case "${cmd}" in
     # Train the long-term MobileNetV2 direction model with the same pinned split.
     exec bash scripts/run_mobilenetv2_direction_longterm.sh "$@"
     ;;
+  train-mobilenetv2-obb-longterm)
+    # Train the long-term MobileNetV2 OBB localizer on the labeled dataset.
+    exec bash scripts/run_mobilenetv2_obb_longterm.sh "$@"
+    ;;
   train-mobilenetv2-rectifier)
     # Train the rectifier-first MobileNetV2 model on the labeled dataset.
     exec bash scripts/run_mobilenetv2_rectifier_full.sh "$@"
@@ -179,6 +186,10 @@ case "${cmd}" in
     # Evaluate the rectifier + scalar-reader chain on raw board captures.
     exec bash scripts/run_rectified_scalar_capture_eval.sh "$@"
     ;;
+  eval-obb-scalar-board-probe)
+    # Evaluate the OBB localizer + scalar-reader chain on the board probe set.
+    exec bash scripts/run_obb_scalar_eval_board_probe.sh "$@"
+    ;;
   sweep-rectified-scalar-crop-scale)
     # Sweep rectifier crop expansion factors against the board-style manifest.
     exec bash scripts/sweep_rectified_scalar_crop_scale.sh "$@"
@@ -190,6 +201,14 @@ case "${cmd}" in
   package-prod-v0-2)
     # Package the prod-v0.2 scalar candidate and refresh the canonical xSPI2 blob.
     exec bash scripts/run_board_package_prod_model_v0_2_raw_int8.sh "$@"
+    ;;
+  export-prod-v0-3-obb)
+    # Export the prod-v0.3 OBB localizer to board-ready TFLite artifacts.
+    exec bash scripts/run_board_export_prod_model_v0_3_obb.sh "$@"
+    ;;
+  package-prod-v0-3-obb)
+    # Package the prod-v0.3 OBB localizer and refresh the canonical xSPI2 blob.
+    exec bash scripts/run_board_package_prod_model_v0_3_obb_raw_int8.sh "$@"
     ;;
   export-rectifier)
     # Export the rectifier stage to board-ready TFLite artifacts.

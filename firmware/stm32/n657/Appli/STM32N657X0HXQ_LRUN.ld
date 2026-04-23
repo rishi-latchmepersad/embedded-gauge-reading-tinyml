@@ -52,6 +52,7 @@ MEMORY
    * The rectifier pool symbol must live here so the NPU reads weights from the
    * correct flash region. */
   EXTRAM_RECTIFIER (rw) : ORIGIN = 0x70600000,   LENGTH = 256K
+  EXTRAM_OBB (rw)       : ORIGIN = 0x70700000,   LENGTH = 4096K
   /* Non-secure alias A/B test — DCMIPP with MSEC=1 writes to 0x24xxxxxx.
    * Placed at top of AXISRAM1 non-secure alias, away from code/data. */
   RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 128K
@@ -119,6 +120,13 @@ SECTIONS
     KEEP(*(.xspi2_rectifier_pool))
     . = ALIGN(32);
   } >EXTRAM_RECTIFIER
+
+  .xspi2_obb_pool (NOLOAD) :
+  {
+    . = ALIGN(32);
+    KEEP(*(.xspi2_obb_pool))
+    . = ALIGN(32);
+  } >EXTRAM_OBB
 
   .ARM.extab   : {
     . = ALIGN(4);

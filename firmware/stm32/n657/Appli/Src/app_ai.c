@@ -12,6 +12,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stddef.h>
+#include <math.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -92,6 +93,7 @@
 #define APP_AI_SCALAR_XSPI2_MODEL_IMAGE_PATH "atonbuf.xSPI2.raw"
 #define APP_AI_RECTIFIER_XSPI2_MODEL_IMAGE_PATH \
 		"atonbuf.rectifier.xSPI2.raw"
+#define APP_AI_OBB_XSPI2_MODEL_IMAGE_PATH   "atonbuf.obb.xSPI2.raw"
 #define APP_AI_XSPI2_MODEL_IMAGE_PATH     APP_AI_SCALAR_XSPI2_MODEL_IMAGE_PATH
 #define APP_AI_XSPI2_PROGRAM_CHUNK_BYTES   4096U
 #define APP_AI_XSPI2_ERASE_BLOCK_BYTES     (64U * 1024U)
@@ -99,10 +101,17 @@
 /* Keep the rectifier crop slightly larger than the raw box so the scalar head
  * still sees the needle and a bit of surrounding dial context. */
 #define APP_AI_RECTIFIER_CROP_SCALE        1.80f
+/* The OBB path only needs a small safety margin around the detected box. */
+#define APP_AI_OBB_CROP_SCALE              1.20f
 /* Match the Python rectifier evaluator: never let the predicted box collapse
  * below a tiny fraction of the canvas, or the scalar stage degenerates to a
  * 1x1 crop. */
 #define APP_AI_RECTIFIER_MIN_BOX_RATIO     0.05f
+/* Keep the OBB decoder from collapsing into a tiny crop when the localizer
+ * gets uncertain. */
+#define APP_AI_OBB_MIN_BOX_RATIO           0.05f
+/* The OBB crop should still be a real crop, not a 1x1 or 8x8 window. */
+#define APP_AI_OBB_MIN_CROP_SIZE_PIXELS    48.0f
 /* Accept any box where both w and h are in [0.2, 1.5] of the frame dimension.
  * The rectifier outputs normalised cx/cy/w/h so these limits reject degenerate
  * (near-zero) or wildly oversized predictions while passing plausible dial
@@ -146,6 +155,8 @@
  * Size: ~118 KB → occupies 0x70600000–0x7053FFFF (2 × 64 KB blocks). */
 #define APP_AI_XSPI2_RECTIFIER_BASE_ADDR  0x70600000UL
 #define APP_AI_XSPI2_RECTIFIER_CHIP_OFFSET (APP_AI_XSPI2_RECTIFIER_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
+#define APP_AI_XSPI2_OBB_BASE_ADDR        0x70700000UL
+#define APP_AI_XSPI2_OBB_CHIP_OFFSET      (APP_AI_XSPI2_OBB_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
 /* Legacy alias used by the single-stage logging helpers; points to scalar. */
 #define APP_AI_XSPI2_MODEL_BASE_ADDR      APP_AI_XSPI2_SCALAR_BASE_ADDR
 #define APP_AI_XSPI2_MODEL_CHIP_OFFSET    APP_AI_XSPI2_SCALAR_CHIP_OFFSET
@@ -190,6 +201,12 @@ __attribute__((section(".xspi2_rectifier_pool"), aligned(APP_AI_CACHE_LINE_BYTES
 uint8_t _mem_pool_xSPI2_mobilenetv2_rectifier_hardcase_finetune[32U] = {
 	0U,
 };
+/* OBB localizer pool lives in its own section so the linker can map it to the
+ * prodv0.3 flash slot without disturbing the rectifier blob. */
+__attribute__((section(".xspi2_obb_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
+uint8_t _mem_pool_xSPI2_mobilenetv2_obb_longterm[32U] = {
+	0U,
+};
 static uint8_t app_ai_xspi2_program_buffer[APP_AI_XSPI2_PROGRAM_CHUNK_BYTES];
 /* Start/tail signatures for the current atonbuf.xSPI2.raw.
  * Update these when a new model is exported by running:
@@ -217,12 +234,24 @@ static const uint8_t app_ai_rectifier_xspi2_signature_tail[
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x80U,
 };
+/* prodv0.3 OBB xSPI2 signatures. */
+static const uint8_t app_ai_obb_xspi2_signature_start[
+		APP_AI_XSPI2_PROBE_BYTES] = {
+	0xF2U, 0x17U, 0x29U, 0xE2U, 0xDCU, 0xEBU, 0xEDU, 0x04U,
+	0x09U, 0x01U, 0x35U, 0xEBU, 0x14U, 0xDEU, 0x0FU, 0x02U,
+};
+static const uint8_t app_ai_obb_xspi2_signature_tail[
+		APP_AI_XSPI2_PROBE_BYTES] = {
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x7FU,
+};
 /* Per-stage programmed sizes. Set during provisioning and used by the verify
  * functions for the tail probe offset. Keeping them separate prevents the
  * scalar tail check from using the rectifier's file size (or vice-versa) when
  * stages alternate. */
 static ULONG app_ai_scalar_programmed_size = 0UL;
 static ULONG app_ai_rectifier_programmed_size = 0UL;
+static ULONG app_ai_obb_programmed_size = 0UL;
 /* Legacy alias kept so existing references still compile; points to the scalar
  * size which was the only stage before the rectifier was added. */
 static ULONG app_ai_xspi2_programmed_size = 0UL;
@@ -236,6 +265,9 @@ static bool    app_ai_scalar_sig_valid = false;
 static uint8_t app_ai_rectifier_sig_start[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
 static uint8_t app_ai_rectifier_sig_tail[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
 static bool    app_ai_rectifier_sig_valid = false;
+static uint8_t app_ai_obb_sig_start[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
+static uint8_t app_ai_obb_sig_tail[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
+static bool    app_ai_obb_sig_valid = false;
 
 /* Declare the generated NN instance locally so the dry-run helper can run the
  * AtoNN runtime on the exact network produced by Cube.AI. */
@@ -243,6 +275,8 @@ LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 		scalar_full_finetune_from_best_piecewise_calibrated_int8);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 		mobilenetv2_rectifier_hardcase_finetune);
+LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
+		mobilenetv2_obb_longterm);
 
 typedef struct AppAI_ModelStageSpec AppAI_ModelStageSpec;
 
@@ -263,6 +297,16 @@ typedef struct {
 	float box_w;
 	float box_h;
 } AppAI_RectifierBox;
+
+typedef struct {
+	float center_x;
+	float center_y;
+	float box_w;
+	float box_h;
+	float angle_cos;
+	float angle_sin;
+	float theta_rad;
+} AppAI_ObbBox;
 
 typedef struct {
 	size_t x_min;
@@ -295,6 +339,17 @@ static const AppAI_ModelStageSpec app_ai_rectifier_stage = {
 	.uses_rectifier_box = true,
 	.xspi2_chip_offset = APP_AI_XSPI2_RECTIFIER_CHIP_OFFSET,
 	.xspi2_base_addr   = APP_AI_XSPI2_RECTIFIER_BASE_ADDR,
+};
+
+static const AppAI_ModelStageSpec app_ai_obb_stage = {
+	.stage_label = "obb",
+	.model_image_path = APP_AI_OBB_XSPI2_MODEL_IMAGE_PATH,
+	.nn_instance = &NN_Instance_mobilenetv2_obb_longterm,
+	.network_init_fn = LL_ATON_EC_Network_Init_mobilenetv2_obb_longterm,
+	.inference_init_fn = LL_ATON_EC_Inference_Init_mobilenetv2_obb_longterm,
+	.uses_rectifier_box = false,
+	.xspi2_chip_offset = APP_AI_XSPI2_OBB_CHIP_OFFSET,
+	.xspi2_base_addr   = APP_AI_XSPI2_OBB_BASE_ADDR,
 };
 /* USER CODE END PV */
 
@@ -369,6 +424,9 @@ static void AppAI_LogInferenceResult(
 static void AppAI_LogRectifierResult(
 		const LL_Buffer_InfoTypeDef *output_buffer_info,
 		const AppAI_RectifierBox *rectifier_box);
+static void AppAI_LogObbResult(
+		const LL_Buffer_InfoTypeDef *output_buffer_info,
+		const AppAI_ObbBox *obb_box);
 static int AppAI_ApplyCacheRange(uint32_t start_addr, uint32_t end_addr,
 		bool clean, bool invalidate);
 static void AppAI_EnableNpuMemoryAndCaches(void);
@@ -395,6 +453,8 @@ static void AppAI_ReadRgbFromYuv422Pixel(const uint8_t *frame_bytes,
 static void AppAI_SetForcedCrop(const char *label, size_t x_min,
 		size_t y_min, size_t width, size_t height);
 static void AppAI_ClearForcedCrop(void);
+static bool AppAI_DecodeObbCropBox(const LL_Buffer_InfoTypeDef *output_buffer_info,
+		AppAI_SourceCrop *crop_out, AppAI_ObbBox *obb_box_out);
 static bool AppAI_DecodeRectifierCropBox(
 		const LL_Buffer_InfoTypeDef *output_buffer_info,
 		AppAI_SourceCrop *crop_out,
@@ -1720,7 +1780,9 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlash(void) {
 
 static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 		const AppAI_ModelStageSpec *stage) {
+	const char *stage_label = NULL;
 	bool is_rectifier;
+	bool is_obb;
 	const uint8_t *sig_start;
 	const uint8_t *sig_tail;
 	bool sig_valid;
@@ -1730,7 +1792,9 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 		return false;
 	}
 
-	is_rectifier = (strcmp(stage->stage_label, "rectifier") == 0);
+	stage_label = (stage->stage_label != NULL) ? stage->stage_label : "scalar";
+	is_rectifier = (strcmp(stage_label, "rectifier") == 0);
+	is_obb = (strcmp(stage_label, "obb") == 0);
 
 	if (is_rectifier) {
 		/* Prefer the SD-sourced signature cached during the last provisioning.
@@ -1744,6 +1808,15 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 				: app_ai_rectifier_xspi2_signature_tail;
 		sig_valid      = app_ai_rectifier_sig_valid;
 		programmed_size = app_ai_rectifier_programmed_size;
+	} else if (is_obb) {
+		sig_start      = app_ai_obb_sig_valid
+				? app_ai_obb_sig_start
+				: app_ai_obb_xspi2_signature_start;
+		sig_tail       = app_ai_obb_sig_valid
+				? app_ai_obb_sig_tail
+				: app_ai_obb_xspi2_signature_tail;
+		sig_valid      = app_ai_obb_sig_valid;
+		programmed_size = app_ai_obb_programmed_size;
 	} else {
 		sig_start      = app_ai_scalar_sig_valid
 				? app_ai_scalar_sig_start
@@ -2354,10 +2427,8 @@ static bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage) {
 	}
 
 	DebugConsole_WriteString("[AI] Stage runtime ready start.\r\n");
-	DebugConsole_WriteString(stage->stage_label != NULL
-			&& (strcmp(stage->stage_label, "rectifier") == 0)
-			? "[AI] Stage label: rectifier\r\n"
-			: "[AI] Stage label: scalar\r\n");
+	DebugConsole_Printf("[AI] Stage label: %s\r\n",
+			(stage->stage_label != NULL) ? stage->stage_label : "(unnamed)");
 	if (!AppAI_EnsureXspi2ModelImageReadyForStage(stage)) {
 		DebugConsole_WriteString(
 				"[AI] Stage runtime ready failed during xSPI2 setup.\r\n");
@@ -2744,6 +2815,242 @@ static void AppAI_LogRectifierResult(
 #endif
 }
 
+static void AppAI_LogObbResult(
+		const LL_Buffer_InfoTypeDef *output_buffer_info,
+		const AppAI_ObbBox *obb_box) {
+	float theta_deg = 0.0f;
+
+	if ((output_buffer_info == NULL) || (obb_box == NULL)) {
+		DebugConsole_Printf("[AI] OBB output missing.\r\n");
+		return;
+	}
+
+	theta_deg = obb_box->theta_rad * 57.29577951308232f;
+	DebugConsole_Printf("[AI] OBB output: name=%s addr=%p len=%lu\r\n",
+			(output_buffer_info->name != NULL) ? output_buffer_info->name
+					: "(unnamed)",
+			LL_Buffer_addr_start(output_buffer_info),
+			(unsigned long) LL_Buffer_len(output_buffer_info));
+#if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
+	DebugConsole_Printf(
+			"[AI] OBB box(clamped): cx=%.6f cy=%.6f w=%.6f h=%.6f cos=%.6f sin=%.6f theta=%.2fdeg\r\n",
+			obb_box->center_x, obb_box->center_y, obb_box->box_w,
+			obb_box->box_h, obb_box->angle_cos, obb_box->angle_sin,
+			theta_deg);
+#endif
+}
+
+static bool AppAI_DecodeObbCropBox(
+		const LL_Buffer_InfoTypeDef *output_buffer_info,
+		AppAI_SourceCrop *crop_out,
+		AppAI_ObbBox *obb_box_out) {
+	const float *output_ptr = NULL;
+	const float source_width_f = (float) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+	const float source_height_f = (float) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+	const float input_size_f = (float) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+	float center_x = 0.0f;
+	float center_y = 0.0f;
+	float box_w = 0.0f;
+	float box_h = 0.0f;
+	float angle_cos = 0.0f;
+	float angle_sin = 0.0f;
+	float theta_rad = 0.0f;
+	float canvas_center_x = 0.0f;
+	float canvas_center_y = 0.0f;
+	float half_width = 0.0f;
+	float half_height = 0.0f;
+	float crop_x_min_f = 0.0f;
+	float crop_y_min_f = 0.0f;
+	float crop_x_max_f = 0.0f;
+	float crop_y_max_f = 0.0f;
+
+	if ((output_buffer_info == NULL) || (crop_out == NULL)) {
+		return false;
+	}
+
+	output_ptr = (const float *) LL_Buffer_addr_start(output_buffer_info);
+	if ((output_ptr == NULL)
+			|| (LL_Buffer_len(output_buffer_info) < (sizeof(float) * 6U))) {
+		return false;
+	}
+
+	if (!AppAI_IsFiniteFloat(output_ptr[0]) || !AppAI_IsFiniteFloat(output_ptr[1])
+			|| !AppAI_IsFiniteFloat(output_ptr[2])
+			|| !AppAI_IsFiniteFloat(output_ptr[3])
+			|| !AppAI_IsFiniteFloat(output_ptr[4])
+			|| !AppAI_IsFiniteFloat(output_ptr[5])) {
+		DebugConsole_WriteString("[AI] OBB output contains non-finite values.\r\n");
+		return false;
+	}
+
+#if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
+	DebugConsole_Printf(
+			"[AI] OBB raw: cx=%.6f cy=%.6f w=%.6f h=%.6f cos=%.6f sin=%.6f\r\n",
+			output_ptr[0], output_ptr[1], output_ptr[2], output_ptr[3],
+			output_ptr[4], output_ptr[5]);
+#endif
+
+	center_x = AppAI_ClampNormalizedFloat(output_ptr[0]);
+	center_y = AppAI_ClampNormalizedFloat(output_ptr[1]);
+	box_w = AppAI_ClampNormalizedFloat(output_ptr[2]);
+	box_h = AppAI_ClampNormalizedFloat(output_ptr[3]);
+	if (box_w < APP_AI_OBB_MIN_BOX_RATIO) {
+		box_w = APP_AI_OBB_MIN_BOX_RATIO;
+	} else if (box_w > 1.0f) {
+		box_w = 1.0f;
+	}
+	if (box_h < APP_AI_OBB_MIN_BOX_RATIO) {
+		box_h = APP_AI_OBB_MIN_BOX_RATIO;
+	} else if (box_h > 1.0f) {
+		box_h = 1.0f;
+	}
+
+	angle_cos = output_ptr[4];
+	angle_sin = output_ptr[5];
+	theta_rad = 0.5f * atan2f(angle_sin, angle_cos);
+
+	if (obb_box_out != NULL) {
+		obb_box_out->center_x = center_x;
+		obb_box_out->center_y = center_y;
+		obb_box_out->box_w = box_w;
+		obb_box_out->box_h = box_h;
+		obb_box_out->angle_cos = angle_cos;
+		obb_box_out->angle_sin = angle_sin;
+		obb_box_out->theta_rad = theta_rad;
+	}
+
+	canvas_center_x = center_x * input_size_f;
+	canvas_center_y = center_y * input_size_f;
+	half_width = 0.5f * box_w * input_size_f * APP_AI_OBB_CROP_SCALE;
+	half_height = 0.5f * box_h * input_size_f * APP_AI_OBB_CROP_SCALE;
+
+	{
+		const float cos_theta = cosf(theta_rad);
+		const float sin_theta = sinf(theta_rad);
+		const float corner_offsets[4][2] = {
+			{ -half_width, -half_height },
+			{  half_width, -half_height },
+			{  half_width,  half_height },
+			{ -half_width,  half_height },
+		};
+		float source_x_values[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		float source_y_values[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+		for (size_t corner_index = 0U; corner_index < 4U; ++corner_index) {
+			const float dx = corner_offsets[corner_index][0];
+			const float dy = corner_offsets[corner_index][1];
+
+			source_x_values[corner_index] = canvas_center_x
+					+ ((dx * cos_theta) - (dy * sin_theta));
+			source_y_values[corner_index] = canvas_center_y
+					+ ((dx * sin_theta) + (dy * cos_theta));
+		}
+
+		crop_x_min_f = source_x_values[0U];
+		crop_y_min_f = source_y_values[0U];
+		crop_x_max_f = source_x_values[0U];
+		crop_y_max_f = source_y_values[0U];
+		for (size_t corner_index = 1U; corner_index < 4U; ++corner_index) {
+			if (source_x_values[corner_index] < crop_x_min_f) {
+				crop_x_min_f = source_x_values[corner_index];
+			}
+			if (source_y_values[corner_index] < crop_y_min_f) {
+				crop_y_min_f = source_y_values[corner_index];
+			}
+			if (source_x_values[corner_index] > crop_x_max_f) {
+				crop_x_max_f = source_x_values[corner_index];
+			}
+			if (source_y_values[corner_index] > crop_y_max_f) {
+				crop_y_max_f = source_y_values[corner_index];
+			}
+		}
+	}
+
+	{
+		const float crop_width_f = crop_x_max_f - crop_x_min_f;
+		const float crop_height_f = crop_y_max_f - crop_y_min_f;
+		const float crop_center_x_f = 0.5f * (crop_x_min_f + crop_x_max_f);
+		const float crop_center_y_f = 0.5f * (crop_y_min_f + crop_y_max_f);
+		const float target_width_f =
+				(crop_width_f < APP_AI_OBB_MIN_CROP_SIZE_PIXELS)
+				? APP_AI_OBB_MIN_CROP_SIZE_PIXELS : crop_width_f;
+		const float target_height_f =
+				(crop_height_f < APP_AI_OBB_MIN_CROP_SIZE_PIXELS)
+				? APP_AI_OBB_MIN_CROP_SIZE_PIXELS : crop_height_f;
+
+		crop_x_min_f = crop_center_x_f - (0.5f * target_width_f);
+		crop_y_min_f = crop_center_y_f - (0.5f * target_height_f);
+		crop_x_max_f = crop_x_min_f + target_width_f;
+		crop_y_max_f = crop_y_min_f + target_height_f;
+	}
+
+	if (crop_x_min_f < 0.0f) {
+		crop_x_max_f -= crop_x_min_f;
+		crop_x_min_f = 0.0f;
+	}
+	if (crop_y_min_f < 0.0f) {
+		crop_y_max_f -= crop_y_min_f;
+		crop_y_min_f = 0.0f;
+	}
+	if (crop_x_max_f > source_width_f) {
+		const float shift = crop_x_max_f - source_width_f;
+		crop_x_min_f = (crop_x_min_f > shift) ? (crop_x_min_f - shift) : 0.0f;
+		crop_x_max_f = source_width_f;
+	}
+	if (crop_y_max_f > source_height_f) {
+		const float shift = crop_y_max_f - source_height_f;
+		crop_y_min_f = (crop_y_min_f > shift) ? (crop_y_min_f - shift) : 0.0f;
+		crop_y_max_f = source_height_f;
+	}
+	if (crop_x_min_f < 0.0f) {
+		crop_x_min_f = 0.0f;
+	}
+	if (crop_y_min_f < 0.0f) {
+		crop_y_min_f = 0.0f;
+	}
+	if (crop_x_max_f > source_width_f) {
+		crop_x_max_f = source_width_f;
+	}
+	if (crop_y_max_f > source_height_f) {
+		crop_y_max_f = source_height_f;
+	}
+	if ((crop_x_max_f <= crop_x_min_f) || (crop_y_max_f <= crop_y_min_f)) {
+		return false;
+	}
+
+	crop_out->x_min = (size_t) floorf(crop_x_min_f);
+	crop_out->y_min = (size_t) floorf(crop_y_min_f);
+	crop_out->width = (size_t) ceilf(crop_x_max_f) - crop_out->x_min;
+	crop_out->height = (size_t) ceilf(crop_y_max_f) - crop_out->y_min;
+	if (crop_out->width == 0U) {
+		crop_out->width = 1U;
+	}
+	if (crop_out->height == 0U) {
+		crop_out->height = 1U;
+	}
+	if (crop_out->x_min >= (size_t) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS) {
+		crop_out->x_min = (size_t) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS - 1U;
+	}
+	if (crop_out->y_min >= (size_t) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS) {
+		crop_out->y_min = (size_t) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS - 1U;
+	}
+	if ((crop_out->x_min + crop_out->width)
+			> (size_t) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS) {
+		crop_out->width = (size_t) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS
+				- crop_out->x_min;
+	}
+	if ((crop_out->y_min + crop_out->height)
+			> (size_t) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS) {
+		crop_out->height = (size_t) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS
+				- crop_out->y_min;
+	}
+	if ((crop_out->width == 0U) || (crop_out->height == 0U)) {
+		return false;
+	}
+
+	return true;
+}
+
 static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		const uint8_t *frame_bytes, size_t frame_size,
 		const AppAI_SourceCrop *forced_crop,
@@ -2770,6 +3077,7 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	input_info = AppAI_GetStageInputBufferInfo(stage);
 	output_info = AppAI_GetStageOutputBufferInfo(stage);
 	if ((input_info == NULL) || (output_info == NULL)) {
+		AppAI_ClearForcedCrop();
 		return false;
 	}
 
@@ -2777,6 +3085,7 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	input_len_bytes = (size_t) LL_Buffer_len(input_info);
 	input_float_count = input_len_bytes / sizeof(float);
 	if (input_ptr == NULL) {
+		AppAI_ClearForcedCrop();
 		return false;
 	}
 
@@ -3411,10 +3720,12 @@ static void AppAI_ConfigureNpuRisafDefaults(void) {
 
 bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		size_t frame_size) {
+	const LL_Buffer_InfoTypeDef *obb_output_info = NULL;
 	const LL_Buffer_InfoTypeDef *rectifier_output_info = NULL;
 	const LL_Buffer_InfoTypeDef *scalar_output_info = NULL;
+	AppAI_ObbBox obb_box = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 	AppAI_RectifierBox rectifier_box = { 0.0f, 0.0f, 0.0f, 0.0f };
-	AppAI_SourceCrop rectifier_crop = { 0U, 0U,
+	AppAI_SourceCrop full_frame_crop = { 0U, 0U,
 		(size_t) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
 		(size_t) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS };
 	AppAI_SourceCrop scalar_crop = { 0U, 0U, 0U, 0U };
@@ -3425,10 +3736,37 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		return false;
 	}
 
-	(void) DebugConsole_WriteString("[AI] Dry-run model init OK; launching rectifier stage.\r\n");
+	(void) DebugConsole_WriteString("[AI] Dry-run model init OK; launching OBB stage.\r\n");
+
+	if (AppAI_RunStageInference(&app_ai_obb_stage, frame_bytes, frame_size,
+			&full_frame_crop, &obb_output_info)
+			&& AppAI_DecodeObbCropBox(obb_output_info, &scalar_crop, &obb_box)) {
+		AppAI_LogObbResult(obb_output_info, &obb_box);
+		DebugConsole_Printf(
+				"[AI] OBB crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+				(unsigned long) scalar_crop.x_min,
+				(unsigned long) scalar_crop.y_min,
+				(unsigned long) scalar_crop.width,
+				(unsigned long) scalar_crop.height);
+
+		if (AppAI_RunStageInference(&app_ai_scalar_stage, frame_bytes, frame_size,
+				&scalar_crop, &scalar_output_info)) {
+			AppAI_LogInferenceResult(scalar_output_info);
+			return app_ai_last_inference_valid;
+		}
+
+		(void) DebugConsole_WriteString(
+				"[AI] OBB scalar stage failed; falling back to rectifier stage.\r\n");
+	} else {
+		(void) DebugConsole_WriteString(
+				"[AI] OBB stage or decode failed; falling back to rectifier stage.\r\n");
+	}
+
+	(void) DebugConsole_WriteString(
+			"[AI] Dry-run model init OK; launching rectifier stage.\r\n");
 
 	if (!AppAI_RunStageInference(&app_ai_rectifier_stage, frame_bytes,
-			frame_size, &rectifier_crop, &rectifier_output_info)) {
+			frame_size, &full_frame_crop, &rectifier_output_info)) {
 		(void) DebugConsole_WriteString("[AI] Dry-run entry aborted during rectifier stage.\r\n");
 		return false;
 	}
@@ -3439,7 +3777,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	}
 
 #if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
-		AppAI_LogRectifierResult(rectifier_output_info, &rectifier_box);
+	AppAI_LogRectifierResult(rectifier_output_info, &rectifier_box);
 #endif
 	DebugConsole_Printf(
 			"[AI] Rectifier crop: x=%lu y=%lu w=%lu h=%lu\r\n",
