@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#fff9e8"/>
+      <stop offset="100%" stop-color="#ffffff"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="112" height="112" rx="16" fill="url(#bg)" stroke="#d6b656" stroke-width="2"/>
+  <circle cx="60" cy="48" r="24" fill="#eef6ff" stroke="#6c8ebf" stroke-width="2"/>
+  <circle cx="60" cy="48" r="4" fill="#243447"/>
+  <circle cx="44" cy="40" r="4" fill="#82b366"/>
+  <circle cx="76" cy="40" r="4" fill="#d6b656"/>
+  <circle cx="60" cy="68" r="4" fill="#9673a6"/>
+  <path d="M60 48l-16-8M60 48l16-8M60 48v20" stroke="#8fa7c0" stroke-width="2" stroke-dasharray="3 2"/>
+  <text x="40" y="38" font-family="Verdana,Arial,sans-serif" font-size="10" font-weight="700" fill="#2f5d87">A</text>
+  <text x="74" y="38" font-family="Verdana,Arial,sans-serif" font-size="10" font-weight="700" fill="#8d6a00">B</text>
+  <text x="56" y="84" font-family="Verdana,Arial,sans-serif" font-size="10" font-weight="700" fill="#7e5c8b">C</text>
+  <text x="60" y="104" text-anchor="middle" font-family="Verdana,Arial,sans-serif" font-size="11" font-weight="700" fill="#8d6a00">CENTER</text>
+</svg>

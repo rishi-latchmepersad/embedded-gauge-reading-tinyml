@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f5fbef"/>
+      <stop offset="100%" stop-color="#ffffff"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="112" height="112" rx="16" fill="url(#bg)" stroke="#82b366" stroke-width="2"/>
+  <circle cx="26" cy="28" r="10" fill="#ffd966" stroke="#d6b656" stroke-width="2"/>
+  <path d="M26 12v6M26 38v6M10 28h6M36 28h6M15 17l4 4M33 35l4 4M15 39l4-4M33 21l4-4" stroke="#d6b656" stroke-width="2" stroke-linecap="round"/>
+  <rect x="58" y="22" width="12" height="46" fill="#2f5d87"/>
+  <rect x="72" y="40" width="12" height="28" fill="#4f81bd"/>
+  <rect x="86" y="30" width="12" height="38" fill="#82b366"/>
+  <path d="M14 74h92" stroke="#8fa7c0" stroke-width="2"/>
+  <path d="M34 74v-8M58 74v-16M88 74v-24" stroke="#d6b656" stroke-width="2" stroke-dasharray="3 2"/>
+  <rect x="14" y="74" width="92" height="12" rx="6" fill="#fff2cc" stroke="#d6b656" stroke-width="1.5"/>
+  <path d="M32 80h14M52 80h14M72 80h14" stroke="#82b366" stroke-width="4" stroke-linecap="round"/>
+  <text x="60" y="104" text-anchor="middle" font-family="Verdana,Arial,sans-serif" font-size="11" font-weight="700" fill="#2f5d87">GATE</text>
+</svg>

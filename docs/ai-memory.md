@@ -42,6 +42,7 @@ Keep this file short, and put detailed notes in the topical files below.
 - The capture path now logs when it begins waiting for FileX media readiness, and it prints a periodic wait breadcrumb so we can tell whether the board is really frozen or just waiting on storage.
 - The hard capture-time storage gate turned out to be too aggressive during bring-up, so the capture path now skips SD saves when FileX is not ready instead of stalling the live camera / inference loop.
 - The FileX thread startup blinks were removed again because they were an unnecessary blocking delay during boot and made the board look stuck during startup.
+- The updated process diagram now uses per-step SVG thumbnails from `docs/process_diagrams_assets/`, so keep those assets in sync if the step text or flow changes again.
 - The long-term MobileNetV2 geometry, direction, and detector-first experiments are exploratory; the OBB localizer is the first one that clearly improved the board-probe cascade.
 - The latest `mobilenetv2_detector_geometry` run also missed badly: `test gauge_value_mae=24.2626` versus `baseline_mae_mean_predictor=20.1698`, so it is still not a usable reader.
 - The geometry keypoint-only MobileNetV2 run also missed the baseline: `test gauge_value_mae=23.1730` versus `baseline_mae_mean_predictor=20.1698`, even though its keypoint MAE improved to `6.6727`.

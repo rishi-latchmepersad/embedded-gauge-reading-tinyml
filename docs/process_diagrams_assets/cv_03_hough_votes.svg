@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f3fbff"/>
+      <stop offset="100%" stop-color="#ffffff"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="112" height="112" rx="16" fill="url(#bg)" stroke="#6c8ebf" stroke-width="2"/>
+  <circle cx="60" cy="48" r="18" fill="#eef6ff" stroke="#6c8ebf" stroke-width="2"/>
+  <g stroke-linecap="round">
+    <path d="M60 48L60 16" stroke="#b8cbe0" stroke-width="2"/>
+    <path d="M60 48L79 22" stroke="#b8cbe0" stroke-width="2"/>
+    <path d="M60 48L94 34" stroke="#b8cbe0" stroke-width="2"/>
+    <path d="M60 48L95 56" stroke="#b8cbe0" stroke-width="2"/>
+    <path d="M60 48L84 82" stroke="#b8cbe0" stroke-width="2"/>
+    <path d="M60 48L60 92" stroke="#b8cbe0" stroke-width="2"/>
+    <path d="M60 48L36 82" stroke="#b8cbe0" stroke-width="2"/>
+    <path d="M60 48L25 56" stroke="#b8cbe0" stroke-width="2"/>
+    <path d="M60 48L26 34" stroke="#b8cbe0" stroke-width="2"/>
+    <path d="M60 48L41 22" stroke="#b8cbe0" stroke-width="2"/>
+    <path d="M60 48L86 58" stroke="#82b366" stroke-width="4"/>
+  </g>
+  <circle cx="60" cy="48" r="4" fill="#243447"/>
+  <text x="60" y="104" text-anchor="middle" font-family="Verdana,Arial,sans-serif" font-size="11" font-weight="700" fill="#2f5d87">VOTES</text>
+</svg>
