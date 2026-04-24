@@ -1,58 +1,43 @@
-<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" version="28.1.2">
+<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" version="28.1.2" pages="2">
   <diagram id="6fHF2__YJ60N_B--ARtN" name="CNN_Model_Process">
-    <mxGraphModel dx="1600" dy="920" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1200" math="0" shadow="0">
+    <mxGraphModel grid="1" page="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" pageScale="1" pageWidth="2400" pageHeight="1200" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-
-        <mxCell id="cnn_title_tech" value="Technical flow (what we do)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=16;" parent="1" vertex="1">
+        <mxCell id="cnn_title_tech" value="Technical flow (current board path)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=16;" parent="1" vertex="1">
           <mxGeometry x="40" y="40" width="350" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="cnn_title_why" value="High-level guide (why we do it)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=16;" parent="1" vertex="1">
+        <mxCell id="cnn_title_why" value="Why this cascade works" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=16;" parent="1" vertex="1">
           <mxGeometry x="40" y="430" width="360" height="30" as="geometry" />
         </mxCell>
-
-        <!-- Step 1: Camera capture -->
         <mxCell id="cnn_tech_1" value="1) IMX335 captures frame&lt;br&gt;- YUV422 224×224 px&lt;br&gt;- Manual exposure (AEC disabled)&lt;br&gt;- Seeded from last accepted value&lt;br&gt;  or 2/3-range fraction on first boot" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1">
           <mxGeometry x="40" y="90" width="270" height="170" as="geometry" />
         </mxCell>
-
-        <!-- Step 2: Brightness gate -->
         <mxCell id="cnn_tech_2" value="2) Brightness gate&lt;br&gt;- Measure mean/min/max luma&lt;br&gt;  over full training crop (155×123 px)&lt;br&gt;- Reject if mean &lt; 100 (too dark)&lt;br&gt;  or mean ≥ 200 &amp; min ≥ 20 (too bright)&lt;br&gt;- Nudge exposure ×2 or ÷2; retry&lt;br&gt;  up to 16 attempts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="350" y="90" width="280" height="170" as="geometry" />
         </mxCell>
-
-        <!-- Step 3: Rectifier stage -->
-        <mxCell id="cnn_tech_3" value="3) Rectifier stage (MobileNetV2, ~118 KB)&lt;br&gt;- Input: full 224×224 YUV422 frame&lt;br&gt;- Output: bounding box (cx, cy, w, h)&lt;br&gt;  predicting dial face location&lt;br&gt;- Model lives in xSPI2 flash @ 0x70600000" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+        <mxCell id="cnn_tech_3" value="3) OBB localizer stage (MobileNetV2, ~118 KB)&lt;br&gt;- Input: full 224x224 YUV422 frame&lt;br&gt;- Output: oriented box (cx, cy, w, h, cos, sin)&lt;br&gt;  for dial-face localization&lt;br&gt;- Model lives in xSPI2 flash @ 0x70700000" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="670" y="90" width="300" height="170" as="geometry" />
         </mxCell>
-
-        <!-- Step 4: Crop decision -->
-        <mxCell id="cnn_tech_4" value="4) Crop selection&lt;br&gt;- Validate rectifier box&lt;br&gt;  (min size, aspect ratio, in-bounds)&lt;br&gt;- Currently always falls back to&lt;br&gt;  fixed training crop x=23 y=57&lt;br&gt;  w=155 h=123 (rectifier not yet&lt;br&gt;  reliable on production frames)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+        <mxCell id="cnn_tech_4" value="4) OBB crop selection&lt;br&gt;- Validate OBB box&lt;br&gt;  (min size, angle, in-bounds)&lt;br&gt;- Scale by 1.20 and clamp to frame&lt;br&gt;- Fall back to fixed training crop&lt;br&gt;  x=23 y=57 w=155 h=123 if invalid" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
           <mxGeometry x="1010" y="90" width="290" height="170" as="geometry" />
         </mxCell>
-
-        <!-- Step 5: Scalar stage -->
         <mxCell id="cnn_tech_5" value="5) Scalar stage (int8 CNN, ~3.07 MB)&lt;br&gt;- Input: crop region extracted from&lt;br&gt;  YUV422 buffer, resized + normalized&lt;br&gt;- Output: single float temperature&lt;br&gt;- Model lives in xSPI2 flash @ 0x70200000&lt;br&gt;- Runs on STM32N6 NPU (ATON)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="1340" y="90" width="300" height="170" as="geometry" />
         </mxCell>
-
-        <!-- Step 6: Output -->
         <mxCell id="cnn_tech_6" value="6) Calibrated output&lt;br&gt;- Dequantize int8 → float32&lt;br&gt;- Log to SD card CSV&lt;br&gt;  (inference/YYYY-MM-DD.csv)&lt;br&gt;- Report via UART as %ld.%1ld °C" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
           <mxGeometry x="1680" y="90" width="280" height="170" as="geometry" />
         </mxCell>
-
-        <!-- Why row -->
         <mxCell id="cnn_why_1" value="Why: manual exposure gives consistent luma across captures. AEC chases highlights and would destabilize the scalar model input. Cached seed means no search delay after first capture." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
           <mxGeometry x="40" y="480" width="270" height="190" as="geometry" />
         </mxCell>
         <mxCell id="cnn_why_2" value="Why: the scalar model was trained on well-exposed frames. Underexposed frames lose needle contrast; overexposed frames blow out the dial face. Measuring the full crop avoids being fooled by a specular glare spot at dial center." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
           <mxGeometry x="350" y="480" width="280" height="190" as="geometry" />
         </mxCell>
-        <mxCell id="cnn_why_3" value="Why: the dial face is only a portion of the 224×224 FOV. A dedicated localization stage lets the scalar head focus on dial pixels instead of wasting capacity on background." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+        <mxCell id="cnn_why_3" value="Why: the OBB localizer finds the gauge face before the scalar head reads it. That keeps the crop aligned to the dial instead of wasting capacity on background." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
           <mxGeometry x="670" y="480" width="300" height="190" as="geometry" />
         </mxCell>
-        <mxCell id="cnn_why_4" value="Why: the rectifier currently outputs degenerate boxes on production frames (y_min &gt; y_max). The fixed training crop is the same region used during scalar training, so it is always valid." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+        <mxCell id="cnn_why_4" value="Why: the OBB box is still checked for size and bounds, and the fixed training crop stays as a safe fallback when the detector collapses or wanders off-frame." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
           <mxGeometry x="1010" y="480" width="290" height="190" as="geometry" />
         </mxCell>
         <mxCell id="cnn_why_5" value="Why: a large int8 model runs efficiently on the NPU. Storing it in NOR flash avoids RAM pressure — it is memory-mapped and accessed in-place without copying." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
@@ -61,102 +46,122 @@
         <mxCell id="cnn_why_6" value="Why: logging every inference to SD card enables offline accuracy analysis and retraining data collection without modifying firmware." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
           <mxGeometry x="1680" y="480" width="280" height="190" as="geometry" />
         </mxCell>
-
-        <!-- Flow arrows -->
-        <mxCell id="cnn_e1" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cnn_tech_1" target="cnn_tech_2" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cnn_e2" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cnn_tech_2" target="cnn_tech_3" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cnn_e3" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cnn_tech_3" target="cnn_tech_4" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cnn_e4" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cnn_tech_4" target="cnn_tech_5" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cnn_e5" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cnn_tech_5" target="cnn_tech_6" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-
-        <!-- Why connectors -->
-        <mxCell id="cnn_w1" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_1" target="cnn_why_1" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cnn_w2" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_2" target="cnn_why_2" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cnn_w3" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_3" target="cnn_why_3" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cnn_w4" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_4" target="cnn_why_4" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cnn_w5" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_5" target="cnn_why_5" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cnn_w6" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_6" target="cnn_why_6" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="cnn_e1" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cnn_tech_1" target="cnn_tech_2" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cnn_e2" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cnn_tech_2" target="cnn_tech_3" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cnn_e3" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cnn_tech_3" target="cnn_tech_4" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cnn_e4" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cnn_tech_4" target="cnn_tech_5" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cnn_e5" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cnn_tech_5" target="cnn_tech_6" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cnn_w1" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_1" target="cnn_why_1" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cnn_w2" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_2" target="cnn_why_2" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cnn_w3" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_3" target="cnn_why_3" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cnn_w4" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_4" target="cnn_why_4" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cnn_w5" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_5" target="cnn_why_5" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cnn_w6" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_6" target="cnn_why_6" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
-
   <diagram id="classicalCVBaseline01" name="Classical_CV_Baseline_Process">
-    <mxGraphModel dx="1700" dy="950" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1300" math="0" shadow="0">
+    <mxGraphModel dx="960" dy="674" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1300" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-
-        <mxCell id="cv_title_tech" value="Technical flow (what we do)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=16;" parent="1" vertex="1">
+        <mxCell id="cv_title_tech" value="Classical CV Process Steps" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=16;" parent="1" vertex="1">
           <mxGeometry x="40" y="40" width="350" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="cv_title_why" value="High-level guide (why we do it)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=16;" parent="1" vertex="1">
-          <mxGeometry x="40" y="490" width="360" height="30" as="geometry" />
+        <mxCell id="cv_title_why" value="Additional Details For Each Step" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=16;" parent="1" vertex="1">
+          <mxGeometry x="40" y="290" width="360" height="30" as="geometry" />
         </mxCell>
-
-        <!-- Step 1: Input -->
-        <mxCell id="cv_tech_1" value="1) YUV422 frame snapshot&lt;br&gt;- 224×224 px, copied from&lt;br&gt;  camera capture buffer&lt;br&gt;- Luma = byte 0 of each&lt;br&gt;  2-byte YUV422 pair" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1">
+        <mxCell id="cv_tech_1" value="A YUV422 (YU YV) frame snapshot&lt;br&gt;(224×224 px) is copied from&lt;br&gt;  camera capture buffer to another part of SRAM for processing&lt;div&gt;&lt;br&gt;Luma/brightness (Y) is read as byte 0 of each 2-byte YUV422 pair. The chroma (colour) channels are ignored.&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="40" y="90" width="240" height="180" as="geometry" />
         </mxCell>
-
-        <!-- Step 2: Three parallel center hypotheses -->
-        <mxCell id="cv_tech_2" value="2) Three parallel center hypotheses&lt;br&gt;&lt;br&gt;A) Bright centroid — scan training crop&lt;br&gt;  (x=23..178, y=57..180) for pixels&lt;br&gt;  150 ≤ luma ≤ 220; compute centroid;&lt;br&gt;  need ≥ 1024 qualifying pixels&lt;br&gt;&lt;br&gt;B) Training-crop center — fixed point&lt;br&gt;  (100, 118) from AppGaugeGeometry&lt;br&gt;&lt;br&gt;C) Image center — fixed (112, 112)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+        <mxCell id="cv_tech_2" value="Three parallel methods are used to find the center of the gauge (and the needle)&lt;br&gt;&lt;br&gt;1) Bright centroid: The training crop is scanned&lt;br&gt;  (x=23..178, y=57..180) for pixels with&lt;br&gt;  150 ≤ luma ≤ 220; a centroid is computed;&lt;br&gt;  need ≥ 1024 qualifying pixels&lt;br&gt;&lt;br&gt;B) Training-crop center: fixed point&lt;br&gt;  (100, 118) from AppGaugeGeometry&lt;br&gt;&lt;br&gt;C) Image center: fixed at (112, 112)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="320" y="90" width="320" height="180" as="geometry" />
         </mxCell>
-
-        <!-- Step 3: Ray sweep scoring -->
-        <mxCell id="cv_tech_3" value="3) Ray sweep scoring (per hypothesis)&lt;br&gt;- 360 angle bins over 135°→405° sweep&lt;br&gt;- 32 samples per ray (20%–78% of radius)&lt;br&gt;- Skip subdial mask region&lt;br&gt;- Skip saturated samples (luma &gt; 220)&lt;br&gt;- Score = mean(bg_luma − line_luma)&lt;br&gt;  weighted toward tip (outer samples 2×)&lt;br&gt;- Track best and runner-up score" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
-          <mxGeometry x="680" y="90" width="310" height="180" as="geometry" />
+        <mxCell id="cv_tech_3" value="Hough-style edge votes are taken for each hypothesis to try to find the needle.&lt;br&gt;- 360 angle bins are taken over a sweep from 135 deg to 405 deg&lt;br&gt;- 32 samples are taken per ray (20%-78% of radius)&lt;br&gt;- Subdial mask region is skipped (the humidity gauge)&lt;br&gt;- Saturated samples (luma &amp;gt; 220) are skipped&lt;br&gt;- Scores are computed by taking 60% dark contrast + 40% edge magnitude weighted toward the tip (outer samples 2x)&lt;br&gt;- The best and runner-up scores are tracked" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+          <mxGeometry x="680" y="90" width="320" height="180" as="geometry" />
         </mxCell>
-
-        <!-- Step 4: Confidence and selection -->
-        <mxCell id="cv_tech_4" value="4) Confidence and best-hypothesis selection&lt;br&gt;- Confidence = (best − runner_up) / best&lt;br&gt;  (SNR: how much the peak angle dominates)&lt;br&gt;- Pick the hypothesis with highest confidence&lt;br&gt;  among those that produced a valid score&lt;br&gt;- Priority order when tied: bright &gt; training &gt; image" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+        <mxCell id="cv_tech_4" value="Confidence and best-hypothesis selection is then undertaken&lt;br&gt;Confidence = (best − runner_up) / best&lt;br&gt;  (SNR: how much the peak angle dominates)&lt;br&gt;The hypothesis with the highest confidence&lt;br&gt;  among those that produced a valid score is picked&lt;br&gt;If a tie is found, we prefer: bright &amp;gt; training &amp;gt; image" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="1030" y="90" width="320" height="180" as="geometry" />
         </mxCell>
-
-        <!-- Step 5: Confidence threshold gate -->
-        <mxCell id="cv_tech_5" value="5) Confidence threshold gate&lt;br&gt;- Reject if confidence &lt; 0.04&lt;br&gt;  (log: threshold=40 x1000)&lt;br&gt;- Also reject if score − runner_up &lt; 3&lt;br&gt;  (indicates noise, not a real needle)&lt;br&gt;- Log: candidates: bright=X training=X image=X&lt;br&gt;  selected=SOURCE(conf)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="1" vertex="1">
+        <mxCell id="cv_tech_5" value="A confidence threshold gate is then passed&lt;br&gt;We reject if the confidence &amp;lt; 0.04&lt;br&gt;  (log: threshold=40 x1000)&lt;br&gt;We also reject if the score − runner_up &amp;lt; 3&lt;br&gt;  (this indicates noise, its probably not a real needle)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="1390" y="90" width="300" height="180" as="geometry" />
         </mxCell>
-
-        <!-- Step 6: Angle to temperature -->
-        <mxCell id="cv_tech_6" value="6) Angle → temperature&lt;br&gt;- fraction = (angle − 135°) / 270°, clamped [0,1]&lt;br&gt;- temperature = −30 + fraction × 80&lt;br&gt;  (range: −30°C to +50°C)&lt;br&gt;- Log: Temperature estimate: XX.X" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+        <mxCell id="cv_tech_6" value="The angle is then mapped to temperature&lt;br&gt;The fraction is computed as (angle − 135°) / 270°, clamped [0,1]&lt;br&gt;The temperature is taken as −30 + fraction × 80&lt;br&gt;  (range: −30°C to +50°C)&lt;br&gt;The tmperature estimate is then logged." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="1730" y="90" width="290" height="180" as="geometry" />
         </mxCell>
-
-        <!-- Why row -->
-        <mxCell id="cv_why_1" value="Why: the baseline operates directly on raw YUV422 data — no OpenCV, no CLAHE, no edge detection. Luma extraction is a single byte read, which fits within the embedded MCU constraints (no heap, no image library)." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
-          <mxGeometry x="40" y="540" width="240" height="220" as="geometry" />
+        <mxCell id="cv_why_1" value="The baseline operates directly on uncompressed YUV422 data (no heavyweight image library is used) to keep the processing/memory load light&lt;div&gt;&lt;br&gt;&lt;div&gt;No real improvement in accuracy was noted with colour images vs greyscale, so greyscale was used.&lt;/div&gt;&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="40" y="340" width="240" height="220" as="geometry" />
         </mxCell>
-        <mxCell id="cv_why_2" value="Why: three independent center hypotheses hedge against bad localization. Bright centroid finds the lit dial face; training-crop center is always valid; image center is the last resort. Restricting the centroid scan to the training crop prevents bright objects outside the dial (gauge rim, background) from pulling the centroid off the face." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
-          <mxGeometry x="320" y="540" width="320" height="220" as="geometry" />
+        <mxCell id="cv_why_2" value="Three independent center hypotheses are used to hedge against bad localization (glare, offset gauges etc.)&lt;div&gt;1) The bright centroid finds the lit dial face, and the needle is taken as the middle of this bright patch&lt;/div&gt;&lt;div&gt;2) The training-crop center is always taken as valid&lt;/div&gt;&lt;div&gt;3) The image center is the last resort taken.&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Restricting the centroid scan to the training crop prevents bright objects outside the dial (gauge rim, background) from pulling the centroid off the face.&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="320" y="340" width="320" height="220" as="geometry" />
         </mxCell>
-        <mxCell id="cv_why_3" value="Why: the needle is the darkest radial line on the dial face. Scoring bg − line contrast directly detects this without edge detection. Skipping saturated pixels (glare) prevents the glare blob from zeroing out contrast scores on otherwise valid rays. Outer-sample weighting emphasises the needle tip where contrast is clearest." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
-          <mxGeometry x="680" y="540" width="310" height="220" as="geometry" />
+        <mxCell id="cv_why_3" value="The needle is both a dark radial line and a real edge on the dial face.&amp;nbsp;&lt;div&gt;Combining background-minus-line contrast with a Sobel-like edge response keeps the vote robust when glare or soft focus weakens one visual cue.&lt;/div&gt;&lt;div&gt;If many samples land on the dark needle and the ray has strong edges on both sides, then the score will be high&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="680" y="340" width="310" height="220" as="geometry" />
         </mxCell>
-        <mxCell id="cv_why_4" value="Why: running three independent hypotheses gives a natural confidence signal — the one whose peak angle dominates its neighbours most is the most reliable. Selecting on confidence rather than a fixed priority avoids committing to a poor center estimate just because it was the first strategy tried." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
-          <mxGeometry x="1030" y="540" width="320" height="220" as="geometry" />
+        <mxCell id="cv_why_4" value="Running three independent hypotheses gives a natural confidence signal.&lt;div&gt;The one whose peak angle dominates its neighbours most is the most reliable.&amp;nbsp;&lt;/div&gt;&lt;div&gt;Selecting on confidence rather than a fixed priority avoids committing to a poor center estimate just because it was the first strategy tried.&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="1030" y="340" width="320" height="220" as="geometry" />
         </mxCell>
-        <mxCell id="cv_why_5" value="Why: low confidence means best ≈ runner_up — the needle direction is ambiguous (uniform dial, heavy glare, or wrong center). Reporting a random-looking angle is worse than no estimate; the scalar model result is used instead." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
-          <mxGeometry x="1390" y="540" width="300" height="220" as="geometry" />
+        <mxCell id="cv_why_5" value="Low confidence means best ≈ runner_up. This means that the needle direction is ambiguous (uniform dial, heavy glare, or wrong center).&amp;nbsp;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Reporting a random-looking angle is worse than no estimate. The scalar model result is used instead.&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="1390" y="340" width="300" height="220" as="geometry" />
         </mxCell>
-        <mxCell id="cv_why_6" value="Why: the gauge sweep is 270° starting at 135° from the positive x-axis, spanning −30°C to +50°C. A linear mapping from sweep fraction to temperature range is exact by gauge design." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
-          <mxGeometry x="1730" y="540" width="290" height="220" as="geometry" />
+        <mxCell id="cv_why_6" value="The gauge sweep is 270° starting at 135° from the positive x-axis, spanning −30°C to +50°C.&amp;nbsp;&lt;div&gt;A linear mapping from sweep fraction to temperature range is exact by gauge design.&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="1730" y="340" width="290" height="220" as="geometry" />
         </mxCell>
-
-        <!-- Flow arrows -->
-        <mxCell id="cve1" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_tech_1" target="cv_tech_2" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cve2" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_tech_2" target="cv_tech_3" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cve3" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_tech_3" target="cv_tech_4" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cve4" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_tech_4" target="cv_tech_5" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cve5" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_tech_5" target="cv_tech_6" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-
-        <!-- Why connectors -->
-        <mxCell id="cvw1" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_1" target="cv_why_1" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cvw2" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_2" target="cv_why_2" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cvw3" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_3" target="cv_why_3" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cvw4" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_4" target="cv_why_4" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cvw5" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_5" target="cv_why_5" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="cvw6" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_6" target="cv_why_6" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="cve1" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_tech_1" target="cv_tech_2" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cve2" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_tech_2" target="cv_tech_3" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cve3" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_tech_3" target="cv_tech_4" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cve4" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_tech_4" target="cv_tech_5" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cve5" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_tech_5" target="cv_tech_6" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cvw1" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_1" target="cv_why_1" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cvw2" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_2" target="cv_why_2" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cvw3" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_3" target="cv_why_3" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cvw4" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_4" target="cv_why_4" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cvw5" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_5" target="cv_why_5" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cvw6" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_6" target="cv_why_6" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
       </root>
     </mxGraphModel>
   </diagram>

@@ -81,6 +81,7 @@ See `archive.md` for the full chronology.
 - To reduce startup interference while we debug the stall, the image cleanup worker now starts only after the camera probe succeeds instead of during `App_ThreadX_Start()`.
 - The camera init thread now runs at the highest app priority and skips its startup sleep, so bring-up no longer depends on `tx_thread_sleep()` before the probe begins.
 - The classical baseline thread now has a 16 KB stack instead of 8 KB, because the Hough-style sweep plus its logging looked like the next likely stack-pressure source during the freeze.
+- The classical baseline worker now holds the last stable reading whenever a new Hough vote is too weak, and it only lets a brand-new seed into the history if the absolute score is strong enough. That keeps low-confidence frames from dragging the median to nonsense values like the old `-19C` outliers.
 - FileX now runs above the camera thread during startup so it can finish mounting the SD card before the first capture call waits on media readiness.
 - `AppStorage_WaitForMediaReady()` still logs when it starts waiting and on timeout, but it no longer prints periodic “still waiting” breadcrumbs during normal bring-up.
 - The live capture path should not block on FileX readiness during bring-up; if media is not ready yet, skip the SD save for that cycle so camera and inference keep running.

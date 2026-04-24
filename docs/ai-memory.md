@@ -9,6 +9,7 @@ Keep this file short, and put detailed notes in the topical files below.
 - The classical CV baseline now uses a fixed-crop Hough-style edge vote over the stable training crop, still emits a provisional warm-up reading from the first accepted frame, and prefers the stronger fallback heuristic when the stable training crop is absent.
 - The classical baseline is now closer to a canonical Hough-line classical architecture, which makes it a better paper benchmark than the old ray scorer.
 - A true 31C trace was the reason for this upgrade: the old baseline could drift into wrong plateaus, so the new Hough-style version is meant to be the more defensible classical comparator.
+- The classical baseline now refuses to let weak Hough estimates poison the tiny smoothing history: low-confidence frames are held against the last stable reading, and a new seed must have a strong enough vote total before it can start the history.
 - On a recent true 31C board trace, the Hough baseline reported about 30.4C while the current OBB+scalar prodv0.3 path reported about 27.7C, so the classical baseline is currently outperforming the learned path at that point.
 - The DS3231 RTC now seeds itself from the current firmware build timestamp automatically when booting at year `2000`, then re-reads the clock.
 - The one-off forced RTC seed has now been turned back off; the normal rule is back to year-`2000` boot seeding only.
@@ -58,6 +59,7 @@ Keep this file short, and put detailed notes in the topical files below.
 - The next live check should move toward an even more explicit localizer or detector/OBB target rather than another small refinement of the same geometry stack.
 - The OBB long-term experiment should stay on the labeled dataset split with `val_fraction` and `test_fraction`; do not feed it the board manifest hard-case path.
 - For WSL jobs, restart before the run and shut WSL down again afterward.
+- The `docs/process_diagrams.drawio` file now reflects the current OBB + scalar cascade and the current Hough-style classical baseline, so it should be kept in sync with future runtime changes.
 
 ## Topic Files
 

@@ -13,6 +13,7 @@ See `archive.md` for the full chronology.
 - That keeps it classical CV, but makes it behave more like a defensible benchmark instead of a silent gate.
 - The current baseline is now much closer to a canonical Hough-line pipeline than the old ray scorer, which makes it a better reviewer-facing classical comparator.
 - The 31C board trace was the trigger for this upgrade: the old baseline could produce nonsense warm-up values and then lock onto a wrong plateau. The Hough-style version is meant to be the more defensible classical solution to beat.
+- The baseline worker now keeps weak Hough frames out of the smoothing history and holds the last stable estimate when the new frame is ambiguous, so low-confidence glare frames do not drag the comparator into nonsense.
 - A recent 31C live trace showed the Hough baseline at about 30.4C while the current prodv0.3 OBB+scalar path landed around 27.7C. That means the classical comparator is currently ahead at that point, which is a good sign for the baseline but a warning that the learned tail is still under-reading the upper-mid band.
 
 ## Scalar Fine-Tuning

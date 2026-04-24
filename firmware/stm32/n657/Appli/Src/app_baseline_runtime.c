@@ -70,6 +70,10 @@ typedef struct {
  * permissive enough to accept the still-useful training-crop candidates while
  * preserving the noise floor guardrails. */
 #define APP_BASELINE_CONFIDENCE_THRESHOLD    0.055f
+/* Require a minimum amount of absolute vote support before we let a brand-new
+ * baseline estimate seed the history. Weak score spikes are usually glare or
+ * background clutter, even if they briefly look "confident" by ratio alone. */
+#define APP_BASELINE_MIN_ACCEPT_SCORE        500.0f
 /* Keep a tiny history so the baseline can report a stable rough reading
  * instead of jumping frame-to-frame on glare or digit clutter. */
 #define APP_BASELINE_ESTIMATE_HISTORY_SIZE   3U
@@ -266,6 +270,12 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input) {
 		const uint8_t *frame_ptr = NULL;
 		ULONG frame_length = 0U;
 		AppBaselineRuntime_Estimate_t estimate = { 0 };
+		AppBaselineRuntime_Estimate_t held_estimate = { 0 };
+		bool history_available =
+				(camera_baseline_estimate_history_count > 0U);
+		bool confident_enough = false;
+		bool strong_score = false;
+		bool accept_estimate = false;
 
 		if (request_status != TX_SUCCESS) {
 			continue;
@@ -284,8 +294,49 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input) {
 
 		if (!AppBaselineRuntime_EstimateFromFrame(frame_ptr,
 				(size_t) frame_length, &estimate)) {
+			if (!AppBaselineRuntime_SelectSmoothedEstimate(&held_estimate)) {
+				DebugConsole_Printf(
+						"[BASELINE] Classical baseline failed to estimate a temperature.\r\n");
+				continue;
+			}
+
+			held_estimate.source_label = "baseline-hough-held";
+			camera_baseline_last_result_valid = true;
+			camera_baseline_last_temperature_c = held_estimate.temperature_c;
+			camera_baseline_last_angle_rad = held_estimate.angle_rad;
 			DebugConsole_Printf(
-					"[BASELINE] Classical baseline failed to estimate a temperature.\r\n");
+					"[BASELINE] Holding last stable estimate after an invalid frame.\r\n");
+			AppBaselineRuntime_LogEstimate(&held_estimate);
+			continue;
+		}
+
+		/* Reject weak updates when we already have a stable history. The first
+		 * usable seed can still enter with a strong vote total, but after that we
+		 * only let well-supported frames move the running estimate. */
+		confident_enough =
+				(estimate.confidence >= APP_BASELINE_CONFIDENCE_THRESHOLD);
+		strong_score = (estimate.best_score >= APP_BASELINE_MIN_ACCEPT_SCORE);
+		if (history_available) {
+			accept_estimate = confident_enough && strong_score;
+		} else {
+			accept_estimate = confident_enough || strong_score;
+		}
+
+		if (!accept_estimate) {
+			if (history_available
+					&& AppBaselineRuntime_SelectSmoothedEstimate(&held_estimate)) {
+				held_estimate.source_label = "baseline-hough-held";
+				camera_baseline_last_result_valid = true;
+				camera_baseline_last_temperature_c =
+						held_estimate.temperature_c;
+				camera_baseline_last_angle_rad = held_estimate.angle_rad;
+				DebugConsole_Printf(
+						"[BASELINE] Holding last stable estimate after low-confidence frame.\r\n");
+				AppBaselineRuntime_LogEstimate(&held_estimate);
+			} else {
+				DebugConsole_Printf(
+						"[BASELINE] Classical baseline rejected low-confidence frame; no stable history to hold.\r\n");
+			}
 			continue;
 		}
 
