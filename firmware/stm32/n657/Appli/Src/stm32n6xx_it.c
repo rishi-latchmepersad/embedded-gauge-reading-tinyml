@@ -127,6 +127,15 @@ void HardFault_Handler_C(uint32_t *stacked_regs, uint32_t exc_lr)
 
   IT_EnterFaultLedState();
   IT_LogFaultSnapshot("HardFault", stacked_pc, stacked_lr);
+  DebugConsole_Printf(
+      "[FAULT] HardFault regs SP=0x%08lX R0=0x%08lX R1=0x%08lX R2=0x%08lX R3=0x%08lX R12=0x%08lX PSR=0x%08lX\r\n",
+      (unsigned long)stacked_regs,
+      (unsigned long)stacked_r0,
+      (unsigned long)stacked_r1,
+      (unsigned long)stacked_r2,
+      (unsigned long)stacked_r3,
+      (unsigned long)stacked_r12,
+      (unsigned long)stacked_psr);
   __BKPT(0);
   while (1)
   {

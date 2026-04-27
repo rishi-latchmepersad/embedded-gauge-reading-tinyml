@@ -1,8 +1,8 @@
 """Experiment runner for the classical CV gauge baseline.
 
-This module turns the existing Canny + Hough baseline into a repeatable
-benchmark that loads the labelled dataset, evaluates a chosen gauge, and writes
-simple artifact files for later comparison against CNN results.
+This module turns the polar spoke-voting baseline into a repeatable benchmark
+that loads the labelled dataset, evaluates a chosen gauge, and writes simple
+artifact files for later comparison against CNN results.
 """
 
 from __future__ import annotations

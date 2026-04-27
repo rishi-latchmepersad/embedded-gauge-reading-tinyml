@@ -45,6 +45,12 @@
 #ifndef APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
 #define APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS 1U
 #endif
+/* The rectifier fallback has been the source of live hangs on this board, so
+ * keep it available for offline experimentation but route the live cascade to
+ * the fixed training crop instead. */
+#ifndef APP_AI_ENABLE_RECTIFIER_FALLBACK
+#define APP_AI_ENABLE_RECTIFIER_FALLBACK 0U
+#endif
 /* The ATON runtime has been faulting immediately after the per-frame reset
  * path, so keep that reset behind a switch while we verify whether the model
  * can run cleanly with one-shot initialization only. */
@@ -109,6 +115,10 @@
 #define APP_AI_RECTIFIER_CROP_SCALE        1.80f
 /* The OBB path only needs a small safety margin around the detected box. */
 #define APP_AI_OBB_CROP_SCALE              1.20f
+/* Reject only extreme OBB crops that drift far from the stable training crop
+ * size; moderate shape changes should stay on the fast OBB path. */
+#define APP_AI_OBB_TRAINING_CROP_MIN_RATIO  0.60f
+#define APP_AI_OBB_TRAINING_CROP_MAX_RATIO  1.40f
 /* Match the Python rectifier evaluator: never let the predicted box collapse
  * below a tiny fraction of the canvas, or the scalar stage degenerates to a
  * 1x1 crop. */
@@ -1789,10 +1799,6 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 	const char *stage_label = NULL;
 	bool is_rectifier;
 	bool is_obb;
-	const uint8_t *sig_start;
-	const uint8_t *sig_tail;
-	bool sig_valid;
-	ULONG programmed_size;
 
 	if (stage == NULL) {
 		return false;
@@ -1803,18 +1809,17 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 	is_obb = (strcmp(stage_label, "obb") == 0);
 
 	if (is_rectifier) {
-		/* Prefer the SD-sourced signature cached during the last provisioning.
-		 * Fall back to the hardcoded constant only when no provisioning has
-		 * happened yet this boot (cache is zeroed at startup). */
-		sig_start      = app_ai_rectifier_sig_valid
-				? app_ai_rectifier_sig_start
-				: app_ai_rectifier_xspi2_signature_start;
-		sig_tail       = app_ai_rectifier_sig_valid
-				? app_ai_rectifier_sig_tail
-				: app_ai_rectifier_xspi2_signature_tail;
-		sig_valid      = app_ai_rectifier_sig_valid;
-		programmed_size = app_ai_rectifier_programmed_size;
-	} else if (is_obb) {
+		DebugConsole_WriteString(
+				"[AI] rectifier stage trusted on flash; skipping signature compare.\r\n");
+		return true;
+	}
+
+	const uint8_t *sig_start;
+	const uint8_t *sig_tail;
+	bool sig_valid;
+	ULONG programmed_size;
+
+	if (is_obb) {
 		sig_start      = app_ai_obb_sig_valid
 				? app_ai_obb_sig_start
 				: app_ai_obb_xspi2_signature_start;
@@ -2408,15 +2413,15 @@ static bool AppAI_EnsureXspi2ModelImageReadyForStage(
 	DebugConsole_WriteString("[AI] xSPI2 stage reconfigure OK.\r\n");
 
 	if (!AppAI_Xspi2ModelImageMatchesMappedFlashForStage(stage)) {
-		/* Signature mismatch — log but trust whatever is in flash rather than
-		 * aborting. The model in flash may be valid even if the hardcoded
-		 * signature bytes are stale. */
+		/* Signature mismatch means this fallback stage is not trustworthy, so
+		 * fail fast instead of marching into a potentially wedged runtime. */
 		DebugConsole_Printf(
-				"[AI] xSPI2 stage '%s' signature mismatch — continuing anyway.\r\n",
+				"[AI] xSPI2 stage '%s' signature mismatch; aborting stage load.\r\n",
 				stage->stage_label);
-	} else {
-		DebugConsole_WriteString("[AI] xSPI2 stage image already present.\r\n");
+		return false;
 	}
+
+	DebugConsole_WriteString("[AI] xSPI2 stage image already present.\r\n");
 
 	if (!AppAI_Xspi2EnableMemoryMappedMode()) {
 		AppAI_LogXspi2LoadFailure("enable MM after verify", FX_SUCCESS,
@@ -2854,6 +2859,12 @@ static bool AppAI_DecodeObbCropBox(
 	const float source_width_f = (float) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
 	const float source_height_f = (float) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
 	const float input_size_f = (float) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+	const size_t training_crop_width = (size_t) (((float) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS
+			* (APP_AI_TRAINING_CROP_X_MAX_RATIO
+			- APP_AI_TRAINING_CROP_X_MIN_RATIO)) + 0.5f);
+	const size_t training_crop_height = (size_t) (((float) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS
+			* (APP_AI_TRAINING_CROP_Y_MAX_RATIO
+			- APP_AI_TRAINING_CROP_Y_MIN_RATIO)) + 0.5f);
 	float center_x = 0.0f;
 	float center_y = 0.0f;
 	float box_w = 0.0f;
@@ -3052,6 +3063,35 @@ static bool AppAI_DecodeObbCropBox(
 	}
 	if ((crop_out->width == 0U) || (crop_out->height == 0U)) {
 		return false;
+	}
+
+	/* Keep the scalar crop inside the stable training-size family; if the OBB
+	 * box is too tall or too wide, let the rectifier stage try instead. */
+	{
+		const float crop_width_ratio =
+				((training_crop_width > 0U) ?
+						((float) crop_out->width / (float) training_crop_width) : 0.0f);
+		const float crop_height_ratio =
+				((training_crop_height > 0U) ?
+						((float) crop_out->height / (float) training_crop_height) : 0.0f);
+		const long crop_width_ratio_milli =
+				(long) (crop_width_ratio * 1000.0f + 0.5f);
+		const long crop_height_ratio_milli =
+				(long) (crop_height_ratio * 1000.0f + 0.5f);
+
+		if ((crop_width_ratio < APP_AI_OBB_TRAINING_CROP_MIN_RATIO)
+				|| (crop_width_ratio > APP_AI_OBB_TRAINING_CROP_MAX_RATIO)
+				|| (crop_height_ratio < APP_AI_OBB_TRAINING_CROP_MIN_RATIO)
+				|| (crop_height_ratio > APP_AI_OBB_TRAINING_CROP_MAX_RATIO)) {
+			DebugConsole_Printf(
+					"[AI] OBB crop outside training window: crop=%lux%lu train=%lux%lu ratio=%ld/%ld -> fixed training crop fallback.\r\n",
+					(unsigned long) crop_out->width,
+					(unsigned long) crop_out->height,
+					(unsigned long) training_crop_width,
+					(unsigned long) training_crop_height,
+					crop_width_ratio_milli, crop_height_ratio_milli);
+			return false;
+		}
 	}
 
 	return true;
@@ -3740,13 +3780,21 @@ static void AppAI_ConfigureNpuRisafDefaults(void) {
 bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		size_t frame_size) {
 	const LL_Buffer_InfoTypeDef *obb_output_info = NULL;
-	const LL_Buffer_InfoTypeDef *rectifier_output_info = NULL;
 	const LL_Buffer_InfoTypeDef *scalar_output_info = NULL;
 	AppAI_ObbBox obb_box = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-	AppAI_RectifierBox rectifier_box = { 0.0f, 0.0f, 0.0f, 0.0f };
 	AppAI_SourceCrop full_frame_crop = { 0U, 0U,
 		(size_t) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
 		(size_t) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS };
+	const AppGaugeGeometry_Crop_t fixed_training_geometry =
+			AppGaugeGeometry_TrainingCrop(
+					(size_t) APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
+					(size_t) APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS);
+	const AppAI_SourceCrop fixed_training_crop = {
+			fixed_training_geometry.x_min,
+			fixed_training_geometry.y_min,
+			fixed_training_geometry.width,
+			fixed_training_geometry.height,
+	};
 	AppAI_SourceCrop scalar_crop = { 0U, 0U, 0U, 0U };
 
 	(void) DebugConsole_WriteString("[AI] Dry-run entry.\r\n");
@@ -3775,31 +3823,18 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		}
 
 		(void) DebugConsole_WriteString(
-				"[AI] OBB scalar stage failed; falling back to rectifier stage.\r\n");
+				"[AI] OBB scalar stage failed; falling back to fixed training crop.\r\n");
 	} else {
 		(void) DebugConsole_WriteString(
-				"[AI] OBB stage or decode failed; falling back to rectifier stage.\r\n");
+				"[AI] OBB stage or decode failed; falling back to fixed training crop.\r\n");
 	}
 
 	(void) DebugConsole_WriteString(
-			"[AI] Dry-run model init OK; launching rectifier stage.\r\n");
+			"[AI] Dry-run model init OK; launching fixed training crop fallback.\r\n");
 
-	if (!AppAI_RunStageInference(&app_ai_rectifier_stage, frame_bytes,
-			frame_size, &full_frame_crop, &rectifier_output_info)) {
-		(void) DebugConsole_WriteString("[AI] Dry-run entry aborted during rectifier stage.\r\n");
-		return false;
-	}
-
-	if (!AppAI_DecodeRectifierCropBox(rectifier_output_info, &scalar_crop,
-			&rectifier_box)) {
-		return false;
-	}
-
-#if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
-	AppAI_LogRectifierResult(rectifier_output_info, &rectifier_box);
-#endif
+	scalar_crop = fixed_training_crop;
 	DebugConsole_Printf(
-			"[AI] Rectifier crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+			"[AI] Fixed training crop: x=%lu y=%lu w=%lu h=%lu\r\n",
 			(unsigned long) scalar_crop.x_min,
 			(unsigned long) scalar_crop.y_min,
 			(unsigned long) scalar_crop.width,

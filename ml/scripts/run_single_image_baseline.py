@@ -1,4 +1,4 @@
-"""Run the classical gauge baseline on one image and save an annotation."""
+"""Run the classical polar gauge baseline on one image and save an annotation."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from embedded_gauge_reading_tinyml.single_image_baseline import (
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for a single-image baseline run."""
     parser = argparse.ArgumentParser(
-        description="Run the classical Canny + Hough baseline on one image."
+        description="Run the classical polar gauge baseline on one image."
     )
     parser.add_argument(
         "--image-path",

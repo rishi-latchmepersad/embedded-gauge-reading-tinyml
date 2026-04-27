@@ -82,7 +82,7 @@ case "${cmd}" in
     exec "${POETRY_BIN}" run python -c "import tensorflow as tf; print(tf.__version__)"
     ;;
   baseline)
-    # Run the classical Canny + Hough baseline on the labelled dataset.
+    # Run the classical polar spoke-voting baseline on the labelled dataset.
     exec "${POETRY_BIN}" run python scripts/run_classical_baseline.py "$@"
     ;;
   baseline-manifest)
@@ -90,7 +90,7 @@ case "${cmd}" in
     exec "${POETRY_BIN}" run python scripts/eval_classical_baseline_on_manifest.py "$@"
     ;;
   single-image)
-    # Run the classical baseline on one specific camera frame.
+    # Run the classical polar baseline on one specific camera frame.
     exec "${POETRY_BIN}" run python scripts/run_single_image_baseline.py "$@"
     ;;
   train)

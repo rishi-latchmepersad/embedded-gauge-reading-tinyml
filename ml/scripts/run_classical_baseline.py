@@ -1,4 +1,4 @@
-"""Run the classical Canny + Hough gauge baseline and save artifacts."""
+"""Run the classical polar gauge baseline and save artifacts."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from embedded_gauge_reading_tinyml.baseline_runner import (
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for a reproducible baseline run."""
     parser = argparse.ArgumentParser(
-        description="Run the classical Canny + Hough gauge baseline."
+        description="Run the classical polar gauge baseline."
     )
     parser.add_argument(
         "--gauge-id",

@@ -68,8 +68,9 @@ extern "C" {
  * Linear steps across the full sensor range (26–33333 µs) are too coarse at
  * low exposures — a 1/20-range step (1662 µs) straddled the entire acceptable
  * window and caused infinite bright↔dark oscillation. */
-#define CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_SHIFT       1U   /* right-shift = divide by 2 */
-#define CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_SHIFT           1U
+/* Active sensor nudge: use a 25% fractional step instead of a 2x jump. */
+#define CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_FRACTION_SHIFT  2U
+#define CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_FRACTION_SHIFT      2U
 #define CAMERA_CAPTURE_BRIGHTNESS_SETTLE_DELAY_MS         250U
 /* Capture crop is expressed directly in pixels/lines. */
 #define CAMERA_CAPTURE_CROP_HSTART_PIXELS   0U

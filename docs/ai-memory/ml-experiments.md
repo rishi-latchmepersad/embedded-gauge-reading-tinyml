@@ -6,15 +6,20 @@ See `archive.md` for the full chronology.
 ## Classical CV Baseline
 
 - The baseline started as a radial-spoke voting system.
-- Bright-center, training-crop, and image-center heuristics were useful for debugging, but glare could mislead them.
+- Bright-center, fixed-crop, and image-center heuristics are still useful for debugging, but the detector now mirrors the gradient-polar hard-case winner instead of the older shaft-biased ray score.
+- The hard-case detector-family sweep confirms that the gradient-polar detector is still the best pure classical family on the current focus set. On `hard_cases.csv` plus `hard_cases_remaining_focus.csv`, it reached `MAE=6.2606` with `28/28` detections, while `ray_score` reached `7.3950`, `hough_lines` reached `9.6858` with 8 failures, and `dark_polar` failed all 28 samples.
 - The baseline should act as a rough sanity check, not the final answer.
 - A conservative mode is better than a brittle "guess anyway" baseline.
-- The current version now uses a fixed-crop Hough-style edge vote on the stable training crop, emits a provisional warm-up reading from the first accepted frame instead of suppressing the first two samples, and prefers the stronger fallback heuristic when the stable training crop is missing.
+- The current version now uses a fixed-crop polar edge vote, emits a provisional warm-up reading from the first accepted frame instead of suppressing the first two samples, and compares the bright, fixed-crop, and image-center seeds by a blended peak-sharpness-plus-support score after a small local refinement pass instead of trusting the first anchor that happens to score highest on raw confidence.
+- The hard-case strategy sweep still matters because geometry-only selection can move the MAE a lot, so the polar detector should keep being benchmarked on the same hard-case manifests.
 - That keeps it classical CV, but makes it behave more like a defensible benchmark instead of a silent gate.
-- The current baseline is now much closer to a canonical Hough-line pipeline than the old ray scorer, which makes it a better reviewer-facing classical comparator.
-- The 31C board trace was the trigger for this upgrade: the old baseline could produce nonsense warm-up values and then lock onto a wrong plateau. The Hough-style version is meant to be the more defensible classical solution to beat.
-- The baseline worker now keeps weak Hough frames out of the smoothing history and holds the last stable estimate when the new frame is ambiguous, so low-confidence glare frames do not drag the comparator into nonsense.
-- A recent 31C live trace showed the Hough baseline at about 30.4C while the current prodv0.3 OBB+scalar path landed around 27.7C. That means the classical comparator is currently ahead at that point, which is a good sign for the baseline but a warning that the learned tail is still under-reading the upper-mid band.
+- The current baseline is now much closer to a canonical polar spoke detector than the old ray scorer, which makes it a better reviewer-facing classical comparator.
+- The polar vote now follows the gradient-polar family: inner-annulus Sobel edge magnitude plus tangential alignment, with no extra shaft bias.
+- Near-tied peaks are now rejected with a peak-ratio gate so the selected spoke has to beat the runner-up by a meaningful margin, and the smoothing history only accepts estimates that clear the same confidence, score, and peak-ratio gates.
+- The 31C board trace was the trigger for this upgrade: the old baseline could produce nonsense warm-up values and then lock onto a wrong plateau. The polar version is meant to be the more defensible classical solution to beat.
+- The baseline worker now keeps weak polar frames out of the smoothing history and holds the last stable estimate when the new frame is ambiguous, so low-confidence glare frames do not drag the comparator into nonsense.
+- The confidence threshold was relaxed to `1.25` after the live `5C` traces showed the live board needed a less brittle SNR gate, but the selector now compares all refined candidate geometries by peak sharpness instead of giving the fixed crop a free pass.
+- A recent 31C live trace showed the classical baseline at about 30.4C while the current prodv0.3 OBB+scalar path landed around 27.7C. That means the classical comparator is currently ahead at that point, which is a good sign for the baseline but a warning that the learned tail is still under-reading the upper-mid band.
 
 ## Scalar Fine-Tuning
 
@@ -38,12 +43,17 @@ See `archive.md` for the full chronology.
 - The OBB + scalar board-probe cascade using `mobilenetv2_obb_longterm` and the rectified scalar deployment reached `mean_abs_err=3.6617`, `max_abs_err=11.8603`, and `cases_over_5c=11` at `OBB_CROP_SCALE=1.20`.
 - That beats the best rectifier + scalar board result (`mean_abs_err=6.1574` at `RECTIFIER_CROP_SCALE=1.80`), so the OBB cascade is now the strongest board-probe benchmark we have.
 - The OBB localizer is now wired into the firmware candidate path as `prodv0.3`, and the board project builds successfully with the OBB wrapper plus the shared scalar runtime bundle.
-- The deploy-time calibration for `prodv0.3` was re-fit with `mid_band_focus_18_42.csv` as the fit set and `hard_cases_plus_board30_valid_with_new6.csv` plus `board_weak_focus.csv` as the stress tests. The piecewise fit won on the aggregate hard-case set (`affine_test_mae=15.6630`, `piecewise_test_mae=12.8421`) and the firmware now uses the piecewise tail.
-- When `board_rectified_probe_20260422.csv` was added as a third test set, the new affine fit remained slightly better on the board probe (`test2_affine_mean_abs_err=5.1965` vs `test2_piecewise_mean_abs_err=5.5528`). That makes the deployed piecewise calibration a deliberate hard-case tradeoff rather than a universal improvement.
+- The deploy-time calibration for `prodv0.3` now uses the affine p5 fit from `scalar_full_finetune_from_best_affine_calibrated_p5` instead of the older board30 piecewise curve, because the piecewise fit was overcorrecting the original hard-case manifest even though it looked good on some closer live reads.
+- On `hard_cases_remaining_focus.csv`, the raw scalar model landed at `raw_mae=7.1941`, the affine calibration improved that to `affine_mae=4.1813`, and the classical manifest baseline reached `mean_abs_err=4.0247`, so the hard-case mix still gives the classical comparator a small edge on that set.
+- The affine p5 source fit still lands at `calibrated_mae=4.2643` on `ml/artifacts/training/scalar_full_finetune_from_best_affine_calibrated_p5/metrics.json`, which is why it remains the current firmware-side calibration choice even though the hard-case manifest is close.
+- The piecewise hard-case fit can still look perfect on the samples it was fit against, but that overfit makes it a poor general benchmark.
+- The board path now softens the camera brightness nudges to 25% fractional steps, and the OBB crop window stays loose (`0.60..1.40` relative to the stable training crop) so moderate close-up crops remain on the fast path instead of getting punted into the slower rectifier stage.
 - The OBB cascade should be the next comparison target for board-style work, while the rectifier chain remains the fallback benchmark.
 - The OBB hard fault on the board turned out to be a memory-placement bug rather than a model bug: the package's CPU arena was pinned at `0x34100000`, which overlapped the app/RTOS footprint, so the arena base was moved to `0x34110000` and the firmware build still passes.
 - The scalar package had the same memory-placement bug, and the firmware wrapper was rebuilt against `0x34110000` as well so the scalar stage no longer sits on the live app RAM window.
 - The camera-init brightness gate was then simplified so it no longer retries in place. Combined with the 16 KB camera-init stack, that should reduce the chance of a stall right after the exposure nudge while we keep validating `prodv0.3` on the live board.
+- The new laptop-side board-pipeline replay helper is now useful for parity debugging: it lazy-loads the deployed board models, prints the OBB/rectifier/scalar stage trace, and uses a fast PIL-based board-style crop/letterbox path so a single capture can be replayed in about `0.03s` on the laptop capture instead of stalling on TensorFlow resize ops.
+- The hard-case manifest comparison is sobering: on `hard_cases_remaining_focus.csv` the pure classical baseline still reached `MAE=4.0247`, while the deployed board replay landed at `raw_mae=10.4790`, `calibrated_mae=13.7990`, and `reported_mae=14.1790`. The replay selected the OBB path for all 9 samples, so the problem on that manifest is the deployed reader and calibration, not the rectifier fallback.
 
 ## Geometry Experiments
 
@@ -78,6 +88,9 @@ See `archive.md` for the full chronology.
 - Do not spend more cycles on MobileNetV2 scalar/direction heads unless the geometry target changes materially.
 - The current in-repo proxy for that tiny detector/localizer idea is `compact_geometry_longterm`, which keeps the model small while pinning validation and test against the board split.
 - The OBB long-term launcher now uses explicit `--val-fraction` and `--test-fraction` splits and should stay off the board manifest hard-case path.
+- The best pure classical board baseline on the current hard-case focus set is still the gradient-polar family, but the firmware version needs an explicit dial radius derived from crop height to match the Python Hough-seeded geometry path.
+- The firmware classical baseline now also runs a small rim-based center search before the spoke vote, which is the closest board-side analogue to the Hough geometry step used by the Python single-image baseline.
+- The rim search still has a light prior toward the training crop center, but it is deliberately gentler now and its rim score is sharper so a stronger circle fit can win when the live evidence points away from the old fixed anchor.
 
 ## Active Training Split
 
@@ -95,6 +108,7 @@ See `archive.md` for the full chronology.
 - A rectifier/localizer remains worthwhile, but the literature suggests it should normalize the scene for a downstream geometry reader instead of being the full reader on its own.
 - The OBB cascade has now shown the strongest board-probe result so far, so future board-style comparisons should start there before trying more scalar-only variants.
 - The OBB board hardfault was not caused by the localizer itself; the trigger was the per-frame ATON `LL_ATON_RT_Reset_Network()` call in `app_ai.c`, so the deployed `prodv0.3` path should stay in one-shot runtime mode by default.
+- The rectifier fallback path now trusts the flashed blob and skips the signature compare, because the stale fingerprint was blocking a valid fallback image whenever the OBB crop overflowed the scalar window.
 - FileX/SD readiness used to be a separate startup problem and should not be conflated with the ATON fault; the latest storage trace reached ready end-to-end, and the current code keeps that path quiet by default unless we re-enable bring-up breadcrumbs locally.
 - A fresh live trace confirmed the one-shot ATON path is stable: the board now runs OBB + scalar cleanly with `Stage network reset skipped (one-shot runtime)`, so the hardfault is no longer the active issue. The remaining rough edge on that trace was RTC/logging stability, not FileX media readiness.
 - The latest storage trace showed that the SD bring-up path now reaches ready end-to-end, so FileX/media readiness is no longer the active blocker. The explicit breadcrumbs and card-version-aware ACMD41 handshake made it obvious that the card was just being brought up slowly, not failing outright.

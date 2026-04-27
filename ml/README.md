@@ -57,7 +57,7 @@ cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml
 
 ## Baseline Run
 
-Run the classical Canny + Hough baseline from WSL:
+Run the classical polar spoke-voting baseline from WSL:
 
 ```sh
 cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml

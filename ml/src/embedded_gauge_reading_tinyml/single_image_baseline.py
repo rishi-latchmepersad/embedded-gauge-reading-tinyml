@@ -1,7 +1,8 @@
 """Single-image classical baseline runner.
 
-This module runs the existing Canny + Hough baseline on one camera frame and
-optionally writes a small annotated preview plus JSON summary for inspection.
+This module runs the classical polar spoke-voting baseline on one camera frame
+and optionally writes a small annotated preview plus JSON summary for
+inspection.
 """
 
 from __future__ import annotations
