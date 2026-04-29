@@ -26,6 +26,9 @@ See `archive.md` for the full chronology.
 - The baseline worker now keeps weak polar frames out of the smoothing history and holds the last stable estimate when the new frame is ambiguous, so low-confidence glare frames do not drag the comparator into nonsense.
 - The confidence threshold was relaxed to `1.25` after the live `5C` traces showed the live board needed a less brittle SNR gate, but the selector now compares all refined candidate geometries by peak sharpness instead of giving the fixed crop a free pass.
 - A recent 31C live trace showed the classical baseline at about 30.4C while the current prodv0.3 OBB+scalar path landed around 27.7C. That means the classical comparator is currently ahead at that point, which is a good sign for the baseline but a warning that the learned tail is still under-reading the upper-mid band.
+- The latest captured-image inspection suggests the board needle is more saturated / color-separated than the surrounding dial, so the old grayscale-dark shaft assumption is too brittle. A color-aware shaft scan with heavier middle-shaft weighting was a good hypothesis, but the current implementation regressed `board_weak_focus.csv` to about `MAE=28.6173`, so it should stay marked as an experiment rather than the baseline.
+- The current board detector still needs a better tie-breaker between Hough-style geometry and board-prior shaft evidence. The current score is not reliable enough on its own to choose the right candidate across the board-style captures.
+- Keep `captured_images/` and `board_weak_focus.csv` as the main regression set for this detector work, because those samples expose the board-specific color and geometry failure modes better than the broader hard-case mix.
 
 ## Scalar Fine-Tuning
 

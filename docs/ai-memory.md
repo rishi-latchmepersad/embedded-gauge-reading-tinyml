@@ -96,6 +96,8 @@ Keep this file short, and put detailed notes in the topical files below.
 - The `docs/process_diagrams.drawio` file now reflects the current OBB + scalar cascade and the current classical baseline flow, so it should be kept in sync with future runtime changes.
 - The pure classical board baseline now uses an explicit dial radius derived from the training crop height instead of the old inscribed crop radius. That keeps the polar annulus closer to the Hough-seeded Python baseline and should stop the detector from under-scanning the outer needle band.
 - The pure classical board baseline still uses a tiny rim-based center search before the spoke vote, but the live selector no longer hard-prioritizes rim-center over the other accepted candidates. The board bug at `-5C` came from that hard priority forcing a warm false positive, so the firmware now ranks candidates by peak-sharpness quality first, matching the Python classical helper instead of giving the rim an unconditional win.
+- The latest board-image inspection suggests the needle is more saturated / color-separated than the surrounding dial artwork, so the old grayscale-dark shaft assumption is brittle. A color-aware shaft scan with heavier middle-shaft weighting was tried to keep the dial from stealing attention, but the current implementation regressed `board_weak_focus.csv` to about `MAE=28.6173`, so that detector variant is not yet a usable baseline.
+- Keep using `captured_images/` and `board_weak_focus.csv` as the main regression set for the next detector-tuning pass, because those samples expose the board-specific failures better than the broader hard-case mix.
 
 ## Topic Files
 
