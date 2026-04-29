@@ -1,0 +1,42 @@
+{
+  "config": {
+    "image_path": "d:\\Projects\\embedded-gauge-reading-tinyml\\captured_images\\capture_m10c.jpg",
+    "gauge_id": "littlegood_home_temp_gauge_c",
+    "center_x": null,
+    "center_y": null,
+    "dial_radius_px": null,
+    "artifacts_dir": "d:\\Projects\\embedded-gauge-reading-tinyml\\tmp_preview",
+    "run_name": "m10c_debug"
+  },
+  "gauge_spec": {
+    "gauge_id": "littlegood_home_temp_gauge_c",
+    "min_angle_rad": 2.356194490192345,
+    "sweep_rad": 4.71238898038469,
+    "min_value": -30.0,
+    "max_value": 50.0
+  },
+  "center_xy": [
+    664.2000122070312,
+    919.800048828125
+  ],
+  "dial_radius_px": 543.8700256347656,
+  "detection": {
+    "unit_dx": -0.848048096156426,
+    "unit_dy": -0.5299192642332049,
+    "confidence": 4.882870162566765,
+    "peak_value": 67977.7734375,
+    "runner_up_value": 57524.453125,
+    "peak_ratio": 1.1817195947918888,
+    "peak_margin": 10453.3203125
+  },
+  "selected_candidate": {
+    "label": "hough",
+    "center_xy": [
+      664.2000122070312,
+      919.800048828125
+    ],
+    "dial_radius_px": 543.8700256347656
+  },
+  "predicted_value": -7.185185185185187,
+  "annotated_image_path": "d:\\Projects\\embedded-gauge-reading-tinyml\\tmp_preview\\m10c_debug\\capture_m10c_annotated.png"
+}

@@ -262,6 +262,10 @@ def _ray_score_detector(
         unit_dx=math.cos(best_angle),
         unit_dy=math.sin(best_angle),
         confidence=float(confidence),
+        peak_value=float(best_score),
+        runner_up_value=0.0,
+        peak_ratio=1.0,
+        peak_margin=float(best_score),
     )
 
 
@@ -359,7 +363,15 @@ def _hough_lines_detector(
     if confidence < 1.08 or best_score < 2.0:
         return None
 
-    return NeedleDetection(unit_dx=best_vec[0], unit_dy=best_vec[1], confidence=float(confidence))
+    return NeedleDetection(
+        unit_dx=best_vec[0],
+        unit_dy=best_vec[1],
+        confidence=float(confidence),
+        peak_value=float(best_score),
+        runner_up_value=float(second_score if second_score > 0.0 else 0.0),
+        peak_ratio=float(best_score / max(second_score, 1e-6) if second_score > 0.0 else 1.0),
+        peak_margin=float(best_score - second_score if second_score > 0.0 else best_score),
+    )
 
 
 def _dark_polar_detector(
@@ -421,7 +433,15 @@ def _dark_polar_detector(
 
     unit_dx = math.cos(angle_rad)
     unit_dy = math.sin(angle_rad)
-    return NeedleDetection(unit_dx=unit_dx, unit_dy=unit_dy, confidence=float(contrast_score))
+    return NeedleDetection(
+        unit_dx=unit_dx,
+        unit_dy=unit_dy,
+        confidence=float(contrast_score),
+        peak_value=float(best_contrast),
+        runner_up_value=0.0,
+        peak_ratio=1.0,
+        peak_margin=float(best_contrast),
+    )
 
 
 def _evaluate_detector(

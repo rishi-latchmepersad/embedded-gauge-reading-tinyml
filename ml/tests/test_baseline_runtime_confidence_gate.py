@@ -33,6 +33,9 @@ def test_baseline_confidence_gate_matches_snr_scale() -> None:
     assert "baseline-polar-warming" in text
     assert "baseline-polar-smoothed" in text
     assert "baseline-polar-held" in text
+    assert "APP_BASELINE_BORDERLINE_PEAK_RATIO" in text
+    assert "APP_BASELINE_BORDERLINE_MIN_CONFIDENCE" in text
+    assert "APP_BASELINE_BORDERLINE_MAX_TEMP_DELTA_C" in text
 
 
 def test_baseline_uses_polar_vote_histogram() -> None:
@@ -49,8 +52,8 @@ def test_baseline_uses_polar_vote_histogram() -> None:
     assert "alignment_weight = radial_alignment * radial_alignment" in normalized
     assert "angle_votes[APP_BASELINE_ANGLE_BINS]" in normalized
     assert "smoothed_votes[APP_BASELINE_ANGLE_BINS]" in normalized
-    assert "tangential_weight" in normalized
-    assert "vote = edge_mag * tangential_weight" in normalized
+    assert "const float tangential =" in normalized
+    assert "vote = edge_mag * fabsf(tangential)" in normalized
     assert "edge_mag <= 8.0f" in normalized
     assert "gradient_x_out, float *gradient_y_out" in normalized
     assert "AppBaselineRuntime_ReadEdgeMagnitude(" in text
@@ -65,17 +68,19 @@ def test_baseline_selection_prefers_sharper_peak_for_every_candidate() -> None:
 
     assert "AppBaselineRuntime_IsBetterEstimate" in normalized
     assert "AppBaselineRuntime_ComputeEstimateQuality" in normalized
-    assert "blended quality score" in text
-    assert "runner_up_score <= 0.0f" in normalized
+    assert "AppBaselineRuntime_PassesAcceptanceGate" in normalized
+    assert "AppBaselineRuntime_GeometryPriority" not in normalized
+    assert "peak_excess = peak_ratio - 1.0f" in normalized
+    assert "confidence * peak_excess" in normalized
+    assert "peak-separation quality score" in text
+    assert "runner_up_score > 0.0f" in normalized
     assert "selected_is_fixed_crop" not in normalized
-    assert "estimate_out->confidence < APP_BASELINE_CONFIDENCE_THRESHOLD" in normalized
-    assert "estimate_out->best_score < APP_BASELINE_MIN_ACCEPT_SCORE" in normalized
-    assert "((estimate_out->runner_up_score > 0.0f) && ((estimate_out->best_score / estimate_out->runner_up_score) < APP_BASELINE_MIN_PEAK_RATIO))" in normalized
     assert "APP_BASELINE_MIN_ACCEPT_SCORE" in text
-    assert "0.15f * estimate->confidence" in normalized
     assert "dial_radius_px * 0.75f" in normalized
     assert "rim_geometry_hypothesis" in normalized
     assert "rim-center-polar" in text
+    assert "candidate_quality > incumbent_quality" in normalized
+    assert "candidate_peak_ratio > incumbent_peak_ratio" in normalized
 
 
 def test_baseline_history_rejects_weak_near_ties() -> None:
@@ -84,6 +89,8 @@ def test_baseline_history_rejects_weak_near_ties() -> None:
     normalized = re.sub(r"\s+", " ", text)
 
     assert "AppBaselineRuntime_IsStableEstimateForHistory" in normalized
+    assert "AppBaselineRuntime_HasAcceptablePeakSeparation" in normalized
+    assert "AppBaselineRuntime_IsBorderlineContinuityEstimate" in normalized
     assert "Holding last stable estimate after an unstable frame." in text
     assert "selected_is_fixed_crop" not in normalized
     assert "estimate->best_score < APP_BASELINE_MIN_ACCEPT_SCORE" in normalized
@@ -91,19 +98,19 @@ def test_baseline_history_rejects_weak_near_ties() -> None:
     assert "estimate->confidence < APP_BASELINE_CONFIDENCE_THRESHOLD" in normalized
 
 
-def test_baseline_candidate_selection_uses_dominant_geometry() -> None:
-    """The selector should compare refined candidates using peak sharpness."""
+def test_baseline_candidate_selection_defaults_to_fixed_crop_then_center() -> None:
+    """The firmware selector should stay conservative by default."""
     text = BASELINE_RUNTIME_FILE.read_text(encoding="utf-8")
     normalized = re.sub(r"\s+", " ", text)
 
-    assert "fixed_crop_ok = AppBaselineRuntime_EstimateFromTrainingCropHypothesis" in normalized
-    assert "AppBaselineRuntime_ComputeEstimateQuality" in normalized
-    assert "AppBaselineRuntime_IsBetterEstimate" in normalized
-    assert "peak separation" in text
+    assert "APP_BASELINE_ENABLE_LOCAL_GEOMETRY_SWEEP" in text
+    assert "APP_BASELINE_ENABLE_LOCAL_GEOMETRY_SWEEP 0U" in text
+    assert "Keep the live selector conservative by default" in text
+    assert "#if APP_BASELINE_ENABLE_LOCAL_GEOMETRY_SWEEP" in text
+    assert "#else" in text
+    assert "selected_estimate = &fixed_crop_hypothesis;" in normalized
+    assert "else if (center_ok)" in normalized
+    assert "selected_estimate = &center_hypothesis;" in normalized
     assert "bright_hypothesis" in normalized
-    assert "fixed_crop_hypothesis" in normalized
-    assert "center_hypothesis" in normalized
-    assert "AppBaselineRuntime_RefineEstimateAroundSeed" in normalized
-    assert "APP_BASELINE_GEOMETRY_SEARCH_RADIUS_PIXELS" in text
-    assert "offset_values[] = { -8L, -4L, 0L, 4L, 8L }" in normalized
+    assert "rim_geometry_hypothesis" in normalized
     assert "APP_BASELINE_MIN_PEAK_RATIO" in text

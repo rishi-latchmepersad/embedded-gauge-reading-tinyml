@@ -54,6 +54,21 @@ def parse_args() -> argparse.Namespace:
         help="Optional dial radius in pixels.",
     )
     parser.add_argument(
+        "--geometry-search-mode",
+        choices=("hough_first", "auto_sweep"),
+        default="hough_first",
+        help=(
+            "Geometry strategy for the default no-manual-hints path. "
+            "'auto_sweep' is experimental and can override a good Hough seed."
+        ),
+    )
+    parser.add_argument(
+        "--geometry-confidence-threshold",
+        type=float,
+        default=4.0,
+        help="Minimum Hough confidence before the default path trusts it outright.",
+    )
+    parser.add_argument(
         "--artifacts-dir",
         type=Path,
         default=PROJECT_ROOT / "artifacts" / "single_image_baseline",
@@ -77,6 +92,8 @@ def main() -> None:
         center_x=args.center_x,
         center_y=args.center_y,
         dial_radius_px=args.dial_radius_px,
+        geometry_search_mode=args.geometry_search_mode,
+        geometry_confidence_threshold=args.geometry_confidence_threshold,
         artifacts_dir=args.artifacts_dir,
         run_name=args.run_name,
     )

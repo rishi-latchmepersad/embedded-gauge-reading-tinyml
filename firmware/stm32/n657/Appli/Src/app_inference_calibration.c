@@ -20,7 +20,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #ifndef APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION
-#define APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION 1
+#define APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION 0
 #endif
 /* USER CODE END PD */
 
@@ -30,17 +30,21 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
+#if APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION
 /* Hard-case affine calibration from scalar_full_finetune_from_best_affine_calibrated_p5.
  * This is the lighter postprocess that keeps the original hard-case manifest
  * much closer than the older board30 piecewise tail.
  */
 static const float kCalibrationAffineScale = 1.1630995273590088f;
 static const float kCalibrationAffineBias = 0.7423046231269836f;
+#endif
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
+#if APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION
 static float AppInferenceCalibration_EvaluateAffine(float raw_value);
+#endif
 /* USER CODE END PFP */
 
 /* Private function definitions ---------------------------------------------*/
@@ -60,9 +64,11 @@ float AppInferenceCalibration_Apply(float raw_value) {
 /**
  * @brief Evaluate the saved affine scalar calibration.
  */
+#if APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION
 static float AppInferenceCalibration_EvaluateAffine(float raw_value) {
 	/* Keep the board correction mild so the hard-case manifest does not over-shoot. */
 	return kCalibrationAffineBias + (kCalibrationAffineScale * raw_value);
 }
+#endif
 
 /* USER CODE END 0 */

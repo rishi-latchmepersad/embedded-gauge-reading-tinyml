@@ -68,9 +68,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--geometry-mode",
         type=str,
-        default="hough_then_center",
+        default="hough_only",
         choices=("hough_only", "hough_then_center", "center_only"),
-        help="Geometry strategy to use for this manifest run.",
+        help=(
+            "Geometry strategy to use for this manifest run. "
+            "The default stays conservative because the Hough-only path has been"
+            " the strongest on the hard-case manifests."
+        ),
     )
     parser.add_argument(
         "--center-radius-scale",

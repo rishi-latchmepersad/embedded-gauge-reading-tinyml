@@ -1,0 +1,44 @@
+{
+  "config": {
+    "image_path": "../captured_images/capture_p35c_preview.png",
+    "gauge_id": "littlegood_home_temp_gauge_c",
+    "center_x": null,
+    "center_y": null,
+    "dial_radius_px": null,
+    "geometry_search_mode": "hough_first",
+    "geometry_confidence_threshold": 4.0,
+    "artifacts_dir": "../artifacts/single_image_baseline",
+    "run_name": "probe_capture_p35c_preview"
+  },
+  "gauge_spec": {
+    "gauge_id": "littlegood_home_temp_gauge_c",
+    "min_angle_rad": 2.356194490192345,
+    "sweep_rad": 3.141592653589793,
+    "min_value": -30.0,
+    "max_value": 50.0
+  },
+  "center_xy": [
+    109.75999999999999,
+    99.904
+  ],
+  "dial_radius_px": 64.96,
+  "detection": {
+    "unit_dx": 0.3338068592337711,
+    "unit_dy": -0.9426414910921783,
+    "confidence": 0.3333333431510255,
+    "peak_value": 0.3333333431510255,
+    "runner_up_value": 0.0,
+    "peak_ratio": 1307.1895809844136,
+    "peak_margin": 0.3333333431510255
+  },
+  "selected_candidate": {
+    "label": "board_prior",
+    "center_xy": [
+      109.75999999999999,
+      99.904
+    ],
+    "dial_radius_px": 64.96
+  },
+  "predicted_value": 38.66666666666667,
+  "annotated_image_path": "../artifacts/single_image_baseline/probe_capture_p35c_preview/capture_p35c_preview_annotated.png"
+}

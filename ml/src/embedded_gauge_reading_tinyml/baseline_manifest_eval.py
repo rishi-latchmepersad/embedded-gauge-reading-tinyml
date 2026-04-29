@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import csv
+import math
 from typing import Literal
 
 import cv2
@@ -19,10 +20,13 @@ from embedded_gauge_reading_tinyml.baseline_classical_cv import (
     ClassicalBaselineResult,
     ClassicalPrediction,
     GeometryCandidate,
+    GeometrySelection,
     NeedleDetection,
+    board_prior_geometry_candidate,
+    board_prior_geometry_candidates,
     detect_needle_unit_vector,
-    detect_needle_unit_vector_with_geometry_fallback,
     needle_vector_to_value,
+    select_best_geometry_detection,
 )
 from embedded_gauge_reading_tinyml.gauge.processing import GaugeSpec
 from embedded_gauge_reading_tinyml.single_image_baseline import estimate_dial_geometry
@@ -37,6 +41,13 @@ class GeometryEvaluationConfig:
     mode: GeometryMode = "hough_then_center"
     confidence_threshold: float = 4.0
     center_radius_scale: float = 0.45
+
+
+LOCAL_CENTER_OFFSETS_PX: tuple[float, ...] = (-16.0, 0.0, 16.0)
+"""Small center shifts that help the spoke voter recover near-miss crops."""
+
+CENTER_RADIUS_SCALES: tuple[float, ...] = (0.35, 0.45, 0.55)
+"""Fallback radius scales that span the typical board-capture zoom range."""
 
 
 @dataclass(frozen=True)
@@ -62,6 +73,100 @@ def _load_image(path: Path) -> np.ndarray | None:
     return cv2.imread(str(path), cv2.IMREAD_COLOR)
 
 
+def _center_fallback_candidates(
+    image_bgr: np.ndarray,
+    *,
+    radius_scale: float,
+) -> list[GeometryCandidate]:
+    """Build the image-center fallback candidates used by the real-world sweep."""
+    height, width = image_bgr.shape[:2]
+    image_center: tuple[float, float] = (0.5 * float(width), 0.5 * float(height))
+    min_dim: float = float(min(height, width))
+    candidate_scales: tuple[float, ...] = tuple(
+        sorted({radius_scale, *CENTER_RADIUS_SCALES})
+    )
+    return [
+        GeometryCandidate(
+            label=f"image_center_{scale:.2f}",
+            center_xy=image_center,
+            dial_radius_px=scale * min_dim,
+        )
+        for scale in candidate_scales
+    ]
+
+
+def _board_prior_candidates(image_bgr: np.ndarray) -> list[GeometryCandidate]:
+    """Build the fixed board prior candidate used in the manifest sweep."""
+    return board_prior_geometry_candidates(image_bgr)
+
+
+def _hough_local_candidates(estimated: tuple[tuple[float, float], float]) -> list[GeometryCandidate]:
+    """Generate a small local neighborhood around the Hough circle seed."""
+    (center_x, center_y), dial_radius_px = estimated
+    candidates: list[GeometryCandidate] = [
+        GeometryCandidate(
+            label="hough",
+            center_xy=(center_x, center_y),
+            dial_radius_px=dial_radius_px,
+        )
+    ]
+    for dx in LOCAL_CENTER_OFFSETS_PX:
+        for dy in LOCAL_CENTER_OFFSETS_PX:
+            if dx == 0.0 and dy == 0.0:
+                continue
+            candidates.append(
+                GeometryCandidate(
+                    label=f"hough_{int(dx):+d}_{int(dy):+d}",
+                    center_xy=(center_x + dx, center_y + dy),
+                    dial_radius_px=dial_radius_px,
+                )
+            )
+    return candidates
+
+
+def _search_geometry_candidates(
+    image_bgr: np.ndarray,
+    *,
+    config: GeometryEvaluationConfig,
+) -> list[GeometryCandidate]:
+    """Build the candidate geometry set for one manifest row."""
+    estimated = estimate_dial_geometry(image_bgr)
+    if config.mode == "center_only":
+        return _center_fallback_candidates(image_bgr, radius_scale=config.center_radius_scale)
+
+    if estimated is None:
+        if config.mode == "hough_only":
+            return []
+        candidates: list[GeometryCandidate] = []
+        candidates.extend(_board_prior_candidates(image_bgr))
+        candidates.extend(
+            candidate
+            for candidate in _center_fallback_candidates(
+                image_bgr,
+                radius_scale=config.center_radius_scale,
+            )
+            if candidate not in candidates
+        )
+        return candidates
+
+    candidates: list[GeometryCandidate] = []
+    if config.mode != "center_only":
+        candidates.extend(_hough_local_candidates(estimated))
+
+    if config.mode != "hough_only":
+        candidates.extend(_board_prior_candidates(image_bgr))
+        candidates.extend(
+            candidate
+            for candidate in _center_fallback_candidates(
+                image_bgr,
+                radius_scale=config.center_radius_scale,
+            )
+            if candidate not in candidates
+        )
+
+    return candidates
+
+
 def _detect_with_geometry_mode(
     image_bgr: np.ndarray,
     *,
@@ -70,14 +175,16 @@ def _detect_with_geometry_mode(
 ) -> NeedleDetection | None:
     """Detect the needle using one of the supported geometry strategies."""
     height, width = image_bgr.shape[:2]
-    center_fallback: tuple[float, float] = (0.5 * float(width), 0.5 * float(height))
-    radius_fallback: float = config.center_radius_scale * float(min(height, width))
+    image_center: tuple[float, float] = (0.5 * float(width), 0.5 * float(height))
+    min_dim: float = float(min(height, width))
+    fallback_radius_scale: float = min(config.center_radius_scale, 0.35)
+    fallback_radius_px: float = fallback_radius_scale * min_dim
 
     if config.mode == "center_only":
         return detect_needle_unit_vector(
             image_bgr,
-            center_xy=center_fallback,
-            dial_radius_px=radius_fallback,
+            center_xy=image_center,
+            dial_radius_px=fallback_radius_px,
             gauge_spec=spec,
         )
 
@@ -85,38 +192,49 @@ def _detect_with_geometry_mode(
     if estimated is None:
         if config.mode == "hough_only":
             return None
+        selection = select_best_geometry_detection(
+            image_bgr,
+            candidates=_search_geometry_candidates(image_bgr, config=config),
+            gauge_spec=spec,
+        )
+        if selection is not None:
+            return selection.detection
         return detect_needle_unit_vector(
             image_bgr,
-            center_xy=center_fallback,
-            dial_radius_px=radius_fallback,
+            center_xy=image_center,
+            dial_radius_px=fallback_radius_px,
             gauge_spec=spec,
         )
 
-    primary = GeometryCandidate(
-        label="hough",
-        center_xy=estimated[0],
-        dial_radius_px=estimated[1],
+    hough_center, hough_radius_px = estimated
+    center_offset_px: float = math.hypot(
+        hough_center[0] - image_center[0],
+        hough_center[1] - image_center[1],
     )
-    secondary = GeometryCandidate(
-        label="image_center",
-        center_xy=center_fallback,
-        dial_radius_px=radius_fallback,
-    )
-
+    center_offset_ratio: float = center_offset_px / max(min_dim, 1.0)
     if config.mode == "hough_only":
+        if center_offset_ratio > 0.30:
+            return None
         return detect_needle_unit_vector(
             image_bgr,
-            center_xy=primary.center_xy,
-            dial_radius_px=primary.dial_radius_px,
+            center_xy=hough_center,
+            dial_radius_px=hough_radius_px,
             gauge_spec=spec,
         )
 
-    return detect_needle_unit_vector_with_geometry_fallback(
+    selection = select_best_geometry_detection(
         image_bgr,
-        primary=primary,
-        secondary=secondary,
+        candidates=_search_geometry_candidates(image_bgr, config=config),
         gauge_spec=spec,
-        confidence_threshold=config.confidence_threshold,
+    )
+    if selection is not None:
+        return selection.detection
+
+    return detect_needle_unit_vector(
+        image_bgr,
+        center_xy=image_center,
+        dial_radius_px=fallback_radius_px,
+        gauge_spec=spec,
     )
 
 

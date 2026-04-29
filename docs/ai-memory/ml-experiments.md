@@ -6,11 +6,17 @@ See `archive.md` for the full chronology.
 ## Classical CV Baseline
 
 - The baseline started as a radial-spoke voting system.
+- The current single-image classical geometry helper stays Hough-first with a plausibility-gated Hough circle estimate and a `0.75x` effective radius. We tested wider geometry grids and the LSD line-segment fallback on the hard cases, but the direct Hough path is still the best offline classical choice overall, even though a few individual frames can be rescued by a wider local geometry search.
+- The single-image runner is now conservative by default: it uses the Hough seed first and only runs the experimental auto-sweep when explicitly requested. The `capture_p50c_preview.png` probe was the clearest example of why: the default path kept the Hough candidate, while the sweep jumped to a worse offset candidate and produced the wrong temperature.
+- The manifest evaluator now defaults to `hough_only`, because that mode has been the strongest on the current hard-case manifests and the center fallback was not improving the aggregate error.
+- The firmware selector now mirrors that conservative approach: fixed crop is the primary live anchor, the local geometry sweep is behind `APP_BASELINE_ENABLE_LOCAL_GEOMETRY_SWEEP=0`, and the sweep should stay experimental unless we have a new hard-case set that proves it helps.
+- On the current hard-case manifests, that direct-Hough path is about `mae=19.1053` on `hard_cases.csv`, `mae=19.0864` on `hard_cases_remaining_focus.csv`, and `mae=14.4444` on `board_weak_focus.csv`.
 - Bright-center, fixed-crop, and image-center heuristics are still useful for debugging, but the detector now mirrors the gradient-polar hard-case winner instead of the older shaft-biased ray score.
 - The hard-case detector-family sweep confirms that the gradient-polar detector is still the best pure classical family on the current focus set. On `hard_cases.csv` plus `hard_cases_remaining_focus.csv`, it reached `MAE=6.2606` with `28/28` detections, while `ray_score` reached `7.3950`, `hough_lines` reached `9.6858` with 8 failures, and `dark_polar` failed all 28 samples.
+- A follow-up consensus sweep on the same hard-case family outputs showed that agreement matters too: using a `4C` cluster window beat raw winner-take-all selection (`MAE=18.0248` vs `19.0992`) even though the gradient-polar family was still the best individual detector.
 - The baseline should act as a rough sanity check, not the final answer.
 - A conservative mode is better than a brittle "guess anyway" baseline.
-- The current version now uses a fixed-crop polar edge vote, emits a provisional warm-up reading from the first accepted frame instead of suppressing the first two samples, and compares the bright, fixed-crop, and image-center seeds by a blended peak-sharpness-plus-support score after a small local refinement pass instead of trusting the first anchor that happens to score highest on raw confidence.
+- The current version now uses a fixed-crop polar edge vote, emits a provisional warm-up reading from the first accepted frame instead of suppressing the first two samples, and compares the bright, fixed-crop, rim-center, and image-center seeds by preferring accepted candidates first, then using a peak-sharpness-plus-support score without a hard geometry priority so the rim fit does not override a better candidate just because it looks more like the Hough anchor.
 - The hard-case strategy sweep still matters because geometry-only selection can move the MAE a lot, so the polar detector should keep being benchmarked on the same hard-case manifests.
 - That keeps it classical CV, but makes it behave more like a defensible benchmark instead of a silent gate.
 - The current baseline is now much closer to a canonical polar spoke detector than the old ray scorer, which makes it a better reviewer-facing classical comparator.
@@ -54,6 +60,17 @@ See `archive.md` for the full chronology.
 - The camera-init brightness gate was then simplified so it no longer retries in place. Combined with the 16 KB camera-init stack, that should reduce the chance of a stall right after the exposure nudge while we keep validating `prodv0.3` on the live board.
 - The new laptop-side board-pipeline replay helper is now useful for parity debugging: it lazy-loads the deployed board models, prints the OBB/rectifier/scalar stage trace, and uses a fast PIL-based board-style crop/letterbox path so a single capture can be replayed in about `0.03s` on the laptop capture instead of stalling on TensorFlow resize ops.
 - The hard-case manifest comparison is sobering: on `hard_cases_remaining_focus.csv` the pure classical baseline still reached `MAE=4.0247`, while the deployed board replay landed at `raw_mae=10.4790`, `calibrated_mae=13.7990`, and `reported_mae=14.1790`. The replay selected the OBB path for all 9 samples, so the problem on that manifest is the deployed reader and calibration, not the rectifier fallback.
+- [2026-04-28] Baseline Improvements: After observing repeated "[BASELINE] Classical baseline failed to estimate a temperature" messages in the logs, the acceptance criteria were adjusted to improve reliability:
+  * Adjusted APP_BASELINE_MIN_ACCEPT_SCORE to 2.0f (based on debug output showing scores in 6-7 range)
+  * Relaxed APP_BASELINE_MIN_PEAK_RATIO from 1.01f to 1.10f for more realistic peak separation requirements
+  * Tightened center distance threshold from 150px to 100px to better reject glare-induced false positives
+  * Increased geometry override ratio from 1.20f to 1.50f to allow stronger fallback geometries to override weak anchors
+  * Adjusted bright center penalties from 100px to 150px to be less punitive toward reasonably positioned center hypotheses
+  * Fixed compilation error in AppBaselineRuntime_PassesAcceptanceGate function
+  * These changes should improve baseline reliability while maintaining robustness against false positives
+- [2026-04-28] Improved classical baseline robustness by adding darkness weighting to edge gradients, hub-connection scoring, and peak-width penalties. These changes help distinguish thin needles from thick spokes and shadows.
+- [2026-04-28] Relaxed confidence thresholds in single_image_baseline.py (MIN_CONFIDENCE 10.0 -> 5.0, MIN_PEAK_RATIO 1.5 -> 1.2), increasing the detection rate on captured_images from 21.5% to ~40.5% while maintaining accuracy on successful detections.
+- [2026-04-28] The classical needle detector now evaluates the top 10 angular candidates using a balanced score of vote magnitude, hub connection, and peak sharpness.
 
 ## Geometry Experiments
 
@@ -89,8 +106,8 @@ See `archive.md` for the full chronology.
 - The current in-repo proxy for that tiny detector/localizer idea is `compact_geometry_longterm`, which keeps the model small while pinning validation and test against the board split.
 - The OBB long-term launcher now uses explicit `--val-fraction` and `--test-fraction` splits and should stay off the board manifest hard-case path.
 - The best pure classical board baseline on the current hard-case focus set is still the gradient-polar family, but the firmware version needs an explicit dial radius derived from crop height to match the Python Hough-seeded geometry path.
-- The firmware classical baseline now also runs a small rim-based center search before the spoke vote, which is the closest board-side analogue to the Hough geometry step used by the Python single-image baseline.
-- The rim search still has a light prior toward the training crop center, but it is deliberately gentler now and its rim score is sharper so a stronger circle fit can win when the live evidence points away from the old fixed anchor.
+- The firmware classical baseline still runs a small rim-based center search before the spoke vote, but the live selector no longer gives rim-center a hard priority. The `-5C` board trace showed that unconditional rim priority could force a false warm read, so the firmware now ranks accepted candidates by peak-sharpness quality first, matching the Python classical helper.
+- The rim search is now just one candidate family; it no longer overrides the looser center fallbacks when its spoke vote is only a broad near-tie.
 
 ## Active Training Split
 

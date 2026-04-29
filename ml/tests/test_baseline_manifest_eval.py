@@ -12,6 +12,27 @@ from embedded_gauge_reading_tinyml.baseline_classical_cv import NeedleDetection
 from embedded_gauge_reading_tinyml.gauge.processing import load_gauge_specs
 
 
+def _make_detection(
+    *,
+    unit_dx: float,
+    unit_dy: float,
+    confidence: float,
+    peak_ratio: float,
+) -> NeedleDetection:
+    """Build a compact fake detection for manifest-evaluator tests."""
+    peak_value: float = confidence * peak_ratio
+    runner_up_value: float = peak_value / peak_ratio if peak_ratio > 0.0 else 0.0
+    return NeedleDetection(
+        unit_dx=unit_dx,
+        unit_dy=unit_dy,
+        confidence=confidence,
+        peak_value=peak_value,
+        runner_up_value=runner_up_value,
+        peak_ratio=peak_ratio,
+        peak_margin=peak_value - runner_up_value,
+    )
+
+
 def test_detect_with_geometry_mode_hough_only_returns_none_without_geometry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -30,7 +51,12 @@ def test_detect_with_geometry_mode_hough_only_returns_none_without_geometry(
         gauge_spec=None,
     ) -> NeedleDetection | None:
         called.append(True)
-        return NeedleDetection(unit_dx=1.0, unit_dy=0.0, confidence=1.0)
+        return _make_detection(
+            unit_dx=1.0,
+            unit_dy=0.0,
+            confidence=1.0,
+            peak_ratio=1.10,
+        )
 
     monkeypatch.setattr(manifest_eval, "detect_needle_unit_vector", fake_detect)
 
@@ -65,6 +91,10 @@ def test_evaluate_manifest_counts_attempts_and_predictions(
             unit_dx=1.0,
             unit_dy=0.0,
             confidence=7.0,
+            peak_value=9.0,
+            runner_up_value=7.5,
+            peak_ratio=1.20,
+            peak_margin=1.5,
         ),
     )
 

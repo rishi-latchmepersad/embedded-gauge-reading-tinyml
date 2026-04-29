@@ -1,0 +1,44 @@
+{
+  "config": {
+    "image_path": "../captured_images/capture_m30c_preview.png",
+    "gauge_id": "littlegood_home_temp_gauge_c",
+    "center_x": null,
+    "center_y": null,
+    "dial_radius_px": null,
+    "geometry_search_mode": "hough_first",
+    "geometry_confidence_threshold": 4.0,
+    "artifacts_dir": "../artifacts/single_image_baseline",
+    "run_name": "probe"
+  },
+  "gauge_spec": {
+    "gauge_id": "littlegood_home_temp_gauge_c",
+    "min_angle_rad": 2.356194490192345,
+    "sweep_rad": 3.141592653589793,
+    "min_value": -30.0,
+    "max_value": 50.0
+  },
+  "center_xy": [
+    138.60000610351562,
+    102.60000610351562
+  ],
+  "dial_radius_px": 69.7800064086914,
+  "detection": {
+    "unit_dx": -0.8241261886220157,
+    "unit_dy": 0.5664062369248328,
+    "confidence": 16.920437201472847,
+    "peak_value": 1115.207763671875,
+    "runner_up_value": 706.462890625,
+    "peak_ratio": 1.5785793966973451,
+    "peak_margin": 408.744873046875
+  },
+  "selected_candidate": {
+    "label": "hough",
+    "center_xy": [
+      138.60000610351562,
+      102.60000610351562
+    ],
+    "dial_radius_px": 69.7800064086914
+  },
+  "predicted_value": -25.33333333333333,
+  "annotated_image_path": "../artifacts/single_image_baseline/probe/capture_m30c_preview_annotated.png"
+}

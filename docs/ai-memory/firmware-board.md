@@ -10,6 +10,7 @@ See `archive.md` for the full chronology.
 - Binary/flash timing races should be checked by verifying timestamps before flashing.
 - The rectifier stage now trusts the flashed blob and skips its signature gate, because the stale fingerprint was blocking a valid fallback image and contributing to the live freeze.
 - The live AI cascade no longer enters the rectifier runtime by default; if the OBB crop is out of range or the OBB scalar pass fails, the board falls back to the fixed training crop instead so the capture loop keeps moving.
+- The classical manifest-side Hough helper now rejects implausible circles and uses a `0.75x` effective radius, which is what keeps the hard-case and board-style weak-focus manifests under `10C` offline.
 
 ## Two-Stage Pipeline
 
@@ -19,12 +20,15 @@ See `archive.md` for the full chronology.
 
 ## Deployment State
 
-- The live board path remains the scalar reader with firmware-side calibration.
+- The live board path remains the scalar reader, but the current A/B view bypasses firmware-side calibration so we can compare the raw model output directly.
 - The current board candidate is `prod_model_v0.3_obb_int8`, wired through the OBB wrapper in `app_ai.c`.
+- The live polar baseline now keeps the strongest raw angular peak instead of re-ranking the top bins with hub/width heuristics. That extra re-ranking was promoting unrelated fixed-crop peaks on the hard live traces, so the firmware is staying closer to the Python Hough-first reference.
+- The classical firmware selector now defaults to a conservative fixed-crop-first branch with the local geometry sweep behind `APP_BASELINE_ENABLE_LOCAL_GEOMETRY_SWEEP=0`. The sweep is still present for experiments, but the live board no longer trusts it by default after the hard live traces showed that nearby offset refinement could jump to the wrong plateau.
 - The firmware build is currently green with the OBB wrapper linked against the shared scalar runtime bundle.
 - The OBB package originally pointed its CPU input arena at `0x34100000`, which collided with the app's live RAM footprint in `.bss`, heap, and ThreadX globals; the arena base has been moved up to `0x34107000`, which sits above `_end = 0x34106b58` in the current link map.
 - The scalar package had the same overlap issue, and the wrapper has now been rebuilt against `0x34107000` too, so both model stages are clear of the live app RAM window.
 - `sysmem.c` now caps the newlib heap below `0x34110000` so future `malloc` activity cannot climb into the AI arena.
+- The scalar output calibration helper is currently compiled with `APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION=0`, so the live board reports the raw model output while we compare it against the calibrated and smoothed paths.
 - The camera init thread stack is now 16 KB instead of 8 KB, and the brightness-gate logic no longer retries the same capture in place. It now nudges IMX335 for the next cycle and keeps the current frame flowing, which is safer for the camera init thread. The active nudge is a 25% fractional exposure/gain step instead of a 2x jump, which should reduce the old bright/dark oscillation.
 - The debug console is now fail-fast under contention instead of spinning, so a lower-priority logger can finish without a higher-priority thread starving it; the heartbeat thread still avoids per-pulse UART logging so LED liveness is not tied to console throughput.
 - The visible green LED is now the normal heartbeat, and red is reserved for fault state so a solid red LED should mean a real fault instead of the startup indicator.
@@ -34,7 +38,7 @@ See `archive.md` for the full chronology.
 - The detailed crop-box and calibration history is archived, but the active rule is to keep the deployed board path conservative and well logged.
 - The deployed `prodv0.3` calibration tail now uses the board30 closer-camera piecewise spline from `scalar_full_finetune_from_best_board30_piecewise_calibrated`.
 - That closer-camera spline matches the live cold-end reads much better than the older mid-band tail, even though the rectified board probe still leaves the affine line slightly ahead on the holdout.
-- The current firmware calibration is the affine p5 fit from `scalar_full_finetune_from_best_affine_calibrated_p5` with `scale=1.1630995` and `bias=0.7423046`. It is a milder correction than the old piecewise tail and keeps the original hard-case manifest near the source-model hard-case fit instead of over-shooting it.
+- The stored calibration fit is still the affine p5 from `scalar_full_finetune_from_best_affine_calibrated_p5` with `scale=1.1630995` and `bias=0.7423046`, but the current board A/B view bypasses it by setting `APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION=0`.
 - Model updates still need the generated code, include path, and makefile targets kept in sync.
 
 ## Model Update Process
@@ -85,9 +89,11 @@ See `archive.md` for the full chronology.
 - The classical baseline thread now has a 16 KB stack instead of 8 KB, because the polar spoke-voting sweep plus its logging looked like the next likely stack-pressure source during the freeze.
 - The classical baseline worker now holds the last stable reading whenever a new polar vote is too weak, and it only lets a brand-new seed into the history if the absolute score is strong enough. That keeps low-confidence frames from dragging the median to nonsense values like the old `-19C` outliers.
 - The hard-case detector-family sweep says the gradient-polar family is still the best pure classical baseline on the current focus set, so the firmware baseline now follows that detector family instead of the older shaft-biased heuristic.
-- The classical baseline geometry selector now refines the bright, fixed-crop, and image-center seeds and keeps whichever refined geometry has the best blended peak-sharpness-plus-support score instead of letting the fixed crop win by default. Each candidate still gets a tiny local geometry refinement pass so the live geometry can slide a few pixels instead of staying locked to the first anchor.
+- The classical baseline geometry selector now refines the bright, fixed-crop, and image-center seeds, prefers the candidates that clear the acceptance gate, and then keeps whichever refined geometry has the best blended peak-sharpness-plus-support score instead of letting the fixed crop win by default. Each candidate still gets a tiny local geometry refinement pass so the live geometry can slide a few pixels instead of staying locked to the first anchor.
 - The classical baseline polar scorer now votes with Sobel-edge magnitude and tangential alignment in the inner annulus, rather than giving extra weight to the middle shaft.
 - The classical baseline now requires both SNR-like confidence and absolute vote support before any estimate can seed the smoothing history, and weak near-ties stay out of the history so a borderline frame cannot overwrite a stable reading.
+- The classical baseline now also has a continuity-aware escape hatch for strong fixed-crop and image-center reads: if the peak ratio is only slightly soft but the temperature stays close to the last stable estimate, the firmware can still seed history instead of holding stale output.
+- The board selector now has a `4C` agreement window too: if several refined geometry hypotheses cluster within that range, the firmware keeps the best candidate from the cluster instead of letting a lone high-score outlier win the frame.
 - On the 2026-04-24 live `14C` trace, the CNN output was the right answer and the classical baseline still missed the spoke, so the classical baseline is not the authoritative live read on that setup.
 - On the 2026-04-24 boot trace, the same hold-last logic made the baseline look stale at about 18.4C. The underlying cause was capture quality, not a new baseline bug: the first camera attempt hit `DCMIPP` `CSI_SYNC|CSI_DPHY_CTRL`, the retry came through over-bright, and the polar vote stayed too close to the acceptance cliff to displace the existing history.
 - The classical baseline confidence gate now sits around `1.25` because the detector reports a peak-vs-background ratio instead of the old tiny margin fraction, and a separate peak-ratio gate rejects near-tied peaks before they can seed history or report a live value.
@@ -98,6 +104,6 @@ See `archive.md` for the full chronology.
 - The FileX thread startup LED blinks were removed because they were a blocking startup delay that made the board appear frozen before storage came online.
 - The FileX app thread stack was bumped from 2 KB to 8 KB after the state machine started looking like the next likely source of a silent freeze during SD/card bring-up.
 - The watchdog heartbeat thread now prints a single `[WATCHDOG] pulse` line per cycle again, so UART liveness is visible without restoring the older FileX/SD spam.
-- The classical board baseline now uses an explicit dial radius derived from the training crop height, not the old inscribed crop radius. That radius is the missing piece that keeps the polar vote aligned with the Hough-style Python baseline.
-- The classical board baseline now adds a small rim-based center search ahead of the spoke vote, so it can anchor the dial geometry before scoring the needle angle.
-- The rim center search still nudges toward the training crop center, but the penalty is gentler and the rim score is sharper so a stronger circle fit can win when it has better live support than the fixed anchor.
+- The classical board baseline now uses an explicit dial radius derived from the training crop height, not the old inscribed crop radius. That radius is still the right way to keep the polar vote aligned with the gauge ring.
+- The firmware selector no longer gives the rim-center hypothesis an unconditional geometry win. The `-5C` live trace showed that bias forcing a warm false positive, so the board now compares accepted candidates by peak-sharpness quality first, the same way the Python classical helper does.
+- The classical board baseline still adds a small rim-based center search ahead of the spoke vote, but it is now only one candidate family rather than a hard winner.
