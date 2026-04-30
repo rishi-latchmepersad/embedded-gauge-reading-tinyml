@@ -65,12 +65,12 @@ def test_estimate_board_crop_from_rgb_uses_bright_centroid() -> None:
     estimate = estimate_board_crop_from_rgb(image)
 
     assert estimate is not None
-    assert estimate.crop_box.width == 156
-    assert estimate.crop_box.height == 123
+    assert estimate.crop_box.width == 133
+    assert estimate.crop_box.height == 105
     assert estimate.crop_box.centroid_x == 111
     assert estimate.crop_box.centroid_y == 103
-    assert estimate.crop_box.x_min == 33
-    assert estimate.crop_box.y_min == 42
+    assert estimate.crop_box.x_min == 45
+    assert estimate.crop_box.y_min == 39
     assert estimate.center_luma == 220
     assert estimate.mean_luma > 0.0
     assert estimate.min_luma == 0

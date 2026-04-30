@@ -51,6 +51,12 @@
 #ifndef APP_AI_ENABLE_RECTIFIER_FALLBACK
 #define APP_AI_ENABLE_RECTIFIER_FALLBACK 0U
 #endif
+/* The raw model output has been more accurate than the smoothed board value on
+ * the current captures, so keep burst smoothing off unless we explicitly want
+ * to compare filtered behaviour. */
+#ifndef APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
+#define APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING 0U
+#endif
 /* The ATON runtime has been faulting immediately after the per-frame reset
  * path, so keep that reset behind a switch while we verify whether the model
  * can run cleanly with one-shot initialization only. */
@@ -83,14 +89,19 @@
  * drag the crop to x=0 or y=0. */
 #define APP_AI_GAUGE_CROP_BORDER_PIXELS    16U
 /* The newest live board captures want a slightly tighter crop that is biased
- * left of the bright centroid. That keeps more of the dial face in frame and
- * reduces the background washout that was pulling the prod model low. */
+ * left and a little above the bright centroid. That keeps more of the dial
+ * face and upper markings in frame and reduces the background washout that
+ * was pulling the prod model low. */
 #define APP_AI_GAUGE_CROP_WIDTH_SCALE_NUMERATOR    17U
 #define APP_AI_GAUGE_CROP_WIDTH_SCALE_DENOMINATOR  20U
 #define APP_AI_GAUGE_CROP_HEIGHT_SCALE_NUMERATOR   17U
 #define APP_AI_GAUGE_CROP_HEIGHT_SCALE_DENOMINATOR 20U
 #define APP_AI_GAUGE_CROP_CENTER_X_BIAS_PIXELS      24U
-#define APP_AI_GAUGE_CROP_CENTER_Y_BIAS_PIXELS       0U
+/* Pull the crop upward by a bounded fraction of the crop height so the top
+ * of the dial stays visible without drifting off the gauge. */
+#define APP_AI_GAUGE_CROP_CENTER_Y_BIAS_RATIO       0.11f
+#define APP_AI_GAUGE_CROP_CENTER_Y_BIAS_MIN_PIXELS  8U
+#define APP_AI_GAUGE_CROP_CENTER_Y_BIAS_MAX_PIXELS  18U
 /* The current close-up board captures drift too far downward with the
  * adaptive rectifier and miss the needle on low temperatures. Use the stable
  * training crop on-device until we retrain on the closer framing. */
@@ -191,10 +202,12 @@
 static bool app_ai_runtime_initialized = false;
 static volatile float app_ai_last_inference_value = 0.0f;
 static volatile bool app_ai_last_inference_valid = false;
+#if APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
 static float app_ai_inference_burst_history
 		[APP_AI_INFERENCE_BURST_HISTORY_SIZE] = { 0.0f };
 static size_t app_ai_inference_burst_history_count = 0U;
 static size_t app_ai_inference_burst_history_next_index = 0U;
+#endif
 static bool app_ai_npu_hw_initialized = false;
 static bool app_ai_xspi2_initialized = false;
 static const struct AppAI_ModelStageSpec *app_ai_loaded_xspi2_stage = NULL;
@@ -432,9 +445,13 @@ static void AppAI_LogXspi2MappedScaleBytes(void);
 static void AppAI_LogXspi2IndirectAndMappedPrefix(void);
 static void AppAI_LogFloatApprox(const char *label, float value);
 static float AppAI_TraceAndApplyInferenceCalibration(float raw_value);
+#if APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
 static void AppAI_ResetInferenceBurstHistory(void);
+#endif
 static bool AppAI_IsFiniteFloat(float value);
+#if APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
 static float AppAI_FilterInferenceValue(float value);
+#endif
 static void AppAI_LogInferenceResult(
 		const LL_Buffer_InfoTypeDef *output_buffer_info);
 static void AppAI_LogRectifierResult(
@@ -1659,12 +1676,7 @@ static bool AppAI_EstimateGaugeCropBoxFromYuv422(const uint8_t *frame_bytes,
 		return false;
 	}
 
-	biased_center_x = (bright_center_x > APP_AI_GAUGE_CROP_CENTER_X_BIAS_PIXELS) ?
-			(bright_center_x - APP_AI_GAUGE_CROP_CENTER_X_BIAS_PIXELS) : 0U;
-	biased_center_y = (bright_center_y > APP_AI_GAUGE_CROP_CENTER_Y_BIAS_PIXELS) ?
-			(bright_center_y - APP_AI_GAUGE_CROP_CENTER_Y_BIAS_PIXELS) : 0U;
-
-	/* Anchor a slightly tighter crop on a left-biased bright centroid instead of
+	/* Anchor a slightly tighter crop on a shifted bright centroid instead of
 	 * using the full bright bbox, which was pulling in too much background. */
 	if (training_crop_width == 0U) {
 		return false;
@@ -1683,6 +1695,21 @@ static bool AppAI_EstimateGaugeCropBoxFromYuv422(const uint8_t *frame_bytes,
 			(target_crop_width > 0U) ? target_crop_width : 1U;
 	const size_t crop_height_pixels =
 			(target_crop_height > 0U) ? target_crop_height : 1U;
+	{
+		const size_t y_bias_pixels = (size_t) (((float) crop_height_pixels
+				* APP_AI_GAUGE_CROP_CENTER_Y_BIAS_RATIO) + 0.5f);
+		const size_t bounded_y_bias =
+				(y_bias_pixels < APP_AI_GAUGE_CROP_CENTER_Y_BIAS_MIN_PIXELS) ?
+						APP_AI_GAUGE_CROP_CENTER_Y_BIAS_MIN_PIXELS
+					: ((y_bias_pixels > APP_AI_GAUGE_CROP_CENTER_Y_BIAS_MAX_PIXELS) ?
+						 APP_AI_GAUGE_CROP_CENTER_Y_BIAS_MAX_PIXELS
+					 : y_bias_pixels);
+
+		biased_center_x = (bright_center_x > APP_AI_GAUGE_CROP_CENTER_X_BIAS_PIXELS) ?
+				(bright_center_x - APP_AI_GAUGE_CROP_CENTER_X_BIAS_PIXELS) : 0U;
+		biased_center_y = (bright_center_y > bounded_y_bias) ?
+				(bright_center_y - bounded_y_bias) : 0U;
+	}
 
 	left = (biased_center_x > (crop_width_pixels / 2U)) ?
 			(biased_center_x - (crop_width_pixels / 2U)) : 0U;
@@ -3337,7 +3364,9 @@ bool App_AI_Model_Init(void) {
 	}
 
 	app_ai_runtime_initialized = true;
+#if APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
 	AppAI_ResetInferenceBurstHistory();
+#endif
 	DebugConsole_Printf("[AI] Model runtime init OK.\r\n");
 	return true;
 }
@@ -3558,6 +3587,7 @@ static float AppAI_TraceAndApplyInferenceCalibration(float raw_value) {
 	return calibrated_value;
 }
 
+#if APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
 /**
  * @brief Reset the tiny burst history used to stabilize the AI output.
  */
@@ -3567,6 +3597,7 @@ static void AppAI_ResetInferenceBurstHistory(void) {
 	app_ai_inference_burst_history_count = 0U;
 	app_ai_inference_burst_history_next_index = 0U;
 }
+#endif /* APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING */
 
 static bool AppAI_RuntimeInitStepwise(void) {
 	uint32_t t = 0U;
@@ -4099,7 +4130,9 @@ static void AppAI_LogInferenceResult(
 		app_ai_last_inference_valid = false;
 		return;
 	}
+#if APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
 	output_value = AppAI_FilterInferenceValue(output_value);
+#endif
 
 	/* Log both the final float output and the raw int8 tensor so we can spot
 	 * quantization mismatches without changing the model result path. */
@@ -4148,7 +4181,9 @@ static void AppAI_LogInferenceResult(
 		app_ai_last_inference_valid = false;
 		return;
 	}
+#if APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
 	output_value = AppAI_FilterInferenceValue(output_value);
+#endif
 
 	AppInferenceLog_FormatFloatMicros(line, sizeof(line),
 			"[AI] Inference value: ", output_value);
@@ -4159,6 +4194,7 @@ static void AppAI_LogInferenceResult(
 }
 #endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
 
+#if APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
 /**
  * @brief Smooth the user-facing inference value across captures.
  *
@@ -4246,6 +4282,7 @@ static float AppAI_FilterInferenceValue(float value) {
 
 	return ordered[sample_count / 2U];
 }
+#endif /* APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING */
 
 /**
  * @brief Return true only for ordinary finite float values.

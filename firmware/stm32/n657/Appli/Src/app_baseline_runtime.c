@@ -75,7 +75,7 @@ typedef struct
  * it just encodes the framing we already observed on the board. */
 #define APP_BASELINE_BOARD_PRIOR_CENTER_X_RATIO 0.4900f
 #define APP_BASELINE_BOARD_PRIOR_CENTER_Y_RATIO 0.4460f
-#define APP_BASELINE_BOARD_PRIOR_RADIUS_RATIO 0.2900f
+#define APP_BASELINE_BOARD_PRIOR_RADIUS_RATIO 0.3500f
 /* A tiny circle-style center search keeps the baseline aligned to the dial
  * rim before we score the needle spoke. */
 #define APP_BASELINE_CENTER_SEARCH_COARSE_STEP_PIXELS 8U
@@ -88,8 +88,10 @@ typedef struct
  * A peak needs to stand clearly above the angular background before we seed
  * history or report a live baseline value. */
 #define APP_BASELINE_CONFIDENCE_THRESHOLD 1.25f
-/* Even a strong peak is not trustworthy if the runner-up is almost tied. */
-#define APP_BASELINE_MIN_PEAK_RATIO 1.10f
+/* Even a strong peak is not trustworthy if the runner-up is almost tied.
+ * Clean ideal captures often have broader but still correct peaks, so keep
+ * this close to the Python baseline's permissive gate. */
+#define APP_BASELINE_MIN_PEAK_RATIO 1.01f
 /* Strong fixed-crop or image-center reads can still be promoted when they stay
  * close to the last stable temperature, even if the peak ratio is a little
  * soft. This keeps a good continuation frame from getting stuck behind stale
@@ -100,6 +102,10 @@ typedef struct
 /* When multiple geometry hypotheses agree within a few degrees, keep that
  * consensus cluster instead of letting a lone high-score outlier win. */
 #define APP_BASELINE_CONSENSUS_TEMP_DELTA_C 4.0f
+/* A consensus cluster must still be close enough in quality to the raw best
+ * candidate. This keeps a hot agreement cluster from overriding a clearly
+ * stronger near-target geometry. */
+#define APP_BASELINE_CONSENSUS_MIN_QUALITY_RATIO 0.85f
 /* Let a much stronger fallback geometry override the fixed crop when the
  * fixed anchor is clearly missing the needle. */
 #define APP_BASELINE_GEOMETRY_OVERRIDE_RATIO 1.50f
@@ -107,11 +113,11 @@ typedef struct
  * fixed anchor can slide a few pixels when the live crop is slightly off. */
 #define APP_BASELINE_GEOMETRY_SEARCH_RADIUS_PIXELS 8U
 #define APP_BASELINE_GEOMETRY_SEARCH_STEP_PIXELS 4U
-/* Keep the geometry sweep behind an explicit flag. The live default now
- * prefers the primary fixed-crop anchor first, then falls back to the inner
- * dial center, instead of letting a local sweep override the anchor with a
- * nearby but wrong offset. */
-#define APP_BASELINE_ENABLE_LOCAL_GEOMETRY_SWEEP 0U
+/* Run the narrow local geometry sweep by default so each seed can slide a few
+ * pixels when the crop is slightly off. The sweep stays classical and small;
+ * it just gives the seed geometries a chance to recover the inner Celsius
+ * needle instead of freezing on the first plausible anchor. */
+#define APP_BASELINE_ENABLE_LOCAL_GEOMETRY_SWEEP 1U
 /* Require a minimum amount of absolute vote support before we let a brand-new
  * baseline estimate seed the history. The hard-case sweep showed that the
  * gradient-polar detector is already the best classical family, so this floor
@@ -173,6 +179,7 @@ static bool AppBaselineRuntime_EstimateFromBoardPriorHypothesis(
 	AppBaselineRuntime_Estimate_t *estimate_out);
 static float AppBaselineRuntime_ComputeEstimateQuality(
 	const AppBaselineRuntime_Estimate_t *estimate);
+static int AppBaselineRuntime_SourcePriority(const char *source_label);
 static bool AppBaselineRuntime_PassesAcceptanceGate(
 	const AppBaselineRuntime_Estimate_t *estimate);
 static bool AppBaselineRuntime_IsBetterEstimate(
@@ -638,6 +645,9 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 					selected_estimate = candidate_estimate;
 				}
 			}
+
+			selected_estimate = AppBaselineRuntime_SelectConsensusEstimate(
+				candidate_estimates, candidate_ok, selected_estimate);
 		}
 #endif
 	}
@@ -724,13 +734,13 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
  *
  * We mirror the Python classical baseline here: confidence alone is not
  * enough, because broad near-ties can still have a high vote sum. A candidate
- * should only score well when its peak is clearly sharper than the runner-up.
+ * should score well when it is strong and stable, but a tiny runner-up should
+ * not explode the score and let a spiky false geometry win.
  */
 static float AppBaselineRuntime_ComputeEstimateQuality(
 	const AppBaselineRuntime_Estimate_t *estimate)
 {
 	float peak_ratio = 0.0f;
-	float peak_excess = 0.0f;
 
 	if ((estimate == NULL) || !estimate->valid)
 	{
@@ -751,14 +761,57 @@ static float AppBaselineRuntime_ComputeEstimateQuality(
 		peak_ratio = estimate->best_score;
 	}
 
-	peak_excess = peak_ratio - 1.0f;
-	if (peak_excess < 0.0f)
+	if (peak_ratio < 1.0f)
 	{
-		peak_excess = 0.0f;
+		peak_ratio = 1.0f;
 	}
 
 	return AppBaselineRuntime_ClampFloat(
-		estimate->confidence * peak_excess, 0.0f, 1000000.0f);
+		estimate->confidence / peak_ratio, 0.0f, 1000000.0f);
+}
+
+/**
+ * @brief Return a small priority score for live geometry sources.
+ *
+ * Clean, near-centered captures should prefer the stable fixed-crop anchor
+ * first, then the inner image center, and only then fall back to the
+ * board-specific prior before we consider the bright and rim hypotheses. The
+ * board prior is still useful as a rescue path on awkward framings, but it
+ * should not outrank the stable crop on the ideal captures we care about most.
+ */
+static int AppBaselineRuntime_SourcePriority(const char *source_label)
+{
+	if (source_label == NULL)
+	{
+		return 0;
+	}
+
+	if (strcmp(source_label, "fixed-crop-polar") == 0)
+	{
+		return 5;
+	}
+
+	if (strcmp(source_label, "image-center-polar") == 0)
+	{
+		return 4;
+	}
+
+	if (strcmp(source_label, "board-prior-polar") == 0)
+	{
+		return 3;
+	}
+
+	if (strcmp(source_label, "bright-center-polar") == 0)
+	{
+		return 2;
+	}
+
+	if (strcmp(source_label, "rim-center-polar") == 0)
+	{
+		return 1;
+	}
+
+	return 0;
 }
 
 /**
@@ -853,18 +906,45 @@ static bool AppBaselineRuntime_IsBetterEstimate(
 			return false;
 		}
 	}
-	// ...existing code...
-
 	if (candidate_quality > incumbent_quality)
 	{
+		/* Source priority wins before raw quality so ideal captures keep the
+		 * stable fixed-crop anchor instead of drifting to a rim false
+		 * positive. */
+		const int candidate_priority =
+			AppBaselineRuntime_SourcePriority(candidate->source_label);
+		const int incumbent_priority =
+			AppBaselineRuntime_SourcePriority(incumbent->source_label);
+
+		if (candidate_priority > incumbent_priority)
+		{
+			return true;
+		}
+		if (candidate_priority < incumbent_priority)
+		{
+			return false;
+		}
+
 		return true;
 	}
 	if (candidate_quality < incumbent_quality)
 	{
+		const int candidate_priority =
+			AppBaselineRuntime_SourcePriority(candidate->source_label);
+		const int incumbent_priority =
+			AppBaselineRuntime_SourcePriority(incumbent->source_label);
+
+		if (candidate_priority > incumbent_priority)
+		{
+			return true;
+		}
+		if (candidate_priority < incumbent_priority)
+		{
+			return false;
+		}
+
 		return false;
 	}
-	// ...existing code...
-
 	{
 		const float candidate_peak_ratio =
 			(candidate->runner_up_score > 0.0f) ? (candidate->best_score / candidate->runner_up_score) : candidate->best_score;
@@ -1408,6 +1488,7 @@ static const AppBaselineRuntime_Estimate_t *AppBaselineRuntime_SelectConsensusEs
 	const AppBaselineRuntime_Estimate_t *fallback_estimate)
 {
 	const AppBaselineRuntime_Estimate_t *best_estimate = NULL;
+	int best_priority = -1;
 	float best_quality = -1.0f;
 	float best_peak_ratio = -1.0f;
 	float best_confidence = -1.0f;
@@ -1438,46 +1519,50 @@ static const AppBaselineRuntime_Estimate_t *AppBaselineRuntime_SelectConsensusEs
 		return fallback_estimate;
 	}
 
+	size_t support[5] = {0U};
+
+	for (size_t valid_index = 0U; valid_index < valid_count; ++valid_index)
 	{
-		size_t support[5] = {0U};
+		const size_t i = valid_indices[valid_index];
+		const AppBaselineRuntime_Estimate_t *estimate_i = estimates[i];
+		size_t agreement = 1U;
 
-		for (size_t valid_index = 0U; valid_index < valid_count; ++valid_index)
+		for (size_t other_index = 0U; other_index < valid_count; ++other_index)
 		{
-			const size_t i = valid_indices[valid_index];
-			const AppBaselineRuntime_Estimate_t *estimate_i = estimates[i];
-			size_t agreement = 1U;
+			const size_t j = valid_indices[other_index];
+			const AppBaselineRuntime_Estimate_t *estimate_j = estimates[j];
 
-			for (size_t other_index = 0U; other_index < valid_count; ++other_index)
+			if ((i == j) || (estimate_j == NULL))
 			{
-				const size_t j = valid_indices[other_index];
-				const AppBaselineRuntime_Estimate_t *estimate_j = estimates[j];
-
-				if ((i == j) || (estimate_j == NULL))
-				{
-					continue;
-				}
-
-				if (fabsf(estimate_i->temperature_c - estimate_j->temperature_c) <=
-					APP_BASELINE_CONSENSUS_TEMP_DELTA_C)
-				{
-					++agreement;
-				}
+				continue;
 			}
 
-			support[i] = agreement;
-			if (agreement > best_support)
+			if (fabsf(estimate_i->temperature_c - estimate_j->temperature_c) <=
+				APP_BASELINE_CONSENSUS_TEMP_DELTA_C)
 			{
-				best_support = agreement;
+				++agreement;
 			}
 		}
 
-		if (best_support < 2U)
+		support[i] = agreement;
+		if (agreement > best_support)
 		{
-			return fallback_estimate;
+			best_support = agreement;
 		}
+	}
 
-		for (size_t valid_index = 0U; valid_index < valid_count; ++valid_index)
-		{
+	if (best_support < 2U)
+	{
+		return fallback_estimate;
+	}
+
+	const float fallback_quality =
+		AppBaselineRuntime_ComputeEstimateQuality(fallback_estimate);
+	const int fallback_priority =
+		AppBaselineRuntime_SourcePriority(fallback_estimate->source_label);
+
+	for (size_t valid_index = 0U; valid_index < valid_count; ++valid_index)
+	{
 			const size_t i = valid_indices[valid_index];
 			const AppBaselineRuntime_Estimate_t *candidate = estimates[i];
 			const float candidate_quality =
@@ -1486,6 +1571,8 @@ static const AppBaselineRuntime_Estimate_t *AppBaselineRuntime_SelectConsensusEs
 				(candidate->runner_up_score > 0.0f)
 					? (candidate->best_score / candidate->runner_up_score)
 					: candidate->best_score;
+			const int candidate_priority =
+				AppBaselineRuntime_SourcePriority(candidate->source_label);
 
 			if (support[i] != best_support)
 			{
@@ -1493,27 +1580,53 @@ static const AppBaselineRuntime_Estimate_t *AppBaselineRuntime_SelectConsensusEs
 			}
 
 			if ((best_estimate == NULL) ||
-				(candidate_quality > best_quality) ||
-				((candidate_quality == best_quality) &&
+				(candidate_priority > best_priority) ||
+				((candidate_priority == best_priority) &&
+				 (candidate_quality > best_quality)) ||
+				((candidate_priority == best_priority) &&
+				 (candidate_quality == best_quality) &&
 				 (candidate_peak_ratio > best_peak_ratio)) ||
-				((candidate_quality == best_quality) &&
+				((candidate_priority == best_priority) &&
+				 (candidate_quality == best_quality) &&
 				 (candidate_peak_ratio == best_peak_ratio) &&
 				 (candidate->confidence > best_confidence)) ||
-				((candidate_quality == best_quality) &&
+				((candidate_priority == best_priority) &&
+				 (candidate_quality == best_quality) &&
 				 (candidate_peak_ratio == best_peak_ratio) &&
 				 (candidate->confidence == best_confidence) &&
 				 (candidate->best_score > best_score)))
 			{
 				best_estimate = candidate;
+				best_priority = candidate_priority;
 				best_quality = candidate_quality;
 				best_peak_ratio = candidate_peak_ratio;
 				best_confidence = candidate->confidence;
 				best_score = candidate->best_score;
 			}
 		}
+
+	if ((best_estimate == NULL) || (fallback_quality <= 0.0f))
+	{
+		return fallback_estimate;
 	}
 
-	return (best_estimate != NULL) ? best_estimate : fallback_estimate;
+	if (best_priority < fallback_priority)
+	{
+		return fallback_estimate;
+	}
+
+	if (best_priority > fallback_priority)
+	{
+		return best_estimate;
+	}
+
+	if (best_quality >=
+		(fallback_quality * APP_BASELINE_CONSENSUS_MIN_QUALITY_RATIO))
+	{
+		return best_estimate;
+	}
+
+	return fallback_estimate;
 }
 
 /**
@@ -1787,6 +1900,22 @@ static bool AppBaselineRuntime_IsInSubdialMask(size_t center_x, size_t center_y,
 }
 
 /**
+ * @brief Return a smooth weight that emphasizes the middle of the shaft.
+ *
+ * The dial face is noisy near the hub and the outer tick ring, so the ray
+ * vote should focus on the cleaner middle band where the dark needle is most
+ * visible.
+ */
+static float AppBaselineRuntime_MiddleShaftWeight(float sample_progress)
+{
+	const float shaft_center = 0.55f;
+	const float shaft_sigma = 0.18f;
+	const float normalized = (sample_progress - shaft_center) / shaft_sigma;
+
+	return expf(-0.5f * normalized * normalized);
+}
+
+/**
  * @brief Score one ray candidate by favoring dark pixels on the needle line.
  */
 static float AppBaselineRuntime_ScoreAngle(const uint8_t *frame_bytes,
@@ -1851,8 +1980,9 @@ static float AppBaselineRuntime_ScoreAngle(const uint8_t *frame_bytes,
 	{
 		const float radius = start_radius + (radius_step * (float)sample_index);
 		const float sample_progress = (float)sample_index / (float)(APP_BASELINE_RAY_SAMPLES - 1U);
-		/* Prefer the cleaner shaft near the center over the noisy tip/tick region. */
-		const float weight = 1.0f - (0.50f * sample_progress);
+		/* Prefer the cleaner middle shaft over the noisy hub and tip/tick region. */
+		const float weight = 0.35f +
+			(0.65f * AppBaselineRuntime_MiddleShaftWeight(sample_progress));
 		const long sample_x = AppBaselineRuntime_RoundToLong(
 			center_x_f + (unit_dx * radius));
 		const long sample_y = AppBaselineRuntime_RoundToLong(
@@ -2074,19 +2204,18 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 						/* Tangential component: measures how well the edge aligns with
 						 * a radial spoke. */
 						const float tangential = (grad_x * radial_y) - (grad_y * radial_x);
-						/* Darkness weight: a needle is dark on a light background. */
+						/* Darkness weight: the needle is dark on a light background. */
 						const float darkness = (255.0f - luma) / 255.0f;
+						const float sample_progress =
+							(radius - search_radius_min) /
+							(search_radius_max - search_radius_min + 1e-6f);
+						const float shaft_weight = 0.35f +
+							(0.65f * AppBaselineRuntime_MiddleShaftWeight(sample_progress));
 
-						/* Redness boost: many needles are red. */
-						float u = 128.0f, v = 128.0f;
-						AppBaselineRuntime_ReadChroma(frame_bytes, frame_width_pixels, x, y, &u, &v);
-						/* Redness proxy: V > 128 and V > U. */
-						const float redness = (v > 135.0f && v > u + 10.0f) ? 1.0f : 0.0f;
-						const float red_boost = 1.0f + (5.0f * redness);
-
-						const float vote = edge_mag * fabsf(tangential) * darkness * red_boost;
-						const size_t bin_index = (size_t)AppBaselineRuntime_RoundToLong(
-							fraction * (float)(APP_BASELINE_ANGLE_BINS - 1U));
+						const float vote =
+							edge_mag * fabsf(tangential) * darkness * shaft_weight;
+					const size_t bin_index = (size_t)AppBaselineRuntime_RoundToLong(
+						fraction * (float)(APP_BASELINE_ANGLE_BINS - 1U));
 
 						if (bin_index < APP_BASELINE_ANGLE_BINS)
 						{
@@ -2173,7 +2302,8 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 			float best_angle = min_angle_rad + (refined_fraction * sweep_rad);
 
 			/* Inversion check: compare darkness and redness along the detected ray vs the
-			 * opposite ray. */
+			 * opposite ray. The needle is dark on a light background, so we keep
+			 * the comparison centered on dark shaft evidence instead of color. */
 			{
 				float score_forward = 0.0f;
 				float score_backward = 0.0f;
@@ -2187,22 +2317,19 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 					const long fy = AppBaselineRuntime_RoundToLong((float)center_y + (sin_a * r_frac * dial_radius_px));
 					const long bx = AppBaselineRuntime_RoundToLong((float)center_x - (cos_a * r_frac * dial_radius_px));
 					const long by = AppBaselineRuntime_RoundToLong((float)center_y - (sin_a * r_frac * dial_radius_px));
+					const float shaft_progress = (r_frac - 0.2f) / 0.6f;
+					const float shaft_weight =
+						0.35f + (0.65f * AppBaselineRuntime_MiddleShaftWeight(shaft_progress));
 
 					if (fx >= 0 && (size_t)fx < frame_width_pixels && fy >= 0 && (size_t)fy < frame_height_pixels)
 					{
 						const float luma = AppBaselineRuntime_ReadLuma(frame_bytes, frame_width_pixels, (size_t)fx, (size_t)fy);
-						float u = 128.0f, v = 128.0f;
-						AppBaselineRuntime_ReadChroma(frame_bytes, frame_width_pixels, (size_t)fx, (size_t)fy, &u, &v);
-						const float redness = (v > 135.0f && v > u + 10.0f) ? 1.0f : 0.0f;
-						score_forward += (255.0f - luma) / 255.0f + (5.0f * redness);
+						score_forward += ((255.0f - luma) / 255.0f) * shaft_weight;
 					}
 					if (bx >= 0 && (size_t)bx < frame_width_pixels && by >= 0 && (size_t)by < frame_height_pixels)
 					{
 						const float luma = AppBaselineRuntime_ReadLuma(frame_bytes, frame_width_pixels, (size_t)bx, (size_t)by);
-						float u = 128.0f, v = 128.0f;
-						AppBaselineRuntime_ReadChroma(frame_bytes, frame_width_pixels, (size_t)bx, (size_t)by, &u, &v);
-						const float redness = (v > 135.0f && v > u + 10.0f) ? 1.0f : 0.0f;
-						score_backward += (255.0f - luma) / 255.0f + (5.0f * redness);
+						score_backward += ((255.0f - luma) / 255.0f) * shaft_weight;
 					}
 					count++;
 				}

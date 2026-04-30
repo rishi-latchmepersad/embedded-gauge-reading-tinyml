@@ -19,6 +19,7 @@ from embedded_gauge_reading_tinyml.baseline_classical_cv import (
     detect_needle_unit_vector,
     detect_needle_unit_vector_with_geometry_fallback,
     evaluate_classical_baseline,
+    needle_vector_to_value,
     select_best_geometry_detection,
 )
 from embedded_gauge_reading_tinyml.dataset import load_dataset
@@ -191,7 +192,7 @@ def test_detect_needle_unit_vector_with_geometry_fallback_uses_secondary_when_pr
 def test_select_best_geometry_detection_prefers_consensus_cluster_over_outlier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A lone high-quality outlier should not beat a small agreeing cluster."""
+    """A close-quality agreeing cluster should beat a lone outlier."""
     image: np.ndarray = np.zeros((16, 16, 3), dtype=np.uint8)
     spec = load_gauge_specs()["littlegood_home_temp_gauge_c"]
     candidates = [
@@ -209,13 +210,13 @@ def test_select_best_geometry_detection_prefers_consensus_cluster_over_outlier(
     ) -> NeedleDetection | None:
         if center_xy == candidates[0].center_xy:
             dx, dy = _unit_vector_for_value(18.0, spec)
-            return _make_detection(unit_dx=dx, unit_dy=dy, confidence=5.0, peak_ratio=1.20)
+            return _make_detection(unit_dx=dx, unit_dy=dy, confidence=14.5, peak_ratio=1.05)
         if center_xy == candidates[1].center_xy:
             dx, dy = _unit_vector_for_value(20.0, spec)
-            return _make_detection(unit_dx=dx, unit_dy=dy, confidence=5.0, peak_ratio=1.30)
+            return _make_detection(unit_dx=dx, unit_dy=dy, confidence=14.0, peak_ratio=1.05)
         if center_xy == candidates[2].center_xy:
             dx, dy = _unit_vector_for_value(45.0, spec)
-            return _make_detection(unit_dx=dx, unit_dy=dy, confidence=20.0, peak_ratio=1.40)
+            return _make_detection(unit_dx=dx, unit_dy=dy, confidence=16.0, peak_ratio=1.05)
         return None
 
     monkeypatch.setattr(classical_cv, "detect_needle_unit_vector", fake_detect)
@@ -227,8 +228,55 @@ def test_select_best_geometry_detection_prefers_consensus_cluster_over_outlier(
     )
 
     assert selection is not None
-    assert selection.candidate.label == "cluster_b"
-    assert selection.detection.confidence == pytest.approx(5.0)
+    assert selection.candidate.label == "cluster_a"
+    assert selection.detection.confidence == pytest.approx(14.5)
+
+
+def test_select_best_geometry_detection_penalizes_spiky_peak_outliers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cleaner near-target candidate should beat a spikier hot outlier."""
+    image: np.ndarray = np.zeros((16, 16, 3), dtype=np.uint8)
+    spec = load_gauge_specs()["littlegood_home_temp_gauge_c"]
+    cleaner = GeometryCandidate(label="cleaner", center_xy=(4.0, 4.0), dial_radius_px=6.0)
+    spikier = GeometryCandidate(label="spikier", center_xy=(8.0, 4.0), dial_radius_px=6.0)
+    candidates = [cleaner, spikier]
+
+    def fake_detect(
+        image_bgr: np.ndarray,
+        *,
+        center_xy: tuple[float, float],
+        dial_radius_px: float,
+        gauge_spec=None,
+    ) -> NeedleDetection | None:
+        if center_xy == cleaner.center_xy:
+            dx, dy = _unit_vector_for_value(5.0, spec)
+            return _make_detection(unit_dx=dx, unit_dy=dy, confidence=74.9, peak_ratio=1.41)
+        if center_xy == spikier.center_xy:
+            dx, dy = _unit_vector_for_value(10.0, spec)
+            return _make_detection(unit_dx=dx, unit_dy=dy, confidence=68.8, peak_ratio=1.84)
+        return None
+
+    monkeypatch.setattr(classical_cv, "detect_needle_unit_vector", fake_detect)
+    monkeypatch.setattr(
+        classical_cv,
+        "_sample_line_darkness",
+        lambda *args, **kwargs: (0.80, 0.50),
+    )
+
+    selection = select_best_geometry_detection(
+        image,
+        candidates=candidates,
+        gauge_spec=spec,
+    )
+
+    assert selection is not None
+    assert selection.candidate.label == "cleaner"
+    assert needle_vector_to_value(
+        selection.detection.unit_dx,
+        selection.detection.unit_dy,
+        spec,
+    ) == pytest.approx(5.0, abs=0.2)
 
 
 def test_run_single_image_baseline_uses_hough_geometry_by_default(
@@ -351,11 +399,11 @@ def test_run_single_image_baseline_falls_back_to_board_prior_when_hough_is_weak(
     assert result.detection.confidence == pytest.approx(9.0)
 
 
-def test_run_single_image_baseline_prefers_board_prior_scan_over_confident_hough(
+def test_run_single_image_baseline_keeps_confident_hough_over_board_prior_scan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A strong board-prior shaft scan should beat a confident but wrong Hough seed."""
+    """A confident Hough seed should stay in charge over the board-prior scan."""
     image_path: Path = tmp_path / "frame.png"
     image_bgr: np.ndarray = np.full((32, 32, 3), 128, dtype=np.uint8)
     assert cv2.imwrite(str(image_path), image_bgr)
@@ -427,11 +475,44 @@ def test_run_single_image_baseline_prefers_board_prior_scan_over_confident_hough
         )
     )
 
-    assert result.center_xy[0] == pytest.approx(board_prior_candidate.center_xy[0])
-    assert result.center_xy[1] == pytest.approx(board_prior_candidate.center_xy[1])
-    assert result.dial_radius_px == pytest.approx(board_prior_candidate.dial_radius_px)
+    assert result.center_xy[0] == pytest.approx(hough_center_xy[0])
+    assert result.center_xy[1] == pytest.approx(hough_center_xy[1])
+    assert result.dial_radius_px == pytest.approx(hough_radius_px)
     assert result.detection is not None
-    assert result.detection.confidence == pytest.approx(1.5)
+    assert result.detection.confidence == pytest.approx(12.0)
+
+
+@pytest.mark.parametrize(
+    ("image_name", "expected_value"),
+    [
+        ("capture_p25c.jpg", 25.0),
+        ("capture_p30c.jpg", 30.0),
+        ("capture_p31c.jpg", 31.0),
+        ("capture_p35c.jpg", 35.0),
+        ("capture_p45c.png", 45.0),
+        ("capture_2026-04-29_09-35-33.png", 5.0),
+    ],
+)
+def test_run_single_image_baseline_on_clean_ideal_captures(
+    tmp_path: Path,
+    image_name: str,
+    expected_value: float,
+) -> None:
+    """The default baseline should stay usable on clean ideal captures."""
+    image_path = Path(__file__).resolve().parents[2] / "captured_images" / image_name
+    if not image_path.exists():
+        pytest.skip(f"Missing clean capture fixture: {image_name}")
+
+    result = single_image_baseline.run_single_image_baseline(
+        single_image_baseline.SingleImageBaselineConfig(
+            image_path=image_path,
+            artifacts_dir=tmp_path,
+            run_name=image_path.stem,
+        )
+    )
+
+    assert result.predicted_value is not None
+    assert abs(result.predicted_value - expected_value) <= 10.0
 
 
 def test_estimate_dial_geometry_rejects_implausible_off_center_circle(

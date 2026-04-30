@@ -33,7 +33,7 @@ extern "C" {
 #define CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC 0
 #define CAMERA_CAPTURE_TARGET_FRAME_COUNT   4U
 /* Brightness gate: reject frames that are still too dim for the gauge face or
- * blown out, then nudge the sensor before trying again.
+ * genuinely blown out, then nudge the sensor before trying again.
  *
  * Step size history: 1/12 caused a hard oscillation between two exposure
  * values that had no stable midpoint — the step was larger than the gap
@@ -45,9 +45,13 @@ extern "C" {
  * in the crop from the needle and dial markings.  A min of 80 rejected frames
  * that were genuinely usable for inference.
  *
- * BRIGHT_MEAN_THRESHOLD raised from 200 to 210: gives a small guard band
- * above the dark limit so a borderline mean=200 frame is accepted as OK
- * rather than being right on the too-bright edge.
+ * The newer live captures are much brighter than the older calibration notes.
+ * Usable frames can land around mean ~180-222 with a still-visible dark needle,
+ * so the old 200/20 bright gate was too eager while the later 230/100 gate
+ * became too lax.  The thin needle leaves some dark pixels in otherwise bright
+ * frames, so min-Y alone is not enough.  We now use a bright-pixel ratio gate
+ * to catch scenes where most of the crop is still near-white even if a narrow
+ * needle keeps the minimum luma low.
  *
  * Brightness gate now measures the full training crop (155x123 = ~19k pixels)
  * rather than a small centre ROI.  A specular reflection on the gauge glass
@@ -56,13 +60,17 @@ extern "C" {
  * under-reading.  Crop-mean thresholds are calibrated from captured frames:
  * good frames (13:xx session, model reading ~31C) had crop mean 97-156;
  * bad frames (18:xx, model reading 14-20C) had crop mean 43-87.
- * DARK threshold=100 rejects the dim frames; BRIGHT threshold=200 with
- * min=20 catches blown-out overexposure (min=20 because the needle and
- * markings will always produce some dark pixels in the crop). */
+ * DARK threshold=100 rejects the dim frames; BRIGHT threshold=180 plus a
+ * 50% bright-pixel ratio catches the still-overexposed frames, while a
+ * 220/45 solid-overexposure fallback still catches the near-white frame from
+ * 11:51. */
 #define CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD     100U
 #define CAMERA_CAPTURE_BRIGHTNESS_DARK_MAX_THRESHOLD      240U
-#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD   200U
-#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MIN_THRESHOLD     20U
+#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD   180U
+#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_PIXEL_LEVEL_THRESHOLD 220U
+#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_RATIO_PERCENT     50U
+#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_SOLID_MEAN_THRESHOLD 220U
+#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MIN_THRESHOLD     45U
 #define CAMERA_CAPTURE_BRIGHTNESS_RETRY_LIMIT              16U
 /* Multiplicative step: exposure multiplied/divided by 2 per nudge (1 stop).
  * Linear steps across the full sensor range (26–33333 µs) are too coarse at

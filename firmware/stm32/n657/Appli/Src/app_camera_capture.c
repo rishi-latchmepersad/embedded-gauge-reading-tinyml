@@ -86,10 +86,11 @@ typedef enum {
 } AppCameraCapture_BrightnessGate_t;
 
 /**
- * @brief Center-ROI luma summary used to decide whether to accept a frame.
+ * @brief Crop luma summary used to decide whether to accept a frame.
  */
 typedef struct {
 	uint32_t sample_count;
+	uint32_t bright_sample_count;
 	uint8_t min_y;
 	uint8_t max_y;
 	uint32_t mean_y;
@@ -112,6 +113,7 @@ static bool AppCameraCapture_ComputeBrightnessStats(const uint8_t *buffer_ptr,
 	const uint32_t stride_bytes = frame_width_pixels * bytes_per_pixel;
 	uint64_t sum_y = 0U;
 	uint32_t sample_count = 0U;
+	uint32_t bright_sample_count = 0U;
 	uint8_t min_y = 0xFFU;
 	uint8_t max_y = 0U;
 
@@ -144,6 +146,9 @@ static bool AppCameraCapture_ComputeBrightnessStats(const uint8_t *buffer_ptr,
 			if (y_sample > max_y) {
 				max_y = y_sample;
 			}
+			if (y_sample >= CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_PIXEL_LEVEL_THRESHOLD) {
+				bright_sample_count++;
+			}
 			sum_y += y_sample;
 			sample_count++;
 		}
@@ -154,6 +159,7 @@ static bool AppCameraCapture_ComputeBrightnessStats(const uint8_t *buffer_ptr,
 	}
 
 	stats->sample_count = sample_count;
+	stats->bright_sample_count = bright_sample_count;
 	stats->min_y = min_y;
 	stats->max_y = max_y;
 	stats->mean_y = (uint32_t) (sum_y / sample_count);
@@ -176,8 +182,15 @@ static AppCameraCapture_BrightnessGate_t AppCameraCapture_ClassifyBrightness(
 		return APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_DARK;
 	}
 
-	if ((stats->mean_y >= CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD)
+	if ((stats->mean_y >= CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_SOLID_MEAN_THRESHOLD)
 			&& (stats->min_y >= CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MIN_THRESHOLD)) {
+		return APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_BRIGHT;
+	}
+
+	if ((stats->mean_y >= CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD)
+			&& ((stats->bright_sample_count * 100U)
+					>= (stats->sample_count
+							* CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_RATIO_PERCENT))) {
 		return APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_BRIGHT;
 	}
 
@@ -204,15 +217,21 @@ static void AppCameraCapture_LogBrightnessGateDecision(
 	}
 
 	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] Brightness gate (%s): samples=%lu mean=%lu min=%u max=%u thresholds dark<=%u/%u bright>=%u/%u.\r\n",
+			"[CAMERA][CAPTURE] Brightness gate (%s): samples=%lu mean=%lu min=%u max=%u bright=%lu (%lu%%) thresholds dark<=%u/%u bright_ratio>=%u%%@%u bright_solid>=%u/%u.\r\n",
 			decision_label,
 			(unsigned long) ((stats != NULL) ? stats->sample_count : 0U),
 			(unsigned long) ((stats != NULL) ? stats->mean_y : 0U),
 			(unsigned int) ((stats != NULL) ? stats->min_y : 0U),
 			(unsigned int) ((stats != NULL) ? stats->max_y : 0U),
+			(unsigned long) ((stats != NULL) ? stats->bright_sample_count : 0U),
+			(unsigned long) (((stats != NULL) && (stats->sample_count != 0U))
+					? ((stats->bright_sample_count * 100U) / stats->sample_count)
+					: 0U),
 			(unsigned int) CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD,
 			(unsigned int) CAMERA_CAPTURE_BRIGHTNESS_DARK_MAX_THRESHOLD,
 			(unsigned int) CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD,
+			(unsigned int) CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_RATIO_PERCENT,
+			(unsigned int) CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_SOLID_MEAN_THRESHOLD,
 			(unsigned int) CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MIN_THRESHOLD);
 }
 /* USER CODE END PV */

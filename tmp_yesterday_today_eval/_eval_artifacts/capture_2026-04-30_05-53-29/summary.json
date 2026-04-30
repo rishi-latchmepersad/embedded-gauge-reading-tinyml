@@ -1,0 +1,44 @@
+{
+  "config": {
+    "image_path": "d:\\Projects\\embedded-gauge-reading-tinyml\\tmp_yesterday_today_eval\\capture_2026-04-30_05-53-29.png",
+    "gauge_id": "littlegood_home_temp_gauge_c",
+    "center_x": null,
+    "center_y": null,
+    "dial_radius_px": null,
+    "geometry_search_mode": "hough_first",
+    "geometry_confidence_threshold": 4.0,
+    "artifacts_dir": "d:\\Projects\\embedded-gauge-reading-tinyml\\tmp_yesterday_today_eval\\_eval_artifacts",
+    "run_name": "capture_2026-04-30_05-53-29"
+  },
+  "gauge_spec": {
+    "gauge_id": "littlegood_home_temp_gauge_c",
+    "min_angle_rad": 2.356194490192345,
+    "sweep_rad": 4.71238898038469,
+    "min_value": -30.0,
+    "max_value": 50.0
+  },
+  "center_xy": [
+    115.80000305175781,
+    99.00000762939453
+  ],
+  "dial_radius_px": 59.339996337890625,
+  "detection": {
+    "unit_dx": -0.3173046564050922,
+    "unit_dy": -0.9483236552061993,
+    "confidence": 67.56086739686671,
+    "peak_value": 29.64697265625,
+    "runner_up_value": 27.744182586669922,
+    "peak_ratio": 1.0685833890991727,
+    "peak_margin": 1.9027900695800781
+  },
+  "selected_candidate": {
+    "label": "hough",
+    "center_xy": [
+      115.80000305175781,
+      99.00000762939453
+    ],
+    "dial_radius_px": 59.339996337890625
+  },
+  "predicted_value": 4.518518518518512,
+  "annotated_image_path": "d:\\Projects\\embedded-gauge-reading-tinyml\\tmp_yesterday_today_eval\\_eval_artifacts\\capture_2026-04-30_05-53-29\\capture_2026-04-30_05-53-29_annotated.png"
+}

@@ -25,6 +25,7 @@ from embedded_gauge_reading_tinyml.baseline_classical_cv import (
     _detect_needle_unit_vector_shaft_scan,
     _detect_needle_unit_vector_spoke_improved,
     detect_needle_unit_vector,
+    select_best_geometry_detection,
     needle_detection_quality,
     needle_vector_to_value,
 )
@@ -45,11 +46,22 @@ HOUGH_GEOMETRY_MAX_RADIUS_RATIO: Final[float] = 0.60
 HOUGH_GEOMETRY_RADIUS_SCALE: Final[float] = 0.75
 """Use a slightly smaller effective radius than the raw Hough circle."""
 
+SMALL_IMAGE_MAX_DIM_PX: Final[float] = 320.0
+"""Below this size we trust the Hough seed directly and skip board-prior competition."""
+
 LOCAL_CENTER_OFFSETS_PX: Final[tuple[float, ...]] = (-16.0, 0.0, 16.0)
 """Small center shifts that help the spoke voter recover near-miss crops."""
 
 CENTER_RADIUS_SCALES: Final[tuple[float, ...]] = (0.35, 0.45, 0.55)
 """Fallback radius scales that span the common board-capture zoom range."""
+
+BOARD_PRIOR_FINE_CENTER_OFFSETS_PX: Final[tuple[float, ...]] = tuple(
+    float(offset) for offset in range(-18, 19, 2)
+)
+"""Broader board-prior offsets used when Hough misses the dial."""
+
+BOARD_PRIOR_FINE_RADIUS_SCALES: Final[tuple[float, ...]] = (0.94, 1.00, 1.06)
+"""Keep the wide board-prior sweep near the observed board radius."""
 
 HOUGH_FINE_CENTER_OFFSETS_PX: Final[tuple[float, ...]] = tuple(
     float(offset) for offset in range(-40, 41, 4)
@@ -212,7 +224,10 @@ def _auto_geometry_candidates(image_bgr: np.ndarray) -> list[GeometryCandidate]:
 
     # Add the fixed board prior neighborhood so the sweep can prefer the
     # slightly off-center inner dial even when Hough is missing or noisy.
-    candidates.extend(board_prior_geometry_candidates(image_bgr))
+    if estimated is None:
+        candidates.extend(_wide_board_prior_candidates(image_bgr))
+    else:
+        candidates.extend(board_prior_geometry_candidates(image_bgr))
 
     # Always keep a small family of image-center fallbacks around the board's
     # most common zoom levels.
@@ -224,6 +239,40 @@ def _auto_geometry_candidates(image_bgr: np.ndarray) -> list[GeometryCandidate]:
                 dial_radius_px=radius_scale * min_dim,
             )
         )
+
+    return candidates
+
+
+def _wide_board_prior_candidates(image_bgr: np.ndarray) -> list[GeometryCandidate]:
+    """Build a broader board-prior neighborhood for Hough-missing captures.
+
+    The ideal clean captures sometimes miss the Hough-circle seed entirely, but
+    a slightly wider classical board prior can still land on the correct needle
+    geometry if we keep the candidate centers on integer pixels.
+    """
+    base_candidate: GeometryCandidate = board_prior_geometry_candidate(image_bgr)
+    candidates: list[GeometryCandidate] = [base_candidate]
+    base_center_x, base_center_y = base_candidate.center_xy
+    base_radius_px = base_candidate.dial_radius_px
+
+    for dx in BOARD_PRIOR_FINE_CENTER_OFFSETS_PX:
+        for dy in BOARD_PRIOR_FINE_CENTER_OFFSETS_PX:
+            if dx == 0.0 and dy == 0.0:
+                continue
+            for radius_scale in BOARD_PRIOR_FINE_RADIUS_SCALES:
+                candidates.append(
+                    GeometryCandidate(
+                        label=(
+                            f"board_prior_wide_{int(dx):+d}_{int(dy):+d}_"
+                            f"{radius_scale:.2f}"
+                        ),
+                        center_xy=(
+                            float(round(base_center_x + dx)),
+                            float(round(base_center_y + dy)),
+                        ),
+                        dial_radius_px=float(round(base_radius_px * radius_scale)),
+                    )
+                )
 
     return candidates
 
@@ -246,16 +295,27 @@ def _detect_hough_first_geometry(
     """
     board_prior_candidate = board_prior_geometry_candidate(image_bgr)
 
-    def _board_prior_detection() -> NeedleDetection | None:
-        """Run the board-specific shaft scan with a generic fallback."""
-        board_scan_detection = _detect_needle_unit_vector_shaft_scan(
+    def _board_prior_detection() -> tuple[GeometryCandidate, NeedleDetection] | None:
+        """Run the board prior with a wider classical neighborhood first.
+
+        The clean ideal captures can miss the Hough-circle seed, so the board
+        prior needs a slightly broader pixel-aligned sweep to land on the
+        better inner-Celsius geometry instead of freezing on the first hot
+        radial line that happens to look plausible.
+        """
+        wide_selection = select_best_geometry_detection(
             image_bgr,
-            center_xy=board_prior_candidate.center_xy,
-            dial_radius_px=board_prior_candidate.dial_radius_px,
+            candidates=_wide_board_prior_candidates(image_bgr),
             gauge_spec=gauge_spec,
+            # Keep the board-prior rescue dark-shaft-driven: the center-weighted
+            # vote can still lock onto a zero-support blob on clean bright dials
+            # and override a good Hough seed.
+            detectors=(
+                _detect_needle_unit_vector_spoke_improved,
+            ),
         )
-        if board_scan_detection is not None and board_scan_detection.peak_ratio >= 1.10:
-            return board_scan_detection
+        if wide_selection is not None:
+            return wide_selection.candidate, wide_selection.detection
 
         generic_detection = detect_needle_unit_vector(
             image_bgr,
@@ -263,22 +323,37 @@ def _detect_hough_first_geometry(
             dial_radius_px=board_prior_candidate.dial_radius_px,
             gauge_spec=gauge_spec,
         )
+        if (
+            generic_detection is not None
+            and generic_detection.confidence >= 1.10
+            and generic_detection.peak_ratio >= 1.02
+        ):
+            return board_prior_candidate, generic_detection
+
+        board_scan_detection = _detect_needle_unit_vector_shaft_scan(
+            image_bgr,
+            center_xy=board_prior_candidate.center_xy,
+            dial_radius_px=board_prior_candidate.dial_radius_px,
+            gauge_spec=gauge_spec,
+        )
         if generic_detection is None:
-            return board_scan_detection
+            if board_scan_detection is None:
+                return None
+            return board_prior_candidate, board_scan_detection
         if board_scan_detection is None:
-            return generic_detection
+            return board_prior_candidate, generic_detection
         return (
-            generic_detection
+            (board_prior_candidate, generic_detection)
             if needle_detection_quality(generic_detection)
             > needle_detection_quality(board_scan_detection)
-            else board_scan_detection
+            else (board_prior_candidate, board_scan_detection)
         )
 
     estimated = estimated_geometry
     if estimated is None:
         estimated = _estimate_dial_geometry(image_bgr)
     if estimated is None:
-        board_prior_detection = _board_prior_detection()
+        board_prior_result = _board_prior_detection()
         center_candidate = GeometryCandidate(
             label="image_center",
             center_xy=fallback_center_xy,
@@ -290,7 +365,8 @@ def _detect_hough_first_geometry(
             dial_radius_px=fallback_radius_px,
             gauge_spec=gauge_spec,
         )
-        if board_prior_detection is not None:
+        if board_prior_result is not None:
+            board_prior_candidate, board_prior_detection = board_prior_result
             return (
                 board_prior_candidate,
                 board_prior_candidate.center_xy,
@@ -321,12 +397,18 @@ def _detect_hough_first_geometry(
         gauge_spec=gauge_spec,
     )
 
+    image_min_dim: float = float(min(image_bgr.shape[:2]))
+    use_quality_competition: bool = image_min_dim > SMALL_IMAGE_MAX_DIM_PX
+    board_prior_result = _board_prior_detection()
+
     if (
-        center_offset_ratio > HOUGH_GEOMETRY_MAX_CENTER_OFFSET_RATIO
-        or hough_radius_ratio < 0.80
-        or hough_radius_ratio > 1.30
+        not use_quality_competition
+        and (
+            center_offset_ratio > HOUGH_GEOMETRY_MAX_CENTER_OFFSET_RATIO
+            or hough_radius_ratio < 0.70
+            or hough_radius_ratio > 1.30
+        )
     ):
-        board_prior_detection = _board_prior_detection()
         center_candidate = GeometryCandidate(
             label="image_center",
             center_xy=fallback_center_xy,
@@ -338,7 +420,8 @@ def _detect_hough_first_geometry(
             dial_radius_px=fallback_radius_px,
             gauge_spec=gauge_spec,
         )
-        if board_prior_detection is not None:
+        if board_prior_result is not None:
+            board_prior_candidate, board_prior_detection = board_prior_result
             return (
                 board_prior_candidate,
                 board_prior_candidate.center_xy,
@@ -349,8 +432,15 @@ def _detect_hough_first_geometry(
             return center_candidate, fallback_center_xy, fallback_radius_px, center_detection
         return center_candidate, fallback_center_xy, fallback_radius_px, None
 
-    board_prior_detection = _board_prior_detection()
-    if board_prior_detection is not None and board_prior_detection.peak_ratio >= 1.10:
+    if (
+        use_quality_competition
+        and hough_detection is not None
+        and board_prior_result is not None
+        and board_prior_result[1].peak_ratio >= 1.02
+        and hough_radius_ratio > 1.35
+        and center_offset_ratio < 0.10
+    ):
+        board_prior_candidate, board_prior_detection = board_prior_result
         return (
             board_prior_candidate,
             board_prior_candidate.center_xy,
@@ -360,6 +450,15 @@ def _detect_hough_first_geometry(
 
     if hough_detection is not None and hough_detection.confidence >= confidence_threshold:
         return hough_candidate, hough_center_xy, hough_radius_px, hough_detection
+
+    if board_prior_result is not None and board_prior_result[1].peak_ratio >= 1.10:
+        board_prior_candidate, board_prior_detection = board_prior_result
+        return (
+            board_prior_candidate,
+            board_prior_candidate.center_xy,
+            board_prior_candidate.dial_radius_px,
+            board_prior_detection,
+        )
 
     center_candidate = GeometryCandidate(
         label="image_center",
@@ -373,7 +472,8 @@ def _detect_hough_first_geometry(
         gauge_spec=gauge_spec,
     )
 
-    if board_prior_detection is not None:
+    if board_prior_result is not None:
+        board_prior_candidate, board_prior_detection = board_prior_result
         return (
             board_prior_candidate,
             board_prior_candidate.center_xy,
@@ -613,15 +713,17 @@ def run_single_image_baseline(
             )
     # Filter weak detections: require minimum confidence and peak sharpness.
     # Based on offline testing, low confidence (<5) often correlates with large errors.
-    # Peak ratio > 1.2 indicates a clear dominant spoke rather than a near-tie.
+    # Clean bright captures on this board can still produce broad but stable
+    # peaks, so keep the ratio gate modest and let confidence do most of the
+    # rejection work.
     MIN_CONFIDENCE: float = 5.0
-    MIN_PEAK_RATIO: float = 1.2
+    MIN_PEAK_RATIO: float = 1.01
     if selected_candidate is not None and selected_candidate.label.startswith("board_prior"):
-        # The board-prior fallback deliberately favors the dark-shaft scan on
-        # ideal captures, so it needs a much softer acceptance gate than the
+        # The board-prior path now prefers the generic radial detector on
+        # ideal captures, so it still needs a softer acceptance gate than the
         # generic Hough-first path.
         MIN_CONFIDENCE = 0.25
-        MIN_PEAK_RATIO = 1.05
+        MIN_PEAK_RATIO = 1.01
 
     valid_detection: bool = False
     if detection is not None:

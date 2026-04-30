@@ -1,0 +1,44 @@
+{
+  "config": {
+    "image_path": "..\\tmp_today_previews\\capture_2026-04-30_05-51-06.png",
+    "gauge_id": "littlegood_home_temp_gauge_c",
+    "center_x": null,
+    "center_y": null,
+    "dial_radius_px": null,
+    "geometry_search_mode": "hough_first",
+    "geometry_confidence_threshold": 4.0,
+    "artifacts_dir": "..\\tmp_today_eval",
+    "run_name": "capture_2026-04-30_05-51-06"
+  },
+  "gauge_spec": {
+    "gauge_id": "littlegood_home_temp_gauge_c",
+    "min_angle_rad": 2.356194490192345,
+    "sweep_rad": 3.141592653589793,
+    "min_value": -30.0,
+    "max_value": 50.0
+  },
+  "center_xy": [
+    109.75999999999999,
+    99.904
+  ],
+  "dial_radius_px": 64.96,
+  "detection": {
+    "unit_dx": 6.123233995736766e-17,
+    "unit_dy": -1.0,
+    "confidence": 10.192922609937572,
+    "peak_value": 797.4874877929688,
+    "runner_up_value": 646.1891479492188,
+    "peak_ratio": 1.2341394007063082,
+    "peak_margin": 151.29833984375
+  },
+  "selected_candidate": {
+    "label": "board_prior",
+    "center_xy": [
+      109.75999999999999,
+      99.904
+    ],
+    "dial_radius_px": 64.96
+  },
+  "predicted_value": 30.0,
+  "annotated_image_path": "..\\tmp_today_eval\\capture_2026-04-30_05-51-06\\capture_2026-04-30_05-51-06_annotated.png"
+}

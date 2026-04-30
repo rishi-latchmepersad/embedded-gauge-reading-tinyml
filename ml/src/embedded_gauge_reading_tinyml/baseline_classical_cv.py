@@ -77,12 +77,18 @@ class GeometrySelection:
 CONSENSUS_TEMP_DELTA_C: Final[float] = 4.0
 """Temperature tolerance for candidate-agreement consensus."""
 
+# Consensus is only allowed to override the raw winner when the cluster is
+# close enough in quality to the best candidate. That keeps a large hot
+# cluster from displacing a clearly stronger near-target geometry.
+CONSENSUS_MIN_QUALITY_RATIO: Final[float] = 0.85
+"""Minimum consensus quality ratio relative to the best raw candidate."""
+
 # The board capture is centered slightly above and left of the dial midpoint,
 # and the useful inner gauge radius is much smaller than the full crop.
 # These ratios give us a lightweight classical prior without introducing ML.
 BOARD_PRIOR_CENTER_X_RATIO: Final[float] = 0.490
 BOARD_PRIOR_CENTER_Y_RATIO: Final[float] = 0.446
-BOARD_PRIOR_RADIUS_RATIO: Final[float] = 0.290
+BOARD_PRIOR_RADIUS_RATIO: Final[float] = 0.350
 BOARD_PRIOR_CENTER_OFFSETS_PX: Final[tuple[float, ...]] = (-4.0, 0.0, 4.0)
 BOARD_PRIOR_RADIUS_SCALES: Final[tuple[float, ...]] = (0.94, 1.0, 1.06)
 
@@ -145,18 +151,17 @@ def needle_vector_to_value(unit_dx: float, unit_dy: float, spec: GaugeSpec) -> f
 
 
 def needle_detection_quality(detection: NeedleDetection) -> float:
-    """Return a bounded scalar score that favors strong, supported peaks.
+    """Return a scale-free score for comparing detector outputs.
 
-    The earlier confidence * peak-ratio score could explode when the runner-up
-    bin collapsed to zero on a spurious geometry. That made the selector chase
-    isolated spikes instead of stable needle-like responses. We now reward the
-    main peak directly, but only give a candidate full credit when it still has
-    some supporting runner-up energy nearby.
+    The detector families report very different raw peak scales, so a
+    peak-value-based score can over-rank the wrong family on clean captures.
+    We keep confidence as the main signal and treat peak_ratio as a penalty
+    instead of a multiplier so a spiky outlier does not dominate a slightly
+    broader but more plausible candidate.
     """
-    peak_value: float = max(detection.peak_value, 0.0)
-    runner_value: float = max(detection.runner_up_value, 0.0)
-    support_term: float = 0.1 + math.log1p(runner_value)
-    return peak_value * support_term
+    confidence: float = max(detection.confidence, 0.0)
+    peak_ratio: float = max(detection.peak_ratio, 1.0)
+    return confidence / peak_ratio
 
 
 def _geometry_selection_key(selection: GeometrySelection) -> tuple[float, float, float]:
@@ -965,6 +970,163 @@ def _detect_needle_unit_vector_hough_lines(
     )
 
 
+def _detect_needle_unit_vector_line_segment(
+    image_bgr: np.ndarray,
+    *,
+    center_xy: tuple[float, float],
+    dial_radius_px: float,
+    gauge_spec: GaugeSpec | None = None,
+) -> NeedleDetection | None:
+    """Detect the needle as a dark line segment from hub to tip.
+
+    This is the primary detector. It finds line segments with HoughLinesP,
+    scores them by length + darkness + center proximity, and determines
+    tip direction unambiguously: the endpoint farther from the center is
+    the tip; the endpoint near the bright hub is the tail.
+
+    This eliminates needle inversion because a line segment has two distinct
+    endpoints, unlike histogram voting which only knows an angle.
+    """
+    if dial_radius_px <= 1.0:
+        return None
+
+    center_x, center_y = center_xy
+
+    # Preprocess: grayscale, CLAHE, blur, Canny edges.
+    gray: np.ndarray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced: np.ndarray = clahe.apply(gray)
+    blurred: np.ndarray = cv2.GaussianBlur(enhanced, (5, 5), 0)
+    edges: np.ndarray = cv2.Canny(blurred, 30, 100, apertureSize=3, L2gradient=True)
+
+    # Find line segments. Use relatively permissive parameters so we catch
+    # the needle even when it is faint.
+    min_line_length: int = max(15, int(round(0.20 * dial_radius_px)))
+    max_line_gap: int = max(6, int(round(0.12 * dial_radius_px)))
+    threshold: int = max(10, int(round(0.08 * dial_radius_px)))
+    lines: np.ndarray | None = cv2.HoughLinesP(
+        edges,
+        1,
+        math.pi / 180.0,
+        threshold=threshold,
+        minLineLength=min_line_length,
+        maxLineGap=max_line_gap,
+    )
+    if lines is None:
+        return None
+
+    best_score: float = float("-inf")
+    second_score: float = float("-inf")
+    best_tip_vec: tuple[float, float] | None = None
+
+    for line in lines[:, 0, :]:
+        x1, y1, x2, y2 = map(float, line)
+        seg_len: float = math.hypot(x2 - x1, y2 - y1)
+        if seg_len < min_line_length:
+            continue
+
+        # Distance from center to the line segment.
+        center_dist: float = _point_to_segment_distance(
+            center_x, center_y, x1, y1, x2, y2
+        )
+        # Needle must pass near the hub.
+        if center_dist > 0.30 * dial_radius_px:
+            continue
+
+        # Distances from center to each endpoint.
+        d1: float = math.hypot(x1 - center_x, y1 - center_y)
+        d2: float = math.hypot(x2 - center_x, y2 - center_y)
+        near: float = min(d1, d2)
+        far: float = max(d1, d2)
+
+        # One end must be near the hub (but not exactly at center), the other
+        # must reach toward the rim.
+        if near > 0.30 * dial_radius_px or far < 0.45 * dial_radius_px:
+            continue
+
+        # Determine tip vs tail: the farther endpoint is the tip.
+        tip_x, tip_y = (x1, y1) if d1 > d2 else (x2, y2)
+        tail_x, tail_y = (x2, y2) if d1 > d2 else (x1, y1)
+
+        # Compute tip angle from center.
+        tip_dx: float = tip_x - center_x
+        tip_dy: float = tip_y - center_y
+        tip_angle: float = math.atan2(tip_dy, tip_dx)
+
+        # Reject if outside the gauge sweep.
+        if gauge_spec is not None and not _angle_in_sweep(
+            tip_angle,
+            gauge_spec,
+            margin_rad=math.radians(8.0),
+        ):
+            continue
+
+        # Score darkness along the segment.
+        line_contrast, dark_fraction = _sample_line_darkness(
+            image_bgr,
+            x1=tail_x,
+            y1=tail_y,
+            x2=tip_x,
+            y2=tip_y,
+            center_xy=center_xy,
+            dial_radius_px=dial_radius_px,
+        )
+        darkness: float = max(0.0, line_contrast) + 0.60 * max(0.0, dark_fraction)
+        if darkness <= 0.0:
+            continue
+
+        # Score how radial the segment is (needle should be roughly radial).
+        # Project segment direction onto radial direction at midpoint.
+        mid_x: float = (x1 + x2) / 2.0
+        mid_y: float = (y1 + y2) / 2.0
+        mid_dx: float = mid_x - center_x
+        mid_dy: float = mid_y - center_y
+        mid_dist: float = math.hypot(mid_dx, mid_dy)
+        if mid_dist < 1.0:
+            continue
+        radial_unit_x: float = mid_dx / mid_dist
+        radial_unit_y: float = mid_dy / mid_dist
+        seg_unit_x: float = (x2 - x1) / seg_len
+        seg_unit_y: float = (y2 - y1) / seg_len
+        # Dot product of segment direction with radial direction.
+        radiality: float = abs(radial_unit_x * seg_unit_x + radial_unit_y * seg_unit_y)
+        if radiality < 0.60:
+            continue
+
+        # Composite score: length * darkness * radiality.
+        # Length matters most — the needle is the longest dark feature.
+        score: float = seg_len * darkness * (0.3 + 0.7 * radiality)
+
+        if score > best_score:
+            second_score = best_score
+            best_score = score
+            tip_dist = max(far, 1e-6)
+            best_tip_vec = (tip_dx / tip_dist, tip_dy / tip_dist)
+        elif score > second_score:
+            second_score = score
+
+    if best_tip_vec is None:
+        return None
+
+    confidence: float = (
+        best_score / max(second_score, 1e-6) if second_score > 0.0 else best_score
+    )
+    if confidence < 1.05 or best_score < 1.5:
+        return None
+
+    return NeedleDetection(
+        unit_dx=best_tip_vec[0],
+        unit_dy=best_tip_vec[1],
+        confidence=float(confidence),
+        peak_value=float(best_score),
+        runner_up_value=float(second_score if second_score > 0.0 else 0.0),
+        peak_ratio=float(
+            best_score / max(second_score, 1e-6) if second_score > 0.0 else 1.0
+        ),
+        peak_margin=float(best_score - second_score if second_score > 0.0 else best_score),
+    )
+
+
 def _detect_needle_unit_vector_combined(
     image_bgr: np.ndarray,
     *,
@@ -972,9 +1134,17 @@ def _detect_needle_unit_vector_combined(
     dial_radius_px: float,
     gauge_spec: GaugeSpec | None = None,
 ) -> NeedleDetection | None:
-    """Run the improved classical detectors and keep the best result."""
+    """Run the stable radial detectors and keep the best result.
+
+    The line-segment and Hough-line paths remain in the module as experiments,
+    but they were too eager to win on clean captures and masked the better
+    spoke/center-weighted votes.
+    """
     candidates: list[NeedleDetection] = []
 
+    # Primary: line segment detector — no inversion ambiguity.
+    # Favor the middle-shaft detectors first because they are the most stable
+    # on the bright, clean gauge photos we use as the thesis baseline.
     spoke_detection: NeedleDetection | None = _detect_needle_unit_vector_spoke_improved(
         image_bgr,
         center_xy=center_xy,
@@ -992,15 +1162,6 @@ def _detect_needle_unit_vector_combined(
     )
     if center_detection is not None:
         candidates.append(center_detection)
-
-    line_detection: NeedleDetection | None = _detect_needle_unit_vector_hough_lines(
-        image_bgr,
-        center_xy=center_xy,
-        dial_radius_px=dial_radius_px,
-        gauge_spec=gauge_spec,
-    )
-    if line_detection is not None:
-        candidates.append(line_detection)
 
     if not candidates:
         return None
@@ -1126,9 +1287,11 @@ def select_best_geometry_detection(
                 y1=candidate.center_xy[1]
                 + detection.unit_dy * (0.30 * candidate.dial_radius_px),
                 x2=candidate.center_xy[0]
-                + detection.unit_dx * (0.68 * candidate.dial_radius_px),
+                # Look a little farther toward the tip so the middle shaft,
+                # not the dial rim or nearby markings, drives the score.
+                + detection.unit_dx * (0.78 * candidate.dial_radius_px),
                 y2=candidate.center_xy[1]
-                + detection.unit_dy * (0.68 * candidate.dial_radius_px),
+                + detection.unit_dy * (0.78 * candidate.dial_radius_px),
                 center_xy=candidate.center_xy,
                 dial_radius_px=candidate.dial_radius_px,
             )
@@ -1154,6 +1317,8 @@ def select_best_geometry_detection(
 
     if (best_selection is None) or (gauge_spec is None) or (len(selections) < 2):
         return best_selection
+
+    best_selection_quality: float = best_selection.quality
 
     # Count how many other geometry hypotheses land near each candidate.
     predicted_values: list[float] = [
@@ -1190,7 +1355,14 @@ def select_best_geometry_detection(
     )
     if consensus_index == best_index:
         return best_selection
-    return selections[consensus_index]
+
+    consensus_selection: GeometrySelection = selections[consensus_index]
+    if consensus_selection.quality < (
+        best_selection_quality * CONSENSUS_MIN_QUALITY_RATIO
+    ):
+        return best_selection
+
+    return consensus_selection
 
 
 def evaluate_classical_baseline(

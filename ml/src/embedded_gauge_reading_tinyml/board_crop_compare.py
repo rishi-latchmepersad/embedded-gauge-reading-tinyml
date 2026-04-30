@@ -36,8 +36,11 @@ BOARD_CROP_WIDTH_SCALE_NUMERATOR: Final[int] = 17
 BOARD_CROP_WIDTH_SCALE_DENOMINATOR: Final[int] = 20
 BOARD_CROP_HEIGHT_SCALE_NUMERATOR: Final[int] = 17
 BOARD_CROP_HEIGHT_SCALE_DENOMINATOR: Final[int] = 20
-BOARD_CROP_CENTER_X_BIAS_PIXELS: Final[int] = 24
-BOARD_CROP_CENTER_Y_BIAS_PIXELS: Final[int] = 0
+BOARD_CROP_CENTER_X_BIAS_PIXELS: Final[int] = 0
+# Nudge the crop slightly upward so the dial top and upper markings stay in frame.
+BOARD_CROP_CENTER_Y_BIAS_RATIO: Final[float] = 0.11
+BOARD_CROP_CENTER_Y_BIAS_MIN_PIXELS: Final[int] = 8
+BOARD_CROP_CENTER_Y_BIAS_MAX_PIXELS: Final[int] = 18
 DEFAULT_IMAGE_SIZE: Final[int] = 224
 
 
@@ -291,8 +294,11 @@ def estimate_board_crop_from_rgb(
         )),
     )
 
+    y_bias_pixels = int(round(crop_height * BOARD_CROP_CENTER_Y_BIAS_RATIO))
+    y_bias_pixels = max(BOARD_CROP_CENTER_Y_BIAS_MIN_PIXELS, y_bias_pixels)
+    y_bias_pixels = min(BOARD_CROP_CENTER_Y_BIAS_MAX_PIXELS, y_bias_pixels)
     biased_center_x = max(0, centroid_x - BOARD_CROP_CENTER_X_BIAS_PIXELS)
-    biased_center_y = max(0, centroid_y - BOARD_CROP_CENTER_Y_BIAS_PIXELS)
+    biased_center_y = max(0, centroid_y - y_bias_pixels)
     left = max(0, biased_center_x - (crop_width // 2))
     top = max(0, biased_center_y - (crop_height // 2))
     right = left + crop_width

@@ -58,6 +58,33 @@ def test_camera_brightness_nudges_use_fractional_steps() -> None:
     assert gain_shift == 2
 
 
+def test_camera_brightness_gate_uses_a_bright_pixel_ratio() -> None:
+    """The bright-frame gate should notice broad overexposure, not just min-Y."""
+    text = CAMERA_CONFIG_FILE.read_text(encoding="utf-8")
+
+    bright_mean_threshold = _extract_uint_constant(
+        "CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD",
+        text,
+    )
+    bright_pixel_threshold = _extract_uint_constant(
+        "CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_PIXEL_LEVEL_THRESHOLD",
+        text,
+    )
+    bright_ratio_percent = _extract_uint_constant(
+        "CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_RATIO_PERCENT",
+        text,
+    )
+    bright_solid_mean_threshold = _extract_uint_constant(
+        "CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_SOLID_MEAN_THRESHOLD",
+        text,
+    )
+
+    assert bright_mean_threshold == 180
+    assert bright_pixel_threshold == 220
+    assert bright_ratio_percent == 50
+    assert bright_solid_mean_threshold == 220
+
+
 def test_obb_crop_window_keeps_the_current_live_crop_in_family() -> None:
     """The OBB crop window should keep the current live crop on the fast path."""
     ai_text = APP_AI_FILE.read_text(encoding="utf-8")

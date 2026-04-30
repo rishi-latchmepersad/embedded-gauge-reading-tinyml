@@ -26,10 +26,12 @@ def test_baseline_confidence_gate_matches_snr_scale() -> None:
     """The firmware confidence gate should track the polar detector's SNR."""
     text = BASELINE_RUNTIME_FILE.read_text(encoding="utf-8")
     threshold = _extract_float_constant("APP_BASELINE_CONFIDENCE_THRESHOLD", text)
+    peak_ratio = _extract_float_constant("APP_BASELINE_MIN_PEAK_RATIO", text)
 
     # The live board needs a slightly more permissive gate so real captures can
     # seed history without waiting for perfect SNR.
     assert 1.0 < threshold < 2.0
+    assert 1.0 <= peak_ratio <= 1.05
     assert "baseline-polar-warming" in text
     assert "baseline-polar-smoothed" in text
     assert "baseline-polar-held" in text
@@ -61,8 +63,8 @@ def test_baseline_uses_polar_vote_histogram() -> None:
     assert "baseline-hough" not in text
 
 
-def test_baseline_selection_prefers_sharper_peak_for_every_candidate() -> None:
-    """All classical candidates should compete on a blended sharpness/support score."""
+def test_baseline_selection_penalizes_spiky_peak_outliers() -> None:
+    """Classical candidates should favor stable support over ratio explosions."""
     text = BASELINE_RUNTIME_FILE.read_text(encoding="utf-8")
     normalized = re.sub(r"\s+", " ", text)
 
@@ -70,9 +72,8 @@ def test_baseline_selection_prefers_sharper_peak_for_every_candidate() -> None:
     assert "AppBaselineRuntime_ComputeEstimateQuality" in normalized
     assert "AppBaselineRuntime_PassesAcceptanceGate" in normalized
     assert "AppBaselineRuntime_GeometryPriority" not in normalized
-    assert "peak_excess = peak_ratio - 1.0f" in normalized
-    assert "confidence * peak_excess" in normalized
-    assert "peak-separation quality score" in text
+    assert "confidence / peak_ratio" in normalized
+    assert "spiky false geometry" in text
     assert "runner_up_score > 0.0f" in normalized
     assert "selected_is_fixed_crop" not in normalized
     assert "APP_BASELINE_MIN_ACCEPT_SCORE" in text
@@ -81,6 +82,28 @@ def test_baseline_selection_prefers_sharper_peak_for_every_candidate() -> None:
     assert "rim-center-polar" in text
     assert "candidate_quality > incumbent_quality" in normalized
     assert "candidate_peak_ratio > incumbent_peak_ratio" in normalized
+    assert "APP_BASELINE_CONSENSUS_MIN_QUALITY_RATIO" in text
+
+
+def test_baseline_source_priority_keeps_fixed_crop_ahead_of_board_prior() -> None:
+    """The live firmware should rank the stable crop ahead of the board prior."""
+    text = BASELINE_RUNTIME_FILE.read_text(encoding="utf-8")
+    start = text.index("static int AppBaselineRuntime_SourcePriority(const char *source_label)")
+    end = text.index(
+        "/**\n * @brief Check whether one estimate clears the live acceptance gate.",
+        start,
+    )
+    source_priority_block = text[start:end]
+
+    assert 'strcmp(source_label, "fixed-crop-polar") == 0' in source_priority_block
+    assert 'return 5;' in source_priority_block
+    assert 'strcmp(source_label, "image-center-polar") == 0' in source_priority_block
+    assert 'return 4;' in source_priority_block
+    assert 'strcmp(source_label, "board-prior-polar") == 0' in source_priority_block
+    assert 'return 3;' in source_priority_block
+    assert source_priority_block.index('fixed-crop-polar') < source_priority_block.index(
+        'board-prior-polar'
+    )
 
 
 def test_baseline_history_rejects_weak_near_ties() -> None:
@@ -98,19 +121,49 @@ def test_baseline_history_rejects_weak_near_ties() -> None:
     assert "estimate->confidence < APP_BASELINE_CONFIDENCE_THRESHOLD" in normalized
 
 
-def test_baseline_candidate_selection_defaults_to_fixed_crop_then_center() -> None:
-    """The firmware selector should stay conservative by default."""
+def test_baseline_candidate_selection_enables_local_refinement_sweep() -> None:
+    """The firmware selector should use the narrow local refinement sweep."""
     text = BASELINE_RUNTIME_FILE.read_text(encoding="utf-8")
     normalized = re.sub(r"\s+", " ", text)
+    sweep_branch_start = text.index("#if APP_BASELINE_ENABLE_LOCAL_GEOMETRY_SWEEP")
+    sweep_branch_end = text.index("#else", sweep_branch_start)
+    sweep_branch = text[sweep_branch_start:sweep_branch_end]
 
     assert "APP_BASELINE_ENABLE_LOCAL_GEOMETRY_SWEEP" in text
-    assert "APP_BASELINE_ENABLE_LOCAL_GEOMETRY_SWEEP 0U" in text
-    assert "Keep the live selector conservative by default" in text
+    assert "APP_BASELINE_ENABLE_LOCAL_GEOMETRY_SWEEP 1U" in text
+    assert "Run the narrow local geometry sweep by default" in text
     assert "#if APP_BASELINE_ENABLE_LOCAL_GEOMETRY_SWEEP" in text
     assert "#else" in text
-    assert "selected_estimate = &fixed_crop_hypothesis;" in normalized
-    assert "else if (center_ok)" in normalized
-    assert "selected_estimate = &center_hypothesis;" in normalized
+    assert "const AppBaselineRuntime_Estimate_t *seed_candidates[5]" in sweep_branch
+    assert "AppBaselineRuntime_Estimate_t *refined_candidates[5]" in sweep_branch
+    assert "AppBaselineRuntime_RefineEstimateAroundSeed(" in sweep_branch
+    assert "AppBaselineRuntime_SelectConsensusEstimate(" in sweep_branch
+    assert "&fixed_crop_hypothesis" in normalized
+    assert "&board_prior_hypothesis" in normalized
+    assert "&center_hypothesis" in normalized
     assert "bright_hypothesis" in normalized
     assert "rim_geometry_hypothesis" in normalized
     assert "APP_BASELINE_MIN_PEAK_RATIO" in text
+    assert "APP_BASELINE_CONSENSUS_MIN_QUALITY_RATIO" in text
+    assert "selected_estimate = AppBaselineRuntime_SelectConsensusEstimate(" in sweep_branch
+
+
+def test_baseline_consensus_respects_source_priority_before_quality() -> None:
+    """Consensus should keep the stronger anchor family ahead of rim clutter."""
+    text = BASELINE_RUNTIME_FILE.read_text(encoding="utf-8")
+    consensus_start = text.index(
+        "static const AppBaselineRuntime_Estimate_t *AppBaselineRuntime_SelectConsensusEstimate("
+    )
+    consensus_end = text.index(
+        "/**\n * @brief Return a smoothed estimate from the tiny baseline history.",
+        consensus_start,
+    )
+    consensus_block = text[consensus_start:consensus_end]
+
+    assert "best_priority" in consensus_block
+    assert "fallback_priority" in consensus_block
+    assert "AppBaselineRuntime_SourcePriority(candidate->source_label)" in consensus_block
+    assert "AppBaselineRuntime_SourcePriority(fallback_estimate->source_label)" in consensus_block
+    assert "if (best_priority < fallback_priority)" in consensus_block
+    assert "if (best_priority > fallback_priority)" in consensus_block
+    assert "APP_BASELINE_CONSENSUS_MIN_QUALITY_RATIO" in consensus_block
