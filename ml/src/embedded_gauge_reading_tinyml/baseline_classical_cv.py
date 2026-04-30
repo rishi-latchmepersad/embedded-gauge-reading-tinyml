@@ -250,7 +250,9 @@ def _detect_needle_unit_vector_shaft_scan(
     angle_scores: np.ndarray = np.zeros(angle_bins, dtype=np.float32)
 
     for bin_index in range(angle_bins):
-        angle_rad: float = (2.0 * math.pi * float(bin_index)) / float(angle_bins) - math.pi
+        angle_rad: float = (2.0 * math.pi * float(bin_index)) / float(
+            angle_bins
+        ) - math.pi
         if gauge_spec is not None and not _angle_in_sweep(
             angle_rad,
             gauge_spec,
@@ -281,7 +283,9 @@ def _detect_needle_unit_vector_shaft_scan(
                     neighbor_ix: int = int(round(min(max(nx, 0.0), w_img - 1.0)))
                     neighbor_iy: int = int(round(min(max(ny, 0.0), h_img - 1.0)))
                     neighbor_sats.append(float(saturation[neighbor_iy, neighbor_ix]))
-                    neighbor_spreads.append(float(color_spread[neighbor_iy, neighbor_ix]))
+                    neighbor_spreads.append(
+                        float(color_spread[neighbor_iy, neighbor_ix])
+                    )
 
             if not neighbor_sats or not neighbor_spreads:
                 continue
@@ -291,7 +295,8 @@ def _detect_needle_unit_vector_shaft_scan(
             )
             shaft_weight: float = math.exp(
                 -0.5
-                * ((float(fraction) - shaft_center_fraction) / shaft_sigma_fraction) ** 2
+                * ((float(fraction) - shaft_center_fraction) / shaft_sigma_fraction)
+                ** 2
             )
             contrast: float = shaft_weight * (
                 0.50 * max(line_sat - local_sat, 0.0)
@@ -300,7 +305,9 @@ def _detect_needle_unit_vector_shaft_scan(
             sample_contrasts.append(contrast)
 
         if sample_contrasts:
-            angle_scores[bin_index] = float(np.quantile(np.asarray(sample_contrasts), 0.25))
+            angle_scores[bin_index] = float(
+                np.quantile(np.asarray(sample_contrasts), 0.25)
+            )
 
     if not np.any(angle_scores > 0.0):
         return None
@@ -335,7 +342,11 @@ def _detect_needle_unit_vector_shaft_scan(
     # the shared ranking code can compare them without special casing.
     scaled_peak: float = best_score * 255.0
     scaled_runner_up: float = runner_up * 255.0
-    confidence: float = scaled_peak / max(scaled_runner_up, 1e-6) if scaled_runner_up > 0.0 else scaled_peak
+    confidence: float = (
+        scaled_peak / max(scaled_runner_up, 1e-6)
+        if scaled_runner_up > 0.0
+        else scaled_peak
+    )
 
     return NeedleDetection(
         unit_dx=float(math.cos(best_angle)),
@@ -602,7 +613,9 @@ def _sample_line_darkness(
     return contrast_mean, dark_fraction
 
 
-def _angle_in_sweep(angle_rad: float, spec: GaugeSpec, *, margin_rad: float = 0.0) -> bool:
+def _angle_in_sweep(
+    angle_rad: float, spec: GaugeSpec, *, margin_rad: float = 0.0
+) -> bool:
     """Return True if angle_rad falls within the gauge's calibrated sweep arc.
 
     An optional margin widens the arc on each side to tolerate small detection
@@ -670,9 +683,9 @@ def _detect_needle_unit_vector_spoke_improved(
 
     spoke_angle: np.ndarray = np.arctan2(dy, dx)
     num_bins: int = 720
-    angle_bins: np.ndarray = ((spoke_angle + math.pi) / (2.0 * math.pi) * num_bins).astype(
-        np.int32
-    )
+    angle_bins: np.ndarray = (
+        (spoke_angle + math.pi) / (2.0 * math.pi) * num_bins
+    ).astype(np.int32)
     angle_bins = np.clip(angle_bins, 0, num_bins - 1)
 
     histogram: np.ndarray = np.zeros(num_bins, dtype=np.float32)
@@ -791,9 +804,9 @@ def _detect_needle_unit_vector_center_weighted(
 
     spoke_angle: np.ndarray = np.arctan2(dy, dx)
     num_bins: int = 720
-    angle_bins: np.ndarray = ((spoke_angle + math.pi) / (2.0 * math.pi) * num_bins).astype(
-        np.int32
-    )
+    angle_bins: np.ndarray = (
+        (spoke_angle + math.pi) / (2.0 * math.pi) * num_bins
+    ).astype(np.int32)
     angle_bins = np.clip(angle_bins, 0, num_bins - 1)
 
     histogram: np.ndarray = np.zeros(num_bins, dtype=np.float32)
@@ -893,7 +906,9 @@ def _detect_needle_unit_vector_hough_lines(
         if seg_len < min_line_length:
             continue
 
-        center_dist: float = _point_to_segment_distance(center_x, center_y, x1, y1, x2, y2)
+        center_dist: float = _point_to_segment_distance(
+            center_x, center_y, x1, y1, x2, y2
+        )
         if center_dist > 0.24 * dial_radius_px:
             continue
 
@@ -966,7 +981,9 @@ def _detect_needle_unit_vector_hough_lines(
         peak_ratio=float(
             best_score / max(second_score, 1e-6) if second_score > 0.0 else 1.0
         ),
-        peak_margin=float(best_score - second_score if second_score > 0.0 else best_score),
+        peak_margin=float(
+            best_score - second_score if second_score > 0.0 else best_score
+        ),
     )
 
 
@@ -1123,7 +1140,9 @@ def _detect_needle_unit_vector_line_segment(
         peak_ratio=float(
             best_score / max(second_score, 1e-6) if second_score > 0.0 else 1.0
         ),
-        peak_margin=float(best_score - second_score if second_score > 0.0 else best_score),
+        peak_margin=float(
+            best_score - second_score if second_score > 0.0 else best_score
+        ),
     )
 
 
@@ -1154,11 +1173,13 @@ def _detect_needle_unit_vector_combined(
     if spoke_detection is not None:
         candidates.append(spoke_detection)
 
-    center_detection: NeedleDetection | None = _detect_needle_unit_vector_center_weighted(
-        image_bgr,
-        center_xy=center_xy,
-        dial_radius_px=dial_radius_px,
-        gauge_spec=gauge_spec,
+    center_detection: NeedleDetection | None = (
+        _detect_needle_unit_vector_center_weighted(
+            image_bgr,
+            center_xy=center_xy,
+            dial_radius_px=dial_radius_px,
+            gauge_spec=gauge_spec,
+        )
     )
     if center_detection is not None:
         candidates.append(center_detection)
@@ -1251,10 +1272,15 @@ def select_best_geometry_detection(
     *,
     candidates: Sequence[GeometryCandidate],
     gauge_spec: GaugeSpec | None = None,
-    detectors: Sequence[
-        Callable[[np.ndarray, tuple[float, float], float, GaugeSpec | None], NeedleDetection | None]
-    ]
-    | None = None,
+    detectors: (
+        Sequence[
+            Callable[
+                [np.ndarray, tuple[float, float], float, GaugeSpec | None],
+                NeedleDetection | None,
+            ]
+        ]
+        | None
+    ) = None,
 ) -> GeometrySelection | None:
     """Run the detector over several geometry hypotheses and keep the best one.
 
@@ -1263,8 +1289,13 @@ def select_best_geometry_detection(
     agreement cluster over a lone high-score outlier.
     """
     detector_fns: Sequence[
-        Callable[[np.ndarray, tuple[float, float], float, GaugeSpec | None], NeedleDetection | None]
-    ] = detectors if detectors is not None else (detect_needle_unit_vector,)
+        Callable[
+            [np.ndarray, tuple[float, float], float, GaugeSpec | None],
+            NeedleDetection | None,
+        ]
+    ] = (
+        detectors if detectors is not None else (detect_needle_unit_vector,)
+    )
     best_selection: GeometrySelection | None = None
     best_index: int = -1
     selections: list[GeometrySelection] = []
@@ -1311,7 +1342,9 @@ def select_best_geometry_detection(
                 best_index = len(selections) - 1
                 continue
 
-            if _geometry_selection_key(selection) > _geometry_selection_key(best_selection):
+            if _geometry_selection_key(selection) > _geometry_selection_key(
+                best_selection
+            ):
                 best_selection = selection
                 best_index = len(selections) - 1
 
@@ -1389,7 +1422,9 @@ def evaluate_classical_baseline(
             break
         attempted += 1
 
-        image_bgr: np.ndarray | None = cv2.imread(str(sample.image_path), cv2.IMREAD_COLOR)
+        image_bgr: np.ndarray | None = cv2.imread(
+            str(sample.image_path), cv2.IMREAD_COLOR
+        )
         if image_bgr is None:
             continue
 

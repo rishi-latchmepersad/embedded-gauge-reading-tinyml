@@ -18,11 +18,15 @@
 #define APP_GAUGE_TRAINING_CROP_X_MAX_RATIO 0.7987f
 #define APP_GAUGE_TRAINING_CROP_Y_MAX_RATIO 0.8071f
 
-/* Inner Celsius dial center ratios — the inner dial sits in the center
- * of the full gauge crop. These ratios give center ~(112,112) on a
- * 224x224 frame, which is the correct pivot for the polar needle vote. */
+/* Inner Celsius dial center ratios — the inner dial sits in the bottom-left
+ * of the full gauge crop, not the geometric center. These ratios give center
+ * ~(112,100) on a 224x224 frame, which is the correct pivot for the polar
+ * needle vote on the inner Celsius scale.
+ *
+ * Y_RATIO was 0.5000f (center of frame) but the inner dial is higher up.
+ * Using 0.4460f matches the board prior and centers on the inner dial. */
 #define APP_GAUGE_INNER_DIAL_CENTER_X_RATIO 0.5000f
-#define APP_GAUGE_INNER_DIAL_CENTER_Y_RATIO 0.5000f
+#define APP_GAUGE_INNER_DIAL_CENTER_Y_RATIO 0.4460f
 
 /* Keep the legacy per-module names so the existing call sites stay readable. */
 #define APP_AI_TRAINING_CROP_X_MIN_RATIO \

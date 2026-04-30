@@ -52,6 +52,10 @@ typedef struct
 #define APP_BASELINE_SWEEP_DEG 180.0f
 #define APP_BASELINE_MIN_VALUE_C -30.0f
 #define APP_BASELINE_MAX_VALUE_C 50.0f
+/* Calibration offset determined from hard-case analysis (2026-04-30).
+ * The detected angles are consistently ~2° low compared to expected.
+ * This offset shifts the angle before temperature conversion. */
+#define APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG 2.0f
 #define APP_BASELINE_BRIGHT_THRESHOLD 150U
 /* Pixels above this luma are considered saturated/glare and excluded from
  * the bright-centroid calculation and ray scoring. */
@@ -640,7 +644,7 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 
 				if ((selected_estimate == NULL) ||
 					AppBaselineRuntime_IsBetterEstimate(candidate_estimate,
-													   selected_estimate))
+														selected_estimate))
 				{
 					selected_estimate = candidate_estimate;
 				}
@@ -910,11 +914,14 @@ static bool AppBaselineRuntime_IsBetterEstimate(
 	{
 		/* Source priority wins before raw quality so ideal captures keep the
 		 * stable fixed-crop anchor instead of drifting to a rim false
-		 * positive. */
+		 * positive. However, if a lower-priority candidate has significantly
+		 * higher quality (2x), allow it to win — the fixed-crop may be
+		 * detecting a dial marking while rim/image found the real needle. */
 		const int candidate_priority =
 			AppBaselineRuntime_SourcePriority(candidate->source_label);
 		const int incumbent_priority =
 			AppBaselineRuntime_SourcePriority(incumbent->source_label);
+		const float quality_ratio = candidate_quality / incumbent_quality;
 
 		if (candidate_priority > incumbent_priority)
 		{
@@ -922,6 +929,11 @@ static bool AppBaselineRuntime_IsBetterEstimate(
 		}
 		if (candidate_priority < incumbent_priority)
 		{
+			/* Allow lower-priority candidate to win if quality is 2x better. */
+			if (quality_ratio >= 2.0f)
+			{
+				return true;
+			}
 			return false;
 		}
 
@@ -999,6 +1011,16 @@ static bool AppBaselineRuntime_EstimateFromTrainingCropHypothesis(
 
 	AppGaugeGeometry_TrainingCropCenter(width_pixels, height_pixels,
 										&center_x, &center_y);
+
+	/* Apply upward bias to center on the inner Celsius dial rather than the
+	 * geometric center of the training crop. The inner dial sits higher in the
+	 * frame, so we nudge the center upward by ~11% of crop height, clamped
+	 * to 8..18 pixels to stay within the dial face. */
+	const AppGaugeGeometry_Crop_t crop =
+		AppGaugeGeometry_TrainingCrop(width_pixels, height_pixels);
+	const size_t bias = (size_t)(0.11f * (float)crop.height + 0.5f);
+	const size_t clamped_bias = (bias < 8U) ? 8U : ((bias > 18U) ? 18U : bias);
+	center_y = (center_y > clamped_bias) ? (center_y - clamped_bias) : 0U;
 
 	/* Scan area centered on the inner dial, large enough to cover the full
 	 * needle range but tight enough to exclude outer-dial clutter. */
@@ -1157,8 +1179,20 @@ static bool AppBaselineRuntime_EstimateCenterFromBrightPixels(
 		return false;
 	}
 
-	*center_x_out = (size_t)(bright_sum_x / (uint64_t)bright_count);
-	*center_y_out = (size_t)(bright_sum_y / (uint64_t)bright_count);
+	size_t raw_center_x = (size_t)(bright_sum_x / (uint64_t)bright_count);
+	size_t raw_center_y = (size_t)(bright_sum_y / (uint64_t)bright_count);
+
+	/* Apply upward bias to center on the inner Celsius dial rather than the
+	 * whole gauge face. The inner dial sits above the geometric center of the
+	 * crop, so we nudge the bright centroid upward by ~11% of crop height,
+	 * clamped to 8..18 pixels to stay within the dial face. */
+	const size_t crop_height = bright_y_max - bright_y_min;
+	const size_t bias = (size_t)(0.11f * (float)crop_height + 0.5f);
+	const size_t clamped_bias = (bias < 8U) ? 8U : ((bias > 18U) ? 18U : bias);
+	const size_t biased_center_y = (raw_center_y > clamped_bias) ? (raw_center_y - clamped_bias) : 0U;
+
+	*center_x_out = raw_center_x;
+	*center_y_out = biased_center_y;
 	*bright_count_out = bright_count;
 	return true;
 }
@@ -1187,7 +1221,7 @@ static bool AppBaselineRuntime_EstimateFromCenterHypothesis(
 	const size_t scan_y_min = (center_y > scan_radius) ? (center_y - scan_radius) : 0U;
 	const size_t scan_y_max = (center_y + scan_radius < height_pixels) ? (center_y + scan_radius) : height_pixels;
 
-return AppBaselineRuntime_EstimatePolarNeedle(frame_bytes, frame_size,
+	return AppBaselineRuntime_EstimatePolarNeedle(frame_bytes, frame_size,
 												  width_pixels, height_pixels, scan_x_min, scan_y_min,
 												  scan_x_max, scan_y_max, center_x,
 												  center_y, dial_radius_px, source_label, estimate_out);
@@ -1563,47 +1597,47 @@ static const AppBaselineRuntime_Estimate_t *AppBaselineRuntime_SelectConsensusEs
 
 	for (size_t valid_index = 0U; valid_index < valid_count; ++valid_index)
 	{
-			const size_t i = valid_indices[valid_index];
-			const AppBaselineRuntime_Estimate_t *candidate = estimates[i];
-			const float candidate_quality =
-				AppBaselineRuntime_ComputeEstimateQuality(candidate);
-			const float candidate_peak_ratio =
-				(candidate->runner_up_score > 0.0f)
-					? (candidate->best_score / candidate->runner_up_score)
-					: candidate->best_score;
-			const int candidate_priority =
-				AppBaselineRuntime_SourcePriority(candidate->source_label);
+		const size_t i = valid_indices[valid_index];
+		const AppBaselineRuntime_Estimate_t *candidate = estimates[i];
+		const float candidate_quality =
+			AppBaselineRuntime_ComputeEstimateQuality(candidate);
+		const float candidate_peak_ratio =
+			(candidate->runner_up_score > 0.0f)
+				? (candidate->best_score / candidate->runner_up_score)
+				: candidate->best_score;
+		const int candidate_priority =
+			AppBaselineRuntime_SourcePriority(candidate->source_label);
 
-			if (support[i] != best_support)
-			{
-				continue;
-			}
-
-			if ((best_estimate == NULL) ||
-				(candidate_priority > best_priority) ||
-				((candidate_priority == best_priority) &&
-				 (candidate_quality > best_quality)) ||
-				((candidate_priority == best_priority) &&
-				 (candidate_quality == best_quality) &&
-				 (candidate_peak_ratio > best_peak_ratio)) ||
-				((candidate_priority == best_priority) &&
-				 (candidate_quality == best_quality) &&
-				 (candidate_peak_ratio == best_peak_ratio) &&
-				 (candidate->confidence > best_confidence)) ||
-				((candidate_priority == best_priority) &&
-				 (candidate_quality == best_quality) &&
-				 (candidate_peak_ratio == best_peak_ratio) &&
-				 (candidate->confidence == best_confidence) &&
-				 (candidate->best_score > best_score)))
-			{
-				best_estimate = candidate;
-				best_priority = candidate_priority;
-				best_quality = candidate_quality;
-				best_peak_ratio = candidate_peak_ratio;
-				best_confidence = candidate->confidence;
-				best_score = candidate->best_score;
-			}
+		if (support[i] != best_support)
+		{
+			continue;
 		}
+
+		if ((best_estimate == NULL) ||
+			(candidate_priority > best_priority) ||
+			((candidate_priority == best_priority) &&
+			 (candidate_quality > best_quality)) ||
+			((candidate_priority == best_priority) &&
+			 (candidate_quality == best_quality) &&
+			 (candidate_peak_ratio > best_peak_ratio)) ||
+			((candidate_priority == best_priority) &&
+			 (candidate_quality == best_quality) &&
+			 (candidate_peak_ratio == best_peak_ratio) &&
+			 (candidate->confidence > best_confidence)) ||
+			((candidate_priority == best_priority) &&
+			 (candidate_quality == best_quality) &&
+			 (candidate_peak_ratio == best_peak_ratio) &&
+			 (candidate->confidence == best_confidence) &&
+			 (candidate->best_score > best_score)))
+		{
+			best_estimate = candidate;
+			best_priority = candidate_priority;
+			best_quality = candidate_quality;
+			best_peak_ratio = candidate_peak_ratio;
+			best_confidence = candidate->confidence;
+			best_score = candidate->best_score;
+		}
+	}
 
 	if ((best_estimate == NULL) || (fallback_quality <= 0.0f))
 	{
@@ -1665,6 +1699,41 @@ static bool AppBaselineRuntime_SelectSmoothedEstimate(
 		ordered[j] = key;
 	}
 
+	/* Filter out history entries with invalid angles (polluted from before
+	 * the angle validation fix). Only consider entries with angles in the
+	 * valid needle range (130°-320°) covering full gauge range -30°C to 50°C. */
+	{
+		AppBaselineRuntime_Estimate_t valid_entries[APP_BASELINE_ESTIMATE_HISTORY_SIZE] = {0};
+		size_t valid_count = 0U;
+
+		for (size_t i = 0U; i < sample_count; ++i)
+		{
+			float angle_deg = ordered[i].angle_rad * (180.0f / APP_BASELINE_PI);
+			while (angle_deg < 0.0f)
+			{
+				angle_deg += 360.0f;
+			}
+			while (angle_deg >= 360.0f)
+			{
+				angle_deg -= 360.0f;
+			}
+			if ((angle_deg >= 130.0f) && (angle_deg <= 320.0f))
+			{
+				valid_entries[valid_count++] = ordered[i];
+			}
+		}
+
+		if (valid_count > 0U)
+		{
+			/* Replace ordered with valid_entries for further processing. */
+			(void)memcpy(ordered, valid_entries,
+						 valid_count * sizeof(ordered[0]));
+			sample_count = valid_count;
+		}
+		/* If no valid entries, fall through to use original (will be rejected
+		 * by angle validation later anyway). */
+	}
+
 	if (sample_count < APP_BASELINE_ESTIMATE_HISTORY_SIZE)
 	{
 		/* Emit the provisional reading anyway so the classical benchmark has a
@@ -1686,7 +1755,11 @@ static bool AppBaselineRuntime_SelectSmoothedEstimate(
  */
 static float AppBaselineRuntime_ConvertAngleToTemperature(float angle_rad)
 {
-	return APP_BASELINE_MIN_VALUE_C + (AppBaselineRuntime_ConvertAngleToFraction(angle_rad) * (APP_BASELINE_MAX_VALUE_C - APP_BASELINE_MIN_VALUE_C));
+	/* Apply calibration offset determined from hard-case analysis.
+	 * The detected angles are consistently ~2° low compared to expected
+	 * values from the hard-case manifest. This corrects the systematic bias. */
+	const float calibrated_angle_rad = angle_rad + (APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG * (APP_BASELINE_PI / 180.0f));
+	return APP_BASELINE_MIN_VALUE_C + (AppBaselineRuntime_ConvertAngleToFraction(calibrated_angle_rad) * (APP_BASELINE_MAX_VALUE_C - APP_BASELINE_MIN_VALUE_C));
 }
 
 /**
@@ -1982,7 +2055,7 @@ static float AppBaselineRuntime_ScoreAngle(const uint8_t *frame_bytes,
 		const float sample_progress = (float)sample_index / (float)(APP_BASELINE_RAY_SAMPLES - 1U);
 		/* Prefer the cleaner middle shaft over the noisy hub and tip/tick region. */
 		const float weight = 0.35f +
-			(0.65f * AppBaselineRuntime_MiddleShaftWeight(sample_progress));
+							 (0.65f * AppBaselineRuntime_MiddleShaftWeight(sample_progress));
 		const long sample_x = AppBaselineRuntime_RoundToLong(
 			center_x_f + (unit_dx * radius));
 		const long sample_y = AppBaselineRuntime_RoundToLong(
@@ -2115,7 +2188,11 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 {
 	const float min_angle_rad = APP_BASELINE_MIN_ANGLE_DEG * (APP_BASELINE_PI / 180.0f);
 	const float sweep_rad = APP_BASELINE_SWEEP_DEG * (APP_BASELINE_PI / 180.0f);
-	const float angle_margin_rad = 12.0f * (APP_BASELINE_PI / 180.0f);
+	/* Reduced from 12° to 6° — the 12° margin was too wide and allowed dial
+	 * markings and subdial artifacts to pollute the vote. The needle is a
+	 * thin dark spoke; we want tight angular filtering to reject the radial
+	 * dial artwork that sits just outside the calibrated sweep. */
+	const float angle_margin_rad = 6.0f * (APP_BASELINE_PI / 180.0f);
 	const size_t scan_x_max_inclusive = scan_x_max - 1U;
 	const size_t scan_y_max_inclusive = scan_y_max - 1U;
 	float angle_votes[APP_BASELINE_ANGLE_BINS] = {0.0f};
@@ -2123,6 +2200,9 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 	float best_score = -1.0f;
 	float runner_up_score = -1.0f;
 	size_t best_bin = 0U;
+	/* Rate-limit debug output to once per ~30 frames (~1 second at 30fps) */
+	static uint32_t frame_counter = 0U;
+	const bool debug_output = (++frame_counter % 30U) == 0U;
 
 	if ((estimate_out == NULL) || (frame_bytes == NULL) || (source_label == NULL))
 	{
@@ -2145,11 +2225,12 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 	}
 
 	{
+		/* Focus on middle shaft (30%-70%) where needle is most distinct from
+		 * dial markings. The Python reference uses this tighter range. */
 		const float search_radius_min = AppBaselineRuntime_ClampFloat(
-			dial_radius_px * 0.15f, (float)APP_BASELINE_MIN_RADIUS_PIXELS,
+			dial_radius_px * 0.30f, (float)APP_BASELINE_MIN_RADIUS_PIXELS,
 			dial_radius_px);
-		const float search_radius_max = dial_radius_px * 0.75f;
-
+		const float search_radius_max = dial_radius_px * 0.70f;
 		if (search_radius_max <= search_radius_min)
 		{
 			return false;
@@ -2184,7 +2265,10 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 						frame_bytes, frame_width_pixels, frame_height_pixels, x,
 						y, &gradient_x, &gradient_y, NULL);
 
-					if (edge_mag <= 8.0f)
+					/* Raised from 8.0f to 12.0f — the dial markings produce weak edges
+					 * that were polluting the vote. The needle is a strong dark edge
+					 * on a light background, so we can afford a higher threshold. */
+					if (edge_mag <= 12.0f)
 					{
 						continue;
 					}
@@ -2210,16 +2294,103 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 							(radius - search_radius_min) /
 							(search_radius_max - search_radius_min + 1e-6f);
 						const float shaft_weight = 0.35f +
-							(0.65f * AppBaselineRuntime_MiddleShaftWeight(sample_progress));
+												   (0.65f * AppBaselineRuntime_MiddleShaftWeight(sample_progress));
 
 						const float vote =
 							edge_mag * fabsf(tangential) * darkness * shaft_weight;
-					const size_t bin_index = (size_t)AppBaselineRuntime_RoundToLong(
-						fraction * (float)(APP_BASELINE_ANGLE_BINS - 1U));
+						const size_t bin_index = (size_t)AppBaselineRuntime_RoundToLong(
+							fraction * (float)(APP_BASELINE_ANGLE_BINS - 1U));
 
 						if (bin_index < APP_BASELINE_ANGLE_BINS)
 						{
-							angle_votes[bin_index] += vote;
+							/* Hub-connection boost: the needle is a long spoke that connects
+							 * to the center. Dial markings are short edges that don't reach
+							 * the center. Check if there's a dark path toward the center. */
+							float hub_connection = 0.0f;
+							const size_t steps = 7U;
+							for (size_t step = 1U; step <= steps; ++step)
+							{
+								const float t = (float)step / (float)(steps + 1U);
+								const long hx = AppBaselineRuntime_RoundToLong(
+									(float)center_x + (dx * t * 0.6f));
+								const long hy = AppBaselineRuntime_RoundToLong(
+									(float)center_y + (dy * t * 0.6f));
+								if (hx >= 0 && (size_t)hx < frame_width_pixels &&
+									hy >= 0 && (size_t)hy < frame_height_pixels)
+								{
+									const float hub_luma = AppBaselineRuntime_ReadLuma(
+										frame_bytes, frame_width_pixels, (size_t)hx, (size_t)hy);
+									hub_connection += ((255.0f - hub_luma) / 255.0f);
+								}
+							}
+							hub_connection /= (float)steps;
+
+							/* Tip-extension check: the needle extends beyond the middle shaft
+							 * toward the outer dial edge. Dial markings are isolated.
+							 * Sample points from 70% to 95% of dial radius. */
+							float tip_extension = 0.0f;
+							const size_t tip_steps = 5U;
+							for (size_t step = 0U; step < tip_steps; ++step)
+							{
+								const float r_frac = 0.70f + (0.25f * (float)step / (float)(tip_steps - 1U));
+								const long tx = AppBaselineRuntime_RoundToLong(
+									(float)center_x + (dx / radius) * r_frac * dial_radius_px);
+								const long ty = AppBaselineRuntime_RoundToLong(
+									(float)center_y + (dy / radius) * r_frac * dial_radius_px);
+								if (tx >= 0 && (size_t)tx < frame_width_pixels &&
+									ty >= 0 && (size_t)ty < frame_height_pixels)
+								{
+									const float tip_luma = AppBaselineRuntime_ReadLuma(
+										frame_bytes, frame_width_pixels, (size_t)tx, (size_t)ty);
+									tip_extension += ((255.0f - tip_luma) / 255.0f);
+								}
+							}
+							tip_extension /= (float)tip_steps;
+
+							/* Width check: the needle is a thin spoke. Sample perpendicular
+							 * to the spoke direction and check if dark region is narrow.
+							 * Dial markings are typically wider edges. */
+							float width_score = 1.0f;
+							{
+								const float perp_x = -dy / radius;
+								const float perp_y = dx / radius;
+								float perp_darkness = 0.0f;
+								const size_t width_samples = 5U;
+								for (size_t w = 0U; w < width_samples; ++w)
+								{
+									const float offset = (float)(w - width_samples / 2) * 1.5f;
+									const long wx = AppBaselineRuntime_RoundToLong((float)x + perp_x * offset);
+									const long wy = AppBaselineRuntime_RoundToLong((float)y + perp_y * offset);
+									if (wx >= 0 && (size_t)wx < frame_width_pixels &&
+										wy >= 0 && (size_t)wy < frame_height_pixels)
+									{
+										const float w_luma = AppBaselineRuntime_ReadLuma(
+											frame_bytes, frame_width_pixels, (size_t)wx, (size_t)wy);
+										perp_darkness += ((255.0f - w_luma) / 255.0f);
+									}
+								}
+								/* Thin spoke: darkness concentrated in center samples.
+								 * Wide marking: darkness spread across all samples. */
+								const float center_darkness = ((255.0f - luma) / 255.0f);
+								const float avg_perp_darkness = perp_darkness / (float)width_samples;
+								/* High score if center is much darker than average (thin). */
+								width_score = 0.3f + (0.7f * (center_darkness / (avg_perp_darkness + 0.01f)));
+								if (width_score > 1.0f)
+									width_score = 1.0f;
+							}
+
+							/* Combined boost: hub connection AND tip extension AND thin width.
+							 * Needle: hub~0.9, tip~0.8, width~0.9 → boost ~18x
+							 * Dial marking: hub~0.1, tip~0.2, width~0.5 → boost ~0.03x */
+							const float spoke_score = ((hub_connection * 0.4f) +
+													   (tip_extension * 0.4f) +
+													   (width_score * 0.2f));
+							const float connection_boost = 0.03f + (19.97f * spoke_score * spoke_score);
+
+							/* No center-of-sweep bias - the needle can be at any angle
+							 * across the full -30°C to 50°C range. The angle validation
+							 * (130°-320°) is sufficient to reject outliers. */
+							angle_votes[bin_index] += (vote * connection_boost);
 						}
 					}
 				}
@@ -2239,8 +2410,8 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 
 	{
 		float vote_sum = 0.0f;
-		size_t top_bins[10] = {0};
-		float top_scores[10] = {0.0f};
+		size_t top_bins[16] = {0};
+		float top_scores[16] = {0.0f};
 
 		for (size_t bin_index = 0U; bin_index < APP_BASELINE_ANGLE_BINS;
 			 ++bin_index)
@@ -2248,12 +2419,12 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 			const float val = smoothed_votes[bin_index];
 			vote_sum += val;
 
-			/* Keep track of top 10 candidates. */
-			for (size_t i = 0U; i < 10U; ++i)
+			/* Keep track of top 16 candidates. */
+			for (size_t i = 0U; i < 16U; ++i)
 			{
 				if (val > top_scores[i])
 				{
-					for (size_t j = 9U; j > i; --j)
+					for (size_t j = 15U; j > i; --j)
 					{
 						top_scores[j] = top_scores[j - 1U];
 						top_bins[j] = top_bins[j - 1U];
@@ -2270,13 +2441,136 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 			return false;
 		}
 
-		/* Keep the strongest peak itself, instead of re-ranking the top bins by
-		 * hub/width heuristics. The Python baseline already showed that the raw
-		 * peak is the more reliable choice on the hard-case captures, while the
-		 * extra re-ranking could promote a visually unrelated but very peaky bin. */
+		/* Use spoke continuity to select the best peak. The needle forms a
+		 * continuous dark spoke from center to edge, while dial markings are
+		 * isolated edges with poor continuity. Weight each peak by both
+		 * vote score and continuity to find the true needle. */
 		best_bin = top_bins[0];
 		best_score = smoothed_votes[best_bin];
-		/* Find runner-up for peak ratio. */
+
+		/* Classical spoke-continuity weighted peak selection.
+		 * Analyze top 16 peaks and pick the one with best continuity-weighted score.
+		 * This ensures we select the needle (continuous spoke) over dial
+		 * markings (isolated edges with high vote but poor continuity).
+		 * Increased from 8 to 16 to catch needle peaks that may have lower
+		 * vote counts but better continuity. */
+		{
+			float best_weighted_score = 0.0f;
+			size_t best_weighted_bin = best_bin;
+
+			for (size_t peak_idx = 0U; peak_idx < 16U && top_scores[peak_idx] > 0.0f; ++peak_idx)
+			{
+				const size_t candidate_bin = top_bins[peak_idx];
+				const float candidate_angle = min_angle_rad + ((float)candidate_bin / (float)(APP_BASELINE_ANGLE_BINS - 1U)) * sweep_rad;
+				const float cos_a = cosf(candidate_angle);
+				const float sin_a = sinf(candidate_angle);
+
+				/* Classical CV: measure spoke continuity along this angle.
+				 * The needle forms a continuous dark spoke from center to edge.
+				 * Dial markings are isolated edges without continuity. */
+				float continuity = 0.0f;
+				const size_t continuity_samples = 12U;
+				size_t valid_samples = 0U;
+
+				for (size_t i = 0U; i < continuity_samples; ++i)
+				{
+					const float r_frac = 0.20f + (0.60f * (float)i / (float)(continuity_samples - 1U));
+					const long sx = AppBaselineRuntime_RoundToLong(
+						(float)center_x + (cos_a * r_frac * dial_radius_px));
+					const long sy = AppBaselineRuntime_RoundToLong(
+						(float)center_y + (sin_a * r_frac * dial_radius_px));
+
+					if (sx >= 0 && (size_t)sx < frame_width_pixels &&
+						sy >= 0 && (size_t)sy < frame_height_pixels)
+					{
+						const float sample_luma = AppBaselineRuntime_ReadLuma(
+							frame_bytes, frame_width_pixels, (size_t)sx, (size_t)sy);
+						continuity += ((255.0f - sample_luma) / 255.0f);
+						valid_samples++;
+					}
+				}
+
+				/* Hub darkness check: the needle connects to the center hub,
+				 * so there should be darkness near the center along this angle.
+				 * Dial markings don't reach the center, so center region is light. */
+				float hub_darkness = 0.0f;
+				{
+					const size_t hub_samples = 3U;
+					size_t hub_valid = 0U;
+					for (size_t h = 0U; h < hub_samples; ++h)
+					{
+						const float r_frac = 0.10f + (0.15f * (float)h / (float)(hub_samples - 1U));
+						const long hx = AppBaselineRuntime_RoundToLong(
+							(float)center_x + (cos_a * r_frac * dial_radius_px));
+						const long hy = AppBaselineRuntime_RoundToLong(
+							(float)center_y + (sin_a * r_frac * dial_radius_px));
+						if (hx >= 0 && (size_t)hx < frame_width_pixels &&
+							hy >= 0 && (size_t)hy < frame_height_pixels)
+						{
+							const float hub_luma = AppBaselineRuntime_ReadLuma(
+								frame_bytes, frame_width_pixels, (size_t)hx, (size_t)hy);
+							hub_darkness += ((255.0f - hub_luma) / 255.0f);
+							hub_valid++;
+						}
+					}
+					if (hub_valid > 0U)
+					{
+						hub_darkness /= (float)hub_valid;
+					}
+				}
+
+				if (valid_samples > 0U)
+				{
+					continuity /= (float)valid_samples;
+					/* Skip peaks with poor continuity OR poor hub connection.
+					 * Needle has both: continuous spoke AND dark hub connection.
+					 * Dial markings have continuity but no hub connection. */
+					if (continuity >= 0.50f && hub_darkness >= 0.40f)
+					{
+						/* Weight by continuity^2 * hub_darkness * vote.
+						 * This strongly favors the needle which has both
+						 * continuity and hub connection. */
+						const float weighted_score = (continuity * continuity) * hub_darkness * top_scores[peak_idx];
+						/* Debug: log peak analysis with hub darkness (rate-limited) */
+						if (debug_output)
+						{
+							const float candidate_angle_deg = candidate_angle * (180.0f / APP_BASELINE_PI);
+							DebugConsole_Printf(
+								"[BASELINE] peak[%lu]: bin=%lu angle=%lddeg vote=%ld cont=%ld.%02ld hub=%ld.%02ld wscore=%ld\r\n",
+								(unsigned long)peak_idx,
+								(unsigned long)candidate_bin,
+								(long)(candidate_angle_deg),
+								(long)top_scores[peak_idx],
+								(long)continuity,
+								(long)((continuity - (long)continuity) * 100),
+								(long)hub_darkness,
+								(long)((hub_darkness - (long)hub_darkness) * 100),
+								(long)weighted_score);
+						}
+						if (weighted_score > best_weighted_score)
+						{
+							best_weighted_score = weighted_score;
+							best_weighted_bin = candidate_bin;
+						}
+					}
+				}
+			}
+
+			best_bin = best_weighted_bin;
+			best_score = smoothed_votes[best_bin];
+
+		/* Debug: show which peak was selected (rate-limited) */
+		if (debug_output)
+		{
+			const float selected_angle = min_angle_rad + ((float)best_bin / (float)(APP_BASELINE_ANGLE_BINS - 1U)) * sweep_rad;
+			const float selected_angle_deg = selected_angle * (180.0f / APP_BASELINE_PI);
+			DebugConsole_Printf(
+				"[BASELINE] SELECTED: bin=%lu angle=%ld.%01lddeg wscore=%ld\r\n",
+				(unsigned long)best_bin,
+				(long)selected_angle_deg,
+				(long)((selected_angle_deg - (long)selected_angle_deg) * 10),
+				(long)best_weighted_score);
+		}
 		runner_up_score = AppBaselineRuntime_RunnerUpPeakAfterSuppression(smoothed_votes, APP_BASELINE_ANGLE_BINS, best_bin, 15);
 
 		{
@@ -2340,6 +2634,77 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 					while (best_angle >= APP_BASELINE_TWO_PI)
 					{
 						best_angle -= APP_BASELINE_TWO_PI;
+					}
+				}
+			}
+
+			/* Validate the detected angle points to the upper Celsius dial, not
+			 * the lower subdial. The Celsius needle is in the upper half of the
+			 * gauge (angles 225°-315° point up; 135°-225° sweep left-to-right).
+			 * Reject angles in the lower quadrant (45°-135°) that would point to
+			 * the humidity subdial at the bottom of the gauge face. */
+			float best_angle_deg = best_angle * (180.0f / APP_BASELINE_PI);
+			while (best_angle_deg < 0.0f)
+			{
+				best_angle_deg += 360.0f;
+			}
+			while (best_angle_deg >= 360.0f)
+			{
+				best_angle_deg -= 360.0f;
+			}
+			/* Lower quadrant check: 45°-135° points toward the subdial.
+			 * Allow a small margin — reject 30°-150° to be safe. */
+			if ((best_angle_deg > 30.0f) && (best_angle_deg < 150.0f))
+			{
+				return false;
+			}
+			/* Angle validation: the gauge sweep is 135° (-30°C) to 315° (50°C).
+			 * Allow the full valid range with a small margin to account for
+			 * detection jitter while still rejecting obvious outliers. */
+			if ((best_angle_deg < 130.0f) || (best_angle_deg > 320.0f))
+			{
+				return false;
+			}
+
+			/* Spoke-continuity validation: verify there's a continuous dark spoke
+			 * along the detected angle from center to outer dial edge.
+			 * This rejects isolated edge peaks (dial markings) that don't form
+			 * a continuous spoke. Needle should have dark continuity. */
+			{
+				const float cos_a = cosf(best_angle);
+				const float sin_a = sinf(best_angle);
+				float spoke_continuity = 0.0f;
+				const size_t continuity_samples = 10U;
+				size_t valid_samples = 0U;
+
+				for (size_t i = 0U; i < continuity_samples; ++i)
+				{
+					const float r_frac = 0.15f + (0.70f * (float)i / (float)(continuity_samples - 1U));
+					const long sx = AppBaselineRuntime_RoundToLong(
+						(float)center_x + (cos_a * r_frac * dial_radius_px));
+					const long sy = AppBaselineRuntime_RoundToLong(
+						(float)center_y + (sin_a * r_frac * dial_radius_px));
+
+					if (sx >= 0 && (size_t)sx < frame_width_pixels &&
+						sy >= 0 && (size_t)sy < frame_height_pixels)
+					{
+						const float sample_luma = AppBaselineRuntime_ReadLuma(
+							frame_bytes, frame_width_pixels, (size_t)sx, (size_t)sy);
+						spoke_continuity += ((255.0f - sample_luma) / 255.0f);
+						valid_samples++;
+					}
+				}
+
+				if (valid_samples > 0U)
+				{
+					spoke_continuity /= (float)valid_samples;
+					/* Require at least 35% darkness along the spoke.
+					 * Dial markings won't have continuous dark spoke.
+					 * This threshold balances rejecting dial markings while
+					 * accepting valid needles at all temperature positions. */
+					if (spoke_continuity < 0.35f)
+					{
+						return false;
 					}
 				}
 			}
@@ -2640,8 +3005,16 @@ static void AppBaselineRuntime_LogEstimate(
 	long runner_up_whole = 0L;
 	long angle_abs_tenths = 0L;
 	long confidence_abs_thousandths = 0L;
+	/* Rate-limit log output to once per ~30 frames (~1 second at 30fps) */
+	static uint32_t log_counter = 0U;
+	const bool should_log = (++log_counter % 30U) == 0U;
 
 	if ((estimate == NULL) || !estimate->valid)
+	{
+		return;
+	}
+
+	if (!should_log)
 	{
 		return;
 	}

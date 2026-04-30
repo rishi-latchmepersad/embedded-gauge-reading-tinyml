@@ -142,8 +142,7 @@ def detect_needle_line_segment(
 
 
 def _point_to_segment_distance(
-    px: float, py: float,
-    x1: float, y1: float, x2: float, y2: float
+    px: float, py: float, x1: float, y1: float, x2: float, y2: float
 ) -> float:
     """Shortest distance from point to finite line segment."""
     seg_dx = x2 - x1
@@ -160,7 +159,10 @@ def _point_to_segment_distance(
 
 def _sample_line_darkness(
     image_bgr: np.ndarray,
-    x1: float, y1: float, x2: float, y2: float,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
     center_xy: tuple[float, float],
     dial_radius_px: float,
 ) -> tuple[float, float]:

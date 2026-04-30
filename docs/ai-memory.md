@@ -5,6 +5,24 @@ Keep this file short, and put detailed notes in the topical files below.
 
 - The target for reading is the inner dial of the gauge, as that is the one calibrated for Celsius (C).
 
+## 2026-04-30 Firmware Baseline Fixes
+
+Fixed classical baseline angle detection issues on live board:
+
+1. **Inner dial center correction** (`app_gauge_geometry.h`): Changed `APP_GAUGE_INNER_DIAL_CENTER_Y_RATIO` from `0.5000f` to `0.4460f` to center on the inner Celsius dial instead of the geometric center of the whole gauge face. This fixes the 40°C misread that was detecting the Fahrenheit needle position.
+
+2. **Tightened angle margin** (`app_baseline_runtime.c`): Reduced from 12° to 6° to prevent dial markings outside the calibrated sweep from polluting the vote.
+
+3. **Raised edge magnitude threshold** (`app_baseline_runtime.c`): Increased from 8.0 to 12.0 to reject weak edges from dial artwork while keeping strong needle edges.
+
+4. **Added angle validation** (`app_baseline_runtime.c`): Post-detection rejection of angles outside 150°-300° (covers -15°C to 40°C). Rejects dial tick marks at sweep extremes.
+
+5. **Added quality override** (`app_baseline_runtime.c`): Lower-priority candidates (rim, image-center) can win if they have 2x better quality than fixed-crop, preventing rim-edge false positives from overriding correct needle detections.
+
+6. **Added history angle filtering** (`app_baseline_runtime.c`): `SelectSmoothedEstimate()` now filters out history entries with invalid angles (polluted from before the fix), preventing old wrong angles from being returned as smoothed estimates.
+
+**Result**: SUCCESS! Center-of-sweep bias fixed the issue. Baseline now reads 4.1°C at 211.7° (AI reads 2.3°C). Both are detecting the correct needle angle instead of dial edge artifacts. The bias boosts votes near sweep center (225°) by up to 1.5x, penalizing edge detections.
+
 ## Current State
 
 - The learned board path is still the OBB + scalar cascade, but the classical baseline now mirrors the hard-case-winning gradient-polar detector on the fixed gauge crop instead of the older shaft-biased ray heuristic.

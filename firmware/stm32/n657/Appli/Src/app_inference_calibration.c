@@ -20,7 +20,9 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #ifndef APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION
-#define APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION 0
+/* Enabled 2026-04-30: The raw model output is significantly under-reading
+ * (2-3°C vs true 9°C). The affine calibration improves accuracy. */
+#define APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION 1
 #endif
 /* USER CODE END PD */
 
@@ -53,7 +55,8 @@ static float AppInferenceCalibration_EvaluateAffine(float raw_value);
 /**
  * @brief Apply the scalar correction fit to a raw inference value.
  */
-float AppInferenceCalibration_Apply(float raw_value) {
+float AppInferenceCalibration_Apply(float raw_value)
+{
 #if APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION
 	return AppInferenceCalibration_EvaluateAffine(raw_value);
 #else
@@ -65,7 +68,8 @@ float AppInferenceCalibration_Apply(float raw_value) {
  * @brief Evaluate the saved affine scalar calibration.
  */
 #if APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION
-static float AppInferenceCalibration_EvaluateAffine(float raw_value) {
+static float AppInferenceCalibration_EvaluateAffine(float raw_value)
+{
 	/* Keep the board correction mild so the hard-case manifest does not over-shoot. */
 	return kCalibrationAffineBias + (kCalibrationAffineScale * raw_value);
 }
