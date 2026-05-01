@@ -1,0 +1,100 @@
+image_path,value
+# 2026-04-09 captures - early morning, dark but readable at ~30C
+# capture_2026-04-09_04-48-50.png,30
+# capture_2026-04-09_05-54-15.png,30
+# capture_2026-04-09_06-28-44.png,30
+# capture_2026-04-09_06-29-30.png,30
+captured_images/capture_2026-04-09_06-41-57.png,30
+captured_images/capture_2026-04-09_06-50-28.png,30
+captured_images/capture_2026-04-09_06-51-13.png,30
+
+# 2026-04-15 captures - indoor stable ~72F = ~22C
+captured_images/capture_2026-04-15_11-28-02.png,22
+captured_images/capture_2026-04-15_11-29-40.png,22
+captured_images/capture_2026-04-15_11-31-17.png,22
+captured_images/capture_2026-04-15_11-32-55.png,22
+captured_images/capture_2026-04-15_11-34-07.png,22
+captured_images/capture_2026-04-15_11-35-45.png,22
+captured_images/capture_2026-04-15_11-37-23.png,22
+captured_images/capture_2026-04-15_11-39-00.png,22
+captured_images/capture_2026-04-15_11-40-37.png,22
+captured_images/capture_2026-04-15_11-42-14.png,22
+captured_images/capture_2026-04-15_11-43-52.png,22
+captured_images/capture_2026-04-15_11-45-29.png,22
+captured_images/capture_2026-04-15_11-47-07.png,22
+captured_images/capture_2026-04-15_11-53-13.png,22
+captured_images/capture_2026-04-15_11-54-49.png,22
+captured_images/capture_2026-04-15_11-56-26.png,22
+captured_images/capture_2026-04-15_11-58-03.png,22
+captured_images/capture_2026-04-15_12-06-42.png,22
+captured_images/capture_2026-04-15_13-08-57.png,22
+captured_images/capture_2026-04-15_13-10-35.png,22
+captured_images/capture_2026-04-15_13-12-13.png,22
+captured_images/capture_2026-04-15_13-13-50.png,22
+captured_images/capture_2026-04-15_13-15-28.png,22
+captured_images/capture_2026-04-15_13-17-07.png,22
+captured_images/capture_2026-04-15_13-18-44.png,22
+captured_images/capture_2026-04-15_13-22-10.png,22
+captured_images/capture_2026-04-15_13-25-27.png,22
+captured_images/capture_2026-04-15_13-27-05.png,22
+captured_images/capture_2026-04-15_13-28-42.png,22
+captured_images/capture_2026-04-15_13-30-20.png,22
+captured_images/capture_2026-04-15_13-31-58.png,22
+captured_images/capture_2026-04-15_13-33-37.png,22
+captured_images/capture_2026-04-15_13-35-15.png,22
+captured_images/capture_2026-04-15_13-36-53.png,22
+captured_images/capture_2026-04-15_13-38-31.png,22
+captured_images/capture_2026-04-15_13-40-07.png,22
+captured_images/capture_2026-04-15_13-41-46.png,22
+captured_images/capture_2026-04-15_13-43-24.png,22
+captured_images/capture_2026-04-15_13-45-03.png,22
+captured_images/capture_2026-04-15_13-46-41.png,22
+captured_images/capture_2026-04-15_13-48-19.png,22
+captured_images/capture_2026-04-15_13-49-57.png,22
+captured_images/capture_2026-04-15_13-51-36.png,22
+captured_images/capture_2026-04-15_13-53-14.png,22
+captured_images/capture_2026-04-15_13-54-53.png,22
+captured_images/capture_2026-04-15_14-10-06.png,22
+
+# 2026-04-18 morning session - ~62-65F = ~17C
+captured_images/capture_2026-04-18_13-18-53.png,17
+captured_images/capture_2026-04-18_13-21-46.png,17
+captured_images/capture_2026-04-18_13-23-37.png,17
+captured_images/capture_2026-04-18_13-26-34.png,17
+captured_images/capture_2026-04-18_13-28-35.png,17
+captured_images/capture_2026-04-18_13-31-09.png,17
+captured_images/capture_2026-04-18_13-33-01.png,17
+captured_images/capture_2026-04-18_13-35-17.png,17
+captured_images/capture_2026-04-18_13-37-09.png,17
+captured_images/capture_2026-04-18_13-39-01.png,17
+captured_images/capture_2026-04-18_13-40-52.png,17
+captured_images/capture_2026-04-18_13-42-44.png,17
+captured_images/capture_2026-04-18_13-44-35.png,17
+
+# 2026-04-18 afternoon session - ~72F = ~22C
+captured_images/capture_2026-04-18_14-51-12.png,22
+
+# 2026-04-18 evening session - ~88-90F = ~31-32C
+captured_images/capture_2026-04-18_17-22-32.png,31
+captured_images/capture_2026-04-18_17-25-20.png,31
+captured_images/capture_2026-04-18_17-26-51.png,31
+captured_images/capture_2026-04-18_17-28-23.png,31
+captured_images/capture_2026-04-18_17-29-54.png,31
+captured_images/capture_2026-04-18_17-31-25.png,31
+captured_images/capture_2026-04-18_17-32-57.png,31
+captured_images/capture_2026-04-18_17-34-29.png,31
+captured_images/capture_2026-04-18_17-36-00.png,31
+captured_images/capture_2026-04-18_17-37-31.png,31
+captured_images/capture_2026-04-18_17-39-03.png,31
+captured_images/capture_2026-04-18_17-40-34.png,31
+captured_images/capture_2026-04-18_17-42-06.png,31
+captured_images/capture_2026-04-18_17-43-37.png,31
+captured_images/capture_2026-04-18_17-45-09.png,31
+captured_images/capture_2026-04-18_17-46-40.png,31
+
+# 2026-04-19 session - ~90-92F = ~32-33C
+captured_images/capture_2026-04-19_12-56-02.png,32
+captured_images/capture_2026-04-19_12-57-14.png,32
+captured_images/capture_2026-04-19_12-58-27.png,32
+captured_images/capture_2026-04-19_12-59-39.png,32
+captured_images/capture_2026-04-19_13-00-52.png,32

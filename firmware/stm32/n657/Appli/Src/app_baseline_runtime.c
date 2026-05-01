@@ -58,8 +58,11 @@ typedef struct
 #define APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG 2.0f
 #define APP_BASELINE_BRIGHT_THRESHOLD 150U
 /* Pixels above this luma are considered saturated/glare and excluded from
- * the bright-centroid calculation and ray scoring. */
-#define APP_BASELINE_SATURATION_THRESHOLD 220U
+ * the bright-centroid calculation and ray scoring.
+ * Raised from 220 to 235 (2026-04-30) — the 220 threshold was too aggressive
+ * on bright board captures where the dial face is well-lit but not blown out,
+ * causing valid needle pixels to be skipped and the detector to miss entirely. */
+#define APP_BASELINE_SATURATION_THRESHOLD 235U
 #define APP_BASELINE_MIN_BRIGHT_PIXELS 1024U
 #define APP_BASELINE_SCAN_BORDER_PIXELS 8U
 #define APP_BASELINE_ANGLE_BINS 360U
@@ -2191,8 +2194,12 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 	/* Reduced from 12° to 6° — the 12° margin was too wide and allowed dial
 	 * markings and subdial artifacts to pollute the vote. The needle is a
 	 * thin dark spoke; we want tight angular filtering to reject the radial
-	 * dial artwork that sits just outside the calibrated sweep. */
-	const float angle_margin_rad = 6.0f * (APP_BASELINE_PI / 180.0f);
+	 * dial artwork that sits just outside the calibrated sweep.
+	 * Widened to 10° (2026-04-30) — the 6° margin was too tight and rejected
+	 * valid needle angles on captures where the needle sits near the sweep
+	 * boundaries (e.g. -30°C or 50°C). The spoke-continuity check below is
+	 * sufficient to reject dial markings. */
+	const float angle_margin_rad = 10.0f * (APP_BASELINE_PI / 180.0f);
 	const size_t scan_x_max_inclusive = scan_x_max - 1U;
 	const size_t scan_y_max_inclusive = scan_y_max - 1U;
 	float angle_votes[APP_BASELINE_ANGLE_BINS] = {0.0f};
@@ -2200,9 +2207,6 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 	float best_score = -1.0f;
 	float runner_up_score = -1.0f;
 	size_t best_bin = 0U;
-	/* Rate-limit debug output to once per ~30 frames (~1 second at 30fps) */
-	static uint32_t frame_counter = 0U;
-	const bool debug_output = (++frame_counter % 30U) == 0U;
 
 	if ((estimate_out == NULL) || (frame_bytes == NULL) || (source_label == NULL))
 	{
@@ -2267,8 +2271,13 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 
 					/* Raised from 8.0f to 12.0f — the dial markings produce weak edges
 					 * that were polluting the vote. The needle is a strong dark edge
-					 * on a light background, so we can afford a higher threshold. */
-					if (edge_mag <= 12.0f)
+					 * on a light background, so we can afford a higher threshold.
+					 * Lowered back to 8.0f (2026-04-30) — the 12.0f threshold was
+					 * rejecting valid needle edges on lower-contrast board captures
+					 * where the needle is visible but the edge gradient is weaker
+					 * due to lighting or glare. The spoke-continuity and hub-darkness
+					 * checks below are sufficient to reject dial markings. */
+					if (edge_mag <= 8.0f)
 					{
 						continue;
 					}
@@ -2454,9 +2463,9 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 		 * markings (isolated edges with high vote but poor continuity).
 		 * Increased from 8 to 16 to catch needle peaks that may have lower
 		 * vote counts but better continuity. */
+		size_t best_weighted_bin = best_bin;
 		{
 			float best_weighted_score = 0.0f;
-			size_t best_weighted_bin = best_bin;
 
 			for (size_t peak_idx = 0U; peak_idx < 16U && top_scores[peak_idx] > 0.0f; ++peak_idx)
 			{
@@ -2524,29 +2533,18 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 					continuity /= (float)valid_samples;
 					/* Skip peaks with poor continuity OR poor hub connection.
 					 * Needle has both: continuous spoke AND dark hub connection.
-					 * Dial markings have continuity but no hub connection. */
-					if (continuity >= 0.50f && hub_darkness >= 0.40f)
+					 * Dial markings have continuity but no hub connection.
+					 * Lowered thresholds (2026-04-30): continuity from 0.50→0.35,
+					 * hub_darkness from 0.40→0.25. The previous thresholds were
+					 * too strict on lower-contrast board captures where the needle
+					 * is visible but the spoke is not perfectly dark throughout.
+					 * The weighted score formula still favors strong spokes. */
+					if (continuity >= 0.35f && hub_darkness >= 0.25f)
 					{
 						/* Weight by continuity^2 * hub_darkness * vote.
 						 * This strongly favors the needle which has both
 						 * continuity and hub connection. */
 						const float weighted_score = (continuity * continuity) * hub_darkness * top_scores[peak_idx];
-						/* Debug: log peak analysis with hub darkness (rate-limited) */
-						if (debug_output)
-						{
-							const float candidate_angle_deg = candidate_angle * (180.0f / APP_BASELINE_PI);
-							DebugConsole_Printf(
-								"[BASELINE] peak[%lu]: bin=%lu angle=%lddeg vote=%ld cont=%ld.%02ld hub=%ld.%02ld wscore=%ld\r\n",
-								(unsigned long)peak_idx,
-								(unsigned long)candidate_bin,
-								(long)(candidate_angle_deg),
-								(long)top_scores[peak_idx],
-								(long)continuity,
-								(long)((continuity - (long)continuity) * 100),
-								(long)hub_darkness,
-								(long)((hub_darkness - (long)hub_darkness) * 100),
-								(long)weighted_score);
-						}
 						if (weighted_score > best_weighted_score)
 						{
 							best_weighted_score = weighted_score;
@@ -2555,22 +2553,11 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 					}
 				}
 			}
-
-			best_bin = best_weighted_bin;
-			best_score = smoothed_votes[best_bin];
-
-		/* Debug: show which peak was selected (rate-limited) */
-		if (debug_output)
-		{
-			const float selected_angle = min_angle_rad + ((float)best_bin / (float)(APP_BASELINE_ANGLE_BINS - 1U)) * sweep_rad;
-			const float selected_angle_deg = selected_angle * (180.0f / APP_BASELINE_PI);
-			DebugConsole_Printf(
-				"[BASELINE] SELECTED: bin=%lu angle=%ld.%01lddeg wscore=%ld\r\n",
-				(unsigned long)best_bin,
-				(long)selected_angle_deg,
-				(long)((selected_angle_deg - (long)selected_angle_deg) * 10),
-				(long)best_weighted_score);
 		}
+
+		best_bin = best_weighted_bin;
+		best_score = smoothed_votes[best_bin];
+
 		runner_up_score = AppBaselineRuntime_RunnerUpPeakAfterSuppression(smoothed_votes, APP_BASELINE_ANGLE_BINS, best_bin, 15);
 
 		{
@@ -2698,11 +2685,11 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 				if (valid_samples > 0U)
 				{
 					spoke_continuity /= (float)valid_samples;
-					/* Require at least 35% darkness along the spoke.
-					 * Dial markings won't have continuous dark spoke.
-					 * This threshold balances rejecting dial markings while
-					 * accepting valid needles at all temperature positions. */
-					if (spoke_continuity < 0.35f)
+					/* Require at least 25% darkness along the spoke.
+					 * Lowered from 35% to 25% (2026-04-30) — the 35% threshold
+					 * was rejecting valid needles on lower-contrast board captures
+					 * where the needle is visible but not perfectly dark. */
+					if (spoke_continuity < 0.25f)
 					{
 						return false;
 					}
@@ -3005,16 +2992,8 @@ static void AppBaselineRuntime_LogEstimate(
 	long runner_up_whole = 0L;
 	long angle_abs_tenths = 0L;
 	long confidence_abs_thousandths = 0L;
-	/* Rate-limit log output to once per ~30 frames (~1 second at 30fps) */
-	static uint32_t log_counter = 0U;
-	const bool should_log = (++log_counter % 30U) == 0U;
 
 	if ((estimate == NULL) || !estimate->valid)
-	{
-		return;
-	}
-
-	if (!should_log)
 	{
 		return;
 	}
