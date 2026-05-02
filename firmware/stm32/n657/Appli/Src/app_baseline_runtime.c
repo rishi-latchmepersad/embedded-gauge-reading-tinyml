@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "app_camera_buffers.h"
+#include "app_ai.h"
 #include "app_gauge_geometry.h"
 #include "app_inference_log_utils.h"
 #include "app_memory_budget.h"
@@ -158,6 +159,25 @@ typedef struct
 #define APP_BASELINE_HISTORY_RESET_DELTA_C 12.0f
 /* Scale factor for integer-encoded confidence in log output (avoids %f). */
 #define APP_BASELINE_CONFIDENCE_LOG_SCALE 1000L
+/* Hot-zone override is useful under heavy overexposure, but in normal frames
+ * it can hijack cold readings by repeatedly snapping to the hot wrap edge. */
+#define APP_BASELINE_HOT_OVERRIDE_ENABLE_IN_NORMAL_MODE 0U
+/* Hysteresis guard: when recent stable history is cold, require very strong
+ * hot vote dominance before allowing a warm/hot override. */
+#define APP_BASELINE_HOT_OVERRIDE_COLD_HISTORY_TEMP_C 0.0f
+#define APP_BASELINE_HOT_OVERRIDE_WARM_TARGET_TEMP_C 25.0f
+#define APP_BASELINE_HOT_OVERRIDE_COLD_HISTORY_MIN_RATIO 0.90f
+/* Recovery guard: allow cold estimates to break out of poisoned warm history
+ * in normal frames when the jump direction is warm->cold and confidence is
+ * still reasonable for this baseline. */
+#define APP_BASELINE_COLD_RECOVERY_HISTORY_TEMP_C 20.0f
+#define APP_BASELINE_COLD_RECOVERY_TARGET_TEMP_C 0.0f
+#define APP_BASELINE_COLD_RECOVERY_MIN_CONFIDENCE 2.5f
+/* Cross-check guard against stale warm baseline locks: when AI strongly says
+ * cold, do not accept a warm baseline jump into history. */
+#define APP_BASELINE_AI_COLD_CROSSCHECK_TEMP_C -10.0f
+#define APP_BASELINE_AI_WARM_REJECT_TEMP_C 15.0f
+#define APP_BASELINE_AI_CROSSCHECK_MIN_DELTA_C 20.0f
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -1518,9 +1538,15 @@ static bool AppBaselineRuntime_IsStableEstimateForHistory(
 		const float delta_c =
 			fabsf(estimate->temperature_c - camera_baseline_last_temperature_c);
 		const float peak_ratio = estimate->best_score / estimate->runner_up_score;
+		const bool cold_recovery_candidate =
+			(!camera_baseline_current_frame_is_bright) &&
+			(camera_baseline_last_temperature_c >= APP_BASELINE_COLD_RECOVERY_HISTORY_TEMP_C) &&
+			(estimate->temperature_c <= APP_BASELINE_COLD_RECOVERY_TARGET_TEMP_C) &&
+			(estimate->confidence >= APP_BASELINE_COLD_RECOVERY_MIN_CONFIDENCE);
 		if ((delta_c > APP_BASELINE_AMBIGUOUS_JUMP_DELTA_C) &&
 			(peak_ratio < APP_BASELINE_AMBIGUOUS_JUMP_MAX_PEAK_RATIO) &&
-			(estimate->confidence < APP_BASELINE_AMBIGUOUS_JUMP_MAX_CONFIDENCE))
+			(estimate->confidence < APP_BASELINE_AMBIGUOUS_JUMP_MAX_CONFIDENCE) &&
+			!cold_recovery_candidate)
 		{
 			const long delta_x10 = AppBaselineRuntime_RoundToLong(delta_c * 10.0f);
 			const long ratio_m = AppBaselineRuntime_RoundToLong(peak_ratio * 1000.0f);
@@ -1532,6 +1558,53 @@ static bool AppBaselineRuntime_IsStableEstimateForHistory(
 				((delta_x10 % 10L) < 0L) ? -(delta_x10 % 10L) : (delta_x10 % 10L),
 				ratio_m, conf_m);
 			return false;
+		}
+		if (cold_recovery_candidate)
+		{
+			const long prev_x10 =
+				AppBaselineRuntime_RoundToLong(camera_baseline_last_temperature_c * 10.0f);
+			const long curr_x10 =
+				AppBaselineRuntime_RoundToLong(estimate->temperature_c * 10.0f);
+			const long conf_m = AppBaselineRuntime_RoundToLong(
+				estimate->confidence * 1000.0f);
+			DebugConsole_Printf(
+				"[BASELINE] Stability recovery: warm->cold unlock prev=%ld.%01ldC curr=%ld.%01ldC conf=%ld/1000\r\n",
+				prev_x10 / 10L,
+				((prev_x10 % 10L) < 0L) ? -(prev_x10 % 10L) : (prev_x10 % 10L),
+				curr_x10 / 10L,
+				((curr_x10 % 10L) < 0L) ? -(curr_x10 % 10L) : (curr_x10 % 10L),
+				conf_m);
+		}
+	}
+
+	/* AI cross-check: if the latest AI value is strongly cold, warn about warm
+	 * baseline candidates but do not hard-block them. This lets a credible cold
+	 * frame replace stale warm history instead of freezing the estimate. */
+	{
+		float ai_temp_c = 0.0f;
+		if (App_AI_GetLastInferenceResult(&ai_temp_c))
+		{
+			const float cross_delta =
+				fabsf(estimate->temperature_c - ai_temp_c);
+			if ((ai_temp_c <= APP_BASELINE_AI_COLD_CROSSCHECK_TEMP_C) &&
+				(estimate->temperature_c >= APP_BASELINE_AI_WARM_REJECT_TEMP_C) &&
+				(cross_delta >= APP_BASELINE_AI_CROSSCHECK_MIN_DELTA_C))
+			{
+				const long ai_x10 =
+					AppBaselineRuntime_RoundToLong(ai_temp_c * 10.0f);
+				const long base_x10 =
+					AppBaselineRuntime_RoundToLong(estimate->temperature_c * 10.0f);
+				const long delta_x10 =
+					AppBaselineRuntime_RoundToLong(cross_delta * 10.0f);
+				DebugConsole_Printf(
+					"[BASELINE] Stability warn: AI cross-check ai=%ld.%01ldC base=%ld.%01ldC delta=%ld.%01ldC\r\n",
+					ai_x10 / 10L,
+					((ai_x10 % 10L) < 0L) ? -(ai_x10 % 10L) : (ai_x10 % 10L),
+					base_x10 / 10L,
+					((base_x10 % 10L) < 0L) ? -(base_x10 % 10L) : (base_x10 % 10L),
+					delta_x10 / 10L,
+					((delta_x10 % 10L) < 0L) ? -(delta_x10 % 10L) : (delta_x10 % 10L));
+			}
 		}
 	}
 
@@ -2787,7 +2860,8 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 
 			/* Only do the hot-zone search if the primary peak is in the
 			 * cold/mid range (135°-315°). */
-			if (best_angle_deg_check >= 135.0f && best_angle_deg_check <= 315.0f)
+			if (best_angle_deg_check >= 135.0f && best_angle_deg_check <= 315.0f &&
+				(bright_relaxed || (APP_BASELINE_HOT_OVERRIDE_ENABLE_IN_NORMAL_MODE != 0U)))
 			{
 				for (size_t peak_idx = 0U; peak_idx < APP_BASELINE_TOP_PEAK_COUNT && top_scores[peak_idx] > 0.0f; ++peak_idx)
 				{
@@ -2880,10 +2954,13 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 				if (best_hot_weighted > 0.0f &&
 					smoothed_votes[best_hot_bin] >= (0.35f * smoothed_votes[best_bin]))
 				{
+					/* Hysteresis: if recent stable history is cold, do not allow
+					 * a warm/hot jump from a marginal hot-zone candidate. */
+					bool allow_hot_override = true;
 					const float hot_angle_deg =
 						(min_angle_rad + ((float)best_hot_bin /
-											   (float)(APP_BASELINE_ANGLE_BINS - 1U)) *
-											  sweep_rad) *
+										  (float)(APP_BASELINE_ANGLE_BINS - 1U)) *
+											 sweep_rad) *
 						(180.0f / APP_BASELINE_PI);
 					const float primary_angle_deg_norm =
 						AppBaselineRuntime_NormalizeAngleDegrees(best_angle_deg_check);
@@ -2893,14 +2970,34 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 						primary_angle_deg_norm * 10.0f);
 					const long hot_angle_x10 = AppBaselineRuntime_RoundToLong(
 						hot_angle_deg_norm * 10.0f);
-					best_bin = best_hot_bin;
-					best_score = smoothed_votes[best_bin];
-					DebugConsole_Printf(
-						"[BASELINE] Hot-zone override: primary=%ld.%01lddeg hot=%ld.%01lddeg\r\n",
-						primary_angle_x10 / 10L,
-						((primary_angle_x10 % 10L) < 0L) ? -(primary_angle_x10 % 10L) : (primary_angle_x10 % 10L),
-						hot_angle_x10 / 10L,
-						((hot_angle_x10 % 10L) < 0L) ? -(hot_angle_x10 % 10L) : (hot_angle_x10 % 10L));
+					{
+						const float hot_angle_rad =
+							min_angle_rad + ((float)best_hot_bin / (float)(APP_BASELINE_ANGLE_BINS - 1U)) * sweep_rad;
+						const float hot_temp_c =
+							AppBaselineRuntime_ConvertAngleToTemperature(hot_angle_rad);
+						const float hot_vote_ratio =
+							(smoothed_votes[best_bin] > 0.0f)
+								? (smoothed_votes[best_hot_bin] / smoothed_votes[best_bin])
+								: 0.0f;
+						if (camera_baseline_last_result_valid &&
+							camera_baseline_last_temperature_c <= APP_BASELINE_HOT_OVERRIDE_COLD_HISTORY_TEMP_C &&
+							hot_temp_c >= APP_BASELINE_HOT_OVERRIDE_WARM_TARGET_TEMP_C &&
+							hot_vote_ratio < APP_BASELINE_HOT_OVERRIDE_COLD_HISTORY_MIN_RATIO)
+						{
+							allow_hot_override = false;
+						}
+					}
+					if (allow_hot_override)
+					{
+						best_bin = best_hot_bin;
+						best_score = smoothed_votes[best_bin];
+						DebugConsole_Printf(
+							"[BASELINE] Hot-zone override: primary=%ld.%01lddeg hot=%ld.%01lddeg\r\n",
+							primary_angle_x10 / 10L,
+							((primary_angle_x10 % 10L) < 0L) ? -(primary_angle_x10 % 10L) : (primary_angle_x10 % 10L),
+							hot_angle_x10 / 10L,
+							((hot_angle_x10 % 10L) < 0L) ? -(hot_angle_x10 % 10L) : (hot_angle_x10 % 10L));
+					}
 				}
 				else if (best_hot_weighted > 0.0f)
 				{
@@ -2923,7 +3020,8 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 			float best_hot_weighted_full = 0.0f;
 			size_t best_hot_bin_full = best_bin;
 
-			if (best_angle_deg_check >= 135.0f && best_angle_deg_check <= 315.0f)
+			if (best_angle_deg_check >= 135.0f && best_angle_deg_check <= 315.0f &&
+				(bright_relaxed || (APP_BASELINE_HOT_OVERRIDE_ENABLE_IN_NORMAL_MODE != 0U)))
 			{
 				for (size_t candidate_bin = 0U; candidate_bin < APP_BASELINE_ANGLE_BINS; ++candidate_bin)
 				{
@@ -3016,10 +3114,11 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 				if (best_hot_weighted_full > 0.0f &&
 					smoothed_votes[best_hot_bin_full] >= (0.22f * smoothed_votes[best_bin]))
 				{
+					bool allow_hot_rescue = true;
 					const float hot_angle_deg =
 						(min_angle_rad + ((float)best_hot_bin_full /
-											   (float)(APP_BASELINE_ANGLE_BINS - 1U)) *
-											  sweep_rad) *
+										  (float)(APP_BASELINE_ANGLE_BINS - 1U)) *
+											 sweep_rad) *
 						(180.0f / APP_BASELINE_PI);
 					const float primary_angle_deg_norm =
 						AppBaselineRuntime_NormalizeAngleDegrees(best_angle_deg_check);
@@ -3029,14 +3128,34 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 						primary_angle_deg_norm * 10.0f);
 					const long hot_angle_x10 = AppBaselineRuntime_RoundToLong(
 						hot_angle_deg_norm * 10.0f);
-					best_bin = best_hot_bin_full;
-					best_score = smoothed_votes[best_bin];
-					DebugConsole_Printf(
-						"[BASELINE] Hot-zone full-sweep rescue: primary=%ld.%01lddeg hot=%ld.%01lddeg\r\n",
-						primary_angle_x10 / 10L,
-						((primary_angle_x10 % 10L) < 0L) ? -(primary_angle_x10 % 10L) : (primary_angle_x10 % 10L),
-						hot_angle_x10 / 10L,
-						((hot_angle_x10 % 10L) < 0L) ? -(hot_angle_x10 % 10L) : (hot_angle_x10 % 10L));
+					{
+						const float hot_angle_rad =
+							min_angle_rad + ((float)best_hot_bin_full / (float)(APP_BASELINE_ANGLE_BINS - 1U)) * sweep_rad;
+						const float hot_temp_c =
+							AppBaselineRuntime_ConvertAngleToTemperature(hot_angle_rad);
+						const float hot_vote_ratio =
+							(smoothed_votes[best_bin] > 0.0f)
+								? (smoothed_votes[best_hot_bin_full] / smoothed_votes[best_bin])
+								: 0.0f;
+						if (camera_baseline_last_result_valid &&
+							camera_baseline_last_temperature_c <= APP_BASELINE_HOT_OVERRIDE_COLD_HISTORY_TEMP_C &&
+							hot_temp_c >= APP_BASELINE_HOT_OVERRIDE_WARM_TARGET_TEMP_C &&
+							hot_vote_ratio < APP_BASELINE_HOT_OVERRIDE_COLD_HISTORY_MIN_RATIO)
+						{
+							allow_hot_rescue = false;
+						}
+					}
+					if (allow_hot_rescue)
+					{
+						best_bin = best_hot_bin_full;
+						best_score = smoothed_votes[best_bin];
+						DebugConsole_Printf(
+							"[BASELINE] Hot-zone full-sweep rescue: primary=%ld.%01lddeg hot=%ld.%01lddeg\r\n",
+							primary_angle_x10 / 10L,
+							((primary_angle_x10 % 10L) < 0L) ? -(primary_angle_x10 % 10L) : (primary_angle_x10 % 10L),
+							hot_angle_x10 / 10L,
+							((hot_angle_x10 % 10L) < 0L) ? -(hot_angle_x10 % 10L) : (hot_angle_x10 % 10L));
+					}
 				}
 			}
 		}

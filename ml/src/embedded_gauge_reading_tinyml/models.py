@@ -180,9 +180,7 @@ def _build_interval_expectation_head(
         raise ValueError("Need at least two bins for interval regression.")
 
     # Place one center per fixed-width interval, anchored at the calibrated range.
-    bin_centers = [
-        value_min + (index + 0.5) * bin_width for index in range(num_bins)
-    ]
+    bin_centers = [value_min + (index + 0.5) * bin_width for index in range(num_bins)]
     centers = keras.layers.Dense(
         1,
         use_bias=False,
@@ -339,9 +337,7 @@ def _build_keypoint_heatmap_head(
     return heatmaps
 
 
-@keras.saving.register_keras_serializable(
-    package="embedded_gauge_reading_tinyml"
-)
+@keras.saving.register_keras_serializable(package="embedded_gauge_reading_tinyml")
 class SpatialSoftArgmax2D(keras.layers.Layer):
     """Convert per-keypoint heatmaps into soft coordinates."""
 
@@ -409,9 +405,7 @@ class SpatialSoftArgmax2D(keras.layers.Layer):
         return config
 
 
-@keras.saving.register_keras_serializable(
-    package="embedded_gauge_reading_tinyml"
-)
+@keras.saving.register_keras_serializable(package="embedded_gauge_reading_tinyml")
 class GaugeValueFromKeypoints(keras.layers.Layer):
     """Convert detected center/tip keypoints into a calibrated gauge value."""
 
@@ -583,8 +577,15 @@ def build_mobilenetv2_regression_model(
     alpha: float = 1.0,
     head_units: int = 128,
     head_dropout: float = 0.2,
+    linear_output: bool = False,
 ) -> keras.Model:
-    """Build a transfer-learning regressor on top of MobileNetV2 features."""
+    """Build a transfer-learning regressor on top of MobileNetV2 features.
+
+    Args:
+        linear_output: If True, use a linear output layer (no activation) for
+                       unbounded regression. If False (default), use a sigmoid
+                       to bound outputs to [0,1] which is then rescaled.
+    """
     inputs, x, base_model = _build_mobilenetv2_backbone(
         image_height,
         image_width,
@@ -596,7 +597,18 @@ def build_mobilenetv2_regression_model(
     x = keras.layers.Dropout(head_dropout)(x)
     x = keras.layers.Dense(head_units, activation="swish")(x)
     x = keras.layers.Dropout(head_dropout)(x)
-    output = keras.layers.Dense(1, name="gauge_value")(x)
+
+    # Linear output for unbounded regression (no saturating activation)
+    if linear_output:
+        output = keras.layers.Dense(1, name="gauge_value")(x)
+    else:
+        # Sigmoid output bounded to [0,1], then rescaled to value range
+        x = keras.layers.Dense(1, activation="sigmoid", name="gauge_value_sigmoid")(x)
+        output = keras.layers.Rescaling(
+            scale=1.0,  # Will be set by training code via set_weights
+            offset=0.0,
+            name="gauge_value",
+        )(x)
 
     model = keras.Model(
         inputs=inputs,
@@ -1052,9 +1064,7 @@ def build_mobilenetv2_geometry_uncertainty_model(
         activation="swish",
         name="geometry_uncertainty_dense",
     )(pooled_features)
-    uncertainty_features = keras.layers.Dropout(head_dropout)(
-        uncertainty_features
-    )
+    uncertainty_features = keras.layers.Dropout(head_dropout)(uncertainty_features)
     interval_radius = keras.layers.Dense(
         1,
         activation="softplus",

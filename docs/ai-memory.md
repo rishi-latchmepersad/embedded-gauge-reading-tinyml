@@ -439,3 +439,8 @@ The issue was that the `prefix` parameter (string literal) was being corrupted b
     - `extra_cold_delta = min(1.05 * (-12 - raw), 8.0)`
     - final correction subtracts this extra delta (pushes value colder).
   - Keeps prior low-band neutralization for around-ambient values while improving deep-cold cases.
+
+## 2026-05-02 Baseline AI Cross-Check Softened
+- The baseline AI cross-check in `app_baseline_runtime.c` is now advisory instead of a hard veto.
+- It still logs when the baseline candidate disagrees strongly with a cold AI reading, but it no longer freezes history on that mismatch.
+- This should help the baseline recover from stale warm locks on cold frames instead of holding a previous estimate indefinitely.

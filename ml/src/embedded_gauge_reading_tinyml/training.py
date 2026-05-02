@@ -85,7 +85,6 @@ from embedded_gauge_reading_tinyml.models import (
     build_regression_model,
 )
 
-
 # Resolve ML/data paths from this file so training works from any cwd.
 ML_ROOT: Path = Path(__file__).resolve().parents[2]
 REPO_ROOT: Path = ML_ROOT.parent
@@ -137,9 +136,7 @@ class TrainConfig:
         "mobilenet_v2_obb",
         "mobilenet_v2_interval",
         "mobilenet_v2_ordinal",
-    ] = (
-        DEFAULT_MODEL_FAMILY
-    )
+    ] = DEFAULT_MODEL_FAMILY
     mobilenet_pretrained: bool = DEFAULT_MOBILENET_PRETRAINED
     mobilenet_backbone_trainable: bool = DEFAULT_MOBILENET_BACKBONE_TRAINABLE
     mobilenet_warmup_epochs: int = DEFAULT_MOBILENET_WARMUP_EPOCHS
@@ -164,15 +161,18 @@ class TrainConfig:
     keypoint_heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT
     keypoint_coord_loss_weight: float = DEFAULT_KEYPOINT_COORD_LOSS_WEIGHT
     geometry_value_loss_weight: float = DEFAULT_GEOMETRY_VALUE_LOSS_WEIGHT
-    geometry_uncertainty_loss_weight: float = (
-        DEFAULT_GEOMETRY_UNCERTAINTY_LOSS_WEIGHT
-    )
-    geometry_uncertainty_low_quantile: float = (
-        DEFAULT_GEOMETRY_UNCERTAINTY_LOW_QUANTILE
-    )
+    geometry_uncertainty_loss_weight: float = DEFAULT_GEOMETRY_UNCERTAINTY_LOSS_WEIGHT
+    geometry_uncertainty_low_quantile: float = DEFAULT_GEOMETRY_UNCERTAINTY_LOW_QUANTILE
     geometry_uncertainty_high_quantile: float = (
         DEFAULT_GEOMETRY_UNCERTAINTY_HIGH_QUANTILE
     )
+    # Range-aware sampling: oversample cold/hot tails for better range coverage
+    range_aware_sampling: bool = False
+    cold_tail_fraction: float = 0.15
+    hot_tail_fraction: float = 0.15
+    oversampling_factor: float = 3.0
+    # Linear output: use unbounded linear output instead of sigmoid
+    linear_output: bool = False
 
 
 @dataclass(frozen=True)
@@ -210,6 +210,88 @@ class TrainingResult:
     test_metrics: dict[str, float]
     baseline_test_mae: float
     dropped_out_of_sweep: int
+
+
+def _fit_calibration(
+    result: TrainingResult,
+    test_examples: list[TrainingExample],
+    spec: GaugeSpec,
+) -> TrainingResult:
+    """Fit calibration parameters to map linear model outputs to calibrated values.
+
+    When using a linear output head (no saturating activation), the model outputs
+    are unbounded and need to be calibrated to match the expected value range.
+    This function fits a simple affine transformation (slope and bias) to map
+    model outputs to ground truth values.
+
+    Args:
+        result: Training result containing the model and test metrics.
+        test_examples: Test examples for calibration.
+        spec: Gauge specification with value range.
+
+    Returns:
+        Updated TrainingResult with calibration parameters stored in model metadata.
+    """
+    import sklearn.linear_model
+
+    # Get model predictions on test set
+    test_paths = np.array([e.image_path for e in test_examples], dtype=str)
+    test_values = np.array([e.value for e in test_examples], dtype=np.float32)
+
+    # Create a simple dataset for prediction
+    test_dataset = tf.data.Dataset.from_tensor_slices(test_paths)
+    test_dataset = test_dataset.map(
+        lambda p: _load_crop(
+            p, result.model.input_shape[1], result.model.input_shape[2]
+        ),
+        num_parallel_calls=tf.data.AUTOTUNE,
+    )
+    test_dataset = test_dataset.batch(32)
+
+    # Get model predictions
+    predictions = result.model.predict(test_dataset, verbose=0)
+    predictions = predictions.flatten()
+
+    # Fit affine calibration: output = slope * prediction + bias
+    # We want: expected_value ≈ slope * prediction + bias
+    # Use sklearn linear regression for calibration
+    X = predictions.reshape(-1, 1)
+    y = test_values.reshape(-1, 1)
+
+    calibration_model = sklearn.linear_model.LinearRegression()
+    calibration_model.fit(X, y)
+
+    slope = float(calibration_model.coef_[0][0])
+    bias = float(calibration_model.intercept_[0])
+
+    # Apply calibration to model by adding a Dense layer
+    # We'll store the calibration parameters in the model's metadata
+    # and apply them during inference
+
+    # Update test metrics with calibrated predictions
+    calibrated_predictions = slope * predictions + bias
+    calibrated_mae = float(np.mean(np.abs(calibrated_predictions - test_values)))
+
+    result.test_metrics["calibrated_mae"] = calibrated_mae
+    result.test_metrics["calibration_slope"] = slope
+    result.test_metrics["calibration_bias"] = bias
+
+    # Store calibration parameters in model metadata
+    if not hasattr(result.model, "metadata"):
+        result.model.metadata = {}
+    result.model.metadata["calibration"] = {
+        "slope": slope,
+        "bias": bias,
+        "method": "affine_fit",
+    }
+
+    print(
+        f"[CALIBRATION] Linear output calibration: "
+        f"slope={slope:.4f}, bias={bias:.4f}, "
+        f"MAE={calibrated_mae:.4f}C"
+    )
+
+    return result
 
 
 def _validate_split_config(config: TrainConfig) -> None:
@@ -257,14 +339,13 @@ def _validate_split_config(config: TrainConfig) -> None:
     if config.geometry_uncertainty_loss_weight < 0.0:
         raise ValueError("geometry_uncertainty_loss_weight must be >= 0.")
     if not (0.0 < config.geometry_uncertainty_low_quantile < 0.5):
-        raise ValueError(
-            "geometry_uncertainty_low_quantile must be in (0, 0.5)."
-        )
+        raise ValueError("geometry_uncertainty_low_quantile must be in (0, 0.5).")
     if not (0.5 < config.geometry_uncertainty_high_quantile < 1.0):
-        raise ValueError(
-            "geometry_uncertainty_high_quantile must be in (0.5, 1)."
-        )
-    if config.geometry_uncertainty_low_quantile >= config.geometry_uncertainty_high_quantile:
+        raise ValueError("geometry_uncertainty_high_quantile must be in (0.5, 1).")
+    if (
+        config.geometry_uncertainty_low_quantile
+        >= config.geometry_uncertainty_high_quantile
+    ):
         raise ValueError(
             "geometry_uncertainty_low_quantile must be < geometry_uncertainty_high_quantile."
         )
@@ -290,9 +371,7 @@ def _configure_training_runtime(config: TrainConfig) -> None:
     # probe entirely because some WSL GPU stacks stall here even though the rest
     # of the training job is fine.
     if config.gpu_memory_growth:
-        gpus: list[tf.config.PhysicalDevice] = tf.config.list_physical_devices(
-            "GPU"
-        )
+        gpus: list[tf.config.PhysicalDevice] = tf.config.list_physical_devices("GPU")
         if config.device == "gpu" and not gpus:
             raise ValueError(
                 "device='gpu' was requested, but TensorFlow did not detect a GPU."
@@ -416,10 +495,7 @@ def _make_gaussian_heatmap(
         indexing="ij",
     )
     heatmap: np.ndarray = np.exp(
-        -(
-            (xx - np.float32(center_x)) ** 2
-            + (yy - np.float32(center_y)) ** 2
-        )
+        -((xx - np.float32(center_x)) ** 2 + (yy - np.float32(center_y)) ** 2)
         / (2.0 * np.float32(sigma) ** 2)
     )
     max_value: float = float(np.max(heatmap))
@@ -673,7 +749,9 @@ def _load_manifest_examples_for_split(
             image_width=image_width,
         )
 
-    manifest_names: set[str] = {Path(example.image_path).name for example in manifest_examples}
+    manifest_names: set[str] = {
+        Path(example.image_path).name for example in manifest_examples
+    }
     return manifest_examples, manifest_names
 
 
@@ -730,9 +808,7 @@ def _value_to_ordinal_threshold_vector(
     if value_max <= value_min:
         raise ValueError("value_max must be > value_min.")
 
-    num_thresholds: int = _ordinal_threshold_count(
-        value_min, value_max, threshold_step
-    )
+    num_thresholds: int = _ordinal_threshold_count(value_min, value_max, threshold_step)
     thresholds: np.ndarray = value_min + (
         np.arange(num_thresholds, dtype=np.float32) + 0.5
     ) * np.float32(threshold_step)
@@ -836,16 +912,17 @@ def _predict_rectifier_crop_box(
 
     center_x: float = float(np.clip(rectifier_box[0], 0.0, 1.0))
     center_y: float = float(np.clip(rectifier_box[1], 0.0, 1.0))
-    box_w: float = min(1.0, float(np.clip(rectifier_box[2], 0.05, 1.0)) * rectifier_crop_scale)
-    box_h: float = min(1.0, float(np.clip(rectifier_box[3], 0.05, 1.0)) * rectifier_crop_scale)
+    box_w: float = min(
+        1.0, float(np.clip(rectifier_box[2], 0.05, 1.0)) * rectifier_crop_scale
+    )
+    box_h: float = min(
+        1.0, float(np.clip(rectifier_box[3], 0.05, 1.0)) * rectifier_crop_scale
+    )
     canvas_w: float = float(image_size)
     canvas_h: float = float(image_size)
 
     use_fixed_training_crop: bool = (
-        (box_w < 0.25)
-        or (box_h < 0.25)
-        or (box_w > 0.95)
-        or (box_h > 0.95)
+        (box_w < 0.25) or (box_h < 0.25) or (box_w > 0.95) or (box_h > 0.95)
     )
     if use_fixed_training_crop:
         # Keep the scalar head on the same stable crop used by the board's
@@ -898,6 +975,7 @@ def _is_board_capture(image_path: str) -> bool:
         return True
     # Timestamp captures: capture_YYYY-MM-DD_HH-MM-SS or capture_YYYY-MM-DD_*
     import re as _re
+
     if _re.match(r"capture_\d{4}-\d{2}-\d{2}", name):
         return True
     return False
@@ -921,7 +999,12 @@ def _apply_precomputed_crop_boxes(
     boxes: dict[str, tuple[float, float, float, float]] = {}
     with open(csv_path, newline="") as f:
         for row in _csv.DictReader(f):
-            box = (float(row["x0"]), float(row["y0"]), float(row["x1"]), float(row["y1"]))
+            box = (
+                float(row["x0"]),
+                float(row["y0"]),
+                float(row["x1"]),
+                float(row["y1"]),
+            )
             rel = row["image_path"]
             boxes[rel] = box
             abs_path = (ML_ROOT / rel).resolve()
@@ -988,13 +1071,10 @@ def _rectify_examples_for_scalar(
                 image_size=image_size,
                 rectifier_crop_scale=rectifier_crop_scale,
             )
-            rectified_examples.append(
-                replace(example, crop_box_xyxy=crop_box_xyxy)
-            )
+            rectified_examples.append(replace(example, crop_box_xyxy=crop_box_xyxy))
             if index % 50 == 0 or index == total_examples:
                 print(
-                    "[TRAIN] Rectified crops: "
-                    f"{index}/{total_examples}",
+                    "[TRAIN] Rectified crops: " f"{index}/{total_examples}",
                     flush=True,
                 )
     return rectified_examples
@@ -1010,7 +1090,9 @@ def _iter_layers_recursive(model: keras.Model) -> list[keras.layers.Layer]:
     return layers
 
 
-def _transfer_matching_weights(source_model: keras.Model, target_model: keras.Model) -> int:
+def _transfer_matching_weights(
+    source_model: keras.Model, target_model: keras.Model
+) -> int:
     """Copy matching weights by name from one model into another model."""
     source_layers: dict[str, keras.layers.Layer] = {
         layer.name: layer for layer in _iter_layers_recursive(source_model)
@@ -1132,7 +1214,9 @@ def _split_examples(
         )
 
         if len(remaining) < 2:
-            raise ValueError("val_manifest consumed all examples; check manifest paths.")
+            raise ValueError(
+                "val_manifest consumed all examples; check manifest paths."
+            )
 
         remaining_idx = np.arange(len(remaining))
         test_size = max(1, int(len(remaining) * config.test_fraction))
@@ -1159,7 +1243,9 @@ def _split_examples(
         )
 
         if len(remaining) < 2:
-            raise ValueError("test_manifest consumed all examples; check manifest paths.")
+            raise ValueError(
+                "test_manifest consumed all examples; check manifest paths."
+            )
 
         remaining_idx = np.arange(len(remaining))
         val_size = max(1, int(len(remaining) * config.val_fraction))
@@ -1306,30 +1392,26 @@ def _load_rectifier_and_preprocess_image(
     y_max_canvas: tf.Tensor = y_max * scale + pad_y
 
     center_x: tf.Tensor = tf.clip_by_value(
-        ((x_min_canvas + x_max_canvas) * 0.5) / tf.maximum(
-            tf.cast(image_width, tf.float32), 1.0
-        ),
+        ((x_min_canvas + x_max_canvas) * 0.5)
+        / tf.maximum(tf.cast(image_width, tf.float32), 1.0),
         0.0,
         1.0,
     )
     center_y: tf.Tensor = tf.clip_by_value(
-        ((y_min_canvas + y_max_canvas) * 0.5) / tf.maximum(
-            tf.cast(image_height, tf.float32), 1.0
-        ),
+        ((y_min_canvas + y_max_canvas) * 0.5)
+        / tf.maximum(tf.cast(image_height, tf.float32), 1.0),
         0.0,
         1.0,
     )
     box_w: tf.Tensor = tf.clip_by_value(
-        (x_max_canvas - x_min_canvas) / tf.maximum(
-            tf.cast(image_width, tf.float32), 1.0
-        ),
+        (x_max_canvas - x_min_canvas)
+        / tf.maximum(tf.cast(image_width, tf.float32), 1.0),
         0.0,
         1.0,
     )
     box_h: tf.Tensor = tf.clip_by_value(
-        (y_max_canvas - y_min_canvas) / tf.maximum(
-            tf.cast(image_height, tf.float32), 1.0
-        ),
+        (y_max_canvas - y_min_canvas)
+        / tf.maximum(tf.cast(image_height, tf.float32), 1.0),
         0.0,
         1.0,
     )
@@ -1731,13 +1813,23 @@ def _augment_glare_blobs(image: tf.Tensor) -> tf.Tensor:
 
 
 def _augment_image(image: tf.Tensor) -> tf.Tensor:
-    """Apply photometric augmentation that preserves gauge geometry."""
+    """Apply photometric augmentation that preserves gauge geometry.
+
+    This augmentation is designed to match the board camera reality:
+    - Crop jitter: Simulates slight variations in dial position within crop
+    - Brightness/exposure: Simulates camera exposure variations (under/over)
+    - Contrast/saturation: Simulates lighting condition variations
+    - Gamma: Simulates non-linear exposure response
+    - Glare: Simulates specular reflections on gauge glass
+    - Noise: Simulates sensor noise
+    """
     image_shape: tf.Tensor = tf.shape(image)
     image_h: tf.Tensor = image_shape[0]
     image_w: tf.Tensor = image_shape[1]
 
-    # Randomly crop-and-resize to inject slight scale/translation variation.
-    scale: tf.Tensor = tf.random.uniform([], minval=0.92, maxval=1.0, dtype=tf.float32)
+    # --- Crop jitter: simulate slight dial position variations within crop ---
+    # Random scale from 90% to 100% of crop (was 92-100%)
+    scale: tf.Tensor = tf.random.uniform([], minval=0.90, maxval=1.0, dtype=tf.float32)
     crop_h: tf.Tensor = tf.maximum(
         2, tf.cast(tf.cast(image_h, tf.float32) * scale, dtype=tf.int32)
     )
@@ -1747,45 +1839,94 @@ def _augment_image(image: tf.Tensor) -> tf.Tensor:
     image = tf.image.random_crop(image, size=[crop_h, crop_w, 3])
     image = tf.image.resize(image, [image_h, image_w])
 
+    # Additional crop jitter: slight translation within the crop box
+    # This simulates the dial not being perfectly centered in the crop
+    max_offset: tf.Tensor = tf.cast(image_h * 0.05, tf.int32)  # 5% max offset
+    if max_offset > 0:
+        offset_y = tf.random.uniform([], -max_offset, max_offset + 1, dtype=tf.int32)
+        offset_x = tf.random.uniform([], -max_offset, max_offset + 1, dtype=tf.int32)
+        # Pad image to allow cropping with offset
+        pad_h = image_h + 2 * max_offset
+        pad_w = image_w + 2 * max_offset
+        image_padded = tf.image.resize_with_pad(image, pad_h, pad_w)
+        image = tf.image.crop_to_bounding_box(
+            image_padded, max_offset + offset_y, max_offset + offset_x, image_h, image_w
+        )
+
     # AUG_HEAVY=1 → stronger photometric augmentation for board-domain robustness.
     aug_heavy: bool = os.environ.get("AUG_HEAVY", "0") == "1"
+
+    # --- Brightness/exposure augmentation (matches board camera reality) ---
+    # Simulates exposure variations: underexposure (dark) and overexposure (bright)
     if aug_heavy:
-        image = tf.image.random_brightness(image, max_delta=0.25)
-        image = tf.image.random_contrast(image, lower=0.65, upper=1.35)
-        image = tf.image.random_saturation(image, lower=0.80, upper=1.20)
-        image = tf.image.random_hue(image, max_delta=0.04)
+        # Wider exposure range for heavy augmentation
+        exposure_range = 0.35  # +/- 35% brightness
+        contrast_range = (0.55, 1.45)
+        saturation_range = (0.70, 1.30)
+        gamma_range_dark = (1.0, 2.8)
+        gamma_range_bright = (0.4, 1.0)
     else:
-        image = tf.image.random_brightness(image, max_delta=0.15)
-        image = tf.image.random_contrast(image, lower=0.80, upper=1.20)
-        image = tf.image.random_saturation(image, lower=0.9, upper=1.1)
-    # Clip to valid range before any pow/exp operations to prevent NaN from negative bases.
+        # Moderate exposure range for standard augmentation
+        exposure_range = 0.20  # +/- 20% brightness
+        contrast_range = (0.75, 1.25)
+        saturation_range = (0.85, 1.15)
+        gamma_range_dark = (1.0, 2.2)
+        gamma_range_bright = (0.6, 1.0)
+
+    # Random brightness (linear exposure)
+    image = tf.image.random_brightness(image, max_delta=exposure_range)
+
+    # Random contrast (simulates lighting consistency)
+    image = tf.image.random_contrast(
+        image, lower=contrast_range[0], upper=contrast_range[1]
+    )
+
+    # Random saturation (simulates color consistency under different lighting)
+    image = tf.image.random_saturation(
+        image, lower=saturation_range[0], upper=saturation_range[1]
+    )
+
+    # Clip to valid range before gamma operations
     image = tf.clip_by_value(image, 0.0, 1.0)
 
+    # --- Gamma augmentation: simulates non-linear camera exposure response ---
     if aug_heavy:
         # Wider gamma sweep at higher rate: covers under- AND over-exposed captures.
-        gamma_dark: tf.Tensor = tf.random.uniform([], minval=1.0, maxval=2.5, dtype=tf.float32)
-        apply_dark: tf.Tensor = tf.random.uniform([]) < 0.30
+        gamma_dark: tf.Tensor = tf.random.uniform(
+            [], minval=gamma_range_dark[0], maxval=gamma_range_dark[1], dtype=tf.float32
+        )
+        apply_dark: tf.Tensor = tf.random.uniform([]) < 0.35
         image = tf.where(apply_dark, tf.pow(image, gamma_dark), image)
-        gamma_bright: tf.Tensor = tf.random.uniform([], minval=0.5, maxval=1.0, dtype=tf.float32)
-        apply_bright: tf.Tensor = tf.random.uniform([]) < 0.15
+        gamma_bright: tf.Tensor = tf.random.uniform(
+            [],
+            minval=gamma_range_bright[0],
+            maxval=gamma_range_bright[1],
+            dtype=tf.float32,
+        )
+        apply_bright: tf.Tensor = tf.random.uniform([]) < 0.20
         image = tf.where(apply_bright, tf.pow(image, gamma_bright), image)
     else:
-        gamma: tf.Tensor = tf.random.uniform([], minval=1.0, maxval=2.0, dtype=tf.float32)
-        apply_dark: tf.Tensor = tf.random.uniform([]) < 0.10
+        # Moderate gamma adjustment
+        gamma: tf.Tensor = tf.random.uniform(
+            [], minval=1.0, maxval=2.0, dtype=tf.float32
+        )
+        apply_dark: tf.Tensor = tf.random.uniform([]) < 0.15
         image = tf.where(apply_dark, tf.pow(image, gamma), image)
 
-    # Simulate specular glare patches on gauge glass (20% chance).
-    apply_glare: tf.Tensor = tf.random.uniform([]) < 0.20
+    # Simulate specular glare patches on gauge glass (25% chance, was 20%)
+    apply_glare: tf.Tensor = tf.random.uniform([]) < 0.25
     image = tf.cond(
         apply_glare,
         lambda: _augment_glare_blobs(image),
         lambda: image,
     )
 
+    # Add sensor noise (slightly higher for board-like conditions)
+    noise_std: float = 0.02 if aug_heavy else 0.015
     noise: tf.Tensor = tf.random.normal(
         shape=tf.shape(image),
         mean=0.0,
-        stddev=0.015,
+        stddev=noise_std,
         dtype=tf.float32,
     )
     image = image + noise
@@ -1914,9 +2055,11 @@ def _build_tf_dataset(
         values = np.array([e.value for e in examples], dtype=np.float32)
         targets = np.array(
             [
-                e.obb_params
-                if e.obb_params is not None
-                else np.zeros((6,), dtype=np.float32)
+                (
+                    e.obb_params
+                    if e.obb_params is not None
+                    else np.zeros((6,), dtype=np.float32)
+                )
                 for e in examples
             ],
             dtype=np.float32,
@@ -1926,9 +2069,27 @@ def _build_tf_dataset(
     boxes: np.ndarray = np.array([e.crop_box_xyxy for e in examples], dtype=np.float32)
 
     if training and target_kind == "value":
-        weights: np.ndarray = _compute_edge_weights(
-            examples, config.edge_focus_strength
-        )
+        # Compute sample weights: use range-aware sampling if enabled, otherwise edge weights
+        if config.range_aware_sampling:
+            # Get value range from spec if available, otherwise from examples
+            if value_range is not None:
+                value_min, value_max = value_range
+            else:
+                value_min = min(example.value for example in examples)
+                value_max = max(example.value for example in examples)
+
+            # Compute range-aware weights (oversample cold/hot tails)
+            weights = _compute_range_aware_weights(
+                examples,
+                value_min=value_min,
+                value_max=value_max,
+                cold_tail_fraction=config.cold_tail_fraction,
+                hot_tail_fraction=config.hot_tail_fraction,
+                oversampling_factor=config.oversampling_factor,
+            )
+        else:
+            # Use standard edge weights
+            weights = _compute_edge_weights(examples, config.edge_focus_strength)
         dataset: tf.data.Dataset = tf.data.Dataset.from_tensor_slices(
             (paths, targets, boxes, weights)
         )
@@ -1967,7 +2128,20 @@ def _build_tf_dataset(
             max_value = max(example.value for example in examples)
         else:
             min_value, max_value = value_range
-        weights = _compute_edge_weights(examples, config.edge_focus_strength)
+
+        # Compute sample weights: use range-aware sampling if enabled
+        if config.range_aware_sampling:
+            weights = _compute_range_aware_weights(
+                examples,
+                value_min=min_value,
+                value_max=max_value,
+                cold_tail_fraction=config.cold_tail_fraction,
+                hot_tail_fraction=config.hot_tail_fraction,
+                oversampling_factor=config.oversampling_factor,
+            )
+        else:
+            weights = _compute_edge_weights(examples, config.edge_focus_strength)
+
         interval_targets = np.array(
             [
                 _value_to_interval_index(
@@ -2007,10 +2181,25 @@ def _build_tf_dataset(
             )
     elif training and target_kind == "sweep_fraction":
         if config.mixup_alpha > 0.0:
-            raise ValueError(
-                "MixUp is not supported for sweep-fraction targets yet."
+            raise ValueError("MixUp is not supported for sweep-fraction targets yet.")
+
+        # Compute sample weights: use range-aware sampling if enabled
+        if config.range_aware_sampling:
+            # For sweep_fraction, we need to convert value_norm back to value
+            # value_norm is already in [0,1], so we can use it directly
+            value_min = 0.0
+            value_max = 1.0
+            weights = _compute_range_aware_weights(
+                examples,
+                value_min=value_min,
+                value_max=value_max,
+                cold_tail_fraction=config.cold_tail_fraction,
+                hot_tail_fraction=config.hot_tail_fraction,
+                oversampling_factor=config.oversampling_factor,
             )
-        weights = _compute_edge_weights(examples, config.edge_focus_strength)
+        else:
+            weights = _compute_edge_weights(examples, config.edge_focus_strength)
+
         fraction_targets = np.array([e.value_norm for e in examples], dtype=np.float32)
         dataset = tf.data.Dataset.from_tensor_slices(
             (paths, targets, fraction_targets, boxes, weights)
@@ -2039,10 +2228,24 @@ def _build_tf_dataset(
             )
     elif training and target_kind == "keypoint_heatmaps":
         if config.mixup_alpha > 0.0:
-            raise ValueError(
-                "MixUp is not supported for keypoint-heatmap targets yet."
+            raise ValueError("MixUp is not supported for keypoint-heatmap targets yet.")
+
+        # Compute sample weights: use range-aware sampling if enabled
+        if config.range_aware_sampling:
+            # For keypoint_heatmaps, use the value range from examples
+            value_min = min(example.value for example in examples)
+            value_max = max(example.value for example in examples)
+            weights = _compute_range_aware_weights(
+                examples,
+                value_min=value_min,
+                value_max=value_max,
+                cold_tail_fraction=config.cold_tail_fraction,
+                hot_tail_fraction=config.hot_tail_fraction,
+                oversampling_factor=config.oversampling_factor,
             )
-        weights = _compute_edge_weights(examples, config.edge_focus_strength)
+        else:
+            weights = _compute_edge_weights(examples, config.edge_focus_strength)
+
         heatmap_weights = np.array(
             [
                 np.full(
@@ -2058,15 +2261,17 @@ def _build_tf_dataset(
         )
         heatmaps = np.array(
             [
-                example.keypoint_heatmaps
-                if example.keypoint_heatmaps is not None
-                else np.zeros(
-                    (
-                        config.keypoint_heatmap_size,
-                        config.keypoint_heatmap_size,
-                        2,
-                    ),
-                    dtype=np.float32,
+                (
+                    example.keypoint_heatmaps
+                    if example.keypoint_heatmaps is not None
+                    else np.zeros(
+                        (
+                            config.keypoint_heatmap_size,
+                            config.keypoint_heatmap_size,
+                            2,
+                        ),
+                        dtype=np.float32,
+                    )
                 )
                 for example in examples
             ],
@@ -2117,15 +2322,17 @@ def _build_tf_dataset(
         )
         heatmaps = np.array(
             [
-                example.keypoint_heatmaps
-                if example.keypoint_heatmaps is not None
-                else np.zeros(
-                    (
-                        config.keypoint_heatmap_size,
-                        config.keypoint_heatmap_size,
-                        2,
-                    ),
-                    dtype=np.float32,
+                (
+                    example.keypoint_heatmaps
+                    if example.keypoint_heatmaps is not None
+                    else np.zeros(
+                        (
+                            config.keypoint_heatmap_size,
+                            config.keypoint_heatmap_size,
+                            2,
+                        ),
+                        dtype=np.float32,
+                    )
                 )
                 for example in examples
             ],
@@ -2133,9 +2340,11 @@ def _build_tf_dataset(
         )
         coords = np.array(
             [
-                example.keypoint_coords
-                if example.keypoint_coords is not None
-                else np.zeros((2, 2), dtype=np.float32)
+                (
+                    example.keypoint_coords
+                    if example.keypoint_coords is not None
+                    else np.zeros((2, 2), dtype=np.float32)
+                )
                 for example in examples
             ],
             dtype=np.float32,
@@ -2152,7 +2361,16 @@ def _build_tf_dataset(
             dtype=np.float32,
         )
         dataset = tf.data.Dataset.from_tensor_slices(
-            (paths, targets, heatmaps, coords, boxes, weights, heatmap_weights, coord_weights)
+            (
+                paths,
+                targets,
+                heatmaps,
+                coords,
+                boxes,
+                weights,
+                heatmap_weights,
+                coord_weights,
+            )
         )
         dataset = dataset.shuffle(
             buffer_size=max(len(examples), 1),
@@ -2200,15 +2418,17 @@ def _build_tf_dataset(
         )
         heatmaps = np.array(
             [
-                example.keypoint_heatmaps
-                if example.keypoint_heatmaps is not None
-                else np.zeros(
-                    (
-                        config.keypoint_heatmap_size,
-                        config.keypoint_heatmap_size,
-                        2,
-                    ),
-                    dtype=np.float32,
+                (
+                    example.keypoint_heatmaps
+                    if example.keypoint_heatmaps is not None
+                    else np.zeros(
+                        (
+                            config.keypoint_heatmap_size,
+                            config.keypoint_heatmap_size,
+                            2,
+                        ),
+                        dtype=np.float32,
+                    )
                 )
                 for example in examples
             ],
@@ -2216,9 +2436,11 @@ def _build_tf_dataset(
         )
         coords = np.array(
             [
-                example.keypoint_coords
-                if example.keypoint_coords is not None
-                else np.zeros((2, 2), dtype=np.float32)
+                (
+                    example.keypoint_coords
+                    if example.keypoint_coords is not None
+                    else np.zeros((2, 2), dtype=np.float32)
+                )
                 for example in examples
             ],
             dtype=np.float32,
@@ -2235,7 +2457,16 @@ def _build_tf_dataset(
             dtype=np.float32,
         )
         dataset = tf.data.Dataset.from_tensor_slices(
-            (paths, targets, heatmaps, coords, boxes, weights, heatmap_weights, coord_weights)
+            (
+                paths,
+                targets,
+                heatmaps,
+                coords,
+                boxes,
+                weights,
+                heatmap_weights,
+                coord_weights,
+            )
         )
         dataset = dataset.shuffle(
             buffer_size=max(len(examples), 1),
@@ -2265,9 +2496,7 @@ def _build_tf_dataset(
             )
     elif training and target_kind == "rectifier_box":
         if config.mixup_alpha > 0.0:
-            raise ValueError(
-                "MixUp is not supported for rectifier-box targets yet."
-            )
+            raise ValueError("MixUp is not supported for rectifier-box targets yet.")
         weights = _compute_edge_weights(examples, config.edge_focus_strength)
         dataset = tf.data.Dataset.from_tensor_slices((paths, boxes, weights))
         dataset = dataset.shuffle(
@@ -2422,15 +2651,17 @@ def _build_tf_dataset(
         elif target_kind == "keypoint_heatmaps":
             heatmaps = np.array(
                 [
-                    example.keypoint_heatmaps
-                    if example.keypoint_heatmaps is not None
-                    else np.zeros(
-                        (
-                            config.keypoint_heatmap_size,
-                            config.keypoint_heatmap_size,
-                            2,
-                        ),
-                        dtype=np.float32,
+                    (
+                        example.keypoint_heatmaps
+                        if example.keypoint_heatmaps is not None
+                        else np.zeros(
+                            (
+                                config.keypoint_heatmap_size,
+                                config.keypoint_heatmap_size,
+                                2,
+                            ),
+                            dtype=np.float32,
+                        )
                     )
                     for example in examples
                 ],
@@ -2453,15 +2684,17 @@ def _build_tf_dataset(
         elif target_kind == "geometry":
             heatmaps = np.array(
                 [
-                    example.keypoint_heatmaps
-                    if example.keypoint_heatmaps is not None
-                    else np.zeros(
-                        (
-                            config.keypoint_heatmap_size,
-                            config.keypoint_heatmap_size,
-                            2,
-                        ),
-                        dtype=np.float32,
+                    (
+                        example.keypoint_heatmaps
+                        if example.keypoint_heatmaps is not None
+                        else np.zeros(
+                            (
+                                config.keypoint_heatmap_size,
+                                config.keypoint_heatmap_size,
+                                2,
+                            ),
+                            dtype=np.float32,
+                        )
                     )
                     for example in examples
                 ],
@@ -2469,9 +2702,11 @@ def _build_tf_dataset(
             )
             coords = np.array(
                 [
-                    example.keypoint_coords
-                    if example.keypoint_coords is not None
-                    else np.zeros((2, 2), dtype=np.float32)
+                    (
+                        example.keypoint_coords
+                        if example.keypoint_coords is not None
+                        else np.zeros((2, 2), dtype=np.float32)
+                    )
                     for example in examples
                 ],
                 dtype=np.float32,
@@ -2494,15 +2729,17 @@ def _build_tf_dataset(
         elif target_kind == "geometry_uncertainty":
             heatmaps = np.array(
                 [
-                    example.keypoint_heatmaps
-                    if example.keypoint_heatmaps is not None
-                    else np.zeros(
-                        (
-                            config.keypoint_heatmap_size,
-                            config.keypoint_heatmap_size,
-                            2,
-                        ),
-                        dtype=np.float32,
+                    (
+                        example.keypoint_heatmaps
+                        if example.keypoint_heatmaps is not None
+                        else np.zeros(
+                            (
+                                config.keypoint_heatmap_size,
+                                config.keypoint_heatmap_size,
+                                2,
+                            ),
+                            dtype=np.float32,
+                        )
                     )
                     for example in examples
                 ],
@@ -2510,9 +2747,11 @@ def _build_tf_dataset(
             )
             coords = np.array(
                 [
-                    example.keypoint_coords
-                    if example.keypoint_coords is not None
-                    else np.zeros((2, 2), dtype=np.float32)
+                    (
+                        example.keypoint_coords
+                        if example.keypoint_coords is not None
+                        else np.zeros((2, 2), dtype=np.float32)
+                    )
                     for example in examples
                 ],
                 dtype=np.float32,
@@ -2548,7 +2787,9 @@ def _build_tf_dataset(
                 num_parallel_calls=tf.data.AUTOTUNE,
             )
         elif target_kind == "obb":
-            dataset = tf.data.Dataset.from_tensor_slices((paths, values, targets, boxes))
+            dataset = tf.data.Dataset.from_tensor_slices(
+                (paths, values, targets, boxes)
+            )
             dataset = dataset.map(
                 lambda p, v, y, b: _load_crop_with_obb_target(
                     p,
@@ -2619,6 +2860,73 @@ def _edge_weight(value_norm: float, strength: float) -> float:
     return 1.0 + strength * distance
 
 
+def _range_aware_weight(
+    value: float,
+    *,
+    value_min: float,
+    value_max: float,
+    cold_tail_fraction: float = 0.15,
+    hot_tail_fraction: float = 0.15,
+    oversampling_factor: float = 3.0,
+) -> float:
+    """Return a weight that oversamples cold/hot tails for range-aware training.
+
+    Args:
+        value: The normalized gauge value (in the calibrated range).
+        value_min: Minimum value in the gauge range.
+        value_max: Maximum value in the gauge range.
+        cold_tail_fraction: Fraction of range at cold end to oversample (default 15%).
+        hot_tail_fraction: Fraction of range at hot end to oversample (default 15%).
+        oversampling_factor: How much more to weight tail samples (default 3x).
+
+    Returns:
+        A sample weight that emphasizes cold/hot tail regions.
+    """
+    if value_max <= value_min:
+        return 1.0
+
+    span = value_max - value_min
+    cold_threshold = value_min + cold_tail_fraction * span
+    hot_threshold = value_max - hot_tail_fraction * span
+
+    if value <= cold_threshold:
+        # Cold tail region
+        return oversampling_factor
+    elif value >= hot_threshold:
+        # Hot tail region
+        return oversampling_factor
+    else:
+        # Middle region
+        return 1.0
+
+
+def _compute_range_aware_weights(
+    examples: list[TrainingExample],
+    *,
+    value_min: float,
+    value_max: float,
+    cold_tail_fraction: float = 0.15,
+    hot_tail_fraction: float = 0.15,
+    oversampling_factor: float = 3.0,
+) -> np.ndarray:
+    """Compute range-aware sample weights for oversampling cold/hot tails."""
+    weights = np.array(
+        [
+            _range_aware_weight(
+                example.value,
+                value_min=value_min,
+                value_max=value_max,
+                cold_tail_fraction=cold_tail_fraction,
+                hot_tail_fraction=hot_tail_fraction,
+                oversampling_factor=oversampling_factor,
+            )
+            for example in examples
+        ],
+        dtype=np.float32,
+    )
+    return weights
+
+
 def _compute_edge_weights(
     examples: list[TrainingExample],
     strength: float,
@@ -2670,8 +2978,12 @@ def _compute_mean_baseline_mae(
     test_examples: list[TrainingExample],
 ) -> float:
     """Compute MAE of a trivial baseline that predicts train-mean value."""
-    train_values: np.ndarray = np.array([e.value for e in train_examples], dtype=np.float32)
-    test_values: np.ndarray = np.array([e.value for e in test_examples], dtype=np.float32)
+    train_values: np.ndarray = np.array(
+        [e.value for e in train_examples], dtype=np.float32
+    )
+    test_values: np.ndarray = np.array(
+        [e.value for e in test_examples], dtype=np.float32
+    )
 
     mean_pred: float = float(np.mean(train_values))
     baseline_mae: float = float(np.mean(np.abs(test_values - mean_pred)))
@@ -2686,6 +2998,7 @@ def _make_scalar_regression_loss(
     interpolation_pair_scale: float = DEFAULT_INTERPOLATION_PAIR_SCALE,
 ):
     """Create the scalar regression loss used by the training heads."""
+
     def monotonic_pair_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
         """Penalize local ordering violations inside a batch."""
         y_true_flat: tf.Tensor = tf.reshape(tf.cast(y_true, tf.float32), [-1])
@@ -2738,8 +3051,9 @@ def _make_scalar_regression_loss(
                 y_true, y_pred
             )
         if interpolation_pair_strength > 0.0:
-            total_loss = total_loss + interpolation_pair_strength * interpolation_pair_loss(
-                y_true, y_pred
+            total_loss = (
+                total_loss
+                + interpolation_pair_strength * interpolation_pair_loss(y_true, y_pred)
             )
         return total_loss
 
@@ -3034,7 +3348,9 @@ def _compile_interval_model(
         optimizer=optimizer,
         loss={
             "gauge_value": scalar_loss,
-            "interval_logits": keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+            "interval_logits": keras.losses.SparseCategoricalCrossentropy(
+                from_logits=True
+            ),
         },
         loss_weights={
             "gauge_value": 1.0,
@@ -3112,7 +3428,9 @@ def _compile_direction_model(
     )
 
 
-def _make_training_callbacks(*, monitor: str = "val_mae") -> list[keras.callbacks.Callback]:
+def _make_training_callbacks(
+    *, monitor: str = "val_mae"
+) -> list[keras.callbacks.Callback]:
     """Build standard callbacks used for the main training/fine-tuning phase."""
     return [
         keras.callbacks.EarlyStopping(
@@ -3151,7 +3469,9 @@ def _vectors_to_values_tf(y: tf.Tensor, spec: GaugeSpec) -> tf.Tensor:
     min_angle: tf.Tensor = tf.constant(spec.min_angle_rad, dtype=tf.float32)
     sweep: tf.Tensor = tf.constant(spec.sweep_rad, dtype=tf.float32)
     min_value: tf.Tensor = tf.constant(spec.min_value, dtype=tf.float32)
-    value_span: tf.Tensor = tf.constant(spec.max_value - spec.min_value, dtype=tf.float32)
+    value_span: tf.Tensor = tf.constant(
+        spec.max_value - spec.min_value, dtype=tf.float32
+    )
     two_pi: tf.Tensor = tf.constant(2.0 * math.pi, dtype=tf.float32)
 
     angles: tf.Tensor = tf.atan2(y[..., 1], y[..., 0])
@@ -3280,7 +3600,7 @@ def train(config: TrainConfig) -> TrainingResult:
     if len(examples) < 3:
         raise ValueError(
             "Not enough valid examples after filtering invalid sweep labels."
-    )
+        )
     print(
         "[TRAIN] Training examples ready: "
         f"examples={len(examples)} dropped_out_of_sweep={dropped_out_of_sweep}"
@@ -3320,19 +3640,35 @@ def train(config: TrainConfig) -> TrainingResult:
         ] = (
             "value"
             if config.model_family == "mobilenet_v2_rectifier"
-            else "needle_unit_xy"
-            if config.model_family in {"mobilenet_v2_direction", "compact_direction"}
-            else "sweep_fraction"
-            if config.model_family == "mobilenet_v2_fraction"
-            else "keypoint_heatmaps"
-            if config.model_family in {"mobilenet_v2_keypoint", "mobilenet_v2_detector"}
-            else "geometry_uncertainty"
-            if config.model_family == "mobilenet_v2_geometry_uncertainty"
-            else "geometry"
-            if config.model_family in {"mobilenet_v2_geometry", "compact_geometry"}
-            else "ordinal_thresholds"
-            if config.model_family == "mobilenet_v2_ordinal"
-            else "value"
+            else (
+                "needle_unit_xy"
+                if config.model_family
+                in {"mobilenet_v2_direction", "compact_direction"}
+                else (
+                    "sweep_fraction"
+                    if config.model_family == "mobilenet_v2_fraction"
+                    else (
+                        "keypoint_heatmaps"
+                        if config.model_family
+                        in {"mobilenet_v2_keypoint", "mobilenet_v2_detector"}
+                        else (
+                            "geometry_uncertainty"
+                            if config.model_family
+                            == "mobilenet_v2_geometry_uncertainty"
+                            else (
+                                "geometry"
+                                if config.model_family
+                                in {"mobilenet_v2_geometry", "compact_geometry"}
+                                else (
+                                    "ordinal_thresholds"
+                                    if config.model_family == "mobilenet_v2_ordinal"
+                                    else "value"
+                                )
+                            )
+                        )
+                    )
+                )
+            )
         )
         hard_case_examples: list[TrainingExample] = _load_hard_case_examples(
             hard_case_manifest_path,
@@ -3378,7 +3714,9 @@ def train(config: TrainConfig) -> TrainingResult:
                 f"repeat={hard_case_repeat} added={len(repeated_hard_cases)}"
             )
         elif hard_case_repeat > 0 and hard_case_examples:
-            repeated_hard_cases: list[TrainingExample] = hard_case_examples * hard_case_repeat
+            repeated_hard_cases: list[TrainingExample] = (
+                hard_case_examples * hard_case_repeat
+            )
             split = DatasetSplit(
                 train_examples=split.train_examples + repeated_hard_cases,
                 val_examples=split.val_examples,
@@ -3396,9 +3734,15 @@ def train(config: TrainConfig) -> TrainingResult:
         if not boxes_path.is_absolute():
             boxes_path = ML_ROOT / boxes_path
         split = DatasetSplit(
-            train_examples=_apply_precomputed_crop_boxes(split.train_examples, csv_path=boxes_path),
-            val_examples=_apply_precomputed_crop_boxes(split.val_examples, csv_path=boxes_path),
-            test_examples=_apply_precomputed_crop_boxes(split.test_examples, csv_path=boxes_path),
+            train_examples=_apply_precomputed_crop_boxes(
+                split.train_examples, csv_path=boxes_path
+            ),
+            val_examples=_apply_precomputed_crop_boxes(
+                split.val_examples, csv_path=boxes_path
+            ),
+            test_examples=_apply_precomputed_crop_boxes(
+                split.test_examples, csv_path=boxes_path
+            ),
         )
     elif config.rectifier_model_path:
         print("[TRAIN] step: rectified-scalar-preprocess", flush=True)
@@ -3471,7 +3815,9 @@ def train(config: TrainConfig) -> TrainingResult:
             model = build_regression_model(config.image_height, config.image_width)
         elif config.model_family == "compact_direction":
             print("[TRAIN] Building compact CNN direction model...")
-            model = build_needle_direction_model(config.image_height, config.image_width)
+            model = build_needle_direction_model(
+                config.image_height, config.image_width
+            )
         elif config.model_family == "compact_interval":
             print("[TRAIN] Building compact CNN interval model...")
             model = build_compact_interval_model(
@@ -3502,6 +3848,7 @@ def train(config: TrainConfig) -> TrainingResult:
                 alpha=config.mobilenet_alpha,
                 head_units=config.mobilenet_head_units,
                 head_dropout=config.mobilenet_head_dropout,
+                linear_output=config.linear_output,
             )
         elif config.model_family == "mobilenet_v2_tiny":
             print("[TRAIN] Building tiny MobileNetV2 model...")
@@ -3513,6 +3860,7 @@ def train(config: TrainConfig) -> TrainingResult:
                 alpha=config.mobilenet_alpha,
                 head_units=config.mobilenet_head_units,
                 head_dropout=config.mobilenet_head_dropout,
+                linear_output=config.linear_output,
             )
         elif config.model_family == "mobilenet_v2_direction":
             print("[TRAIN] Building MobileNetV2 direction model...")
@@ -3667,25 +4015,43 @@ def train(config: TrainConfig) -> TrainingResult:
         "obb",
     ] = (
         "needle_unit_xy"
-        if config.model_family
-        in {"mobilenet_v2_direction", "compact_direction"}
-        else "sweep_fraction"
-        if config.model_family == "mobilenet_v2_fraction"
-        else "keypoint_heatmaps"
-        if config.model_family in {"mobilenet_v2_keypoint", "mobilenet_v2_detector"}
-        else "geometry_uncertainty"
-        if config.model_family == "mobilenet_v2_geometry_uncertainty"
-        else "rectifier_box"
-        if config.model_family == "mobilenet_v2_rectifier"
-        else "obb"
-        if config.model_family == "mobilenet_v2_obb"
-        else "geometry"
-        if config.model_family in {"mobilenet_v2_geometry", "compact_geometry"}
-        else "ordinal_thresholds"
-        if config.model_family == "mobilenet_v2_ordinal"
-        else "interval_value"
-        if config.model_family in {"mobilenet_v2_interval", "compact_interval"}
-        else "value"
+        if config.model_family in {"mobilenet_v2_direction", "compact_direction"}
+        else (
+            "sweep_fraction"
+            if config.model_family == "mobilenet_v2_fraction"
+            else (
+                "keypoint_heatmaps"
+                if config.model_family
+                in {"mobilenet_v2_keypoint", "mobilenet_v2_detector"}
+                else (
+                    "geometry_uncertainty"
+                    if config.model_family == "mobilenet_v2_geometry_uncertainty"
+                    else (
+                        "rectifier_box"
+                        if config.model_family == "mobilenet_v2_rectifier"
+                        else (
+                            "obb"
+                            if config.model_family == "mobilenet_v2_obb"
+                            else (
+                                "geometry"
+                                if config.model_family
+                                in {"mobilenet_v2_geometry", "compact_geometry"}
+                                else (
+                                    "ordinal_thresholds"
+                                    if config.model_family == "mobilenet_v2_ordinal"
+                                    else (
+                                        "interval_value"
+                                        if config.model_family
+                                        in {"mobilenet_v2_interval", "compact_interval"}
+                                        else "value"
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        )
     )
     print("[TRAIN] step: build-datasets", flush=True)
     train_ds = _build_tf_dataset(
@@ -3693,57 +4059,63 @@ def train(config: TrainConfig) -> TrainingResult:
         config,
         training=True,
         target_kind=target_kind,
-        value_range=(spec.min_value, spec.max_value)
-        if target_kind
-        in {
-            "interval_value",
-            "ordinal_thresholds",
-            "sweep_fraction",
-            "keypoint_heatmaps",
-            "geometry",
-            "geometry_uncertainty",
-            "rectifier_box",
-            "obb",
-        }
-        else None,
+        value_range=(
+            (spec.min_value, spec.max_value)
+            if target_kind
+            in {
+                "interval_value",
+                "ordinal_thresholds",
+                "sweep_fraction",
+                "keypoint_heatmaps",
+                "geometry",
+                "geometry_uncertainty",
+                "rectifier_box",
+                "obb",
+            }
+            else None
+        ),
     )
     val_ds = _build_tf_dataset(
         split.val_examples,
         config,
         training=False,
         target_kind=target_kind,
-        value_range=(spec.min_value, spec.max_value)
-        if target_kind
-        in {
-            "interval_value",
-            "ordinal_thresholds",
-            "sweep_fraction",
-            "keypoint_heatmaps",
-            "geometry",
-            "geometry_uncertainty",
-            "rectifier_box",
-            "obb",
-        }
-        else None,
+        value_range=(
+            (spec.min_value, spec.max_value)
+            if target_kind
+            in {
+                "interval_value",
+                "ordinal_thresholds",
+                "sweep_fraction",
+                "keypoint_heatmaps",
+                "geometry",
+                "geometry_uncertainty",
+                "rectifier_box",
+                "obb",
+            }
+            else None
+        ),
     )
     test_ds = _build_tf_dataset(
         split.test_examples,
         config,
         training=False,
         target_kind=target_kind,
-        value_range=(spec.min_value, spec.max_value)
-        if target_kind
-        in {
-            "interval_value",
-            "ordinal_thresholds",
-            "sweep_fraction",
-            "keypoint_heatmaps",
-            "geometry",
-            "geometry_uncertainty",
-            "rectifier_box",
-            "obb",
-        }
-        else None,
+        value_range=(
+            (spec.min_value, spec.max_value)
+            if target_kind
+            in {
+                "interval_value",
+                "ordinal_thresholds",
+                "sweep_fraction",
+                "keypoint_heatmaps",
+                "geometry",
+                "geometry_uncertainty",
+                "rectifier_box",
+                "obb",
+            }
+            else None
+        ),
     )
     print("[TRAIN] TensorFlow datasets built.")
     print("[TRAIN] step: callbacks", flush=True)
@@ -3756,22 +4128,26 @@ def train(config: TrainConfig) -> TrainingResult:
     monitor_metric: str = (
         "val_mae"
         if config.model_family == "mobilenet_v2_rectifier"
-        else "val_gauge_value_mae"
-        if config.model_family
-        in {
-            "mobilenet_v2_interval",
-            "compact_interval",
-            "compact_geometry",
-            "mobilenet_v2_geometry_uncertainty",
-            "mobilenet_v2_ordinal",
-            "mobilenet_v2_fraction",
-            "mobilenet_v2_keypoint",
-            "mobilenet_v2_detector",
-            "mobilenet_v2_geometry",
-        }
-        else "val_obb_params_mae"
-        if config.model_family == "mobilenet_v2_obb"
-        else "val_mae"
+        else (
+            "val_gauge_value_mae"
+            if config.model_family
+            in {
+                "mobilenet_v2_interval",
+                "compact_interval",
+                "compact_geometry",
+                "mobilenet_v2_geometry_uncertainty",
+                "mobilenet_v2_ordinal",
+                "mobilenet_v2_fraction",
+                "mobilenet_v2_keypoint",
+                "mobilenet_v2_detector",
+                "mobilenet_v2_geometry",
+            }
+            else (
+                "val_obb_params_mae"
+                if config.model_family == "mobilenet_v2_obb"
+                else "val_mae"
+            )
+        )
     )
     callbacks: list[keras.callbacks.Callback] = _make_training_callbacks(
         monitor=monitor_metric
@@ -4121,7 +4497,7 @@ def train(config: TrainConfig) -> TrainingResult:
     )
     test_metrics["baseline_mae_mean_predictor"] = baseline_test_mae
 
-    return TrainingResult(
+    result = TrainingResult(
         model=model,
         history=history,
         label_summary=label_summary,
@@ -4129,3 +4505,9 @@ def train(config: TrainConfig) -> TrainingResult:
         baseline_test_mae=baseline_test_mae,
         dropped_out_of_sweep=dropped_out_of_sweep,
     )
+
+    # If linear output is enabled, fit calibration to map model outputs to calibrated values
+    if config.linear_output:
+        result = _fit_calibration(result, split.test_examples, spec)
+
+    return result

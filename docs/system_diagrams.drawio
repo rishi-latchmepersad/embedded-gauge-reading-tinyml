@@ -1,4 +1,4 @@
-<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" version="28.1.2" pages="2">
+﻿<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" version="28.1.2" pages="2">
   <diagram name="Edge Camera Pod" id="eDqyFWhCivcmqFs6QsoU">
     <mxGraphModel dx="1355" dy="889" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="800" math="0" shadow="0">
       <root>
@@ -77,19 +77,19 @@
         <mxCell id="site_container" value="" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;container=1;fillColor=#eeeeee;strokeColor=#36393d;" parent="1" vertex="1">
           <mxGeometry x="40" y="80" width="560" height="760" as="geometry" />
         </mxCell>
-        <mxCell id="pods_note" value="Each pod reads a single gauge&amp;nbsp;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;periodically, processes&amp;nbsp;&lt;/span&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;the image to&amp;nbsp;&lt;/span&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;get a value, then uploads it to the&amp;nbsp;&lt;/span&gt;&lt;div&gt;LoRaWAN gateway.&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;The reading is then forwarded over the Internet to the&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;backend server.&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;" style="text;html=1;fontSize=14;" parent="site_container" vertex="1">
+        <mxCell id="pods_note" value="Each pod reads a single gauge&amp;nbsp;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;periodically, processes&amp;nbsp;&lt;/span&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;the image on-device with the current classical baseline and CNN cascade to&amp;nbsp;&lt;/span&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;get a value, then uploads it to the&amp;nbsp;&lt;/span&gt;&lt;div&gt;LoRaWAN gateway.&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;The reading is then forwarded over the Internet to the&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;backend server.&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;" style="text;html=1;fontSize=14;" parent="site_container" vertex="1">
           <mxGeometry x="100" y="650" width="360" height="100" as="geometry" />
         </mxCell>
         <mxCell id="site_backhaul" value="Backhaul / Router&lt;br&gt;(LTE, Microwave, Satellite,Fiber uplink)" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#ffff88;strokeColor=#36393d;" parent="site_container" vertex="1">
           <mxGeometry x="300" y="430" width="230" height="90" as="geometry" />
         </mxCell>
-        <mxCell id="pod2" value="Camera Pod #2&#xa;- Camera + MCU&#xa;- Battery + Solar&#xa;- Local inference (optional)&#xa;- LoRaWAN radio" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#cce5ff;strokeColor=#36393d;" parent="site_container" vertex="1">
+        <mxCell id="pod2" value="Camera Pod #2&#xa;- Camera + MCU&#xa;- Battery + Solar&#xa;- On-device classical baseline + CNN cascade&#xa;- LoRaWAN radio" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#cce5ff;strokeColor=#36393d;" parent="site_container" vertex="1">
           <mxGeometry x="20" y="250" width="220" height="160" as="geometry" />
         </mxCell>
-        <mxCell id="pod1" value="Camera Pod #1&#xa;- Camera + MCU&#xa;- Battery + Solar&#xa;- Local inference (optional)&#xa;- LoRaWAN radio" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#cce5ff;strokeColor=#36393d;" parent="site_container" vertex="1">
+        <mxCell id="pod1" value="Camera Pod #1&#xa;- Camera + MCU&#xa;- Battery + Solar&#xa;- On-device classical baseline + CNN cascade&#xa;- LoRaWAN radio" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#cce5ff;strokeColor=#36393d;" parent="site_container" vertex="1">
           <mxGeometry x="20" y="60" width="220" height="160" as="geometry" />
         </mxCell>
-        <mxCell id="pod3" value="Camera Pod #3&#xa;- Camera + MCU&#xa;- Battery + Solar&#xa;- Local inference (optional)&#xa;- LoRaWAN radio" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#cce5ff;strokeColor=#36393d;" parent="site_container" vertex="1">
+        <mxCell id="pod3" value="Camera Pod #3&#xa;- Camera + MCU&#xa;- Battery + Solar&#xa;- On-device classical baseline + CNN cascade&#xa;- LoRaWAN radio" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#cce5ff;strokeColor=#36393d;" parent="site_container" vertex="1">
           <mxGeometry x="20" y="440" width="220" height="160" as="geometry" />
         </mxCell>
         <mxCell id="DUbwKN0YmCOqAmX4_Q1j-1" value="One industrial customer site/plant" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1" parent="site_container" vertex="1">
@@ -192,3 +192,4 @@
     </mxGraphModel>
   </diagram>
 </mxfile>
+
