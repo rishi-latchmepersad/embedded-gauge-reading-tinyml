@@ -68,11 +68,16 @@ if "%FLASH_MODEL%"=="1" if not exist "%OBB_RAW%" (
 
 echo.
 echo === Step 2: Sign FSBL binary ===
-"%SIGN%" -bin "%FSBL_BIN%" -nk -of 0x80000000 -t fsbl -hv 2.3 -o "%FSBL_TRUSTED%" -dump "%FSBL_TRUSTED%" -align
+set "FSBL_TRUSTED_TMP=%SCRIPT_DIR%FSBL\Debug\FSBL_trusted_%RANDOM%.bin"
+"%SIGN%" -bin "%FSBL_BIN%" -nk -of 0x80000000 -t fsbl -hv 2.3 -o "%FSBL_TRUSTED_TMP%" -dump "%FSBL_TRUSTED_TMP%" -align
 if errorlevel 1 (
     echo ERROR: FSBL signing failed.
     exit /b 1
 )
+if exist "%FSBL_TRUSTED%" (
+    del /f /q "%FSBL_TRUSTED%"
+)
+move /y "%FSBL_TRUSTED_TMP%" "%FSBL_TRUSTED%" >nul
 echo Trusted FSBL: %FSBL_TRUSTED%
 
 echo.
@@ -130,11 +135,16 @@ if "%FLASH_MODEL%"=="1" (
 if "%FLASH_APP%"=="1" (
     echo.
     echo === Step 5: Sign application binary ===
-    "%SIGN%" -bin "%APP_BIN%" -nk -of 0x80000000 -t ssbl -hv 2.3 -o "%APP_SIGN%" -align
+    set "APP_SIGN_TMP=%SCRIPT_DIR%Appli\Debug\n657_Appli_sign_%RANDOM%.bin"
+    "%SIGN%" -bin "%APP_BIN%" -nk -of 0x80000000 -t ssbl -hv 2.3 -o "%APP_SIGN_TMP%" -align
     if errorlevel 1 (
         echo ERROR: Signing failed.
         exit /b 1
     )
+    if exist "%APP_SIGN%" (
+        del /f /q "%APP_SIGN%"
+    )
+    move /y "%APP_SIGN_TMP%" "%APP_SIGN%" >nul
     echo Signed binary: %APP_SIGN%
 
     echo.

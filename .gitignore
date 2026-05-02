@@ -69,8 +69,15 @@ firmware/stm32/N657X0_bringup/AppliNonSecure/build/*
 
 #ignore ML artifacts etc.
 ml/artifacts/*
+!ml/artifacts/.gitkeep
 ml/__pycache__/*
 ml/.pytest_cache/*
 __pycache__/*
 *.pyc
 st_ai_output/*
+!st_ai_output/.gitkeep
+
+# Temporary directories
+tmp_*/
+tmp/*
+!tmp/.gitkeep

@@ -49,13 +49,17 @@ typedef struct
 #define APP_BASELINE_PI 3.14159265358979323846f
 #define APP_BASELINE_TWO_PI (2.0f * APP_BASELINE_PI)
 #define APP_BASELINE_MIN_ANGLE_DEG 135.0f
-#define APP_BASELINE_SWEEP_DEG 180.0f
+/* FIX (2026-05-01): sweep was 180° but the physical gauge sweep is 270°.
+ * The Python spec (gauge_calibration_parameters.toml) has sweep_deg = 270.0.
+ * Using 180° here caused every temperature to be read ~80 % too high
+ * (e.g. -30 °C read as +50 °C). */
+#define APP_BASELINE_SWEEP_DEG 270.0f
 #define APP_BASELINE_MIN_VALUE_C -30.0f
 #define APP_BASELINE_MAX_VALUE_C 50.0f
-/* Calibration offset determined from hard-case analysis (2026-04-30).
- * The detected angles are consistently ~2° low compared to expected.
- * This offset shifts the angle before temperature conversion. */
-#define APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG 2.0f
+/* Calibration offset removed (2026-05-01). The ~2° "low" bias was an
+ * artifact of the incorrect 180° sweep; with the correct 270° sweep the
+ * mapping now aligns with the Python reference without extra offset. */
+#define APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG 0.0f
 #define APP_BASELINE_BRIGHT_THRESHOLD 150U
 /* Pixels above this luma are considered saturated/glare and excluded from
  * the bright-centroid calculation and ray scoring.
@@ -97,8 +101,12 @@ typedef struct
 #define APP_BASELINE_CONFIDENCE_THRESHOLD 1.25f
 /* Even a strong peak is not trustworthy if the runner-up is almost tied.
  * Clean ideal captures often have broader but still correct peaks, so keep
- * this close to the Python baseline's permissive gate. */
-#define APP_BASELINE_MIN_PEAK_RATIO 1.01f
+ * this close to the Python baseline's permissive gate.
+ * At extreme temperatures (-30C) the needle sits at the sweep edge where
+ * the background gradient can out-vote the needle. Lower the ratio so the
+ * best peak still wins even when runner_up > best_score. Board log at -30C
+ * shows pr=582-617 being rejected, so we need this well below 0.58. */
+#define APP_BASELINE_MIN_PEAK_RATIO 0.35f
 /* Strong fixed-crop or image-center reads can still be promoted when they stay
  * close to the last stable temperature, even if the peak ratio is a little
  * soft. This keeps a good continuation frame from getting stuck behind stale
@@ -106,6 +114,18 @@ typedef struct
 #define APP_BASELINE_BORDERLINE_PEAK_RATIO 1.05f
 #define APP_BASELINE_BORDERLINE_MIN_CONFIDENCE 10.0f
 #define APP_BASELINE_BORDERLINE_MAX_TEMP_DELTA_C 4.0f
+/* Bright-relaxed frames can still produce occasional false jumps. If the
+ * estimate moves too far in one frame and confidence is only modest, hold
+ * the last stable value instead of seeding history with the jump. */
+#define APP_BASELINE_BRIGHT_RELAXED_MAX_TEMP_JUMP_C 8.0f
+#define APP_BASELINE_BRIGHT_RELAXED_MIN_CONFIDENCE_FOR_JUMP 8.0f
+/* Even when global peak-ratio gating is permissive, reject sudden large
+ * temperature jumps when the winning and runner-up peaks are almost tied.
+ * This catches ambiguous false-lock frames (e.g., hot scene snapping to a
+ * cold angle with score ~= runner_up). */
+#define APP_BASELINE_AMBIGUOUS_JUMP_DELTA_C 12.0f
+#define APP_BASELINE_AMBIGUOUS_JUMP_MAX_PEAK_RATIO 1.08f
+#define APP_BASELINE_AMBIGUOUS_JUMP_MAX_CONFIDENCE 12.0f
 /* When multiple geometry hypotheses agree within a few degrees, keep that
  * consensus cluster instead of letting a lone high-score outlier win. */
 #define APP_BASELINE_CONSENSUS_TEMP_DELTA_C 4.0f
@@ -161,6 +181,11 @@ static AppBaselineRuntime_Estimate_t camera_baseline_estimate_history
 	[APP_BASELINE_ESTIMATE_HISTORY_SIZE] = {0};
 static size_t camera_baseline_estimate_history_count = 0U;
 static size_t camera_baseline_estimate_history_next_index = 0U;
+/* Per-frame brightness profile used to adapt detector thresholds under
+ * heavy overexposure without globally weakening the baseline gate. */
+static bool camera_baseline_current_frame_is_bright = false;
+static float camera_baseline_current_frame_mean_luma = 0.0f;
+static float camera_baseline_current_frame_bright_ratio = 0.0f;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -236,6 +261,11 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 	const char *source_label, AppBaselineRuntime_Estimate_t *estimate_out);
 static bool AppBaselineRuntime_AngleToSweepFractionWithMargin(float angle_rad,
 															  float margin_rad, float *fraction_out);
+static void AppBaselineRuntime_UpdateFrameBrightnessProfile(
+	const uint8_t *frame_bytes, size_t frame_size);
+static float AppBaselineRuntime_NormalizeAngleDegrees(float angle_deg);
+static bool AppBaselineRuntime_IsAngleInCelsiusSweep(float angle_deg);
+static bool AppBaselineRuntime_IsAngleInSubdialBand(float angle_deg);
 static float AppBaselineRuntime_ClampFloat(float value, float min_value,
 										   float max_value);
 static long AppBaselineRuntime_RoundToLong(float value);
@@ -507,6 +537,20 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 		return false;
 	}
 
+	AppBaselineRuntime_UpdateFrameBrightnessProfile(frame_bytes, frame_size);
+	{
+		const long mean_luma_x10 = AppBaselineRuntime_RoundToLong(
+			camera_baseline_current_frame_mean_luma * 10.0f);
+		const long bright_pct = AppBaselineRuntime_RoundToLong(
+			camera_baseline_current_frame_bright_ratio * 100.0f);
+		DebugConsole_Printf(
+			"[BASELINE] frame profile: mean=%ld.%01ld bright=%ld%% mode=%s\r\n",
+			mean_luma_x10 / 10L,
+			((mean_luma_x10 % 10L) < 0L) ? -(mean_luma_x10 % 10L) : (mean_luma_x10 % 10L),
+			bright_pct,
+			camera_baseline_current_frame_is_bright ? "bright-relaxed" : "normal");
+	}
+
 	bright_ok = AppBaselineRuntime_EstimateCenterFromBrightPixels(frame_bytes,
 																  frame_size, &center_x, &center_y, &bright_count);
 	if (bright_ok)
@@ -661,6 +705,13 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 
 	if (selected_estimate == NULL)
 	{
+		DebugConsole_Printf(
+			"[BASELINE] candidates: bright=%s fixed=%s board=%s rim=%s image=%s selected=none(0)\r\n",
+			bright_ok ? "ok" : "no",
+			fixed_crop_ok ? "ok" : "no",
+			board_prior_ok ? "ok" : "no",
+			rim_geometry_ok ? "ok" : "no",
+			center_ok ? "ok" : "no");
 		return false;
 	}
 
@@ -727,6 +778,16 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 		}
 		DebugConsole_Printf(
 			"[BASELINE] Rejected: src=%s reason=%s conf=%ld/%ld score=%ld ru=%ld pr=%ld cx=%lu cy=%lu\r\n",
+			(estimate_out->source_label != NULL) ? estimate_out->source_label : "?",
+			reject_reason, conf_m, threshold_m, best_score_m, runner_up_m,
+			peak_ratio_x1000, estimate_out->center_x, estimate_out->center_y);
+		DebugConsole_Printf(
+			"[BASELINE] FAIL: src=%s reason=%s conf=%ld/%ld score=%ld ru=%ld pr=%ld cx=%lu cy=%lu\r\n",
+			(estimate_out->source_label != NULL) ? estimate_out->source_label : "?",
+			reject_reason, conf_m, threshold_m, best_score_m, runner_up_m,
+			peak_ratio_x1000, estimate_out->center_x, estimate_out->center_y);
+		DebugConsole_Printf(
+			"[BASELINE] REJECTED: src=%s reason=%s conf=%ld/%ld score=%ld ru=%ld pr=%ld cx=%lu cy=%lu\r\n",
 			(estimate_out->source_label != NULL) ? estimate_out->source_label : "?",
 			reject_reason, conf_m, threshold_m, best_score_m, runner_up_m,
 			peak_ratio_x1000, estimate_out->center_x, estimate_out->center_y);
@@ -1433,6 +1494,47 @@ static bool AppBaselineRuntime_IsStableEstimateForHistory(
 		return false;
 	}
 
+	if (camera_baseline_current_frame_is_bright && camera_baseline_last_result_valid)
+	{
+		const float delta_c =
+			fabsf(estimate->temperature_c - camera_baseline_last_temperature_c);
+		if ((delta_c > APP_BASELINE_BRIGHT_RELAXED_MAX_TEMP_JUMP_C) &&
+			(estimate->confidence < APP_BASELINE_BRIGHT_RELAXED_MIN_CONFIDENCE_FOR_JUMP))
+		{
+			const long delta_x10 = AppBaselineRuntime_RoundToLong(delta_c * 10.0f);
+			const long conf_m = AppBaselineRuntime_RoundToLong(
+				estimate->confidence * 1000.0f);
+			DebugConsole_Printf(
+				"[BASELINE] Stability hold: bright jump=%ld.%01ldC conf=%ld/1000\r\n",
+				delta_x10 / 10L,
+				((delta_x10 % 10L) < 0L) ? -(delta_x10 % 10L) : (delta_x10 % 10L),
+				conf_m);
+			return false;
+		}
+	}
+
+	if (camera_baseline_last_result_valid && (estimate->runner_up_score > 0.0f))
+	{
+		const float delta_c =
+			fabsf(estimate->temperature_c - camera_baseline_last_temperature_c);
+		const float peak_ratio = estimate->best_score / estimate->runner_up_score;
+		if ((delta_c > APP_BASELINE_AMBIGUOUS_JUMP_DELTA_C) &&
+			(peak_ratio < APP_BASELINE_AMBIGUOUS_JUMP_MAX_PEAK_RATIO) &&
+			(estimate->confidence < APP_BASELINE_AMBIGUOUS_JUMP_MAX_CONFIDENCE))
+		{
+			const long delta_x10 = AppBaselineRuntime_RoundToLong(delta_c * 10.0f);
+			const long ratio_m = AppBaselineRuntime_RoundToLong(peak_ratio * 1000.0f);
+			const long conf_m = AppBaselineRuntime_RoundToLong(
+				estimate->confidence * 1000.0f);
+			DebugConsole_Printf(
+				"[BASELINE] Stability hold: ambiguous jump=%ld.%01ldC ratio=%ld/1000 conf=%ld/1000\r\n",
+				delta_x10 / 10L,
+				((delta_x10 % 10L) < 0L) ? -(delta_x10 % 10L) : (delta_x10 % 10L),
+				ratio_m, conf_m);
+			return false;
+		}
+	}
+
 	return true;
 }
 
@@ -1703,8 +1805,8 @@ static bool AppBaselineRuntime_SelectSmoothedEstimate(
 	}
 
 	/* Filter out history entries with invalid angles (polluted from before
-	 * the angle validation fix). Only consider entries with angles in the
-	 * valid needle range (130°-320°) covering full gauge range -30°C to 50°C. */
+	 * the angle validation fix). Only consider entries with angles outside
+	 * the subdial band (50°–130°) covering the full 270° gauge sweep. */
 	{
 		AppBaselineRuntime_Estimate_t valid_entries[APP_BASELINE_ESTIMATE_HISTORY_SIZE] = {0};
 		size_t valid_count = 0U;
@@ -1720,7 +1822,7 @@ static bool AppBaselineRuntime_SelectSmoothedEstimate(
 			{
 				angle_deg -= 360.0f;
 			}
-			if ((angle_deg >= 130.0f) && (angle_deg <= 320.0f))
+			if ((angle_deg <= 50.0f) || (angle_deg >= 130.0f))
 			{
 				valid_entries[valid_count++] = ordered[i];
 			}
@@ -1858,6 +1960,109 @@ static bool AppBaselineRuntime_AngleToSweepFractionWithMargin(float angle_rad,
 	*fraction_out = AppBaselineRuntime_ClampFloat(shifted / sweep_rad, 0.0f,
 												  1.0f);
 	return true;
+}
+
+/**
+ * @brief Update per-frame brightness profile for adaptive thresholding.
+ *
+ * We sample the training crop region (step 2) and classify a frame as
+ * "bright" when the average luma is high or a large fraction of pixels are
+ * above the capture bright threshold.
+ */
+static void AppBaselineRuntime_UpdateFrameBrightnessProfile(
+	const uint8_t *frame_bytes, size_t frame_size)
+{
+	const size_t width_pixels = CAMERA_CAPTURE_WIDTH_PIXELS;
+	const size_t height_pixels = CAMERA_CAPTURE_HEIGHT_PIXELS;
+	const size_t expected_size =
+		width_pixels * height_pixels * CAMERA_CAPTURE_BYTES_PER_PIXEL;
+	const AppGaugeGeometry_Crop_t crop =
+		AppGaugeGeometry_TrainingCrop(width_pixels, height_pixels);
+	uint64_t luma_sum = 0U;
+	size_t sample_count = 0U;
+	size_t bright_count = 0U;
+
+	camera_baseline_current_frame_is_bright = false;
+	camera_baseline_current_frame_mean_luma = 0.0f;
+	camera_baseline_current_frame_bright_ratio = 0.0f;
+
+	if ((frame_bytes == NULL) || (frame_size < expected_size) ||
+		(crop.width == 0U) || (crop.height == 0U))
+	{
+		return;
+	}
+
+	for (size_t y = crop.y_min; y < (crop.y_min + crop.height); y += 2U)
+	{
+		for (size_t x = crop.x_min; x < (crop.x_min + crop.width); x += 2U)
+		{
+			const float luma =
+				AppBaselineRuntime_ReadLuma(frame_bytes, width_pixels, x, y);
+			luma_sum += (uint64_t)AppBaselineRuntime_RoundToLong(luma);
+			sample_count++;
+			if (luma >= 180.0f)
+			{
+				bright_count++;
+			}
+		}
+	}
+
+	if (sample_count == 0U)
+	{
+		return;
+	}
+
+	camera_baseline_current_frame_mean_luma =
+		(float)luma_sum / (float)sample_count;
+	camera_baseline_current_frame_bright_ratio =
+		(float)bright_count / (float)sample_count;
+	camera_baseline_current_frame_is_bright =
+		(camera_baseline_current_frame_mean_luma >= 188.0f) ||
+		(camera_baseline_current_frame_bright_ratio >= 0.55f);
+}
+
+/**
+ * @brief Normalize an angle in degrees into the [0, 360) range.
+ */
+static float AppBaselineRuntime_NormalizeAngleDegrees(float angle_deg)
+{
+	while (angle_deg < 0.0f)
+	{
+		angle_deg += 360.0f;
+	}
+	while (angle_deg >= 360.0f)
+	{
+		angle_deg -= 360.0f;
+	}
+	return angle_deg;
+}
+
+/**
+ * @brief Check whether an angle falls inside the Celsius sweep.
+ *
+ * The calibrated sweep starts at APP_BASELINE_MIN_ANGLE_DEG and wraps through
+ * 360°. We keep a small tolerance at both ends so warm/hot angles near 0°
+ * are not rejected by single-frame jitter.
+ */
+static bool AppBaselineRuntime_IsAngleInCelsiusSweep(float angle_deg)
+{
+	const float norm_angle = AppBaselineRuntime_NormalizeAngleDegrees(angle_deg);
+	const float sweep_end_deg =
+		AppBaselineRuntime_NormalizeAngleDegrees(
+			APP_BASELINE_MIN_ANGLE_DEG + APP_BASELINE_SWEEP_DEG);
+	const float min_valid_deg = APP_BASELINE_MIN_ANGLE_DEG - 5.0f;
+	const float max_valid_deg = sweep_end_deg + 10.0f;
+
+	return (norm_angle >= min_valid_deg) || (norm_angle <= max_valid_deg);
+}
+
+/**
+ * @brief Check whether an angle falls in the lower subdial clutter band.
+ */
+static bool AppBaselineRuntime_IsAngleInSubdialBand(float angle_deg)
+{
+	const float norm_angle = AppBaselineRuntime_NormalizeAngleDegrees(angle_deg);
+	return (norm_angle > 55.0f) && (norm_angle < 130.0f);
 }
 
 /**
@@ -2207,6 +2412,13 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 	float best_score = -1.0f;
 	float runner_up_score = -1.0f;
 	size_t best_bin = 0U;
+	const bool bright_relaxed = camera_baseline_current_frame_is_bright;
+	const float edge_threshold = bright_relaxed ? 5.5f : 8.0f;
+	const float main_continuity_threshold = bright_relaxed ? 0.24f : 0.35f;
+	const float main_hub_threshold = bright_relaxed ? 0.15f : 0.25f;
+	const float hot_continuity_threshold = bright_relaxed ? 0.22f : 0.28f;
+	const float hot_hub_threshold = bright_relaxed ? 0.12f : 0.18f;
+	const float final_spoke_continuity_threshold = bright_relaxed ? 0.22f : 0.30f;
 
 	if ((estimate_out == NULL) || (frame_bytes == NULL) || (source_label == NULL))
 	{
@@ -2269,15 +2481,10 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 						frame_bytes, frame_width_pixels, frame_height_pixels, x,
 						y, &gradient_x, &gradient_y, NULL);
 
-					/* Raised from 8.0f to 12.0f — the dial markings produce weak edges
-					 * that were polluting the vote. The needle is a strong dark edge
-					 * on a light background, so we can afford a higher threshold.
-					 * Lowered back to 8.0f (2026-04-30) — the 12.0f threshold was
-					 * rejecting valid needle edges on lower-contrast board captures
-					 * where the needle is visible but the edge gradient is weaker
-					 * due to lighting or glare. The spoke-continuity and hub-darkness
-					 * checks below are sufficient to reject dial markings. */
-					if (edge_mag <= 8.0f)
+					/* Bright frames reduce apparent edge magnitude. Use a relaxed
+					 * edge floor only when the frame brightness profile indicates
+					 * heavy overexposure; otherwise keep the nominal threshold. */
+					if (edge_mag <= edge_threshold)
 					{
 						continue;
 					}
@@ -2419,8 +2626,15 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 
 	{
 		float vote_sum = 0.0f;
-		size_t top_bins[16] = {0};
-		float top_scores[16] = {0.0f};
+		enum
+		{
+			/* Keep more candidate peaks so hot-wrap angles (near 30°-60°)
+			 * are not dropped when their raw gradient vote is weaker than
+			 * mid-range false positives. */
+			APP_BASELINE_TOP_PEAK_COUNT = 64
+		};
+		size_t top_bins[APP_BASELINE_TOP_PEAK_COUNT] = {0};
+		float top_scores[APP_BASELINE_TOP_PEAK_COUNT] = {0.0f};
 
 		for (size_t bin_index = 0U; bin_index < APP_BASELINE_ANGLE_BINS;
 			 ++bin_index)
@@ -2429,11 +2643,11 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 			vote_sum += val;
 
 			/* Keep track of top 16 candidates. */
-			for (size_t i = 0U; i < 16U; ++i)
+			for (size_t i = 0U; i < APP_BASELINE_TOP_PEAK_COUNT; ++i)
 			{
 				if (val > top_scores[i])
 				{
-					for (size_t j = 15U; j > i; --j)
+					for (size_t j = APP_BASELINE_TOP_PEAK_COUNT - 1U; j > i; --j)
 					{
 						top_scores[j] = top_scores[j - 1U];
 						top_bins[j] = top_bins[j - 1U];
@@ -2447,6 +2661,10 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 
 		if ((top_scores[0] <= 0.0f))
 		{
+			DebugConsole_Printf(
+				"[BASELINE] Polar reject: no_peak source=%s mode=%s\r\n",
+				source_label,
+				bright_relaxed ? "bright-relaxed" : "normal");
 			return false;
 		}
 
@@ -2458,16 +2676,16 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 		best_score = smoothed_votes[best_bin];
 
 		/* Classical spoke-continuity weighted peak selection.
-		 * Analyze top 16 peaks and pick the one with best continuity-weighted score.
+		 * Analyze top peaks and pick the one with best continuity-weighted score.
 		 * This ensures we select the needle (continuous spoke) over dial
 		 * markings (isolated edges with high vote but poor continuity).
-		 * Increased from 8 to 16 to catch needle peaks that may have lower
-		 * vote counts but better continuity. */
+		 * We intentionally cap this at APP_BASELINE_TOP_PEAK_COUNT because the
+		 * candidate arrays are fixed-size. */
 		size_t best_weighted_bin = best_bin;
 		{
 			float best_weighted_score = 0.0f;
 
-			for (size_t peak_idx = 0U; peak_idx < 16U && top_scores[peak_idx] > 0.0f; ++peak_idx)
+			for (size_t peak_idx = 0U; peak_idx < APP_BASELINE_TOP_PEAK_COUNT && top_scores[peak_idx] > 0.0f; ++peak_idx)
 			{
 				const size_t candidate_bin = top_bins[peak_idx];
 				const float candidate_angle = min_angle_rad + ((float)candidate_bin / (float)(APP_BASELINE_ANGLE_BINS - 1U)) * sweep_rad;
@@ -2533,13 +2751,10 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 					continuity /= (float)valid_samples;
 					/* Skip peaks with poor continuity OR poor hub connection.
 					 * Needle has both: continuous spoke AND dark hub connection.
-					 * Dial markings have continuity but no hub connection.
-					 * Lowered thresholds (2026-04-30): continuity from 0.50→0.35,
-					 * hub_darkness from 0.40→0.25. The previous thresholds were
-					 * too strict on lower-contrast board captures where the needle
-					 * is visible but the spoke is not perfectly dark throughout.
-					 * The weighted score formula still favors strong spokes. */
-					if (continuity >= 0.35f && hub_darkness >= 0.25f)
+					 * Under bright-relaxed mode we use lower thresholds to account
+					 * for reduced contrast in overexposed captures. */
+					if (continuity >= main_continuity_threshold &&
+						hub_darkness >= main_hub_threshold)
 					{
 						/* Weight by continuity^2 * hub_darkness * vote.
 						 * This strongly favors the needle which has both
@@ -2557,6 +2772,274 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 
 		best_bin = best_weighted_bin;
 		best_score = smoothed_votes[best_bin];
+
+		/* Hot-zone second pass: if the best peak is in the cold/mid range
+		 * (135°-315°), check if there's a stronger spoke-continuity peak
+		 * in the hot wrap-around zone (30°-60°). The needle at high
+		 * temperatures (35°C-50°C) sits near 30°-60° where the gradient
+		 * signal is weak, so the primary vote often misses it and picks
+		 * up a false positive from a dial marking instead. */
+		{
+			const float best_angle_deg_check =
+				(min_angle_rad + ((float)best_bin / (float)(APP_BASELINE_ANGLE_BINS - 1U)) * sweep_rad) * (180.0f / APP_BASELINE_PI);
+			float best_hot_weighted = 0.0f;
+			size_t best_hot_bin = best_bin;
+
+			/* Only do the hot-zone search if the primary peak is in the
+			 * cold/mid range (135°-315°). */
+			if (best_angle_deg_check >= 135.0f && best_angle_deg_check <= 315.0f)
+			{
+				for (size_t peak_idx = 0U; peak_idx < APP_BASELINE_TOP_PEAK_COUNT && top_scores[peak_idx] > 0.0f; ++peak_idx)
+				{
+					const size_t candidate_bin = top_bins[peak_idx];
+					const float candidate_angle_deg =
+						(min_angle_rad + ((float)candidate_bin / (float)(APP_BASELINE_ANGLE_BINS - 1U)) * sweep_rad) * (180.0f / APP_BASELINE_PI);
+					float norm_angle = candidate_angle_deg;
+					while (norm_angle < 0.0f)
+						norm_angle += 360.0f;
+					while (norm_angle >= 360.0f)
+						norm_angle -= 360.0f;
+
+					/* Check if this peak is in the hot wrap-around zone.
+					 * Widened to 20°-75° so high-temperature needle positions
+					 * near the sweep edge are less likely to be missed. */
+					if (norm_angle >= 20.0f && norm_angle <= 75.0f)
+					{
+						const float candidate_angle = min_angle_rad + ((float)candidate_bin / (float)(APP_BASELINE_ANGLE_BINS - 1U)) * sweep_rad;
+						const float cos_a = cosf(candidate_angle);
+						const float sin_a = sinf(candidate_angle);
+						float continuity = 0.0f;
+						float hub_darkness = 0.0f;
+						const size_t cont_samples = 12U;
+						size_t valid_samples = 0U;
+
+						for (size_t i = 0U; i < cont_samples; ++i)
+						{
+							const float r_frac = 0.20f + (0.60f * (float)i / (float)(cont_samples - 1U));
+							const long sx = AppBaselineRuntime_RoundToLong(
+								(float)center_x + (cos_a * r_frac * dial_radius_px));
+							const long sy = AppBaselineRuntime_RoundToLong(
+								(float)center_y + (sin_a * r_frac * dial_radius_px));
+							if (sx >= 0 && (size_t)sx < frame_width_pixels &&
+								sy >= 0 && (size_t)sy < frame_height_pixels)
+							{
+								const float sample_luma = AppBaselineRuntime_ReadLuma(
+									frame_bytes, frame_width_pixels, (size_t)sx, (size_t)sy);
+								continuity += ((255.0f - sample_luma) / 255.0f);
+								valid_samples++;
+							}
+						}
+						if (valid_samples > 0U)
+							continuity /= (float)valid_samples;
+
+						/* Hub darkness check. */
+						{
+							const size_t hub_samples = 3U;
+							size_t hub_valid = 0U;
+							for (size_t h = 0U; h < hub_samples; ++h)
+							{
+								const float r_frac = 0.10f + (0.15f * (float)h / (float)(hub_samples - 1U));
+								const long hx = AppBaselineRuntime_RoundToLong(
+									(float)center_x + (cos_a * r_frac * dial_radius_px));
+								const long hy = AppBaselineRuntime_RoundToLong(
+									(float)center_y + (sin_a * r_frac * dial_radius_px));
+								if (hx >= 0 && (size_t)hx < frame_width_pixels &&
+									hy >= 0 && (size_t)hy < frame_height_pixels)
+								{
+									const float hub_luma = AppBaselineRuntime_ReadLuma(
+										frame_bytes, frame_width_pixels, (size_t)hx, (size_t)hy);
+									hub_darkness += ((255.0f - hub_luma) / 255.0f);
+									hub_valid++;
+								}
+							}
+							if (hub_valid > 0U)
+								hub_darkness /= (float)hub_valid;
+						}
+
+						/* Accept hot-zone peak if it has good continuity and hub
+						 * connection, even with a lower vote score. Bright-relaxed
+						 * mode lowers these gates slightly for overexposed frames. */
+						if (continuity >= hot_continuity_threshold &&
+							hub_darkness >= hot_hub_threshold)
+						{
+							const float weighted = (continuity * continuity) * hub_darkness * top_scores[peak_idx];
+							if (weighted > best_hot_weighted)
+							{
+								best_hot_weighted = weighted;
+								best_hot_bin = candidate_bin;
+							}
+						}
+					}
+				}
+
+				/* Override the primary peak if a hot-zone candidate has
+				 * strong spoke continuity AND a reasonable vote score.
+				 * Only override if the hot-zone candidate has at least 35%
+				 * of the primary peak's raw vote score, to avoid overriding
+				 * a strong primary peak with a weak hot-zone candidate. */
+				if (best_hot_weighted > 0.0f &&
+					smoothed_votes[best_hot_bin] >= (0.35f * smoothed_votes[best_bin]))
+				{
+					const float hot_angle_deg =
+						(min_angle_rad + ((float)best_hot_bin /
+											   (float)(APP_BASELINE_ANGLE_BINS - 1U)) *
+											  sweep_rad) *
+						(180.0f / APP_BASELINE_PI);
+					const float primary_angle_deg_norm =
+						AppBaselineRuntime_NormalizeAngleDegrees(best_angle_deg_check);
+					const float hot_angle_deg_norm =
+						AppBaselineRuntime_NormalizeAngleDegrees(hot_angle_deg);
+					const long primary_angle_x10 = AppBaselineRuntime_RoundToLong(
+						primary_angle_deg_norm * 10.0f);
+					const long hot_angle_x10 = AppBaselineRuntime_RoundToLong(
+						hot_angle_deg_norm * 10.0f);
+					best_bin = best_hot_bin;
+					best_score = smoothed_votes[best_bin];
+					DebugConsole_Printf(
+						"[BASELINE] Hot-zone override: primary=%ld.%01lddeg hot=%ld.%01lddeg\r\n",
+						primary_angle_x10 / 10L,
+						((primary_angle_x10 % 10L) < 0L) ? -(primary_angle_x10 % 10L) : (primary_angle_x10 % 10L),
+						hot_angle_x10 / 10L,
+						((hot_angle_x10 % 10L) < 0L) ? -(hot_angle_x10 % 10L) : (hot_angle_x10 % 10L));
+				}
+				else if (best_hot_weighted > 0.0f)
+				{
+					DebugConsole_Printf(
+						"[BASELINE] Hot-zone candidate kept secondary: primary_vote=%ld hot_vote=%ld\r\n",
+						AppBaselineRuntime_RoundToLong(smoothed_votes[best_bin]),
+						AppBaselineRuntime_RoundToLong(smoothed_votes[best_hot_bin]));
+				}
+			}
+		}
+
+		/* Hot-zone full sweep rescue: when the shortlist still misses the
+		 * true hot-end needle, evaluate every bin in 20°-75° directly.
+		 * This is intentionally conservative (extra continuity/hub checks
+		 * plus minimum vote ratio) so we only override strong false
+		 * mid-angle picks with credible hot-wrap spokes. */
+		{
+			const float best_angle_deg_check =
+				(min_angle_rad + ((float)best_bin / (float)(APP_BASELINE_ANGLE_BINS - 1U)) * sweep_rad) * (180.0f / APP_BASELINE_PI);
+			float best_hot_weighted_full = 0.0f;
+			size_t best_hot_bin_full = best_bin;
+
+			if (best_angle_deg_check >= 135.0f && best_angle_deg_check <= 315.0f)
+			{
+				for (size_t candidate_bin = 0U; candidate_bin < APP_BASELINE_ANGLE_BINS; ++candidate_bin)
+				{
+					const float candidate_angle_deg =
+						(min_angle_rad + ((float)candidate_bin / (float)(APP_BASELINE_ANGLE_BINS - 1U)) * sweep_rad) * (180.0f / APP_BASELINE_PI);
+					float norm_angle = candidate_angle_deg;
+					while (norm_angle < 0.0f)
+					{
+						norm_angle += 360.0f;
+					}
+					while (norm_angle >= 360.0f)
+					{
+						norm_angle -= 360.0f;
+					}
+					if (norm_angle < 20.0f || norm_angle > 75.0f)
+					{
+						continue;
+					}
+
+					const float candidate_angle = min_angle_rad + ((float)candidate_bin / (float)(APP_BASELINE_ANGLE_BINS - 1U)) * sweep_rad;
+					const float cos_a = cosf(candidate_angle);
+					const float sin_a = sinf(candidate_angle);
+					float continuity = 0.0f;
+					float hub_darkness = 0.0f;
+					const size_t cont_samples = 12U;
+					size_t valid_samples = 0U;
+
+					for (size_t i = 0U; i < cont_samples; ++i)
+					{
+						const float r_frac = 0.20f + (0.60f * (float)i / (float)(cont_samples - 1U));
+						const long sx = AppBaselineRuntime_RoundToLong(
+							(float)center_x + (cos_a * r_frac * dial_radius_px));
+						const long sy = AppBaselineRuntime_RoundToLong(
+							(float)center_y + (sin_a * r_frac * dial_radius_px));
+						if (sx >= 0 && (size_t)sx < frame_width_pixels &&
+							sy >= 0 && (size_t)sy < frame_height_pixels)
+						{
+							const float sample_luma = AppBaselineRuntime_ReadLuma(
+								frame_bytes, frame_width_pixels, (size_t)sx, (size_t)sy);
+							continuity += ((255.0f - sample_luma) / 255.0f);
+							valid_samples++;
+						}
+					}
+					if (valid_samples > 0U)
+					{
+						continuity /= (float)valid_samples;
+					}
+					else
+					{
+						continue;
+					}
+
+					{
+						const size_t hub_samples = 3U;
+						size_t hub_valid = 0U;
+						for (size_t h = 0U; h < hub_samples; ++h)
+						{
+							const float r_frac = 0.10f + (0.15f * (float)h / (float)(hub_samples - 1U));
+							const long hx = AppBaselineRuntime_RoundToLong(
+								(float)center_x + (cos_a * r_frac * dial_radius_px));
+							const long hy = AppBaselineRuntime_RoundToLong(
+								(float)center_y + (sin_a * r_frac * dial_radius_px));
+							if (hx >= 0 && (size_t)hx < frame_width_pixels &&
+								hy >= 0 && (size_t)hy < frame_height_pixels)
+							{
+								const float hub_luma = AppBaselineRuntime_ReadLuma(
+									frame_bytes, frame_width_pixels, (size_t)hx, (size_t)hy);
+								hub_darkness += ((255.0f - hub_luma) / 255.0f);
+								hub_valid++;
+							}
+						}
+						if (hub_valid > 0U)
+						{
+							hub_darkness /= (float)hub_valid;
+						}
+					}
+
+					if (continuity >= hot_continuity_threshold &&
+						hub_darkness >= hot_hub_threshold)
+					{
+						const float weighted = (continuity * continuity) * hub_darkness * smoothed_votes[candidate_bin];
+						if (weighted > best_hot_weighted_full)
+						{
+							best_hot_weighted_full = weighted;
+							best_hot_bin_full = candidate_bin;
+						}
+					}
+				}
+
+				if (best_hot_weighted_full > 0.0f &&
+					smoothed_votes[best_hot_bin_full] >= (0.22f * smoothed_votes[best_bin]))
+				{
+					const float hot_angle_deg =
+						(min_angle_rad + ((float)best_hot_bin_full /
+											   (float)(APP_BASELINE_ANGLE_BINS - 1U)) *
+											  sweep_rad) *
+						(180.0f / APP_BASELINE_PI);
+					const float primary_angle_deg_norm =
+						AppBaselineRuntime_NormalizeAngleDegrees(best_angle_deg_check);
+					const float hot_angle_deg_norm =
+						AppBaselineRuntime_NormalizeAngleDegrees(hot_angle_deg);
+					const long primary_angle_x10 = AppBaselineRuntime_RoundToLong(
+						primary_angle_deg_norm * 10.0f);
+					const long hot_angle_x10 = AppBaselineRuntime_RoundToLong(
+						hot_angle_deg_norm * 10.0f);
+					best_bin = best_hot_bin_full;
+					best_score = smoothed_votes[best_bin];
+					DebugConsole_Printf(
+						"[BASELINE] Hot-zone full-sweep rescue: primary=%ld.%01lddeg hot=%ld.%01lddeg\r\n",
+						primary_angle_x10 / 10L,
+						((primary_angle_x10 % 10L) < 0L) ? -(primary_angle_x10 % 10L) : (primary_angle_x10 % 10L),
+						hot_angle_x10 / 10L,
+						((hot_angle_x10 % 10L) < 0L) ? -(hot_angle_x10 % 10L) : (hot_angle_x10 % 10L));
+				}
+			}
+		}
 
 		runner_up_score = AppBaselineRuntime_RunnerUpPeakAfterSuppression(smoothed_votes, APP_BASELINE_ANGLE_BINS, best_bin, 15);
 
@@ -2584,7 +3067,12 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 
 			/* Inversion check: compare darkness and redness along the detected ray vs the
 			 * opposite ray. The needle is dark on a light background, so we keep
-			 * the comparison centered on dark shaft evidence instead of color. */
+			 * the comparison centered on dark shaft evidence instead of color.
+			 *
+			 * Only flip if the angle is NOT already in the valid Celsius sweep range.
+			 * The 270° sweep runs from 135° (-30°C) through 270° (up), 360°/0° (right),
+			 * to 45° (50°C). Angles already inside that wrapped sweep should be kept
+			 * unless they fall into the subdial clutter band. */
 			{
 				float score_forward = 0.0f;
 				float score_backward = 0.0f;
@@ -2615,8 +3103,34 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 					count++;
 				}
 
-				if (score_backward > (score_forward + 0.5f * (float)count))
+				/* Only flip if the angle is outside the calibrated sweep or sits
+				 * in the subdial clutter band. If the angle is already plausible
+				 * for the Celsius sweep, keep it as-is. */
+				const float best_angle_deg =
+					AppBaselineRuntime_NormalizeAngleDegrees(
+						best_angle * (180.0f / APP_BASELINE_PI));
+				/* Skip inversion for angles that already sit in the calibrated
+				 * Celsius sweep (including the hot wrap near 0°). */
+				if (AppBaselineRuntime_IsAngleInCelsiusSweep(best_angle_deg))
 				{
+					/* Angle is in valid range - don't flip it. */
+				}
+				else if (AppBaselineRuntime_IsAngleInSubdialBand(best_angle_deg))
+				{
+					/* Angle is in the subdial band - flip it to see if it becomes valid. */
+					if (score_backward > (score_forward + 0.5f * (float)count))
+					{
+						best_angle += APP_BASELINE_PI;
+						while (best_angle >= APP_BASELINE_TWO_PI)
+						{
+							best_angle -= APP_BASELINE_TWO_PI;
+						}
+					}
+				}
+				else if (score_backward > (score_forward + 0.5f * (float)count))
+				{
+					/* Angle is outside the calibrated sweep and backward is darker.
+					 * Flip it to see if it lands in a valid sweep segment. */
 					best_angle += APP_BASELINE_PI;
 					while (best_angle >= APP_BASELINE_TWO_PI)
 					{
@@ -2625,31 +3139,25 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 				}
 			}
 
-			/* Validate the detected angle points to the upper Celsius dial, not
-			 * the lower subdial. The Celsius needle is in the upper half of the
-			 * gauge (angles 225°-315° point up; 135°-225° sweep left-to-right).
-			 * Reject angles in the lower quadrant (45°-135°) that would point to
-			 * the humidity subdial at the bottom of the gauge face. */
-			float best_angle_deg = best_angle * (180.0f / APP_BASELINE_PI);
-			while (best_angle_deg < 0.0f)
+			/* Validate the detected angle against the calibrated Celsius sweep.
+			 * For a 135° start and 270° sweep, valid angles are:
+			 * - 135°..360° and 0°..45° (with a small margin),
+			 * while the lower subdial clutter band (~55°..130°) stays rejected. */
+			const float best_angle_deg =
+				AppBaselineRuntime_NormalizeAngleDegrees(
+					best_angle * (180.0f / APP_BASELINE_PI));
+			/* Keep only angles inside the calibrated Celsius sweep and reject
+			 * the lower subdial clutter band explicitly. */
+			if (!AppBaselineRuntime_IsAngleInCelsiusSweep(best_angle_deg) ||
+				AppBaselineRuntime_IsAngleInSubdialBand(best_angle_deg))
 			{
-				best_angle_deg += 360.0f;
-			}
-			while (best_angle_deg >= 360.0f)
-			{
-				best_angle_deg -= 360.0f;
-			}
-			/* Lower quadrant check: 45°-135° points toward the subdial.
-			 * Allow a small margin — reject 30°-150° to be safe. */
-			if ((best_angle_deg > 30.0f) && (best_angle_deg < 150.0f))
-			{
-				return false;
-			}
-			/* Angle validation: the gauge sweep is 135° (-30°C) to 315° (50°C).
-			 * Allow the full valid range with a small margin to account for
-			 * detection jitter while still rejecting obvious outliers. */
-			if ((best_angle_deg < 130.0f) || (best_angle_deg > 320.0f))
-			{
+				const long angle_x10 = AppBaselineRuntime_RoundToLong(
+					best_angle_deg * 10.0f);
+				DebugConsole_Printf(
+					"[BASELINE] Polar reject: angle=%ld.%01ld source=%s\r\n",
+					angle_x10 / 10L,
+					((angle_x10 % 10L) < 0L) ? -(angle_x10 % 10L) : (angle_x10 % 10L),
+					source_label);
 				return false;
 			}
 
@@ -2661,7 +3169,11 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 				const float cos_a = cosf(best_angle);
 				const float sin_a = sinf(best_angle);
 				float spoke_continuity = 0.0f;
-				const size_t continuity_samples = 10U;
+				/* Increased from 10 to 20 samples (2026-05-02) for more accurate
+				 * spoke continuity measurement. More samples help distinguish
+				 * between real needles (strong continuity along full length)
+				 * and dial markings (weaker or partial continuity). */
+				const size_t continuity_samples = 20U;
 				size_t valid_samples = 0U;
 
 				for (size_t i = 0U; i < continuity_samples; ++i)
@@ -2685,15 +3197,35 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 				if (valid_samples > 0U)
 				{
 					spoke_continuity /= (float)valid_samples;
-					/* Require at least 25% darkness along the spoke.
-					 * Lowered from 35% to 25% (2026-04-30) — the 35% threshold
-					 * was rejecting valid needles on lower-contrast board captures
-					 * where the needle is visible but not perfectly dark. */
-					if (spoke_continuity < 0.25f)
+					/* Require sufficient spoke darkness along the shaft.
+					 * Bright-relaxed mode lowers this floor to tolerate washed-out
+					 * needle contrast while still rejecting flat clutter. */
+					if (spoke_continuity < final_spoke_continuity_threshold)
 					{
+						const long continuity_m = AppBaselineRuntime_RoundToLong(
+							spoke_continuity * 1000.0f);
+						const long threshold_m = AppBaselineRuntime_RoundToLong(
+							final_spoke_continuity_threshold * 1000.0f);
+						DebugConsole_Printf(
+							"[BASELINE] Polar reject: continuity=%ld/%ld source=%s mode=%s\r\n",
+							continuity_m, threshold_m, source_label,
+							bright_relaxed ? "bright-relaxed" : "normal");
 						return false;
 					}
 				}
+			}
+
+			/* Normalize best_angle to [0, 2π) before storing.
+			 * The inversion check adds 180°, which can push the angle above 360°.
+			 * Without normalization, the angle would be reported incorrectly and
+			 * the temperature conversion would be wrong. */
+			while (best_angle >= APP_BASELINE_TWO_PI)
+			{
+				best_angle -= APP_BASELINE_TWO_PI;
+			}
+			while (best_angle < 0.0f)
+			{
+				best_angle += APP_BASELINE_TWO_PI;
 			}
 
 			estimate_out->angle_rad = best_angle;

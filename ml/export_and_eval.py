@@ -10,8 +10,20 @@ import sys
 # Paths - use absolute paths for WSL compatibility
 ML_ROOT = Path("/mnt/d/Projects/embedded-gauge-reading-tinyml/ml")
 REPO_ROOT = ML_ROOT.parent
-model_path = ML_ROOT / "artifacts" / "training" / "scalar_full_finetune_from_best_board30_clean_plus_new5_calibrated_all" / "model.keras"
-output_path = REPO_ROOT / "artifacts" / "training" / "scalar_full_finetune_from_best_board30_clean_plus_new5_calibrated_all" / "model.tflite"
+model_path = (
+    ML_ROOT
+    / "artifacts"
+    / "training"
+    / "scalar_full_finetune_from_best_board30_clean_plus_new5_calibrated_all"
+    / "model.keras"
+)
+output_path = (
+    REPO_ROOT
+    / "artifacts"
+    / "training"
+    / "scalar_full_finetune_from_best_board30_clean_plus_new5_calibrated_all"
+    / "model.tflite"
+)
 
 print(f"[EXPORT] Loading model from {model_path}")
 model = keras.models.load_model(model_path, compile=False)
@@ -20,7 +32,7 @@ print("[EXPORT] Converting to TFLite...")
 converter = tf.lite.TFLiteConverter.from_keras_model(model)
 tflite_model = converter.convert()
 
-with open(output_path, 'wb') as f:
+with open(output_path, "wb") as f:
     f.write(tflite_model)
 
 print(f"[EXPORT] Saved TFLite model to {output_path}")
@@ -32,15 +44,15 @@ manifest_path = REPO_ROOT / "data" / "hard_cases_plus_board30_valid_with_new6.cs
 
 # Load manifest
 samples = []
-with open(manifest_path, 'r', newline='') as f:
+with open(manifest_path, "r", newline="") as f:
     reader = csv.DictReader(f)
     for row in reader:
-        if row['image_path'].startswith('#'):
+        if row["image_path"].startswith("#"):
             continue
-        img_path = row['image_path']
+        img_path = row["image_path"]
         if not Path(img_path).is_absolute():
             img_path = str(REPO_ROOT.parent / img_path)
-        samples.append((img_path, float(row['value'])))
+        samples.append((img_path, float(row["value"])))
 
 print(f"[EVAL] Loaded {len(samples)} hard cases")
 
@@ -61,21 +73,23 @@ for img_path, true_val in samples:
         img = tf.image.resize_with_pad(img, 224, 224)
         img = tf.cast(img, tf.float32) / 255.0
         img = np.expand_dims(img, axis=0)
-        
+
         # Run inference
-        interpreter.set_tensor(input_details[0]['index'], img)
+        interpreter.set_tensor(input_details[0]["index"], img)
         interpreter.invoke()
-        pred_norm = interpreter.get_tensor(output_details[0]['index'])[0][0]
-        
+        pred_norm = interpreter.get_tensor(output_details[0]["index"])[0][0]
+
         # Denormalize prediction (assuming -30 to 50 range)
         pred_val = (pred_norm + 1) / 2 * (50 - (-30)) + (-30)
-        
+
         error = abs(pred_val - true_val)
         errors.append(error)
-        
+
         if error > 10:
-            print(f"  Large error: {img_path} - True: {true_val:.1f}C, Pred: {pred_val:.1f}C, Error: {error:.1f}C")
-            
+            print(
+                f"  Large error: {img_path} - True: {true_val:.1f}C, Pred: {pred_val:.1f}C, Error: {error:.1f}C"
+            )
+
     except Exception as e:
         print(f"  Error processing {img_path}: {e}")
 

@@ -1,4 +1,5 @@
 """Check GPU availability and training capability."""
+
 from __future__ import annotations
 
 import os

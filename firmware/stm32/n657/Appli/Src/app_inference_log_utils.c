@@ -13,23 +13,30 @@
 
 /* Detect IEEE-754 infinities and NaNs so the UART formatter can preserve
  * their special textual form instead of flattening them into a fake zero. */
-static bool AppInferenceLog_IsSpecialFloat(float value, const char **suffix_out) {
-	union {
+static bool AppInferenceLog_IsSpecialFloat(float value, const char **suffix_out)
+{
+	union
+	{
 		float f;
 		uint32_t u;
 	} bits = {
-		.f = value
-	};
+		.f = value};
 
-	if ((bits.u & 0x7F800000U) != 0x7F800000U) {
+	if ((bits.u & 0x7F800000U) != 0x7F800000U)
+	{
 		return false;
 	}
 
-	if ((bits.u & 0x007FFFFFU) != 0U) {
+	if ((bits.u & 0x007FFFFFU) != 0U)
+	{
 		*suffix_out = "NaN";
-	} else if ((bits.u & 0x80000000U) != 0U) {
+	}
+	else if ((bits.u & 0x80000000U) != 0U)
+	{
 		*suffix_out = "-Inf";
-	} else {
+	}
+	else
+	{
 		*suffix_out = "+Inf";
 	}
 
@@ -44,8 +51,10 @@ static bool AppInferenceLog_IsSpecialFloat(float value, const char **suffix_out)
  * @param value Floating-point value to format.
  */
 void AppInferenceLog_FormatFloatTenths(char *dst, size_t dst_len,
-		const char *prefix, float value) {
-	if ((dst == NULL) || (dst_len == 0U) || (prefix == NULL)) {
+									   const char *prefix, float value)
+{
+	if ((dst == NULL) || (dst_len == 0U) || (prefix == NULL))
+	{
 		return;
 	}
 
@@ -53,25 +62,27 @@ void AppInferenceLog_FormatFloatTenths(char *dst, size_t dst_len,
 	 * into a misleading numeric zero. */
 	{
 		const char *special = NULL;
-		if (AppInferenceLog_IsSpecialFloat(value, &special)) {
-			(void) snprintf(dst, dst_len, "%s%s\r\n", prefix, special);
+		if (AppInferenceLog_IsSpecialFloat(value, &special))
+		{
+			(void)snprintf(dst, dst_len, "%s%s\r\n", prefix, special);
 			return;
 		}
 	}
 
 	const bool negative = (value < 0.0f);
 	const float magnitude = negative ? -value : value;
-	long whole = (long) magnitude;
-	float fraction = magnitude - (float) whole;
+	long whole = (long)magnitude;
+	float fraction = magnitude - (float)whole;
 
-	unsigned tenths = (unsigned) (fraction * 10.0f + 0.5f);
-	if (tenths >= 10U) {
+	unsigned tenths = (unsigned)(fraction * 10.0f + 0.5f);
+	if (tenths >= 10U)
+	{
 		tenths = 0U;
 		whole += 1L;
 	}
 
-	(void) snprintf(dst, dst_len, "%s%s%ld.%01u\r\n", prefix,
-			negative ? "-" : "", whole, tenths);
+	(void)snprintf(dst, dst_len, "%s%s%ld.%01u\r\n", prefix,
+				   negative ? "-" : "", whole, tenths);
 }
 
 /**
@@ -81,8 +92,22 @@ void AppInferenceLog_FormatFloatTenths(char *dst, size_t dst_len,
  * pinned, or just rounded into the same tenths bucket by the compact logger.
  */
 void AppInferenceLog_FormatFloatMicros(char *dst, size_t dst_len,
-		const char *prefix, float value) {
-	if ((dst == NULL) || (dst_len == 0U) || (prefix == NULL)) {
+									   const char *prefix, float value)
+{
+	if ((dst == NULL) || (dst_len == 0U) || (prefix == NULL))
+	{
+		return;
+	}
+
+	/* Safety check: verify prefix pointer is in valid flash/ROM range
+	 * to catch corruption from xSPI2 reconfiguration or stack issues */
+	const uintptr_t prefix_addr = (uintptr_t)prefix;
+	/* STM32N6 flash is at 0x08000000, code is typically in AXI/_AXISRAM */
+	if (prefix_addr < 0x20000000U)
+	{
+		/* Prefix is in invalid low-memory range - likely corrupted */
+		(void)snprintf(dst, dst_len, "[AI] ERROR: corrupted prefix ptr=0x%08lX\r\n",
+					   (unsigned long)prefix_addr);
 		return;
 	}
 
@@ -90,23 +115,25 @@ void AppInferenceLog_FormatFloatMicros(char *dst, size_t dst_len,
 	 * into a misleading numeric zero. */
 	{
 		const char *special = NULL;
-		if (AppInferenceLog_IsSpecialFloat(value, &special)) {
-			(void) snprintf(dst, dst_len, "%s%s\r\n", prefix, special);
+		if (AppInferenceLog_IsSpecialFloat(value, &special))
+		{
+			(void)snprintf(dst, dst_len, "%s%s\r\n", prefix, special);
 			return;
 		}
 	}
 
 	const bool negative = (value < 0.0f);
-	const double magnitude = negative ? -(double) value : (double) value;
-	unsigned long whole = (unsigned long) magnitude;
-	double fraction = magnitude - (double) whole;
-	unsigned long micros = (unsigned long) (fraction * 1000000.0 + 0.5);
+	const double magnitude = negative ? -(double)value : (double)value;
+	unsigned long whole = (unsigned long)magnitude;
+	double fraction = magnitude - (double)whole;
+	unsigned long micros = (unsigned long)(fraction * 1000000.0 + 0.5);
 
-	if (micros >= 1000000UL) {
+	if (micros >= 1000000UL)
+	{
 		micros = 0UL;
 		whole += 1UL;
 	}
 
-	(void) snprintf(dst, dst_len, "%s%s%lu.%06lu\r\n", prefix,
-			negative ? "-" : "", whole, micros);
+	(void)snprintf(dst, dst_len, "%s%s%lu.%06lu\r\n", prefix,
+				   negative ? "-" : "", whole, micros);
 }
