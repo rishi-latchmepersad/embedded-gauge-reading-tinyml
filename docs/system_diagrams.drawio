@@ -1,6 +1,6 @@
-﻿<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" version="28.1.2" pages="2">
+<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" version="28.1.2" pages="2">
   <diagram name="Edge Camera Pod" id="eDqyFWhCivcmqFs6QsoU">
-    <mxGraphModel dx="1355" dy="889" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="800" math="0" shadow="0">
+    <mxGraphModel dx="960" dy="674" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="800" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -8,7 +8,7 @@
           <mxGeometry x="40" y="20" width="800" height="50" as="geometry" />
         </mxCell>
         <mxCell id="pipe" value="Pipe / Handrail" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#a0522d;fontColor=#ffffff;strokeColor=#6D1F00;" parent="1" vertex="1">
-          <mxGeometry x="40" y="310" width="720" height="70" as="geometry" />
+          <mxGeometry x="170" y="310" width="590" height="70" as="geometry" />
         </mxCell>
         <mxCell id="clamp" value="U-bolt Clamps" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" parent="1" vertex="1">
           <mxGeometry x="470" y="310" width="65" height="70" as="geometry" />
@@ -42,22 +42,22 @@
         <mxCell id="e7" style="endArrow=classic;html=1;strokeWidth=3;entryX=0.717;entryY=1.008;entryDx=0;entryDy=0;entryPerimeter=0;shape=link;" parent="1" source="tilt" target="solar" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="X8aUyGfJaH6FOO79OV4r-2" value="Gauge Being Measured" style="html=1;verticalLabelPosition=bottom;align=center;labelBackgroundColor=#ffffff;verticalAlign=top;strokeWidth=2;strokeColor=#0080F0;shadow=0;dashed=0;shape=mxgraph.ios7.icons.gauge;" vertex="1" parent="1">
+        <mxCell id="X8aUyGfJaH6FOO79OV4r-2" value="Gauge Being Measured" style="html=1;verticalLabelPosition=bottom;align=center;labelBackgroundColor=#ffffff;verticalAlign=top;strokeWidth=2;strokeColor=#0080F0;shadow=0;dashed=0;shape=mxgraph.ios7.icons.gauge;" parent="1" vertex="1">
           <mxGeometry x="990" y="267" width="140" height="133" as="geometry" />
         </mxCell>
-        <mxCell id="X8aUyGfJaH6FOO79OV4r-4" value="STM32 Board, MicroSD Card, Camera &amp;amp; LoRAWAN Box" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontColor=#FFFFFF;" vertex="1" parent="1">
+        <mxCell id="X8aUyGfJaH6FOO79OV4r-4" value="STM32 Board, MicroSD Card, Camera &amp;amp; LoRAWAN Box" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontColor=#FFFFFF;" parent="1" vertex="1">
           <mxGeometry x="670" y="295" width="100" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="X8aUyGfJaH6FOO79OV4r-5" value="" style="html=1;verticalLabelPosition=bottom;align=center;labelBackgroundColor=#ffffff;verticalAlign=top;strokeWidth=2;strokeColor=#d6b656;shadow=0;dashed=0;shape=mxgraph.ios7.icons.sun;pointerEvents=1;fillColor=#fff2cc;gradientColor=#ffd966;" vertex="1" parent="1">
+        <mxCell id="X8aUyGfJaH6FOO79OV4r-5" value="" style="html=1;verticalLabelPosition=bottom;align=center;labelBackgroundColor=#ffffff;verticalAlign=top;strokeWidth=2;strokeColor=#d6b656;shadow=0;dashed=0;shape=mxgraph.ios7.icons.sun;pointerEvents=1;fillColor=#fff2cc;gradientColor=#ffd966;" parent="1" vertex="1">
           <mxGeometry x="280" y="90" width="70" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="X8aUyGfJaH6FOO79OV4r-6" value="U-bolt Clamps" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" vertex="1" parent="1">
+        <mxCell id="X8aUyGfJaH6FOO79OV4r-6" value="U-bolt Clamps" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" parent="1" vertex="1">
           <mxGeometry x="565" y="310" width="65" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="X8aUyGfJaH6FOO79OV4r-7" value="U-bolt Clamps" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" vertex="1" parent="1">
+        <mxCell id="X8aUyGfJaH6FOO79OV4r-7" value="U-bolt Clamps" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" parent="1" vertex="1">
           <mxGeometry x="230" y="310" width="65" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="X8aUyGfJaH6FOO79OV4r-8" style="endArrow=none;html=1;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=0;exitDx=0;exitDy=0;endFill=0;" edge="1" parent="1" source="power">
+        <mxCell id="X8aUyGfJaH6FOO79OV4r-8" style="endArrow=none;html=1;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=0;exitDx=0;exitDy=0;endFill=0;" parent="1" source="power" edge="1">
           <mxGeometry relative="1" as="geometry">
             <mxPoint x="114.75" y="269.5" as="sourcePoint" />
             <mxPoint x="420" y="220" as="targetPoint" />
@@ -191,5 +191,123 @@
       </root>
     </mxGraphModel>
   </diagram>
+  <diagram id="STM32N657SystemBlock" name="STM32N657 System Block Diagram">
+    <mxGraphModel dx="960" dy="674" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="STM32N657 Nucleo Board - System Block Diagram" style="text;html=1;fontSize=32;fontStyle=1;" parent="1" vertex="1">
+          <mxGeometry x="40" y="20" width="900" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="stm32" value="STM32N657 Nucleo Board&lt;br&gt;&lt;font style=&quot;font-size: 11px&quot;&gt;Cortex-M55 @ 800MHz + NPU&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" parent="1" vertex="1">
+          <mxGeometry x="550" y="350" width="300" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="usb_c" value="USB-C Connector&lt;br&gt;&lt;font style=&quot;font-size: 11px&quot;&gt;5V Power + Debug&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#fad7ac;strokeColor=#b46504;" parent="1" vertex="1">
+          <mxGeometry x="100" y="150" width="180" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="camera" value="OV5640 Camera Module&lt;br&gt;&lt;font style=&quot;font-size: 11px&quot;&gt;224×224 YUV422&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#cce5ff;strokeColor=#36393d;" parent="1" vertex="1">
+          <mxGeometry x="1050" y="150" width="200" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="sd_card" value="MicroSD Card Slot&lt;br&gt;&lt;font style=&quot;font-size: 11px&quot;&gt;Data Logging&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#b0e3e6;strokeColor=#0e8088;" parent="1" vertex="1">
+          <mxGeometry x="1050" y="550" width="200" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="rtc" value="RTC (Real-Time Clock)&lt;br&gt;&lt;font style=&quot;font-size: 11px&quot;&gt;Internal + Backup Battery&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#b1ddf0;strokeColor=#10739e;" parent="1" vertex="1">
+          <mxGeometry x="100" y="550" width="200" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="e_usb_power" value="5V VBUS" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="340" y="180" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_usb_dplus" value="D+ (PA12)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="340" y="210" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_usb_dminus" value="D- (PA11)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="340" y="240" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_cam_d0" value="D0 (PH3)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="920" y="160" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_cam_d1" value="D1 (PH4)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="920" y="190" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_cam_d2" value="D2 (PH5)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="920" y="220" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_cam_d3" value="D3 (PH6)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="920" y="250" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_cam_pclk" value="PCLK (PH7)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="920" y="280" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_cam_hsync" value="HSYNC (PH6)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="920" y="310" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_cam_vsync" value="VSYNC (PH8)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="920" y="340" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_cam_xclk" value="XCLK (PH9)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="920" y="370" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_cam_sccb" value="SCCB (I2C1)&lt;br&gt;SCL: PB6&lt;br&gt;SDA: PB7" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="920" y="400" width="60" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="e_sd_cs" value="CS (PA4)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="920" y="560" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_sd_clk" value="CLK (PA5)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="920" y="590" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_sd_miso" value="MISO (PA6)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="920" y="620" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_sd_mosi" value="MOSI (PA7)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="920" y="650" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_rtc" value="LSI Oscillator&lt;br&gt;32.768 kHz" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="340" y="560" width="60" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="line_usb_1" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" parent="1" edge="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="280" y="200" as="sourcePoint" />
+            <mxPoint x="550" y="200" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="line_usb_2" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" parent="1" edge="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="280" y="230" as="sourcePoint" />
+            <mxPoint x="550" y="230" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="line_cam_1" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" parent="1" edge="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="1050" y="180" as="sourcePoint" />
+            <mxPoint x="850" y="180" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="line_cam_2" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" parent="1" edge="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="1050" y="210" as="sourcePoint" />
+            <mxPoint x="850" y="210" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="line_sd_1" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" parent="1" edge="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="1050" y="580" as="sourcePoint" />
+            <mxPoint x="850" y="580" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="line_sd_2" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" parent="1" edge="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="1050" y="610" as="sourcePoint" />
+            <mxPoint x="850" y="610" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="line_rtc_1" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" parent="1" edge="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="300" y="590" as="sourcePoint" />
+            <mxPoint x="550" y="590" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
 </mxfile>
-

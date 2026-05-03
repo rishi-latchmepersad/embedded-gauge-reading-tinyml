@@ -72,32 +72,105 @@ class GeometrySelection:
     shaft_support: float
 
 
-# When multiple candidates agree within a few degrees, keep that consensus
-# cluster instead of letting a lone outlier win on score alone.
-CONSENSUS_TEMP_DELTA_C: Final[float] = 4.0
-"""Temperature tolerance for candidate-agreement consensus."""
-
-# Consensus is only allowed to override the raw winner when the cluster is
-# close enough in quality to the best candidate. That keeps a large hot
-# cluster from displacing a clearly stronger near-target geometry.
-CONSENSUS_MIN_QUALITY_RATIO: Final[float] = 0.85
-"""Minimum consensus quality ratio relative to the best raw candidate."""
-
-# The board capture is centered slightly above and left of the dial midpoint,
-# and the useful inner gauge radius is much smaller than the full crop.
-# These ratios give us a lightweight classical prior without introducing ML.
-BOARD_PRIOR_CENTER_X_RATIO: Final[float] = 0.490
-BOARD_PRIOR_CENTER_Y_RATIO: Final[float] = 0.446
-BOARD_PRIOR_RADIUS_RATIO: Final[float] = 0.350
-BOARD_PRIOR_CENTER_OFFSETS_PX: Final[tuple[float, ...]] = (-4.0, 0.0, 4.0)
-BOARD_PRIOR_RADIUS_SCALES: Final[tuple[float, ...]] = (0.94, 1.0, 1.06)
+# Fixed geometry constants (matches embedded C baseline)
+BRIGHT_CENTROID_MIN_PIXELS: Final[int] = 1024
+BRIGHT_CENTROID_MIN_LUMA: Final[int] = 150
+BRIGHT_CENTROID_MAX_LUMA: Final[int] = 220
+FIXED_CROP_CENTER_X: Final[float] = 100.0
+FIXED_CROP_CENTER_Y: Final[float] = 118.0
+IMAGE_CENTER_X: Final[float] = 112.0
+IMAGE_CENTER_Y: Final[float] = 112.0
+DEFAULT_DIAL_RADIUS_PX: Final[float] = 80.0
 
 
-def board_prior_geometry_candidate(image_bgr: np.ndarray) -> GeometryCandidate:
-    """Build the fixed board prior used by the classical sweep.
+@dataclass(frozen=True)
+class CenterHypothesis:
+    """One needle-center hypothesis for the classical baseline."""
 
-    The prior is intentionally simple: it biases the detector toward the inner
-    Celsius dial seen in the board capture, which has a slightly off-center
+    label: str
+    center_xy: tuple[float, float]
+    dial_radius_px: float = DEFAULT_DIAL_RADIUS_PX
+
+
+def _bright_centroid_hypothesis(image_bgr: np.ndarray) -> CenterHypothesis | None:
+    """Find the bright centroid of the dial face (matches C baseline).
+
+    Scans the fixed gauge crop for pixels with 150 ≤ luma ≤ 220,
+    computes the centroid, and requires ≥ 1024 qualifying pixels.
+    """
+    gray: np.ndarray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    h_img, w_img = gray.shape[:2]
+
+    # Fixed gauge crop region (matches C baseline)
+    x_start, x_end = 23, 178
+    y_start, y_end = 57, 180
+
+    # Clamp to image bounds
+    x_start = max(0, min(x_start, w_img - 1))
+    x_end = max(x_start + 1, min(x_end, w_img))
+    y_start = max(0, min(y_start, h_img - 1))
+    y_end = max(y_start + 1, min(y_end, h_img))
+
+    crop: np.ndarray = gray[y_start:y_end, x_start:x_end]
+    mask: np.ndarray = (
+        (crop >= BRIGHT_CENTROID_MIN_LUMA) & (crop <= BRIGHT_CENTROID_MAX_LUMA)
+    )
+
+    num_pixels: int = int(np.sum(mask))
+    if num_pixels < BRIGHT_CENTROID_MIN_PIXELS:
+        return None
+
+    # Compute centroid
+    ys, xs = np.where(mask)
+    if len(ys) == 0 or len(xs) == 0:
+        return None
+
+    centroid_x_crop: float = float(np.mean(xs))
+    centroid_y_crop: float = float(np.mean(ys))
+
+    # Convert to full image coordinates
+    centroid_x: float = float(x_start) + centroid_x_crop
+    centroid_y: float = float(y_start) + centroid_y_crop
+
+    return CenterHypothesis(
+        label="bright_centroid",
+        center_xy=(centroid_x, centroid_y),
+    )
+
+
+def _fixed_crop_hypothesis(image_bgr: np.ndarray) -> CenterHypothesis:
+    """Return the fixed-crop center hypothesis (matches C baseline)."""
+    return CenterHypothesis(
+        label="fixed_crop",
+        center_xy=(FIXED_CROP_CENTER_X, FIXED_CROP_CENTER_Y),
+    )
+
+
+def _image_center_hypothesis(image_bgr: np.ndarray) -> CenterHypothesis:
+    """Return the image center hypothesis (matches C baseline)."""
+    h_img, w_img = image_bgr.shape[:2]
+    return CenterHypothesis(
+        label="image_center",
+        center_xy=(float(w_img) / 2.0, float(h_img) / 2.0),
+    )
+
+
+def _center_hypotheses(
+    image_bgr: np.ndarray,
+) -> list[CenterHypothesis]:
+    """Generate all center hypotheses (matches C baseline)."""
+    hypotheses: list[CenterHypothesis] = []
+
+    # Try bright centroid first
+    bright: CenterHypothesis | None = _bright_centroid_hypothesis(image_bgr)
+    if bright is not None:
+        hypotheses.append(bright)
+
+    # Always include fixed crop and image center
+    hypotheses.append(_fixed_crop_hypothesis(image_bgr))
+    hypotheses.append(_image_center_hypothesis(image_bgr))
+
+    return hypotheses
     pivot and a smaller effective radius than the full crop.
     """
     height, width = image_bgr.shape[:2]
@@ -150,41 +223,13 @@ def needle_vector_to_value(unit_dx: float, unit_dy: float, spec: GaugeSpec) -> f
     return spec.min_value + fraction * (spec.max_value - spec.min_value)
 
 
-def needle_detection_quality(detection: NeedleDetection) -> float:
-    """Return a scale-free score for comparing detector outputs.
-
-    The detector families report very different raw peak scales, so a
-    peak-value-based score can over-rank the wrong family on clean captures.
-    We keep confidence as the main signal and treat peak_ratio as a penalty
-    instead of a multiplier so a spiky outlier does not dominate a slightly
-    broader but more plausible candidate.
-    """
-    confidence: float = max(detection.confidence, 0.0)
-    peak_ratio: float = max(detection.peak_ratio, 1.0)
-    return confidence / peak_ratio
-
-
-def _geometry_selection_key(selection: GeometrySelection) -> tuple[float, float, float]:
-    """Return the tie-break tuple used when two geometry candidates agree."""
-    return (
-        selection.quality,
-        selection.shaft_support,
-        selection.detection.peak_value,
-    )
-
-
 def _runner_up_peak_after_suppression(
     peak_values: np.ndarray,
     *,
     best_index: int,
     suppression_bins: int,
 ) -> float:
-    """Find the strongest non-neighbor peak after suppressing the main peak.
-
-    Using the global second-highest bin can overstate how clean a candidate is
-    when the histogram has a broad plateau. We instead suppress a small window
-    around the best bin and measure the strongest remaining competitor.
-    """
+    """Find the strongest non-neighbor peak after suppressing the main peak."""
     if peak_values.size == 0:
         return 0.0
 
@@ -199,164 +244,12 @@ def _runner_up_peak_after_suppression(
     return float(np.max(competitor_values))
 
 
-def _middle_shaft_weight(rr: np.ndarray, dial_radius_px: float) -> np.ndarray:
-    """Return a smooth radial weight that favors the middle of the needle shaft.
-
-    The gauge face is visually busy near the outer tick ring and around the hub,
-    so we emphasize the middle band of the shaft where the needle is usually
-    darkest and least confused with dial graphics.
-    """
-    if dial_radius_px <= 1.0:
-        return np.zeros_like(rr, dtype=np.float32)
-
-    shaft_center: float = 0.56 * dial_radius_px
-    shaft_sigma: float = max(0.09 * dial_radius_px, 1.0)
-    normalized: np.ndarray = (rr - shaft_center) / shaft_sigma
-    return np.exp(-0.5 * np.square(normalized)).astype(np.float32)
-
-
-def _detect_needle_unit_vector_shaft_scan(
-    image_bgr: np.ndarray,
-    *,
-    center_xy: tuple[float, float],
-    dial_radius_px: float,
-    gauge_spec: GaugeSpec | None = None,
-) -> NeedleDetection | None:
-    """Scan the sweep for a colored shaft on a bright dial face.
-
-    The live board captures show a saturated needle-like shaft that is easy to
-    miss when the detector only rewards grayscale darkness. This pass samples
-    the middle part of the candidate shaft directly and looks for saturation
-    and color-spread contrast against the immediate neighborhood on either side
-    of the line.
-    """
-    if dial_radius_px <= 1.0:
-        return None
-
-    center_x, center_y = center_xy
-    hsv: np.ndarray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
-    saturation: np.ndarray = hsv[:, :, 1].astype(np.float32) / 255.0
-    color_spread: np.ndarray = (
-        np.max(image_bgr.astype(np.float32), axis=2)
-        - np.min(image_bgr.astype(np.float32), axis=2)
-    ) / 255.0
-
-    angle_bins: int = 720
-    fractions: np.ndarray = np.linspace(0.34, 0.78, 7, dtype=np.float32)
-    shaft_center_fraction: float = 0.54
-    shaft_sigma_fraction: float = 0.12
-
-    h_img, w_img = image_bgr.shape[:2]
-    angle_scores: np.ndarray = np.zeros(angle_bins, dtype=np.float32)
-
-    for bin_index in range(angle_bins):
-        angle_rad: float = (2.0 * math.pi * float(bin_index)) / float(
-            angle_bins
-        ) - math.pi
-        if gauge_spec is not None and not _angle_in_sweep(
-            angle_rad,
-            gauge_spec,
-            margin_rad=math.radians(8.0),
-        ):
-            continue
-
-        unit_dx: float = math.cos(angle_rad)
-        unit_dy: float = math.sin(angle_rad)
-        perp_dx: float = -unit_dy
-        perp_dy: float = unit_dx
-
-        sample_contrasts: list[float] = []
-        for fraction in fractions:
-            sample_x: float = center_x + float(fraction) * dial_radius_px * unit_dx
-            sample_y: float = center_y + float(fraction) * dial_radius_px * unit_dy
-            sample_ix: int = int(round(min(max(sample_x, 0.0), w_img - 1.0)))
-            sample_iy: int = int(round(min(max(sample_y, 0.0), h_img - 1.0)))
-
-            line_sat: float = float(saturation[sample_iy, sample_ix])
-            line_spread: float = float(color_spread[sample_iy, sample_ix])
-            neighbor_sats: list[float] = []
-            neighbor_spreads: list[float] = []
-            for offset_px in (2.0, 4.0, 6.0):
-                for direction in (-1.0, 1.0):
-                    nx: float = sample_x + direction * offset_px * perp_dx
-                    ny: float = sample_y + direction * offset_px * perp_dy
-                    neighbor_ix: int = int(round(min(max(nx, 0.0), w_img - 1.0)))
-                    neighbor_iy: int = int(round(min(max(ny, 0.0), h_img - 1.0)))
-                    neighbor_sats.append(float(saturation[neighbor_iy, neighbor_ix]))
-                    neighbor_spreads.append(
-                        float(color_spread[neighbor_iy, neighbor_ix])
-                    )
-
-            if not neighbor_sats or not neighbor_spreads:
-                continue
-            local_sat: float = float(np.mean(neighbor_sats)) if neighbor_sats else 0.0
-            local_spread: float = (
-                float(np.mean(neighbor_spreads)) if neighbor_spreads else 0.0
-            )
-            shaft_weight: float = math.exp(
-                -0.5
-                * ((float(fraction) - shaft_center_fraction) / shaft_sigma_fraction)
-                ** 2
-            )
-            contrast: float = shaft_weight * (
-                0.50 * max(line_sat - local_sat, 0.0)
-                + 0.50 * max(line_spread - local_spread, 0.0)
-            )
-            sample_contrasts.append(contrast)
-
-        if sample_contrasts:
-            angle_scores[bin_index] = float(
-                np.quantile(np.asarray(sample_contrasts), 0.25)
-            )
-
-    if not np.any(angle_scores > 0.0):
-        return None
-
-    # Smooth the angular profile a little so a single noisy bin does not win.
-    angle_scores_smooth: np.ndarray = cv2.GaussianBlur(
-        angle_scores[np.newaxis, :],
-        (1, 9),
-        0,
-    ).ravel()
-    best_bin: int = int(np.argmax(angle_scores_smooth))
-    best_score: float = float(angle_scores_smooth[best_bin])
-    if best_score <= 0.0:
-        return None
-
-    runner_up: float = _runner_up_peak_after_suppression(
-        angle_scores_smooth,
-        best_index=best_bin,
-        suppression_bins=6,
-    )
-    peak_ratio: float = best_score / max(runner_up, 1e-6)
-
-    best_angle: float = (2.0 * math.pi * float(best_bin)) / float(angle_bins) - math.pi
-    if gauge_spec is not None and not _angle_in_sweep(
-        best_angle,
-        gauge_spec,
-        margin_rad=math.radians(8.0),
-    ):
-        return None
-
-    # Scale the score back into the same rough range as the other detectors so
-    # the shared ranking code can compare them without special casing.
-    scaled_peak: float = best_score * 255.0
-    scaled_runner_up: float = runner_up * 255.0
-    confidence: float = (
-        scaled_peak / max(scaled_runner_up, 1e-6)
-        if scaled_runner_up > 0.0
-        else scaled_peak
-    )
-
-    return NeedleDetection(
-        unit_dx=float(math.cos(best_angle)),
-        unit_dy=float(math.sin(best_angle)),
-        confidence=float(confidence),
-        peak_value=float(scaled_peak),
-        runner_up_value=float(scaled_runner_up),
-        peak_ratio=float(peak_ratio),
-        peak_margin=float((best_score - runner_up) * 255.0),
-    )
+def _angle_in_sweep(
+    angle_rad: float, spec: GaugeSpec, *, margin_rad: float = 0.0
+) -> bool:
+    """Return True if angle_rad falls within the gauge's calibrated sweep arc."""
+    shifted: float = (angle_rad - spec.min_angle_rad) % (2.0 * math.pi)
+    return shifted <= (spec.sweep_rad + margin_rad)
 
 
 def _detect_needle_unit_vector_polar(
@@ -364,111 +257,129 @@ def _detect_needle_unit_vector_polar(
     *,
     center_xy: tuple[float, float],
     dial_radius_px: float,
-    angle_bounds_rad: tuple[float, float] | None = None,
+    gauge_spec: GaugeSpec | None = None,
 ) -> NeedleDetection | None:
-    """Detect the needle by looking for a dark radial stripe in polar space.
+    """Detect the needle via polar edge voting (matches embedded C baseline).
 
-    When a gauge sweep is known, the search is restricted to that angular span
-    so the fallback does not get distracted by the surrounding dial clutter.
+    This is a simplified implementation that mirrors the embedded C code:
+    - 360 angle bins (1° resolution)
+    - Grayscale only (no HSV saturation weighting)
+    - Simple annulus mask (no middle-shaft Gaussian)
+    - Basic contrast + edge strength voting
+    - Confidence = peak / mean
     """
     if dial_radius_px <= 1.0:
         return None
 
     center_x, center_y = center_xy
 
-    # Normalize contrast first so the radial stripe stands out more cleanly.
-    gray: np.ndarray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enhanced: np.ndarray = clahe.apply(gray)
-    blurred: np.ndarray = cv2.GaussianBlur(enhanced, (5, 5), 0)
+    # Simple grayscale conversion (no CLAHE, no HSV)
+    gray: np.ndarray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    blurred: np.ndarray = cv2.GaussianBlur(gray, (5, 5), 0)
 
-    angle_bins: int = 720
-    radius_bins: int = max(64, int(round(dial_radius_px)))
-    max_radius: float = min(float(min(blurred.shape[:2])) / 2.0, dial_radius_px * 0.98)
-    if max_radius <= 1.0:
-        return None
-
-    # In polar view, the needle should appear as a dark vertical band.
-    polar: np.ndarray = cv2.warpPolar(
-        blurred,
-        (angle_bins, radius_bins),
-        (center_x, center_y),
-        max_radius,
-        cv2.WARP_POLAR_LINEAR,
+    h_img, w_img = gray.shape[:2]
+    yy, xx = np.meshgrid(
+        np.arange(h_img, dtype=np.float32),
+        np.arange(w_img, dtype=np.float32),
+        indexing="ij",
     )
-    if polar.size == 0:
-        return None
+    dx: np.ndarray = xx - center_x
+    dy: np.ndarray = yy - center_y
+    rr: np.ndarray = np.sqrt(dx**2 + dy**2)
 
-    # Ignore the center hub and the outer dial edge to reduce false matches.
-    # We bias a little farther out so the lower subdial and hub clutter do not
-    # dominate the angle score on frames where the main needle is hard to see.
-    start_row: int = max(1, int(0.22 * radius_bins))
-    end_row: int = max(start_row + 1, int(0.95 * radius_bins))
-    radial_slice: np.ndarray = polar[start_row:end_row, :].astype(np.float32)
-    if radial_slice.size == 0:
-        return None
+    # Simple annulus mask (skip subdial and outer ring)
+    inner_mask: np.ndarray = (rr > 0.30 * dial_radius_px) & (rr < 0.70 * dial_radius_px)
 
-    # Blend the mean and a low percentile so thin dark needles still stand out
-    # even when the dial face has text or tick marks nearby.
-    column_means: np.ndarray = np.mean(radial_slice, axis=0)
-    column_q20: np.ndarray = np.percentile(radial_slice, 20.0, axis=0)
-    angular_profile: np.ndarray = 0.55 * column_means + 0.45 * column_q20
-    smoothed: np.ndarray = cv2.GaussianBlur(
-        angular_profile[np.newaxis, :],
-        (1, 31),
+    # Skip saturated samples (luma > 220)
+    saturation_mask: np.ndarray = gray < 220.0
+
+    # Compute simple edge strength (Sobel magnitude)
+    gx: np.ndarray = cv2.Sobel(blurred, cv2.CV_32F, 1, 0, ksize=3)
+    gy: np.ndarray = cv2.Sobel(blurred, cv2.CV_32F, 0, 1, ksize=3)
+    grad_mag: np.ndarray = np.sqrt(gx * gx + gy * gy)
+
+    # Compute radial/tangential alignment
+    rr_safe: np.ndarray = np.where(rr > 0.5, rr, 1.0)
+    radial_x: np.ndarray = -dx / rr_safe
+    radial_y: np.ndarray = -dy / rr_safe
+
+    grad_mag_safe: np.ndarray = np.where(grad_mag > 1.0, grad_mag, 1.0)
+    gx_n: np.ndarray = gx / grad_mag_safe
+    gy_n: np.ndarray = gy / grad_mag_safe
+    tangential_weight: np.ndarray = np.abs(gx_n * radial_y - gy_n * radial_x)
+
+    # Dark contrast: local mean minus center pixel
+    dark_contrast: np.ndarray = np.zeros_like(gray)
+    for i in range(1, h_img - 1):
+        for j in range(1, w_img - 1):
+            if inner_mask[i, j] and saturation_mask[i, j]:
+                neighborhood = gray[i-1:i+2, j-1:j+2].ravel()
+                dark_contrast[i, j] = np.mean(neighborhood) - gray[i, j]
+
+    # Combined vote weight
+    vote_mask: np.ndarray = inner_mask & saturation_mask & (grad_mag > 8.0)
+    vote_weight: np.ndarray = np.where(
+        vote_mask,
+        grad_mag * tangential_weight * np.clip(dark_contrast / 50.0, 0.0, 1.0),
+        0.0,
+    )
+
+    # Accumulate into 360 angle bins (1° resolution)
+    spoke_angle: np.ndarray = np.arctan2(dy, dx)
+    num_bins: int = 360
+    angle_bins: np.ndarray = (
+        (spoke_angle + math.pi) / (2.0 * math.pi) * num_bins
+    ).astype(np.int32)
+    angle_bins = np.clip(angle_bins, 0, num_bins - 1)
+
+    histogram: np.ndarray = np.zeros(num_bins, dtype=np.float32)
+    np.add.at(histogram, angle_bins.ravel(), vote_weight.ravel())
+
+    # Apply gauge sweep mask if spec provided
+    if gauge_spec is not None:
+        for bin_index in range(num_bins):
+            angle_rad: float = (bin_index / num_bins) * 2.0 * math.pi - math.pi
+            if not _angle_in_sweep(angle_rad, gauge_spec, margin_rad=math.radians(6.0)):
+                histogram[bin_index] = 0.0
+
+    # Simple smoothing
+    histogram_smooth: np.ndarray = cv2.GaussianBlur(
+        histogram[np.newaxis, :],
+        (1, 15),
         0,
     ).ravel()
 
-    # Use a local baseline rather than a global threshold so a valid needle can
-    # still win on frames where the whole dial is relatively busy.
-    local_baseline: np.ndarray = cv2.blur(
-        smoothed[np.newaxis, :],
-        (1, 61),
-        borderType=cv2.BORDER_REFLECT,
-    ).ravel()
-    contrast_profile: np.ndarray = local_baseline - smoothed
+    best_bin: int = int(np.argmax(histogram_smooth))
+    peak_val: float = float(histogram_smooth[best_bin])
+    mean_val: float = float(np.mean(histogram)) + 1e-6
 
-    if angle_bounds_rad is not None:
-        start_angle_rad, sweep_rad = angle_bounds_rad
-        angle_span_rad = max(1e-6, sweep_rad)
-        start_index: int = int(
-            round((start_angle_rad % (2.0 * math.pi)) / (2.0 * math.pi) * angle_bins)
-        )
-        sweep_bins: int = max(
-            1,
-            int(round((angle_span_rad / (2.0 * math.pi)) * angle_bins)),
-        )
-        candidate_indices = (start_index + np.arange(sweep_bins + 1)) % angle_bins
-    else:
-        candidate_indices = np.arange(angle_bins)
+    # Confidence = peak / mean (matches C code)
+    confidence: float = peak_val / mean_val
 
-    candidate_contrasts: np.ndarray = contrast_profile[candidate_indices]
-    best_offset: int = int(np.argmax(candidate_contrasts))
-    best_index: int = int(candidate_indices[best_offset])
-    best_contrast: float = float(candidate_contrasts[best_offset])
-    noise: float = float(np.std(candidate_contrasts)) + 1e-6
-    contrast_score: float = best_contrast / noise
+    # Find runner-up (simple: max of rest)
+    rolled: np.ndarray = np.roll(histogram_smooth, -best_bin)
+    runner_up: float = float(np.max(rolled[1:20]))
 
-    # Keep only peaks that clearly beat the local background.
-    if best_contrast <= 0.0 or contrast_score < 0.45:
+    peak_ratio: float = peak_val / max(runner_up, 1e-6)
+    best_angle: float = (best_bin / num_bins) * 2.0 * math.pi - math.pi
+
+    # Apply confidence gates (matches C thresholds)
+    if confidence < 1.25 or peak_val < 75.0 or peak_ratio < 1.05:
         return None
 
-    angle_rad: float = (2.0 * math.pi * best_index) / float(angle_bins)
-    unit_dx: float = math.cos(angle_rad)
-    unit_dy: float = math.sin(angle_rad)
-    runner_up_contrast: float = _runner_up_peak_after_suppression(
-        candidate_contrasts,
-        best_index=best_offset,
-        suppression_bins=max(1, kernel_width // 2),
-    )
+    if gauge_spec is not None and not _angle_in_sweep(
+        best_angle, gauge_spec, margin_rad=math.radians(6.0)
+    ):
+        return None
+
     return NeedleDetection(
-        unit_dx=unit_dx,
-        unit_dy=unit_dy,
-        confidence=contrast_score,
-        peak_value=best_contrast,
-        runner_up_value=runner_up_contrast,
-        peak_ratio=best_contrast / max(runner_up_contrast, 1e-6),
-        peak_margin=best_contrast - runner_up_contrast,
+        unit_dx=float(math.cos(best_angle)),
+        unit_dy=float(math.sin(best_angle)),
+        confidence=float(confidence),
+        peak_value=float(peak_val),
+        runner_up_value=float(runner_up),
+        peak_ratio=float(peak_ratio),
+        peak_margin=float(peak_val - runner_up),
     )
 
 
@@ -1190,6 +1101,43 @@ def _detect_needle_unit_vector_combined(
     return max(candidates, key=needle_detection_quality)
 
 
+def _select_best_detection(
+    image_bgr: np.ndarray,
+    hypotheses: list[CenterHypothesis],
+    gauge_spec: GaugeSpec,
+) -> tuple[CenterHypothesis, NeedleDetection] | None:
+    """Select the best needle detection across all hypotheses (matches C baseline).
+
+    For each hypothesis, run the polar vote detector and track the best peak.
+    The hypothesis with the sharpest peak (highest confidence) wins.
+    """
+    best_hypothesis: CenterHypothesis | None = None
+    best_detection: NeedleDetection | None = None
+    best_confidence: float = 0.0
+
+    for hypothesis in hypotheses:
+        detection: NeedleDetection | None = _detect_needle_unit_vector_polar(
+            image_bgr,
+            center_xy=hypothesis.center_xy,
+            dial_radius_px=hypothesis.dial_radius_px,
+            gauge_spec=gauge_spec,
+        )
+
+        if detection is None:
+            continue
+
+        # Select based on confidence (peak / mean)
+        if detection.confidence > best_confidence:
+            best_hypothesis = hypothesis
+            best_detection = detection
+            best_confidence = detection.confidence
+
+    if best_hypothesis is None or best_detection is None:
+        return None
+
+    return best_hypothesis, best_detection
+
+
 def detect_needle_unit_vector(
     image_bgr: np.ndarray,
     *,
@@ -1197,13 +1145,43 @@ def detect_needle_unit_vector(
     dial_radius_px: float,
     gauge_spec: GaugeSpec | None = None,
 ) -> NeedleDetection | None:
-    """Detect needle direction using the strongest improved classical vote."""
-    return _detect_needle_unit_vector_combined(
+    """Detect needle direction using the polar voting baseline (matches C code).
+
+    This is the main entry point for the classical baseline. It uses the
+    simplified polar voting detector that mirrors the embedded C implementation.
+    """
+    return _detect_needle_unit_vector_polar(
         image_bgr,
         center_xy=center_xy,
         dial_radius_px=dial_radius_px,
         gauge_spec=gauge_spec,
     )
+
+
+def run_classical_baseline(
+    image_bgr: np.ndarray,
+    gauge_spec: GaugeSpec,
+) -> tuple[float, float, float, NeedleDetection | None]:
+    """Run the classical baseline and return (center_x, center_y, radius, detection).
+
+    This matches the C baseline flow:
+    1. Generate center hypotheses (bright centroid, fixed crop, image center)
+    2. Run polar voting for each hypothesis
+    3. Select the hypothesis with the highest confidence peak
+    4. Return the winning geometry and detection
+    """
+    hypotheses: list[CenterHypothesis] = _center_hypotheses(image_bgr)
+    result: tuple[CenterHypothesis, NeedleDetection] | None = _select_best_detection(
+        image_bgr, hypotheses, gauge_spec
+    )
+
+    if result is None:
+        # Fallback to image center with no detection
+        fallback: CenterHypothesis = _image_center_hypothesis(image_bgr)
+        return fallback.center_xy[0], fallback.center_xy[1], fallback.dial_radius_px, None
+
+    hypothesis, detection = result
+    return hypothesis.center_xy[0], hypothesis.center_xy[1], hypothesis.dial_radius_px, detection
 
 
 def detect_needle_unit_vector_with_geometry_fallback(
