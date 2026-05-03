@@ -44,7 +44,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--captured-dir",
         type=Path,
-        default=REPO_ROOT / "captured_images",
+        default=REPO_ROOT / "data" / "captured" / "images",
         help="Directory containing raw .yuv422 board captures.",
     )
     parser.add_argument(
@@ -84,7 +84,9 @@ def _quantize_input(batch: np.ndarray, input_details: dict[str, Any]) -> np.ndar
     return np.clip(quantized, qmin, qmax).astype(np.int8)
 
 
-def _dequantize_output(output_tensor: np.ndarray, output_details: dict[str, Any]) -> float:
+def _dequantize_output(
+    output_tensor: np.ndarray, output_details: dict[str, Any]
+) -> float:
     """Convert the scalar reader output tensor back to a float prediction."""
     scale = float(output_details["quantization"][0])
     zero_point = int(output_details["quantization"][1])
@@ -150,7 +152,9 @@ def _predict_capture(
     rectifier_batch = np.expand_dims(full_frame.astype(np.float32) / 255.0, axis=0)
     rectifier_pred = rectifier.predict(rectifier_batch, verbose=0)
     rectifier_box = np.asarray(
-        rectifier_pred["rectifier_box"] if isinstance(rectifier_pred, dict) else rectifier_pred
+        rectifier_pred["rectifier_box"]
+        if isinstance(rectifier_pred, dict)
+        else rectifier_pred
     ).reshape(-1)
 
     center_x = float(np.clip(rectifier_box[0], 0.0, 1.0))
@@ -214,7 +218,9 @@ def main() -> None:
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )
-        capture_paths = [path.resolve() for path in candidates if path.stat().st_size > 0][: args.limit]
+        capture_paths = [
+            path.resolve() for path in candidates if path.stat().st_size > 0
+        ][: args.limit]
 
     if not capture_paths:
         raise FileNotFoundError(f"No capture files found in {args.captured_dir}.")

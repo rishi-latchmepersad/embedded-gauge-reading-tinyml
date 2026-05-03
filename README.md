@@ -1,7 +1,7 @@
 # Embedded Gauge Reading Using TinyML
 
 ## Overview
-I am prototyping a robust embedded vision system that infers readings from analog industrial gauges across varied environmental conditions using an on-device camera, an STM32 Nucleo board with an NPU, and a compact Convolutional Neural Network (CNN).
+This project prototypes a robust embedded vision system that infers readings from analog industrial gauges across varied environmental conditions using an on-device camera, an STM32 Nucleo board with an NPU, and a compact Convolutional Neural Network (CNN).
 
 Target constraints for a deployable, low-cost prototype (under $200 USD total):
 - Offline inference (no Internet required)
@@ -12,11 +12,16 @@ This enables remote deployments (rural or offshore) using solar power, creating 
 
 ## Project Demo
 
-Watch the system in action:
-
 [![Project Demo Video](https://img.youtube.com/vi/EDLs6GXLhhM/maxresdefault.jpg)](https://youtu.be/EDLs6GXLhhM)
 
-Click the image above to watch on YouTube, or [watch here](https://youtu.be/EDLs6GXLhhM).
+The video shows the STM32 N6 prototype capturing a gauge image, running on-device CNN inference, and producing a temperature estimate without relying on a PC or cloud service.
+
+**Current prototype result:**
+- CNN inference is running on STM32 N6 hardware.
+- A controlled 11-point test achieved approximately 2.4 °C MAE for the CNN compared with approximately 10.9 °C MAE for the classical CV baseline.
+- Next measurements: NPU latency, CPU-vs-NPU comparison, and power draw using INA219.
+
+Watch the full demo: [https://youtu.be/EDLs6GXLhhM](https://youtu.be/EDLs6GXLhhM)
 
 ## Problem
 Many industrial sites still rely on analog gauges and legacy indicators that are not digitally instrumented. Manual readings are costly, slow, error-prone, and sometimes unsafe.  

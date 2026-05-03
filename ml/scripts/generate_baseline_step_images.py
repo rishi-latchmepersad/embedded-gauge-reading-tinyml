@@ -24,20 +24,20 @@ from PIL import Image, ImageDraw, ImageFont
 # Paths
 # ---------------------------------------------------------------------------
 ROOT = pathlib.Path("/mnt/d/Projects/embedded-gauge-reading-tinyml")
-YUV_SOURCE = ROOT / "captured_images" / "capture_p35c.yuv422"
+YUV_SOURCE = ROOT / "data" / "captured" / "images" / "capture_p35c.yuv422"
 OUT_DIR = ROOT / "docs" / "baseline_step_images"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-SCALE = 3          # upsample for readability in draw.io
-W, H = 224, 224    # native capture resolution
+SCALE = 3  # upsample for readability in draw.io
+W, H = 224, 224  # native capture resolution
 
 # ---------------------------------------------------------------------------
 # Parameters mirroring app_baseline_runtime.c defines
 # ---------------------------------------------------------------------------
 CROP_X_MIN, CROP_Y_MIN = 23, 57
 CROP_W, CROP_H = 155, 123
-CROP_X_MAX = CROP_X_MIN + CROP_W   # 178
-CROP_Y_MAX = CROP_Y_MIN + CROP_H   # 180
+CROP_X_MAX = CROP_X_MIN + CROP_W  # 178
+CROP_Y_MAX = CROP_Y_MIN + CROP_H  # 180
 
 BRIGHT_THRESHOLD = 150
 SATURATION_THRESHOLD = 220
@@ -55,6 +55,7 @@ MAX_VALUE_C = 50.0
 SUBDIAL_X_FRAC = 0.35
 SUBDIAL_Y_MIN_FRAC = 0.10
 SUBDIAL_Y_MAX_FRAC = 0.58
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -106,8 +107,10 @@ def score_angle(luma, cx, cy, angle_rad):
     perp_dx = -unit_dy
     perp_dy = unit_dx
     max_r = min(
-        cx, W - 1 - cx,
-        cy, H - 1 - cy,
+        cx,
+        W - 1 - cx,
+        cy,
+        H - 1 - cy,
     )
     start_r = max_r * RAY_START_FRAC
     end_r = max_r * RAY_END_FRAC
@@ -188,7 +191,9 @@ rect_outline(d, CROP_X_MIN, CROP_Y_MIN, CROP_X_MAX, CROP_Y_MAX, (0, 255, 0), wid
 # training crop center
 tcx, tcy = (CROP_X_MIN + CROP_X_MAX) // 2, (CROP_Y_MIN + CROP_Y_MAX) // 2
 r = 5
-d.ellipse([s(tcx - r), s(tcy - r), s(tcx + r), s(tcy + r)], outline=(0, 255, 0), width=2)
+d.ellipse(
+    [s(tcx - r), s(tcy - r), s(tcx + r), s(tcy + r)], outline=(0, 255, 0), width=2
+)
 draw_label(d, "Training crop  x=23..178  y=57..180", (s(4), s(4)))
 draw_label(d, f"Center ({tcx},{tcy})  155x123 px", (s(4), s(14)))
 step2.save(OUT_DIR / "step2_training_crop.png")
@@ -215,8 +220,9 @@ if len(bright_xs) >= MIN_BRIGHT_PIXELS:
     cx = int(sum(bright_xs) / len(bright_xs))
     cy = int(sum(bright_ys) / len(bright_ys))
     r = 8
-    d.ellipse([s(cx - r), s(cy - r), s(cx + r), s(cy + r)],
-              outline=(255, 0, 0), width=3)
+    d.ellipse(
+        [s(cx - r), s(cy - r), s(cx + r), s(cy + r)], outline=(255, 0, 0), width=3
+    )
     d.line([s(cx - 12), s(cy), s(cx + 12), s(cy)], fill=(255, 0, 0), width=2)
     d.line([s(cx), s(cy - 12), s(cx), s(cy + 12)], fill=(255, 0, 0), width=2)
     draw_label(d, f"Bright centroid ({cx},{cy})", (s(4), s(4)))
@@ -234,7 +240,7 @@ print("Saved step3_bright_centroid.png")
 step4 = upscale(src_rgb.copy())
 d = ImageDraw.Draw(step4)
 
-center_x, center_y = W // 2, H // 2   # image-center hypothesis for clarity
+center_x, center_y = W // 2, H // 2  # image-center hypothesis for clarity
 max_r = min(center_x, W - 1 - center_x, center_y, H - 1 - center_y)
 end_r = max_r * RAY_END_FRAC
 
@@ -261,8 +267,10 @@ for i, sc in enumerate(scores):
     d.line([s(center_x), s(center_y), s(ex), s(ey)], fill=color, width=1)
 
 r = 5
-d.ellipse([s(center_x - r), s(center_y - r), s(center_x + r), s(center_y + r)],
-          fill=(255, 255, 0))
+d.ellipse(
+    [s(center_x - r), s(center_y - r), s(center_x + r), s(center_y + r)],
+    fill=(255, 255, 0),
+)
 draw_label(d, "Ray sweep: 360 angles  32 samples each", (s(4), s(4)))
 draw_label(d, "Red=high contrast  Blue=low contrast", (s(4), s(14)))
 step4.save(OUT_DIR / "step4_ray_sweep.png")
@@ -287,14 +295,19 @@ dy = math.sin(best_angle)
 tip_x = int(round(center_x + dx * end_r))
 tip_y = int(round(center_y + dy * end_r))
 
-d.line([s(center_x), s(center_y), s(tip_x), s(tip_y)],
-       fill=(255, 50, 50), width=3)
+d.line([s(center_x), s(center_y), s(tip_x), s(tip_y)], fill=(255, 50, 50), width=3)
 r = 6
-d.ellipse([s(center_x - r), s(center_y - r), s(center_x + r), s(center_y + r)],
-          fill=(255, 255, 0))
+d.ellipse(
+    [s(center_x - r), s(center_y - r), s(center_x + r), s(center_y + r)],
+    fill=(255, 255, 0),
+)
 angle_deg = math.degrees(best_angle)
 draw_label(d, f"Best angle: {angle_deg:.1f} deg", (s(4), s(4)))
-draw_label(d, f"Confidence: {confidence:.3f}  (score={best_score:.1f} runner_up={runner_up:.1f})", (s(4), s(14)))
+draw_label(
+    d,
+    f"Confidence: {confidence:.3f}  (score={best_score:.1f} runner_up={runner_up:.1f})",
+    (s(4), s(14)),
+)
 step5.save(OUT_DIR / "step5_best_angle.png")
 print("Saved step5_best_angle.png")
 
@@ -316,16 +329,21 @@ shifted = max(0.0, min(shifted, sweep_rad))
 frac = shifted / sweep_rad
 temp_c = MIN_VALUE_C + frac * (MAX_VALUE_C - MIN_VALUE_C)
 
-d.line([s(center_x), s(center_y), s(tip_x), s(tip_y)],
-       fill=(255, 50, 50), width=3)
+d.line([s(center_x), s(center_y), s(tip_x), s(tip_y)], fill=(255, 50, 50), width=3)
 r = 6
-d.ellipse([s(center_x - r), s(center_y - r), s(center_x + r), s(center_y + r)],
-          fill=(255, 255, 0))
+d.ellipse(
+    [s(center_x - r), s(center_y - r), s(center_x + r), s(center_y + r)],
+    fill=(255, 255, 0),
+)
 
 big_text = f"{temp_c:.1f} C"
 draw_label(d, big_text, (s(60), s(190)), color=(0, 255, 100))
 draw_label(d, f"frac={frac:.3f}  conf={confidence:.3f}", (s(4), s(4)))
-draw_label(d, f"angle={angle_deg:.1f}deg  =>  {MIN_VALUE_C}+{frac:.3f}*{MAX_VALUE_C-MIN_VALUE_C:.0f}", (s(4), s(14)))
+draw_label(
+    d,
+    f"angle={angle_deg:.1f}deg  =>  {MIN_VALUE_C}+{frac:.3f}*{MAX_VALUE_C-MIN_VALUE_C:.0f}",
+    (s(4), s(14)),
+)
 step6.save(OUT_DIR / "step6_temperature_output.png")
 print("Saved step6_temperature_output.png")
 

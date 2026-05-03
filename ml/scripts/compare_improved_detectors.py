@@ -440,7 +440,7 @@ def main() -> None:
     results = []
 
     for fname, true_val in IMAGES:
-        img_path = REPO_ROOT / "captured_images" / fname
+        img_path = REPO_ROOT / "data" / "captured" / "images" / fname
         if not img_path.exists():
             print(f"SKIP {fname}")
             continue

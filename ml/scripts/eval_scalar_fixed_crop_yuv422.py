@@ -33,7 +33,9 @@ def load_luma(path: Path) -> np.ndarray:
     return luma
 
 
-def crop_and_resize(luma: np.ndarray, x0r: float, y0r: float, x1r: float, y1r: float) -> np.ndarray:
+def crop_and_resize(
+    luma: np.ndarray, x0r: float, y0r: float, x1r: float, y1r: float
+) -> np.ndarray:
     x0 = int(x0r * IMAGE_SIZE)
     y0 = int(y0r * IMAGE_SIZE)
     x1 = int(x1r * IMAGE_SIZE)
@@ -45,9 +47,15 @@ def crop_and_resize(luma: np.ndarray, x0r: float, y0r: float, x1r: float, y1r: f
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=Path,
-                        default=PROJECT_ROOT / "artifacts/deployment/scalar_full_finetune_from_best_piecewise_calibrated_int8/model_int8.tflite")
-    parser.add_argument("--captures-dir", type=Path, default=REPO_ROOT / "captured_images")
+    parser.add_argument(
+        "--model",
+        type=Path,
+        default=PROJECT_ROOT
+        / "artifacts/deployment/scalar_full_finetune_from_best_piecewise_calibrated_int8/model_int8.tflite",
+    )
+    parser.add_argument(
+        "--captures-dir", type=Path, default=REPO_ROOT / "data" / "captured" / "images"
+    )
     parser.add_argument("--pattern", type=str, default="capture_2026-04-18*.yuv422")
     parser.add_argument("--true-value", type=float, default=14.0)
     args = parser.parse_args()
@@ -65,7 +73,9 @@ def main() -> None:
         return
 
     print(f"Scalar model: {args.model.name}")
-    print(f"Fixed training crop: x=[{TRAINING_CROP_X_MIN},{TRAINING_CROP_X_MAX}] y=[{TRAINING_CROP_Y_MIN},{TRAINING_CROP_Y_MAX}]")
+    print(
+        f"Fixed training crop: x=[{TRAINING_CROP_X_MIN},{TRAINING_CROP_X_MAX}] y=[{TRAINING_CROP_Y_MIN},{TRAINING_CROP_Y_MAX}]"
+    )
     print(f"True value: {args.true_value}°C  |  {len(captures)} captures\n")
 
     preds = []
@@ -74,7 +84,13 @@ def main() -> None:
             print(f"  {cap.name}:  SKIP (empty file)")
             continue
         luma = load_luma(cap)
-        img = crop_and_resize(luma, TRAINING_CROP_X_MIN, TRAINING_CROP_Y_MIN, TRAINING_CROP_X_MAX, TRAINING_CROP_Y_MAX)
+        img = crop_and_resize(
+            luma,
+            TRAINING_CROP_X_MIN,
+            TRAINING_CROP_Y_MIN,
+            TRAINING_CROP_X_MAX,
+            TRAINING_CROP_Y_MAX,
+        )
         q = np.clip(np.round(img / in_scale + in_zp), -128, 127).astype(np.int8)
         interp.set_tensor(inp["index"], q[None])
         interp.invoke()
@@ -84,7 +100,9 @@ def main() -> None:
         print(f"  {cap.name}:  pred={pred:7.2f}  err={pred - args.true_value:+.2f}")
 
     preds_arr = np.array(preds)
-    print(f"\nMean={preds_arr.mean():.2f}  Std={preds_arr.std():.2f}  MAE={np.abs(preds_arr - args.true_value).mean():.2f}  (true={args.true_value})")
+    print(
+        f"\nMean={preds_arr.mean():.2f}  Std={preds_arr.std():.2f}  MAE={np.abs(preds_arr - args.true_value).mean():.2f}  (true={args.true_value})"
+    )
 
 
 if __name__ == "__main__":

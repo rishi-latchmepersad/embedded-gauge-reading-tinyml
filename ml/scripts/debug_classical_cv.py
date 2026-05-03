@@ -57,7 +57,9 @@ def draw_needle_arrow(img, cx, cy, radius, dx, dy, color, label):
     tip_x = int(round(cx + radius * 0.85 * dx))
     tip_y = int(round(cy + radius * 0.85 * dy))
     cv2.arrowedLine(img, (int(cx), int(cy)), (tip_x, tip_y), color, 2, tipLength=0.15)
-    cv2.putText(img, label, (tip_x + 3, tip_y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
+    cv2.putText(
+        img, label, (tip_x + 3, tip_y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1
+    )
 
 
 def draw_sweep_arc(img, cx, cy, radius, spec, color=(0, 200, 0)):
@@ -72,7 +74,7 @@ def draw_sweep_arc(img, cx, cy, radius, spec, color=(0, 200, 0)):
 results = []
 
 for fname, true_val in IMAGES:
-    img_path = REPO_ROOT / "captured_images" / fname
+    img_path = REPO_ROOT / "data" / "captured" / "images" / fname
     if not img_path.exists():
         print(f"SKIP {fname} (not found)")
         continue
@@ -106,22 +108,39 @@ for fname, true_val in IMAGES:
 
     draw_sweep_arc(vis, cx, cy, radius * 0.90, spec)
 
-    det = detect_needle_unit_vector(img, center_xy=(cx, cy),
-                                    dial_radius_px=radius, gauge_spec=spec)
+    det = detect_needle_unit_vector(
+        img, center_xy=(cx, cy), dial_radius_px=radius, gauge_spec=spec
+    )
     if det is not None:
         pred_val = needle_vector_to_value(det.unit_dx, det.unit_dy, spec)
         err = abs(pred_val - true_val)
         color = (0, 220, 0) if err < 5.0 else (0, 0, 255)
-        draw_needle_arrow(vis, cx, cy, radius, det.unit_dx, det.unit_dy,
-                          color, f"{pred_val:.1f}C err={err:.1f}")
+        draw_needle_arrow(
+            vis,
+            cx,
+            cy,
+            radius,
+            det.unit_dx,
+            det.unit_dy,
+            color,
+            f"{pred_val:.1f}C err={err:.1f}",
+        )
         status = f"pred={pred_val:.1f} err={err:.1f}"
     else:
-        cv2.putText(vis, "NO DET", (5, h - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        cv2.putText(
+            vis, "NO DET", (5, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1
+        )
         status = "NO DET"
 
-    cv2.putText(vis, f"true={true_val}C  {status}", (3, 12),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
+    cv2.putText(
+        vis,
+        f"true={true_val}C  {status}",
+        (3, 12),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.35,
+        (255, 255, 255),
+        1,
+    )
 
     out_path = OUT_DIR / f"v2_{fname}"
     cv2.imwrite(str(out_path), vis)

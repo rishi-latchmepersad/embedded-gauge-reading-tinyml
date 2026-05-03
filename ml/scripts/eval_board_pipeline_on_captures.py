@@ -74,7 +74,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--captures-dir",
         type=Path,
-        default=REPO_ROOT / "captured_images",
+        default=REPO_ROOT / "data" / "captured" / "images",
         help="Directory to scan when --capture-path is not provided.",
     )
     parser.add_argument(
@@ -251,10 +251,18 @@ def _print_result(result: BoardPipelineResult) -> None:
         )
 
     if result.rectifier_output_probe is not None:
-        print(f"[PIPE] Rectifier output probe: {_format_probe(result.rectifier_output_probe)}")
+        print(
+            f"[PIPE] Rectifier output probe: {_format_probe(result.rectifier_output_probe)}"
+        )
     if result.rectifier_decision is not None:
-        rect_w = result.rectifier_decision.crop_box_xyxy[2] - result.rectifier_decision.crop_box_xyxy[0]
-        rect_h = result.rectifier_decision.crop_box_xyxy[3] - result.rectifier_decision.crop_box_xyxy[1]
+        rect_w = (
+            result.rectifier_decision.crop_box_xyxy[2]
+            - result.rectifier_decision.crop_box_xyxy[0]
+        )
+        rect_h = (
+            result.rectifier_decision.crop_box_xyxy[3]
+            - result.rectifier_decision.crop_box_xyxy[1]
+        )
         print(
             "[PIPE] Rectifier crop: "
             f"x={result.rectifier_decision.crop_box_xyxy[0]:.1f} "
@@ -264,12 +272,8 @@ def _print_result(result: BoardPipelineResult) -> None:
 
     print(f"[PIPE] Scalar input probe: {_format_probe(result.scalar_input_probe)}")
     print(f"[PIPE] Scalar output probe: {_format_probe(result.scalar_output_probe)}")
-    print(
-        f"[PIPE] Model output before calibration: {result.raw_prediction:.6f}"
-    )
-    print(
-        f"[PIPE] Model output after calibration: {result.calibrated_prediction:.6f}"
-    )
+    print(f"[PIPE] Model output before calibration: {result.raw_prediction:.6f}")
+    print(f"[PIPE] Model output after calibration: {result.calibrated_prediction:.6f}")
     print(f"[PIPE] Inference value: {result.reported_prediction:.6f}")
     print(
         f"[PIPE] Burst history: count={result.burst_history_count} "
@@ -319,7 +323,9 @@ def main() -> None:
         flush=True,
     )
     rectifier_start = time.perf_counter()
-    rectifier_session = load_model_session(args.rectifier_model, args.rectifier_model_kind)
+    rectifier_session = load_model_session(
+        args.rectifier_model, args.rectifier_model_kind
+    )
     print(
         f"[PIPE] Rectifier model loaded in {time.perf_counter() - rectifier_start:.3f}s: {args.rectifier_model}",
         flush=True,
@@ -397,7 +403,9 @@ def main() -> None:
         summary["rmse"] = float(np.sqrt(np.mean(np.square(abs_errors_array))))
         summary["max_abs_error"] = float(np.max(abs_errors_array))
     summary_path = args.output_dir / "summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    summary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+    )
 
     print(f"[PIPE] Wrote summary: {summary_path}", flush=True)
     if abs_errors:

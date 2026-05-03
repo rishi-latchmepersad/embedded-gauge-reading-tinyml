@@ -13,8 +13,8 @@ from embedded_gauge_reading_tinyml.export import (
 def test_resolve_repo_path_uses_repo_root_for_relative_paths() -> None:
     """Relative export paths should resolve from the repository root."""
     repo_root = Path("/repo")
-    resolved = _resolve_repo_path(Path("captured_images/capture_0c_preview.png"), repo_root)
-    assert resolved == Path("/repo/captured_images/capture_0c_preview.png")
+    resolved = _resolve_repo_path(Path("data/captured/images/capture_0c_preview.png"), repo_root)
+    assert resolved == Path("/repo/data/captured/images/capture_0c_preview.png")
 
 
 def test_build_export_metadata_includes_board_input_size() -> None:

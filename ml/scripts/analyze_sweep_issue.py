@@ -78,7 +78,7 @@ IMAGES = [
 ]
 
 for fname, true_val, note in IMAGES:
-    img_path = REPO_ROOT / "captured_images" / fname
+    img_path = REPO_ROOT / "data" / "captured" / "images" / fname
     if not img_path.exists():
         print(f"\nSKIP {fname}")
         continue

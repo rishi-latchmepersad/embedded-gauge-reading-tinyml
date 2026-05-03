@@ -16,7 +16,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT: Path = Path(__file__).resolve().parents[2]
 ML_ROOT: Path = REPO_ROOT / "ml"
 DEFAULT_MODEL: Path = (
@@ -34,9 +33,14 @@ DEFAULT_OUTPUT_DIR: Path = (
     / "runtime"
     / "scalar_full_finetune_from_best_piecewise_calibrated_int8_reloc"
 )
-DEFAULT_CANONICAL_XSPI2_RAW: Path = REPO_ROOT / "st_ai_output" / "atonbuf.xSPI2.raw"
+DEFAULT_CANONICAL_XSPI2_RAW: Path = (
+    REPO_ROOT / "firmware" / "stm32" / "n657" / "st_ai_output" / "atonbuf.xSPI2.raw"
+)
 DEFAULT_WORKSPACE_DIR: Path = (
     REPO_ROOT
+    / "firmware"
+    / "stm32"
+    / "n657"
     / "st_ai_output"
     / "packages"
     / "scalar_full_finetune_from_best_piecewise_calibrated_int8"
@@ -44,12 +48,17 @@ DEFAULT_WORKSPACE_DIR: Path = (
 )
 DEFAULT_STAI_OUTPUT_DIR: Path = (
     REPO_ROOT
+    / "firmware"
+    / "stm32"
+    / "n657"
     / "st_ai_output"
     / "packages"
     / "scalar_full_finetune_from_best_piecewise_calibrated_int8"
     / "st_ai_output"
 )
-DEFAULT_WINDOWS_BUILD_ROOT: Path = Path("/mnt/c/Users/rishi_latchmepersad/ml_reloc_build")
+DEFAULT_WINDOWS_BUILD_ROOT: Path = Path(
+    "/mnt/c/Users/rishi_latchmepersad/ml_reloc_build"
+)
 DEFAULT_PACK_ROOT: Path = Path(
     os.environ.get(
         "X_CUBE_AI_PACK_ROOT",
@@ -164,7 +173,9 @@ def _ensure_file(path: Path, description: str) -> None:
 
 def _to_windows_path(path: Path) -> str:
     """Convert a WSL path to a Windows path for Windows-hosted pack tools."""
-    return subprocess.check_output(["wslpath", "-w", str(path.resolve())], text=True).strip()
+    return subprocess.check_output(
+        ["wslpath", "-w", str(path.resolve())], text=True
+    ).strip()
 
 
 def _find_generated_c_file(*search_dirs: Path, model_name: str) -> Path:
@@ -201,7 +212,9 @@ def _find_generated_xspi2_raw_file(*search_dirs: Path, model_name: str) -> Path:
     )
 
 
-def _write_reloc_profile_without_all_buffers_info(source: Path, destination: Path) -> Path:
+def _write_reloc_profile_without_all_buffers_info(
+    source: Path, destination: Path
+) -> Path:
     """Create a local reloc profile that omits the debug-heavy buffer flag."""
     text = source.read_text(encoding="utf-8", errors="ignore")
 
@@ -210,7 +223,7 @@ def _write_reloc_profile_without_all_buffers_info(source: Path, destination: Pat
         cleaned_options = " ".join(
             token for token in options.split() if token != "--all-buffers-info"
         )
-        return f'{match.group(1)}{cleaned_options}{match.group(3)}'
+        return f"{match.group(1)}{cleaned_options}{match.group(3)}"
 
     rewritten = re.sub(
         r'("options"\s*:\s*")(.*?)(")',
@@ -275,7 +288,9 @@ def main() -> None:
         args.pack_root / "scripts" / "N6_reloc" / "test" / "neural_art_reloc.json"
     )
     reloc_profile_path = args.output_dir / "neural_art_reloc_no_dbg.json"
-    _write_reloc_profile_without_all_buffers_info(reloc_profile_source, reloc_profile_path)
+    _write_reloc_profile_without_all_buffers_info(
+        reloc_profile_source, reloc_profile_path
+    )
     windows_neural_art = _to_windows_path(reloc_profile_path)
 
     generate_cmd: list[str] = [
@@ -355,7 +370,9 @@ def main() -> None:
 
     reloc_bin = staging_build_dir / f"{args.name}_rel.bin"
     if not reloc_bin.is_file():
-        raise FileNotFoundError(f"Relocatable binary not found after packaging: {reloc_bin}")
+        raise FileNotFoundError(
+            f"Relocatable binary not found after packaging: {reloc_bin}"
+        )
 
     final_bin = args.output_dir / reloc_bin.name
     shutil.copy2(reloc_bin, final_bin)

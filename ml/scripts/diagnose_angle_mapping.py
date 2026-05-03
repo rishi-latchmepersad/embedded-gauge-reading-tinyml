@@ -92,7 +92,7 @@ print("DETECTION COMPARISON: Spoke-vote vs Polar method")
 print("=" * 70)
 
 for fname, true_val in IMAGES_TO_TEST:
-    img_path = REPO_ROOT / "captured_images" / fname
+    img_path = REPO_ROOT / "data" / "captured" / "images" / fname
     if not img_path.exists():
         print(f"\nSKIP {fname} (not found)")
         continue

@@ -14,4 +14,4 @@
 #define LL_ATON_DBG_BUFFER_INFO_EXCLUDED 1
 #endif
 
-#include "../../../../../st_ai_output/packages/mobilenetv2_rectifier_zoom_aug_v4/st_ai_output/mobilenetv2_rectifier_hardcase_finetune.c"
+#include "../../st_ai_output/packages/mobilenetv2_rectifier_zoom_aug_v4/st_ai_output/mobilenetv2_rectifier_hardcase_finetune.c"

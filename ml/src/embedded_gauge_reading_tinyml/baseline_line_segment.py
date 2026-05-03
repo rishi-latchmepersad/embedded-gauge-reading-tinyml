@@ -256,7 +256,7 @@ def main() -> None:
 
     # Get project root relative to this script.
     script_dir = Path(__file__).parent.parent.parent.parent
-    img_dir = script_dir / "captured_images"
+    img_dir = script_dir / "data" / "captured" / "images"
 
     # Fixed geometry from board prior (simplified).
     center_xy = (120.0, 120.0)

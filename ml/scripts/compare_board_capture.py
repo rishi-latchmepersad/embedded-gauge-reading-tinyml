@@ -55,14 +55,18 @@ def _quantize_input(batch: np.ndarray, input_details: dict[str, Any]) -> np.ndar
     return np.clip(quantized, qmin, qmax).astype(np.int8)
 
 
-def _dequantize_output(output_tensor: np.ndarray, output_details: dict[str, Any]) -> float:
+def _dequantize_output(
+    output_tensor: np.ndarray, output_details: dict[str, Any]
+) -> float:
     """Convert the model's int8 output tensor back to a float gauge value."""
     scale = float(output_details["quantization"][0])
     zero_point = int(output_details["quantization"][1])
     return float(scale * (int(output_tensor) - zero_point))
 
 
-def _predict_board_crop(model_path: Path, board_crop_path: Path, image_size: int) -> None:
+def _predict_board_crop(
+    model_path: Path, board_crop_path: Path, image_size: int
+) -> None:
     """Run the quantized model on the board-style crop and print the prediction."""
     interpreter = _load_tflite_model(model_path)
     input_details = interpreter.get_input_details()[0]
@@ -91,12 +95,12 @@ def parse_args() -> argparse.Namespace:
         "--capture-path",
         type=Path,
         default=None,
-        help="Path to a raw .yuv422 capture. Defaults to the newest file in captured_images.",
+        help="Path to a raw .yuv422 capture. Defaults to the newest file in data/captured/images.",
     )
     parser.add_argument(
         "--captured-dir",
         type=Path,
-        default=REPO_ROOT / "captured_images",
+        default=REPO_ROOT / "data" / "captured" / "images",
         help="Directory that contains the board capture files.",
     )
     parser.add_argument(

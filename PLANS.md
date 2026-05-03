@@ -400,7 +400,7 @@ not introducing a large accuracy drop.
   `capture_p20c_preview.png`, `capture_p35c_preview.png`,
   `capture_m10c_preview.png`, `capture_0075.png`, `capture_m30c_preview.png`,
   and `capture_p10c_preview.png`.
-  The newest labelled captures added to `captured_images/` were mixed: the
+  The newest labelled captures added to `data/captured/images/` were mixed: the
   clean-plus-new fine-tune held at `mean_abs_err=4.0923` on the original hard
   cases and `3.7714` on the valid board30 set. `capture_p15c.jpg`,
   `capture_m10c.jpg`, `capture_m25c.jpg`, `capture_p20.jpg`, `capture_p25c.jpg`,

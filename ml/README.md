@@ -18,7 +18,7 @@ bash scripts/wsl_ml.sh help
 bash scripts/wsl_ml.sh setup
 bash scripts/wsl_ml.sh gpu-check
 bash scripts/wsl_ml.sh baseline --max-samples 24
-bash scripts/wsl_ml.sh single-image --image-path ../captured_images/capture_0006.png
+bash scripts/wsl_ml.sh single-image --image-path ../data/captured/images/capture_0006.png
 bash scripts/wsl_ml.sh train
 bash scripts/wsl_ml.sh fit-search
 bash scripts/wsl_ml.sh export
@@ -109,7 +109,7 @@ The metadata file records the `224x224` board input size and the TFLite tensor
 quantization parameters the MCU runtime will need.
 
 The packaging step also refreshes the canonical raw blob at
-`../st_ai_output/atonbuf.xSPI2.raw`. That is the single file you should copy to
+`../firmware/stm32/n657/st_ai_output/atonbuf.xSPI2.raw`. That is the single file you should copy to
 the SD card root for board boot testing.
 
 If you prefer the WSL helper:
@@ -130,12 +130,12 @@ the same runtime.
 
 Generated model artifacts continue to live under `ml/artifacts/`.
 
-The repository-root `st_ai_output/` directory is reserved for the ST Edge AI
+The `firmware/stm32/n657/st_ai_output/` directory is reserved for the ST Edge AI
 generator workspaces and packaged outputs that accompany the STM32N6 flow:
 
-- `st_ai_output/packages/`
-- `st_ai_output/gauge_scalar_c_info.json`
-- `st_ai_output/gauge_scalar_clean_c_info.json`
+- `firmware/stm32/n657/st_ai_output/packages/`
+- `firmware/stm32/n657/st_ai_output/gauge_scalar_c_info.json`
+- `firmware/stm32/n657/st_ai_output/gauge_scalar_clean_c_info.json`
 
 That keeps the training/deployment artifacts separate from the ST Edge AI
 workspace files while still giving the package outputs a single home.

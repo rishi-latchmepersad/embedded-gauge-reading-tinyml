@@ -77,8 +77,8 @@ Before jumping to the app the FSBL:
 
 ### Neural network models
 Both models are permanently flashed to separate regions — no SD card needed at runtime.
-- Scalar model: `st_ai_output/atonbuf.xSPI2.raw` → flashed at `0x70200000` (~3.07 MB, ends ~`0x7051FFFF`)
-- Rectifier model: `st_ai_output/atonbuf.rectifier.xSPI2.raw` → flashed at `0x70600000` (~118 KB)
+- Scalar model: `firmware/stm32/n657/st_ai_output/atonbuf.xSPI2.raw` → flashed at `0x70200000` (~3.07 MB, ends ~`0x7051FFFF`)
+- Rectifier model: `firmware/stm32/n657/st_ai_output/atonbuf.rectifier.xSPI2.raw` → flashed at `0x70600000` (~118 KB)
 - Flash both with `flash_boot.bat` (set `FLASH_MODEL=1`)
 - WSL must be restarted before running any Python/ML scripts
 

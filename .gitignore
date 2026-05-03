@@ -57,8 +57,8 @@ dkms.conf
 # Ignore raw images (keep folder out of git, but allow the directory to exist)
 ml/data/raw/*
 !ml/data/raw/.gitkeep
-captured_images/_debug/
-captured_images/_live_rectified_probe/
+data/captured/images/_debug/
+data/captured/images/_live_rectified_probe/
 
 #ignore build files
 /build/*
@@ -74,8 +74,8 @@ ml/__pycache__/*
 ml/.pytest_cache/*
 __pycache__/*
 *.pyc
-st_ai_output/*
-!st_ai_output/.gitkeep
+firmware/stm32/n657/st_ai_output/*
+!firmware/stm32/n657/st_ai_output/.gitkeep
 
 # Temporary directories
 tmp_*/

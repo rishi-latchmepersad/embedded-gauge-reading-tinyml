@@ -21,8 +21,8 @@ See `archive.md` for the full chronology.
 ## Important Data Locations
 
 - Labeled training data lives in `ml/data/labelled`.
-- Captured images live in `captured_images/`.
-- Board-generated model artifacts live in `st_ai_output/`.
+- Captured images live in `data/captured/images/`.
+- Board-generated model artifacts live in `firmware/stm32/n657/st_ai_output/`.
 - Deployment-ready TFLite and evaluation artifacts live under `ml/artifacts/`.
 
 ## Runtime Layout

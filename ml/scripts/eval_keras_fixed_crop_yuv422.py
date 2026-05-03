@@ -1,11 +1,13 @@
 """Evaluate a Keras scalar model on YUV422 captures using the fixed training crop.
 Useful for comparing Keras checkpoints before quantization.
 """
+
 from __future__ import annotations
 import argparse
 from pathlib import Path
 import numpy as np
 import os
+
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 import tensorflow as tf
 
@@ -41,14 +43,18 @@ def crop_and_resize(luma: np.ndarray, x0r, y0r, x1r, y1r) -> np.ndarray:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=Path, required=True)
-    parser.add_argument("--captures-dir", type=Path, default=REPO_ROOT / "captured_images")
+    parser.add_argument(
+        "--captures-dir", type=Path, default=REPO_ROOT / "data" / "captured" / "images"
+    )
     parser.add_argument("--pattern", type=str, default="capture_2026-04-18_17-*.yuv422")
     parser.add_argument("--true-value", type=float, default=33.0)
     args = parser.parse_args()
 
     model = tf.keras.models.load_model(
         str(args.model),
-        custom_objects={"preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input},
+        custom_objects={
+            "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input
+        },
         compile=False,
     )
 
@@ -60,14 +66,22 @@ def main():
     preds = []
     for cap in captures:
         luma = load_luma(cap)
-        img = crop_and_resize(luma, TRAINING_CROP_X_MIN, TRAINING_CROP_Y_MIN, TRAINING_CROP_X_MAX, TRAINING_CROP_Y_MAX)
+        img = crop_and_resize(
+            luma,
+            TRAINING_CROP_X_MIN,
+            TRAINING_CROP_Y_MIN,
+            TRAINING_CROP_X_MAX,
+            TRAINING_CROP_Y_MAX,
+        )
         result = model.predict(img[None], verbose=0)
         pred = float(np.asarray(result).flatten()[0])
         preds.append(pred)
         print(f"  {cap.name}:  pred={pred:7.2f}  err={pred - args.true_value:+.2f}")
 
     arr = np.array(preds)
-    print(f"\nMean={arr.mean():.2f}  Std={arr.std():.2f}  MAE={np.abs(arr - args.true_value).mean():.2f}  (true={args.true_value})")
+    print(
+        f"\nMean={arr.mean():.2f}  Std={arr.std():.2f}  MAE={np.abs(arr - args.true_value).mean():.2f}  (true={args.true_value})"
+    )
 
 
 if __name__ == "__main__":

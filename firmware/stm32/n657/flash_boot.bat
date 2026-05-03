@@ -21,9 +21,9 @@ set "ELDR=%CUBE%\ExternalLoader\MX25UM51245G_STM32N6570-NUCLEO.stldr"
 set SCRIPT_DIR=%~dp0
 set "FSBL_BIN=%SCRIPT_DIR%FSBL\Debug\n657_FSBL.bin"
 set "FSBL_TRUSTED=%SCRIPT_DIR%FSBL\Debug\FSBL_trusted.bin"
-set "SCALAR_RAW=%SCRIPT_DIR%..\..\..\st_ai_output\atonbuf.xSPI2.raw"
-set "RECTIFIER_RAW=%SCRIPT_DIR%..\..\..\st_ai_output\atonbuf.rectifier.xSPI2.raw"
-set "OBB_RAW=%SCRIPT_DIR%..\..\..\st_ai_output\atonbuf.obb.xSPI2.raw"
+set "SCALAR_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.xSPI2.raw"
+set "RECTIFIER_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.rectifier.xSPI2.raw"
+set "OBB_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.obb.xSPI2.raw"
 REM CubeProgrammer v2.21 does not accept .raw extension with -w; stage as .bin
 set "SCALAR_BIN=%SCRIPT_DIR%Appli\Debug\scalar_model_stage.bin"
 set "RECTIFIER_BIN=%SCRIPT_DIR%Appli\Debug\rectifier_model_stage.bin"
