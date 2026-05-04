@@ -1,0 +1,22 @@
+{
+  "board_crop_estimate": {
+    "center_luma": 133,
+    "crop_box": {
+      "bright_count": 13745,
+      "centroid_x": 118,
+      "centroid_y": 117,
+      "height": 105,
+      "width": 133,
+      "x_min": 28,
+      "y_min": 65
+    },
+    "max_luma": 181,
+    "mean_luma": 99.36677407805227,
+    "min_luma": 16
+  },
+  "capture_crop_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/captured_images/_live_rectified_probe/capture_2026-04-18_13-42-44/board_crop.png",
+  "capture_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/captured_images/capture_2026-04-18_13-42-44.yuv422",
+  "capture_preview_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/captured_images/_live_rectified_probe/capture_2026-04-18_13-42-44/capture_preview.png",
+  "comparison_figure_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/captured_images/_live_rectified_probe/capture_2026-04-18_13-42-44/comparison.png",
+  "output_dir": "/mnt/d/Projects/embedded-gauge-reading-tinyml/captured_images/_live_rectified_probe/capture_2026-04-18_13-42-44"
+}

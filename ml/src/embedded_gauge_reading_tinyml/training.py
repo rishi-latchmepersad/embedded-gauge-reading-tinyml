@@ -1841,7 +1841,9 @@ def _augment_image(image: tf.Tensor) -> tf.Tensor:
 
     # Additional crop jitter: slight translation within the crop box
     # This simulates the dial not being perfectly centered in the crop
-    max_offset: tf.Tensor = tf.cast(image_h * 0.05, tf.int32)  # 5% max offset
+    max_offset: tf.Tensor = tf.cast(
+        tf.cast(image_h, tf.float32) * 0.05, tf.int32
+    )  # 5% max offset
     if max_offset > 0:
         offset_y = tf.random.uniform([], -max_offset, max_offset + 1, dtype=tf.int32)
         offset_x = tf.random.uniform([], -max_offset, max_offset + 1, dtype=tf.int32)
