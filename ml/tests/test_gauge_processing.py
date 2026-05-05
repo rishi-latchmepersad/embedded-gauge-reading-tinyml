@@ -10,10 +10,14 @@ import pytest
 from embedded_gauge_reading_tinyml.dataset import EllipseLabel, PointLabel, Sample
 from embedded_gauge_reading_tinyml.gauge import (
     GaugeSpec,
+    angle_rad_to_fraction,
+    fraction_to_angle_rad,
+    fraction_to_value,
     load_gauge_specs,
     needle_angle_clockwise_rad,
     needle_fraction,
     needle_value,
+    value_to_fraction,
 )
 
 
@@ -151,3 +155,36 @@ def test_load_gauge_specs_from_toml(tmp_path: Path) -> None:
     assert specs["gauge_a"].sweep_rad == pytest.approx(math.radians(180.0))
     assert specs["gauge_a"].min_value == pytest.approx(0.0)
     assert specs["gauge_a"].max_value == pytest.approx(100.0)
+
+
+def test_value_fraction_round_trip_helpers() -> None:
+    """Value/fraction conversion helpers should round-trip a midpoint."""
+    spec: GaugeSpec = make_spec(min_value=-30.0, max_value=50.0)
+    fraction = value_to_fraction(10.0, spec)
+    value = fraction_to_value(fraction, spec)
+    angle = fraction_to_angle_rad(fraction, spec)
+    fraction_again = angle_rad_to_fraction(angle, spec, strict=True)
+
+    assert fraction == pytest.approx(0.5)
+    assert value == pytest.approx(10.0)
+    assert fraction_again == pytest.approx(0.5)
+
+
+def test_load_gauge_specs_validates_direction(tmp_path: Path) -> None:
+    """Direction should be restricted to clockwise/counterclockwise."""
+    toml_path: Path = tmp_path / "specs.toml"
+    toml_path.write_text(
+        "\n".join(
+            [
+                "[gauge_a]",
+                "min_deg = 10.0",
+                "sweep_deg = 180.0",
+                "min_value = 0.0",
+                "max_value = 100.0",
+                'direction = "invalid"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="direction must be"):
+        load_gauge_specs(toml_path)

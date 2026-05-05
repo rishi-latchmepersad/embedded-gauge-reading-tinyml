@@ -21,6 +21,8 @@
 #include "app_inference_calibration.h"
 #include "app_inference_log_utils.h"
 #include "app_gauge_geometry.h"
+#include "ina219_power.h"
+#include "inference_metrics.h"
 #define LL_ATON_PLATFORM LL_ATON_PLAT_STM32N6
 #define LL_ATON_OSAL LL_ATON_OSAL_THREADX
 #include "tx_api.h"
@@ -3513,9 +3515,21 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 			"[AI] Stage network reset skipped (one-shot runtime).\r\n");
 	}
 
+	/* Start metrics tracking for this inference */
+	Metrics_StartInference("CNN");
+
 	(void)DebugConsole_WriteString("[AI] Stage inference run start.\r\n");
+	bool mid_logged = false;
 	for (uint32_t epoch_step = 0U;; ++epoch_step)
 	{
+		/* Log mid-inference power after a few epochs (NPU active) */
+		if (!mid_logged && epoch_step == 5U)
+		{
+			(void)INA219_LogReading("MID");
+			Metrics_Checkpoint("MID");
+			mid_logged = true;
+		}
+
 		const LL_ATON_RT_RetValues_t run_status =
 			LL_ATON_RT_RunEpochBlock(stage->nn_instance);
 
@@ -3534,6 +3548,10 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		}
 	}
 	(void)DebugConsole_WriteString("[AI] Stage inference run OK.\r\n");
+
+	/* Log post-inference power (peak during NPU activity) */
+	(void)INA219_LogReading("POST");
+	Metrics_Checkpoint("POST");
 
 	output_ptr = (const float *)LL_Buffer_addr_start(output_info);
 	output_len_bytes = (size_t)LL_Buffer_len(output_info);
@@ -4608,6 +4626,10 @@ static void AppAI_LogInferenceResult(
 
 	app_ai_last_inference_value = output_value;
 	app_ai_last_inference_valid = true;
+
+	/* Log final power consumption and end metrics tracking */
+	(void)INA219_LogReading("CNN-DONE");
+	Metrics_EndInference(output_value);
 }
 #endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
 

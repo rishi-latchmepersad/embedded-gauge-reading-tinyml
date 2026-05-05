@@ -5,6 +5,31 @@ Keep this file short, and put detailed notes in the topical files below.
 
 - The target for reading is the inner dial of the gauge, as that is the one calibrated for Celsius (C).
 
+## 2026-05-04 INA219 Power Metrics Integration
+
+**Hardware**: INA219 power sensor module at I2C address 0x40 (shared with DS3231 RTC on I2C1), 0.1 ohm shunt resistor.
+
+**Files modified**:
+- `ina219_power.c/h`: INA219 driver (already existed, verified working)
+- `i2c_scanner.c`: Fixed DEBUG_PRINTF → DebugConsole_Printf
+- `inference_metrics.c/h`: Unified power+latency metrics module
+- `app_ai.c`: Added Metrics_StartInference("CNN"), Metrics_Checkpoint() at epoch 5
+- `app_baseline_runtime.c`: Added Metrics_StartInference("BASELINE")
+
+**Key functions**:
+- `Metrics_Init()`: Initialize DWT cycle counter for microsecond timing
+- `Metrics_StartInference(label)`: Start timing, capture pre-inference power
+- `Metrics_Checkpoint()`: Capture mid-inference power (NPU active)
+- `Metrics_EndInference(temp)`: Stop timing, capture post-power, log results
+
+**Output formats**:
+- UART: `[METRICS] CNN: latency=45.23 ms, power_pre=294.10mW, power_mid=810.71mW, ...`
+- SD Card CSV: `datetime,label,latency_ms,power_pre_mW,power_mid_mW,power_post_mW,power_delta_mW,temp_c`
+
+**Units**: latency in ms (converted from DWT cycles), power in mW, timestamp in ISO 8601 format from DS3231 RTC.
+
+**Cleanup**: Removed duplicate `metrics_power.c/h` that had overlapping functions with `inference_metrics.c`.
+
 ## 2026-05-01 Firmware Baseline Sweep Fix
 
 **Root cause**: `APP_BASELINE_SWEEP_DEG` was `180.0f` in firmware, but the Python
@@ -444,3 +469,18 @@ The issue was that the `prefix` parameter (string literal) was being corrupted b
 - The baseline AI cross-check in `app_baseline_runtime.c` is now advisory instead of a hard veto.
 - It still logs when the baseline candidate disagrees strongly with a cold AI reading, but it no longer freezes history on that mismatch.
 - This should help the baseline recover from stale warm locks on cold frames instead of holding a previous estimate indefinitely.
+
+## 2026-05-04 - No-calibration CNN contract (MobileNet)
+- Removed post-hoc affine calibration usage from ML training and board pipeline replay path.
+- TrainConfig.linear_output=True is now rejected to prevent reintroducing calibration-dependent outputs.
+- gauge_calibration_parameters.toml is now treated as gauge metadata/spec (added units and direction).
+- Added strict gauge-spec validation + conversion helpers in gauge/processing.py for value/fraction/angle mappings.
+- Deleted legacy affine calibration regression test and added new tests for no-calibration behavior.
+- Focused tests passing: poetry run pytest tests/test_gauge_processing.py tests/test_training.py tests/test_board_pipeline.py -q (49 passed).
+
+## 2026-05-04 - Export + STM32N6 relocatable package (new6 no-cal)
+- Exported int8 scalar model: ml/artifacts/deployment/scalar_full_finetune_from_best_board30_clean_plus_new6_int8/model_int8.tflite.
+- Packaged relocatable binary with X-CUBE-AI 10.2.0 in WSL: ml/artifacts/runtime/scalar_full_finetune_from_best_board30_clean_plus_new6_int8_reloc/scalar_full_finetune_from_best_board30_clean_plus_new6_int8_rel.bin.
+- Refreshed firmware canonical model blob: irmware/stm32/n657/st_ai_output/atonbuf.xSPI2.raw.
+- Hard manifest eval snapshot (fixed-crop script): MAE ~9.91C on hard_cases_plus_board30_valid_with_new6.csv; target <5C not yet met.
+- WSL CUDA/GPU probe timed out in this session; packaging/export succeeded in WSL CPU path.

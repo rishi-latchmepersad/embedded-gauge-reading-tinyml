@@ -1,4 +1,4 @@
-"""Training pipeline for gauge-value regression with dial ROI cropping."""
+﻿"""Training pipeline for gauge-value regression with dial ROI cropping."""
 
 from __future__ import annotations
 
@@ -171,7 +171,7 @@ class TrainConfig:
     cold_tail_fraction: float = 0.15
     hot_tail_fraction: float = 0.15
     oversampling_factor: float = 3.0
-    # Linear output: use unbounded linear output instead of sigmoid
+    # Keep for config compatibility; the no-calibration pipeline forbids this path.
     linear_output: bool = False
 
 
@@ -212,88 +212,6 @@ class TrainingResult:
     dropped_out_of_sweep: int
 
 
-def _fit_calibration(
-    result: TrainingResult,
-    test_examples: list[TrainingExample],
-    spec: GaugeSpec,
-) -> TrainingResult:
-    """Fit calibration parameters to map linear model outputs to calibrated values.
-
-    When using a linear output head (no saturating activation), the model outputs
-    are unbounded and need to be calibrated to match the expected value range.
-    This function fits a simple affine transformation (slope and bias) to map
-    model outputs to ground truth values.
-
-    Args:
-        result: Training result containing the model and test metrics.
-        test_examples: Test examples for calibration.
-        spec: Gauge specification with value range.
-
-    Returns:
-        Updated TrainingResult with calibration parameters stored in model metadata.
-    """
-    import sklearn.linear_model
-
-    # Get model predictions on test set
-    test_paths = np.array([e.image_path for e in test_examples], dtype=str)
-    test_values = np.array([e.value for e in test_examples], dtype=np.float32)
-
-    # Create a simple dataset for prediction
-    test_dataset = tf.data.Dataset.from_tensor_slices(test_paths)
-    test_dataset = test_dataset.map(
-        lambda p: _load_crop(
-            p, result.model.input_shape[1], result.model.input_shape[2]
-        ),
-        num_parallel_calls=tf.data.AUTOTUNE,
-    )
-    test_dataset = test_dataset.batch(32)
-
-    # Get model predictions
-    predictions = result.model.predict(test_dataset, verbose=0)
-    predictions = predictions.flatten()
-
-    # Fit affine calibration: output = slope * prediction + bias
-    # We want: expected_value ≈ slope * prediction + bias
-    # Use sklearn linear regression for calibration
-    X = predictions.reshape(-1, 1)
-    y = test_values.reshape(-1, 1)
-
-    calibration_model = sklearn.linear_model.LinearRegression()
-    calibration_model.fit(X, y)
-
-    slope = float(calibration_model.coef_[0][0])
-    bias = float(calibration_model.intercept_[0])
-
-    # Apply calibration to model by adding a Dense layer
-    # We'll store the calibration parameters in the model's metadata
-    # and apply them during inference
-
-    # Update test metrics with calibrated predictions
-    calibrated_predictions = slope * predictions + bias
-    calibrated_mae = float(np.mean(np.abs(calibrated_predictions - test_values)))
-
-    result.test_metrics["calibrated_mae"] = calibrated_mae
-    result.test_metrics["calibration_slope"] = slope
-    result.test_metrics["calibration_bias"] = bias
-
-    # Store calibration parameters in model metadata
-    if not hasattr(result.model, "metadata"):
-        result.model.metadata = {}
-    result.model.metadata["calibration"] = {
-        "slope": slope,
-        "bias": bias,
-        "method": "affine_fit",
-    }
-
-    print(
-        f"[CALIBRATION] Linear output calibration: "
-        f"slope={slope:.4f}, bias={bias:.4f}, "
-        f"MAE={calibrated_mae:.4f}C"
-    )
-
-    return result
-
-
 def _validate_split_config(config: TrainConfig) -> None:
     """Guard against invalid split fractions."""
     if not (0.0 < config.val_fraction < 1.0):
@@ -318,6 +236,10 @@ def _validate_split_config(config: TrainConfig) -> None:
         raise ValueError("monotonic_pair_margin must be >= 0.")
     if config.mixup_alpha < 0.0:
         raise ValueError("mixup_alpha must be >= 0.")
+    if config.linear_output:
+        raise ValueError(
+            "linear_output=True is not supported in no-calibration mode."
+        )
     if config.interval_bin_width <= 0.0:
         raise ValueError("interval_bin_width must be > 0.")
     if config.interpolation_pair_strength < 0.0:
@@ -962,7 +884,7 @@ def _is_board_capture(image_path: str) -> bool:
     Board captures are PNG files with 4-digit names (capture_NNNN.png),
     ISO-timestamp names (capture_2026-*.png), or from today_converted/.
     Phone photos are .jpg files or PXL_* raw files and should NOT have
-    rectifier boxes applied — the rectifier was trained on board framing.
+    rectifier boxes applied â€” the rectifier was trained on board framing.
     """
     p = Path(image_path)
     if p.suffix.lower() != ".png":
@@ -1011,9 +933,9 @@ def _apply_precomputed_crop_boxes(
             boxes[str(abs_path)] = box
             boxes[Path(rel).name] = box  # filename-only fallback
 
-    # RECTIFY_ALL=1 → apply rectifier boxes to every example with a CSV match
+    # RECTIFY_ALL=1 â†’ apply rectifier boxes to every example with a CSV match
     # (true 2-stage training: scalar always sees rectifier-crop framing).
-    # Default (RECTIFY_ALL unset) → board captures only (preserves phone-photo fixed crop).
+    # Default (RECTIFY_ALL unset) â†’ board captures only (preserves phone-photo fixed crop).
     rectify_all: bool = os.environ.get("RECTIFY_ALL", "0") == "1"
 
     out: list[TrainingExample] = []
@@ -1780,8 +1702,8 @@ def _load_crop_with_geometry_uncertainty_weight(
 
 
 def _augment_glare_blobs(image: tf.Tensor) -> tf.Tensor:
-    """Stamp 1–3 bright glare blobs via resized gaussian noise. Simulates specular reflections on gauge glass."""
-    # Generate blobs at a fixed small resolution then resize up — avoids dynamic meshgrid entirely.
+    """Stamp 1â€“3 bright glare blobs via resized gaussian noise. Simulates specular reflections on gauge glass."""
+    # Generate blobs at a fixed small resolution then resize up â€” avoids dynamic meshgrid entirely.
     BLOB_RES = 32
     mask = tf.zeros([BLOB_RES, BLOB_RES, 1], dtype=tf.float32)
     for _ in range(3):
@@ -1855,7 +1777,7 @@ def _augment_image(image: tf.Tensor) -> tf.Tensor:
             image_padded, max_offset + offset_y, max_offset + offset_x, image_h, image_w
         )
 
-    # AUG_HEAVY=1 → stronger photometric augmentation for board-domain robustness.
+    # AUG_HEAVY=1 â†’ stronger photometric augmentation for board-domain robustness.
     aug_heavy: bool = os.environ.get("AUG_HEAVY", "0") == "1"
 
     # --- Brightness/exposure augmentation (matches board camera reality) ---
@@ -1943,7 +1865,7 @@ def _augment_rectifier_image_and_box(
     """Geometric + photometric augmentation for the rectifier training path.
 
     Randomly zooms into a sub-region of the 224x224 padded canvas so the model
-    sees dial sizes ranging from ~30% to 100% of the frame — covering both the
+    sees dial sizes ranging from ~30% to 100% of the frame â€” covering both the
     far-away phone-photo distribution and close-up board-camera framing.
 
     The target box (cx, cy, w, h) in [0,1] canvas coords is recomputed to stay
@@ -1954,7 +1876,7 @@ def _augment_rectifier_image_and_box(
     canvas: tf.Tensor = tf.cast(image_shape[0], tf.float32)  # square 224
 
     # --- random zoom window in canvas pixels ---
-    # zoom_scale in [0.40, 1.0]: 0.40 → 2.5x zoom-in (close-up), 1.0 → full frame
+    # zoom_scale in [0.40, 1.0]: 0.40 â†’ 2.5x zoom-in (close-up), 1.0 â†’ full frame
     zoom_scale: tf.Tensor = tf.random.uniform([], minval=0.40, maxval=1.0)
     win_size: tf.Tensor = canvas * zoom_scale
 
@@ -1984,7 +1906,7 @@ def _augment_rectifier_image_and_box(
     x_max = cx + bw * 0.5
     y_max = cy + bh * 0.5
 
-    # map original canvas coords → zoomed canvas coords
+    # map original canvas coords â†’ zoomed canvas coords
     x_min_z = (x_min - off_x) / win_size * canvas
     y_min_z = (y_min - off_y) / win_size * canvas
     x_max_z = (x_max - off_x) / win_size * canvas
@@ -4508,8 +4430,5 @@ def train(config: TrainConfig) -> TrainingResult:
         dropped_out_of_sweep=dropped_out_of_sweep,
     )
 
-    # If linear output is enabled, fit calibration to map model outputs to calibrated values
-    if config.linear_output:
-        result = _fit_calibration(result, split.test_examples, spec)
-
     return result
+

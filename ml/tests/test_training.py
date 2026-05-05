@@ -147,6 +147,18 @@ def test_build_mobilenetv2_tiny_regression_model_is_smaller() -> None:
     assert tiny.count_params() < standard.count_params()
 
 
+def test_build_mobilenetv2_regression_model_rejects_linear_output() -> None:
+    """No-calibration pipeline should reject unbounded linear outputs."""
+    with pytest.raises(ValueError, match="linear_output=True is no longer supported"):
+        build_mobilenetv2_regression_model(
+            image_height=224,
+            image_width=224,
+            pretrained=False,
+            backbone_trainable=False,
+            linear_output=True,
+        )
+
+
 def test_build_compact_interval_model_outputs_scalar_and_bins() -> None:
     """Compact interval CNN should emit both gauge_value and interval logits."""
     model = build_compact_interval_model(
@@ -689,6 +701,10 @@ def test_load_hard_case_examples_reads_manifest_and_uses_full_image_crop(
             training.TrainConfig(val_fraction=0.6, test_fraction=0.4),
             "val_fraction + test_fraction must be < 1.0.",
         ),
+        (
+            training.TrainConfig(linear_output=True),
+            "linear_output=True is not supported in no-calibration mode.",
+        ),
     ],
 )
 def test_validate_split_config_rejects_invalid_values(
@@ -727,6 +743,9 @@ def test_build_training_examples_filters_out_of_sweep(tmp_path: Path) -> None:
     examples, dropped = training._build_training_examples(
         [in_sweep, out_of_sweep],
         spec,
+        image_height=224,
+        image_width=224,
+        keypoint_heatmap_size=28,
         strict_labels=True,
         crop_pad_ratio=0.1,
     )
@@ -900,13 +919,11 @@ def test_build_tf_dataset_returns_batched_tensors(tmp_path: Path) -> None:
     batches = list(dataset.as_numpy_iterator())
 
     assert len(batches) == 2
-    images, targets, weights = batches[0]
+    images, targets = batches[0]
     assert images.shape == (2, 16, 16, 3)
     assert targets.shape == (2,)
-    assert weights.shape == (2,)
     assert images.dtype == np.float32
     assert targets.dtype == np.float32
-    assert weights.dtype == np.float32
 
 
 def test_compute_edge_weights_emphasizes_extremes() -> None:

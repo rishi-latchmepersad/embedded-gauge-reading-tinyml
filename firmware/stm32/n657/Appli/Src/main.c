@@ -27,6 +27,9 @@
 #include <string.h>
 #include "debug_console.h"
 #include "debug_led.h"
+#include "i2c_scanner.h"
+#include "ina219_power.h"
+#include "inference_metrics.h"
 #include "stm32n6xx_hal_cortex.h"
 #include "threadx_utils.h"
 /* USER CODE END Includes */
@@ -241,8 +244,8 @@ static void Setup_Mpu(void)
 
   region.Enable = MPU_REGION_ENABLE;
   region.Number = MPU_REGION_NUMBER0;
-  region.BaseAddress = (uint32_t) &__snoncacheable;
-  region.LimitAddress = (uint32_t) &__enoncacheable - 1U;
+  region.BaseAddress = (uint32_t)&__snoncacheable;
+  region.LimitAddress = (uint32_t)&__enoncacheable - 1U;
   region.AttributesIndex = MPU_ATTRIBUTES_NUMBER0;
   region.AccessPermission = MPU_REGION_ALL_RW;
   region.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE;
@@ -256,14 +259,12 @@ static void Setup_Mpu(void)
    * each DMA, so zero-init here is not required. */
 }
 
-
-
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
+ * @brief  The application entry point.
+ * @retval int
+ */
 int main(void)
 {
 
@@ -312,9 +313,9 @@ int main(void)
    * per datasheet, 10ms to be safe) before initialising I2C1. */
   {
     GPIO_InitTypeDef pwr_gpio = {0};
-    pwr_gpio.Pin   = GPIO_PIN_10;
-    pwr_gpio.Mode  = GPIO_MODE_OUTPUT_PP;
-    pwr_gpio.Pull  = GPIO_NOPULL;
+    pwr_gpio.Pin = GPIO_PIN_10;
+    pwr_gpio.Mode = GPIO_MODE_OUTPUT_PP;
+    pwr_gpio.Pull = GPIO_NOPULL;
     pwr_gpio.Speed = GPIO_SPEED_FREQ_LOW;
     __HAL_RCC_GPIOD_CLK_ENABLE();
     HAL_GPIO_Init(GPIOD, &pwr_gpio);
@@ -325,17 +326,27 @@ int main(void)
   MX_I2C1_Init();
   MX_I2C2_Init();
 
+  /* Run I2C scanner to detect INA219 and other devices */
+  (void)I2CScanner_Run();
+
   /* Bring up the console before the isolation setup so we can see exactly
    * which early boot step stops making progress. */
-  DebugConsole_Configuration_t debug_console_configuration = { 0 };
+  DebugConsole_Configuration_t debug_console_configuration = {0};
   debug_console_configuration.uart_handle_pointer = &hlpuart1;
   debug_console_configuration.uart_transmit_timeout_milliseconds = 100U;
   debug_console_configuration.lock_callback = NULL;
   debug_console_configuration.unlock_callback = NULL;
-  (void) DebugConsole_Init(&debug_console_configuration);
+  (void)DebugConsole_Init(&debug_console_configuration);
   DebugConsole_Printf("[BOOT] UART console initialized.\r\n");
   DS3231_LogI2c1LineState();
   DS3231_ScanI2C1Bus();
+
+  /* Initialize INA219 power monitor on I2C1 */
+  (void)INA219_Init(&hi2c1);
+  (void)INA219_StartMonitoringThread();
+
+  /* Initialize inference metrics tracking */
+  Metrics_Init();
 
   DebugConsole_Printf("[BOOT] Entering SystemIsolation_Config().\r\n");
   SystemIsolation_Config();
@@ -344,10 +355,10 @@ int main(void)
       "Welcome to STM32 world!\r\nApplication project is running...\r\n");
   // set up the debug leds
   DebugLed_Configuration_t debug_led_configuration = {
-      .bsp_led_for_color_array = { LED_BLUE, LED_RED, LED_GREEN },
-      .delay_milliseconds_callback = DelayMilliseconds_ThreadX };
+      .bsp_led_for_color_array = {LED_BLUE, LED_RED, LED_GREEN},
+      .delay_milliseconds_callback = DelayMilliseconds_ThreadX};
 
-  (void) DebugLed_Initialize(&debug_led_configuration);
+  (void)DebugLed_Initialize(&debug_led_configuration);
 
   DS3231_LogBootTime();
   /* USER CODE END 2 */
@@ -370,32 +381,34 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-	while (1) {
+  while (1)
+  {
 
-		/* -- Sample board code for User push-button in interrupt mode ---- */
-		if (BspButtonState == BUTTON_PRESSED) {
-			/* Update button state */
-			BspButtonState = BUTTON_RELEASED;
-			/* -- Sample board code to toggle leds ---- */
-			BSP_LED_Toggle(LED_BLUE);
-			BSP_LED_Toggle(LED_RED);
-			BSP_LED_Toggle(LED_GREEN);
+    /* -- Sample board code for User push-button in interrupt mode ---- */
+    if (BspButtonState == BUTTON_PRESSED)
+    {
+      /* Update button state */
+      BspButtonState = BUTTON_RELEASED;
+      /* -- Sample board code to toggle leds ---- */
+      BSP_LED_Toggle(LED_BLUE);
+      BSP_LED_Toggle(LED_RED);
+      BSP_LED_Toggle(LED_GREEN);
 
-			/* ..... Perform your action ..... */
-		}
+      /* ..... Perform your action ..... */
+    }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	}
+  }
   /* USER CODE END 3 */
 #endif
 }
 
 /**
-  * @brief DCMIPP Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief DCMIPP Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_DCMIPP_Init(void)
 {
   hdcmipp.Instance = DCMIPP;
@@ -409,10 +422,10 @@ static void MX_DCMIPP_Init(void)
 }
 
 /**
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief I2C1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_I2C1_Init(void)
 {
 
@@ -451,14 +464,13 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
-
 }
 
 /**
-  * @brief I2C2 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief I2C2 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_I2C2_Init(void)
 {
 
@@ -484,14 +496,14 @@ static void MX_I2C2_Init(void)
   }
 
   /** Configure Analogue filter
-  */
+   */
   if (HAL_I2CEx_ConfigAnalogFilter(&hi2c2, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
   {
     Error_Handler();
   }
 
   /** Configure Digital filter
-  */
+   */
   if (HAL_I2CEx_ConfigDigitalFilter(&hi2c2, 0) != HAL_OK)
   {
     Error_Handler();
@@ -499,14 +511,13 @@ static void MX_I2C2_Init(void)
   /* USER CODE BEGIN I2C2_Init 2 */
 
   /* USER CODE END I2C2_Init 2 */
-
 }
 
 /**
-  * @brief LPUART1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief LPUART1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_LPUART1_UART_Init(void)
 {
 
@@ -547,15 +558,14 @@ static void MX_LPUART1_UART_Init(void)
   /* USER CODE BEGIN LPUART1_Init 2 */
 
   /* USER CODE END LPUART1_Init 2 */
-
 }
 
 /**
-  * @brief RIF Initialization Function
-  * @param None
-  * @retval None
-  */
-  static void SystemIsolation_Config(void)
+ * @brief RIF Initialization Function
+ * @param None
+ * @retval None
+ */
+static void SystemIsolation_Config(void)
 {
 
   /* USER CODE BEGIN RIF_Init 0 */
@@ -588,28 +598,28 @@ static void MX_LPUART1_UART_Init(void)
   /* RIF-Aware IPs Config */
 
   /* set up GPIO configuration */
-  HAL_GPIO_ConfigPinAttributes(GPIOA,GPIO_PIN_0,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOA,GPIO_PIN_3,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOA,GPIO_PIN_5,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOA,GPIO_PIN_7,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOA,GPIO_PIN_10,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOA,GPIO_PIN_11,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOB,GPIO_PIN_0,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOB,GPIO_PIN_3,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOB,GPIO_PIN_6,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOB,GPIO_PIN_7,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOB,GPIO_PIN_10,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOB,GPIO_PIN_11,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOD,GPIO_PIN_2,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOD,GPIO_PIN_10,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOE,GPIO_PIN_3,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOE,GPIO_PIN_5,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOE,GPIO_PIN_6,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOE,GPIO_PIN_15,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOG,GPIO_PIN_1,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOG,GPIO_PIN_2,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPION,GPIO_PIN_7,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOO,GPIO_PIN_5,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_0, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_3, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_5, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_7, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_10, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_11, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_0, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_3, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_6, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_7, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_10, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_11, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOD, GPIO_PIN_2, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOD, GPIO_PIN_10, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_3, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_5, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_6, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_15, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOG, GPIO_PIN_1, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOG, GPIO_PIN_2, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPION, GPIO_PIN_7, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+  HAL_GPIO_ConfigPinAttributes(GPIOO, GPIO_PIN_5, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
 
   /* USER CODE BEGIN RIF_Init 1 */
 
@@ -632,66 +642,65 @@ static void MX_LPUART1_UART_Init(void)
     volatile uint32_t r3_cidcfgr;
 
     /* RISAF1 guards SRAM1 NS alias — disable the filter (belt-and-suspenders). */
-    RISAF1_NS->REG[0].STARTR  = 0x00000000U;
-    RISAF1_NS->REG[0].ENDR    = 0x000FFFFFU;
+    RISAF1_NS->REG[0].STARTR = 0x00000000U;
+    RISAF1_NS->REG[0].ENDR = 0x000FFFFFU;
     RISAF1_NS->REG[0].CIDCFGR = 0x00000000U;
-    RISAF1_NS->REG[0].CFGR    = 0x00000000U; /* BREN=0, SEC=0 — no filtering */
-    RISAF1_NS->IACR            = 0xFFFFFFFFU; /* clear any stale illegal-access flags */
+    RISAF1_NS->REG[0].CFGR = 0x00000000U; /* BREN=0, SEC=0 — no filtering */
+    RISAF1_NS->IACR = 0xFFFFFFFFU;        /* clear any stale illegal-access flags */
 
     /* RISAF2 guards the AXISRAM1 secure alias — disable filters so DCMIPP
      * (MSEC=1) can write to the capture buffer even when we move it to the
      * non-secure alias for this A/B test. */
-    RISAF2_S->REG[0].STARTR   = 0x00000000U;
-    RISAF2_S->REG[0].ENDR     = 0x000FFFFFU;
-    RISAF2_S->REG[0].CIDCFGR  = 0x00000000U;
-    RISAF2_S->REG[0].CFGR     = 0x00000000U; /* BREN=0 — no filtering */
-    RISAF2_S->IACR             = 0xFFFFFFFFU;
-    RISAF2_NS->REG[0].STARTR  = 0x00000000U;
-    RISAF2_NS->REG[0].ENDR    = 0x000FFFFFU;
+    RISAF2_S->REG[0].STARTR = 0x00000000U;
+    RISAF2_S->REG[0].ENDR = 0x000FFFFFU;
+    RISAF2_S->REG[0].CIDCFGR = 0x00000000U;
+    RISAF2_S->REG[0].CFGR = 0x00000000U; /* BREN=0 — no filtering */
+    RISAF2_S->IACR = 0xFFFFFFFFU;
+    RISAF2_NS->REG[0].STARTR = 0x00000000U;
+    RISAF2_NS->REG[0].ENDR = 0x000FFFFFU;
     RISAF2_NS->REG[0].CIDCFGR = 0x00000000U;
-    RISAF2_NS->REG[0].CFGR    = 0x00000000U;
-    RISAF2_NS->IACR            = 0xFFFFFFFFU;
+    RISAF2_NS->REG[0].CFGR = 0x00000000U;
+    RISAF2_NS->IACR = 0xFFFFFFFFU;
 
     /* RISAF3 guards AXISRAM2 — disable the filter */
-    RISAF3_NS->REG[0].STARTR  = 0x00000000U;
-    RISAF3_NS->REG[0].ENDR    = 0x000FFFFFU;
+    RISAF3_NS->REG[0].STARTR = 0x00000000U;
+    RISAF3_NS->REG[0].ENDR = 0x000FFFFFU;
     RISAF3_NS->REG[0].CIDCFGR = 0x00000000U;
-    RISAF3_NS->REG[0].CFGR    = 0x00000000U; /* BREN=0, SEC=0 — no filtering */
-    RISAF3_NS->IACR            = 0xFFFFFFFFU; /* clear any stale illegal-access flags */
+    RISAF3_NS->REG[0].CFGR = 0x00000000U; /* BREN=0, SEC=0 — no filtering */
+    RISAF3_NS->IACR = 0xFFFFFFFFU;        /* clear any stale illegal-access flags */
 
     /* Readback to confirm writes were accepted. */
-    r1_cfgr    = RISAF1_NS->REG[0].CFGR;
-    r2_cfgr    = RISAF2_NS->REG[0].CFGR;
+    r1_cfgr = RISAF1_NS->REG[0].CFGR;
+    r2_cfgr = RISAF2_NS->REG[0].CFGR;
     r2_cidcfgr = RISAF2_NS->REG[0].CIDCFGR;
-    r2_startr  = RISAF2_NS->REG[0].STARTR;
-    r2_endr    = RISAF2_NS->REG[0].ENDR;
-    r3_cfgr    = RISAF3_NS->REG[0].CFGR;
+    r2_startr = RISAF2_NS->REG[0].STARTR;
+    r2_endr = RISAF2_NS->REG[0].ENDR;
+    r3_cfgr = RISAF3_NS->REG[0].CFGR;
     r3_cidcfgr = RISAF3_NS->REG[0].CIDCFGR;
     DebugConsole_Printf(
         "[RIF] RISAF1 REG0: CFGR=0x%08lX (NS alias 0x24xxxxxx)\r\n",
-        (unsigned long) r1_cfgr);
+        (unsigned long)r1_cfgr);
     DebugConsole_Printf(
         "[RIF] RISAF2 NS REG0: CFGR=0x%08lX CIDCFGR=0x%08lX STARTR=0x%08lX ENDR=0x%08lX | S CFGR=0x%08lX\r\n",
-        (unsigned long) r2_cfgr, (unsigned long) r2_cidcfgr,
-        (unsigned long) r2_startr, (unsigned long) r2_endr,
-        (unsigned long) RISAF2_S->REG[0].CFGR);
+        (unsigned long)r2_cfgr, (unsigned long)r2_cidcfgr,
+        (unsigned long)r2_startr, (unsigned long)r2_endr,
+        (unsigned long)RISAF2_S->REG[0].CFGR);
     DebugConsole_Printf(
         "[RIF] RISAF3 REG0: CFGR=0x%08lX CIDCFGR=0x%08lX\r\n",
-        (unsigned long) r3_cfgr, (unsigned long) r3_cidcfgr);
+        (unsigned long)r3_cfgr, (unsigned long)r3_cidcfgr);
   }
 
   /* USER CODE END RIF_Init 1 */
   /* USER CODE BEGIN RIF_Init 2 */
 
   /* USER CODE END RIF_Init 2 */
-
 }
 
 /**
-  * @brief SPI5 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief SPI5 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_SPI5_Init(void)
 {
 
@@ -732,14 +741,13 @@ static void MX_SPI5_Init(void)
   /* USER CODE BEGIN SPI5_Init 2 */
 
   /* USER CODE END SPI5_Init 2 */
-
 }
 
 /**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief GPIO Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -771,7 +779,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(CAM_NRST_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : SPI5_CS_Pin CAM1_Pin */
-  GPIO_InitStruct.Pin = SPI5_CS_Pin|CAM1_Pin;
+  GPIO_InitStruct.Pin = SPI5_CS_Pin | CAM1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -789,13 +797,13 @@ static void MX_GPIO_Init(void)
 /* USER CODE END 4 */
 
 /**
-  * @brief  Period elapsed callback in non blocking mode
-  * @note   This function is called  when TIM5 interrupt took place, inside
-  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
-  * a global variable "uwTick" used as application time base.
-  * @param  htim : TIM handle
-  * @retval None
-  */
+ * @brief  Period elapsed callback in non blocking mode
+ * @note   This function is called  when TIM5 interrupt took place, inside
+ * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+ * a global variable "uwTick" used as application time base.
+ * @param  htim : TIM handle
+ * @retval None
+ */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   /* USER CODE BEGIN Callback 0 */
@@ -811,10 +819,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 }
 
 /**
-  * @brief BSP Push Button callback
-  * @param Button Specifies the pressed button
-  * @retval None
-  */
+ * @brief BSP Push Button callback
+ * @param Button Specifies the pressed button
+ * @retval None
+ */
 void BSP_PB_Callback(Button_TypeDef Button)
 {
   if (Button == BUTTON_USER)
@@ -824,26 +832,27 @@ void BSP_PB_Callback(Button_TypeDef Button)
 }
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-	/* User can add his own implementation to report the HAL error return state */
-	__disable_irq();
-	while (1) {
-	}
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */

@@ -582,10 +582,13 @@ def build_mobilenetv2_regression_model(
     """Build a transfer-learning regressor on top of MobileNetV2 features.
 
     Args:
-        linear_output: If True, use a linear output layer (no activation) for
-                       unbounded regression. If False (default), use a sigmoid
-                       to bound outputs to [0,1] which is then rescaled.
+        linear_output: Deprecated and unsupported in no-calibration mode.
     """
+    if linear_output:
+        raise ValueError(
+            "linear_output=True is no longer supported. "
+            "Use the bounded no-calibration output path."
+        )
     inputs, x, base_model = _build_mobilenetv2_backbone(
         image_height,
         image_width,
@@ -598,17 +601,13 @@ def build_mobilenetv2_regression_model(
     x = keras.layers.Dense(head_units, activation="swish")(x)
     x = keras.layers.Dropout(head_dropout)(x)
 
-    # Linear output for unbounded regression (no saturating activation)
-    if linear_output:
-        output = keras.layers.Dense(1, name="gauge_value")(x)
-    else:
-        # Sigmoid output bounded to [0,1], then rescaled to value range
-        x = keras.layers.Dense(1, activation="sigmoid", name="gauge_value_sigmoid")(x)
-        output = keras.layers.Rescaling(
-            scale=1.0,  # Will be set by training code via set_weights
-            offset=0.0,
-            name="gauge_value",
-        )(x)
+    # Sigmoid output bounded to [0,1], then rescaled to value range.
+    x = keras.layers.Dense(1, activation="sigmoid", name="gauge_value_sigmoid")(x)
+    output = keras.layers.Rescaling(
+        scale=1.0,  # Will be set by training code via set_weights.
+        offset=0.0,
+        name="gauge_value",
+    )(x)
 
     model = keras.Model(
         inputs=inputs,

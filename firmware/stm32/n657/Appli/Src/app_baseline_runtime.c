@@ -24,6 +24,8 @@
 #include "app_memory_budget.h"
 #include "app_threadx_config.h"
 #include "debug_console.h"
+#include "ina219_power.h"
+#include "inference_metrics.h"
 #include "threadx_utils.h"
 /* USER CODE END Includes */
 
@@ -464,6 +466,10 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 				"[BASELINE] Worker woke without a queued frame; ignoring.\r\n");
 			continue;
 		}
+
+		/* Log pre-baseline power (idle/background) */
+		Metrics_StartInference("BASELINE");
+		(void)INA219_LogReading("BASELINE-PRE");
 
 		if (!AppBaselineRuntime_EstimateFromFrame(frame_ptr,
 												  (size_t)frame_length, &estimate))
@@ -3675,6 +3681,10 @@ static void AppBaselineRuntime_LogEstimate(
 		(long)(confidence_thousandths / 1000L),
 		(long)(confidence_abs_thousandths % 1000L),
 		score_whole, runner_up_whole);
+
+	/* Log post-baseline power consumption and end metrics tracking */
+	(void)INA219_LogReading("BASELINE-POST");
+	Metrics_EndInference(estimate->temperature_c);
 }
 
 /**

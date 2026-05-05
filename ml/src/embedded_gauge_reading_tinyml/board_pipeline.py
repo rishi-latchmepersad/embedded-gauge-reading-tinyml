@@ -6,7 +6,7 @@ This module mirrors the firmware path closely enough for parity debugging:
 - decode the OBB crop with the same training-window guard as firmware,
 - fall back to the rectifier when the OBB crop is implausible,
 - run the scalar reader on the selected crop, and
-- apply the same affine calibration plus 3-frame burst smoothing.
+- keep raw model output in engineering units plus 3-frame burst smoothing.
 """
 
 from __future__ import annotations
@@ -59,9 +59,6 @@ RECTIFIER_CROP_SCALE: Final[float] = 1.80
 
 INFERENCE_BURST_HISTORY_SIZE: Final[int] = 3
 INFERENCE_BURST_RESET_DELTA_C: Final[float] = 12.0
-
-CALIBRATION_AFFINE_SCALE: Final[float] = 1.1630995273590088
-CALIBRATION_AFFINE_BIAS: Final[float] = 0.7423046231269836
 
 DEFAULT_OBB_MODEL: Final[Path] = (
     ML_ROOT / "artifacts" / "deployment" / "prod_model_v0.3_obb_int8" / "model_int8.tflite"
@@ -706,16 +703,6 @@ class InferenceBurstHistory:
         return (ordered[sample_count // 2], reset, sample_count)
 
 
-def apply_affine_calibration(
-    raw_value: float,
-    *,
-    scale: float = CALIBRATION_AFFINE_SCALE,
-    bias: float = CALIBRATION_AFFINE_BIAS,
-) -> float:
-    """Apply the firmware's fixed scalar output calibration."""
-    return bias + (scale * raw_value)
-
-
 def _predict_full_frame_batch(image: RGBImage, *, image_size: int) -> np.ndarray:
     """Build the full-frame batch used by the OBB and rectifier stages."""
     full_frame = prepare_full_frame(image, image_size=image_size)
@@ -750,9 +737,7 @@ def predict_board_pipeline_on_capture(
     image_size: int = DEFAULT_IMAGE_SIZE,
     obb_crop_scale: float = OBB_CROP_SCALE,
     min_crop_size: float = OBB_MIN_CROP_SIZE_PIXELS,
-    use_calibration: bool = True,
-    calibration_scale: float = CALIBRATION_AFFINE_SCALE,
-    calibration_bias: float = CALIBRATION_AFFINE_BIAS,
+    use_calibration: bool = False,
 ) -> BoardPipelineResult:
     """Replay the full board pipeline on one capture."""
     def emit(message: str) -> None:
@@ -810,15 +795,7 @@ def predict_board_pipeline_on_capture(
         except Exception:
             selected_stage = "rectifier"
         else:
-            calibrated_prediction = (
-                apply_affine_calibration(
-                    raw_prediction,
-                    scale=calibration_scale,
-                    bias=calibration_bias,
-                )
-                if use_calibration
-                else raw_prediction
-            )
+            calibrated_prediction = raw_prediction
             if history is None:
                 reported_prediction = calibrated_prediction
                 history_reset = False
@@ -872,15 +849,7 @@ def predict_board_pipeline_on_capture(
         )
     )
     emit("scalar invoke done stage=rectifier")
-    calibrated_prediction = (
-        apply_affine_calibration(
-            raw_prediction,
-            scale=calibration_scale,
-            bias=calibration_bias,
-        )
-        if use_calibration
-        else raw_prediction
-    )
+    calibrated_prediction = raw_prediction
     if history is None:
         reported_prediction = calibrated_prediction
         history_reset = False
