@@ -9,7 +9,7 @@ import numpy as np
 from pathlib import Path
 from PIL import Image, ImageDraw
 
-CAPTURES_DIR = Path("../captured_images")
+CAPTURES_DIR = Path("../ml/data/captured_images")
 IMAGE_SIZE = 224
 
 def load_yuv422(path, w=224, h=224):
@@ -37,10 +37,10 @@ def annotate(img_arr, label=""):
 
 # Training samples near 30-35C
 training = [
-    ("../captured_images/capture_p30c.jpg", 30),
-    ("../captured_images/capture_p35c.jpg", 35),
-    ("../captured_images/capture_p31c.jpg", 31),
-    ("../captured_images/capture_2026-04-03_13-48-34.png", 30),
+    ("../ml/data/captured_images/capture_p30c.jpg", 30),
+    ("../ml/data/captured_images/capture_p35c.jpg", 35),
+    ("../ml/data/captured_images/capture_p31c.jpg", 31),
+    ("../ml/data/captured_images/capture_2026-04-03_13-48-34.png", 30),
 ]
 
 # Live board captures

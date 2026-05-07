@@ -5,7 +5,7 @@ from PIL import Image
 from pathlib import Path
 import sys
 
-caps_dir = Path("/mnt/d/Projects/embedded-gauge-reading-tinyml/data/captured/images")
+caps_dir = Path("/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images")
 pattern = sys.argv[1] if len(sys.argv) > 1 else "capture_2026-04-18_17-*.yuv422"
 
 for cap in sorted(caps_dir.glob(pattern)):

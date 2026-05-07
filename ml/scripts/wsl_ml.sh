@@ -179,6 +179,10 @@ case "${cmd}" in
     # Fine-tune the scalar reader on rectifier-generated crops.
     exec bash scripts/run_mobilenetv2_rectified_scalar_finetune.sh "$@"
     ;;
+  train-mobilenetv2-rectified-scalar-pure)
+    # Fine-tune the rectified scalar reader with the cleaner pure-model recipe.
+    exec bash scripts/run_mobilenetv2_rectified_scalar_pure_finetune_v3.sh "$@"
+    ;;
   eval-rectified-scalar)
     # Evaluate the rectifier + scalar-reader chain on a labeled manifest.
     exec bash scripts/run_rectified_scalar_eval.sh "$@"

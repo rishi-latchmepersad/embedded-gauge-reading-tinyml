@@ -14,21 +14,21 @@ def test_write_failure_report_groups_and_ranks_predictions(tmp_path: Path) -> No
     """The failure report should rank worst cases and group them by family/value."""
     predictions = [
         ClassicalPrediction(
-            image_path="captured_images/capture_p30c.jpg",
+            image_path="ml/data/captured_images/capture_p30c.jpg",
             true_value=30.0,
             predicted_value=45.0,
             abs_error=15.0,
             confidence=7.0,
         ),
         ClassicalPrediction(
-            image_path="captured_images/today_converted/capture_2026-04-09_06-41-57.png",
+            image_path="ml/data/captured_images/today_converted/capture_2026-04-09_06-41-57.png",
             true_value=30.0,
             predicted_value=34.0,
             abs_error=4.0,
             confidence=6.0,
         ),
         ClassicalPrediction(
-            image_path="captured_images/capture_m25c.jpg",
+            image_path="ml/data/captured_images/capture_m25c.jpg",
             true_value=-25.0,
             predicted_value=10.0,
             abs_error=35.0,
@@ -47,7 +47,7 @@ def test_write_failure_report_groups_and_ranks_predictions(tmp_path: Path) -> No
     assert report.attempted_samples == 4
     assert report.successful_samples == 3
     assert report.failed_samples == 1
-    assert report.worst_cases[0].image_path == "captured_images/capture_m25c.jpg"
+    assert report.worst_cases[0].image_path == "ml/data/captured_images/capture_m25c.jpg"
     assert report.by_image_family[0].group_key == "m25c"
     assert report.by_value_bucket[0].group_key == "-30..-20"
 
@@ -63,9 +63,9 @@ def test_write_failure_report_groups_and_ranks_predictions(tmp_path: Path) -> No
 
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["attempted_samples"] == 4
-    assert summary["worst_cases"][0]["image_path"] == "captured_images/capture_m25c.jpg"
+    assert summary["worst_cases"][0]["image_path"] == "ml/data/captured_images/capture_m25c.jpg"
 
     with worst_cases_path.open("r", encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert rows[0]["rank"] == "1"
-    assert rows[0]["image_path"] == "captured_images/capture_m25c.jpg"
+    assert rows[0]["image_path"] == "ml/data/captured_images/capture_m25c.jpg"

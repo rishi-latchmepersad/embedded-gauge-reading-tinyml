@@ -57,8 +57,8 @@ dkms.conf
 # Ignore raw images (keep folder out of git, but allow the directory to exist)
 ml/data/raw/*
 !ml/data/raw/.gitkeep
-data/captured/images/_debug/
-data/captured/images/_live_rectified_probe/
+ml/data/captured_images/_debug/
+ml/data/captured_images/_live_rectified_probe/
 
 #ignore build files
 /build/*
@@ -81,3 +81,10 @@ firmware/stm32/n657/st_ai_output/*
 tmp_*/
 tmp/*
 !tmp/.gitkeep
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+ml/.venv/

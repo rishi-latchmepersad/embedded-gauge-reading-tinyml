@@ -22,9 +22,9 @@ print("Loading rectifier...", flush=True)
 rect = tf.keras.models.load_model(str(RECTIFIER), compile=False)
 
 images = [
-    "captured_images/today_converted/capture_2026-04-09_06-41-57.png",
-    "captured_images/today_converted/capture_2026-04-09_06-50-28.png",
-    "captured_images/today_converted/capture_2026-04-09_06-51-13.png",
+    "ml/data/captured_images/today_converted/capture_2026-04-09_06-41-57.png",
+    "ml/data/captured_images/today_converted/capture_2026-04-09_06-50-28.png",
+    "ml/data/captured_images/today_converted/capture_2026-04-09_06-51-13.png",
 ]
 
 for rel in images:

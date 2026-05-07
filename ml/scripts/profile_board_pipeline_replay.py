@@ -30,7 +30,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--capture-path",
         type=Path,
-        default=REPO_ROOT / "captured_images" / "capture_2026-04-24_22-30-21.png",
+        default=REPO_ROOT / "ml" / "data" / "captured_images" / "capture_2026-04-24_22-30-21.png",
         help="Capture to replay.",
     )
     parser.add_argument(

@@ -260,7 +260,7 @@ Fixed classical baseline angle detection issues on live board:
 - While FileX is still not ready, the camera loop now retries sooner instead of waiting a full minute between capture attempts, so the board keeps visibly producing progress during bring-up and debug.
 - [2026-04-28] Improved classical baseline reliability by adjusting acceptance criteria: set minimum accept score to 2.0 (based on debug scores in 6-7 range), relaxed peak ratio to 1.10, tightened center distance threshold, and adjusted geometry override and bright center penalties. Fixed compilation error in AppBaselineRuntime_PassesAcceptanceGate function. This should reduce "[BASELINE] Classical baseline failed to estimate a temperature" occurrences while maintaining robustness.
 - [2026-04-28] Added a continuity-aware borderline path for strong fixed-crop and image-center estimates: if the peak ratio is only slightly soft but the new reading stays within a small temperature delta of the last stable estimate, the firmware can seed history instead of holding stale output. This is meant to rescue live continuation frames without lowering the global peak-ratio gate for unrelated clutter.
-- [2026-04-28] Offline single-image testing on 8 images from `data/captured/images/` revealed significant performance variance: some images achieve 0°C error (capture_0001, capture_0002), while hard cases show up to 20°C error (capture_2026-04-24_22-24-04 predicted 26.89°C vs 10°C true). Low confidence (<10) often correlates with large errors. The baseline shows inconsistent performance - works perfectly on some images, fails badly on others. Confidence score appears to be a reliable indicator of accuracy.
+- [2026-04-28] Offline single-image testing on 8 images from `ml/data/captured_images/` revealed significant performance variance: some images achieve 0°C error (capture_0001, capture_0002), while hard cases show up to 20°C error (capture_2026-04-24_22-24-04 predicted 26.89°C vs 10°C true). Low confidence (<10) often correlates with large errors. The baseline shows inconsistent performance - works perfectly on some images, fails badly on others. Confidence score appears to be a reliable indicator of accuracy.
 - [2026-04-28] Added confidence threshold (10.0) and peak ratio threshold (1.5) filtering to single_image_baseline.py. Weak detections (confidence < 10) now return "none" instead of inaccurate predictions. This rejects 3 of 8 hard case images that were previously over-predicting by 16-20°C. Good images (capture_0001, capture_0002) still work correctly with confidence > 20. Remaining high-confidence wrong predictions (capture_2026-04-24_22-30-21, capture_0075, etc.) have confidence > 10 but wrong angles - root cause is the polar spoke voting algorithm finding a strong but incorrect peak in complex scenes. All 8 unit tests pass after improvements with no regressions.
 - [2026-04-28] Improved angular filtering: reduced sweep arc margin from 12° to 6° and added post-detection angle validation in baseline_classical_cv.py. This further reduces false positives from out-of-sweep features. Hard case images with confidence < 10 now correctly return "none" instead of inaccurate predictions. Remaining issue: high-confidence wrong predictions still occur when the detected angle is within the sweep arc but incorrect - need to add geometric validation or multi-stage filtering.
 - The cooperative delay helper now sleeps one tick at a time instead of only yielding, because the pure-yield version starved the lower-priority heartbeat thread and broke the visible green pulse.
@@ -304,12 +304,12 @@ Fixed classical baseline angle detection issues on live board:
 - The pure classical board baseline still uses a tiny rim-based center search before the spoke vote, but the live selector no longer hard-prioritizes rim-center over the other accepted candidates. The board bug at `-5C` came from that hard priority forcing a warm false positive, so the firmware now ranks candidates by peak-sharpness quality first, matching the Python classical helper instead of giving the rim an unconditional win.
 - [2026-04-29] Attempted to simplify the classical baseline using a pure line-segment approach (HoughLinesP + tip-vs-tail discrimination). The "simple" version failed on 4/5 hard cases, proving that the complexity in the original baseline (polar voting, multiple geometry candidates, numerous thresholds) was a necessary evolution to handle low contrast, close-up framing, and noisy edges. HoughCircles remains a major bottleneck on close-ups.
 - The latest board-image inspection suggests the needle is more saturated / color-separated than the surrounding dial artwork, so the old grayscale-dark shaft assumption is brittle. A color-aware shaft scan with heavier middle-shaft weighting was tried to keep the dial from stealing attention, but the current implementation regressed `board_weak_focus.csv` to about `MAE=28.6173`, so that detector variant is not yet a usable baseline.
-- Keep using `data/captured/images/` and `board_weak_focus.csv` as the main regression set for the next detector-tuning pass, because those samples expose the board-specific failures better than the broader hard-case mix.
+- Keep using `ml/data/captured_images/` and `board_weak_focus.csv` as the main regression set for the next detector-tuning pass, because those samples expose the board-specific failures better than the broader hard-case mix.
 - For the clean 2026-04-24 captures, the over-aggressive board-prior override was the bigger problem than the Hough seed itself. The default single-image baseline now keeps a confident Hough geometry on ideal frames and only falls back to the board-prior scan when Hough is weak, which is the right tradeoff for the simple near-centered cases we care about most right now.
 - [2026-04-29] The clean-capture baseline got a lot better once the default combined detector stopped letting the experimental line-segment and Hough-line branches win. The default now prefers the stable spoke/center-weighted detectors, and the board-prior helper tries the generic radial detector before the shaft scan so clean photos keep the better middle-shaft vote.
 - On the clean labeled set (`capture_p25c.jpg`, `capture_p30c.jpg`, `capture_p31c.jpg`, `capture_p35c.jpg`, `capture_p45c.png`) the current default baseline is now around `MAE=5.413`, which is finally good enough for the ideal-case thesis baseline.
 - [2026-04-29] The live STM32 baseline should now rank `fixed-crop-polar` ahead of `board-prior-polar` so the stable crop stays in charge on clean captures. The board prior is still a fallback, but it should no longer outrank the ideal-case fixed crop just because it found a slightly stronger local vote.
-- [2026-04-30] The newest `data/captured/images/capture_2026-04-30_05-51-06.yuv422`, `05-52-17`, and `05-53-29` previews confirmed the gauge is a dark-needle-on-light-background case. The STM32 polar vote should therefore emphasize the middle shaft and ignore red-pixel bias rather than assuming the needle itself is red.
+- [2026-04-30] The newest `ml/data/captured_images/capture_2026-04-30_05-51-06.yuv422`, `05-52-17`, and `05-53-29` previews confirmed the gauge is a dark-needle-on-light-background case. The STM32 polar vote should therefore emphasize the middle shaft and ignore red-pixel bias rather than assuming the needle itself is red.
 - [2026-04-30] The newest ideal previews (`capture_2026-04-30_07-00-09.png`, `07-01-21.png`, `05-51-06.png`, `05-52-17.png`, `05-53-29.png`) still look reasonable on the laptop classical baseline, but the live firmware was still letting a lone fixed-crop peak win too often. The default selector now keeps the agreement-cluster rule enabled so a consistent temperature cluster can beat a single outlier.
 - [2026-04-30] A batch replay over the newest captures confirmed the chosen classical baseline is acceptable on the ideal controls: `capture_p25c.jpg`, `capture_p30c.jpg`, `capture_p31c.jpg`, `capture_p35c.jpg`, and `capture_p45c.png` came out to about `MAE=3.556C`. The new 2026-04-29 raw frames are mostly overexposed/blank and should be treated as non-ideal smoke-test inputs, not as the target regime for the thesis baseline.
 - [2026-04-30] Re-checking the live 2026-04-30 previews showed the upper temperature needle is around 5C on the inner scale, which is also around 40F on the outer scale. The earlier "40C" read was wrong, so future baseline tuning should keep the upper needle as the target and ignore the lower subdial.
@@ -362,6 +362,95 @@ The issue was that the `prefix` parameter (string literal) was being corrupted b
 - No HardFault crash during inference
 - Calibration delta logging works correctly
 - Baseline and CNN inference both complete successfully
+
+## 2026-05-07 CNN Training Session — Model Collapse and Recovery
+
+### Data Reality Check
+- **Only 141 unique labelled images exist** across all manifests. The canonical manifest (141 images) already contains the best/unique images. Other manifests (unified=57, full_labelled=31, hard_cases=57, new_captures=26, board_captures=84) are all subsets or duplicates.
+- Merging all manifests with priority-based deduplication yields exactly 141 images — no more data to add.
+- Value range: -30°C to +50°C (full gauge range represented).
+
+### Recheck Note (2026-05-07)
+- The `ml/data/*.csv` manifests contain **2,648 valid scalar rows** after filtering out comment rows and non-numeric labels.
+- Those rows collapse to **538 unique image references** and **538 unique resolved filesystem paths**.
+- Of those, **144 unique stems** overlap with files present in `ml/data/captured_images/`.
+- There are **13 resolved-path label conflicts** where the same file is assigned multiple temperatures across manifests.
+- So the repo does contain many more capture files and manifest rows than the canonical 141, but we need deduping and conflict resolution before all of them can be treated as clean supervised training data.
+
+### Full-Data Tiny Run (2026-05-07)
+- Built `ml/data/full_scalar_manifest_v1.csv` with **538 deduped rows**.
+- The builder also wrote `ml/data/full_scalar_manifest_conflicts_v1.csv` with **65 conflict rows**.
+- Best full-data tiny run so far: `test_mae=16.20C`, `test_rmse=20.28C`, `predicted_std=1.82C`.
+- The run early-stopped at epoch 41 and restored weights from epoch 26, so the larger manifest is usable but still not enough by itself to reach the sub-5C target.
+
+### Full-Manifest Rectified Run (2026-05-07)
+- Built `ml/data/rectified_crop_boxes_full_scalar_v1.csv` for the full 538-row manifest using the rectifier stage.
+- Warm-started full MobileNetV2 scalar training on the noisy full manifest, but the run still landed at `test_mae=16.44C` and `test_pct_under_5c=14.8%`.
+- Conclusion: the full manifest remains too noisy for the best learned path, even with rectifier-aligned crops and a warm start.
+- The strongest learned path is still the curated rectified-crop fine-tune artifact `ml/artifacts/training/scalar_rectified_crop_finetune_v2_20260422`, which reported `mae=1.66C` on its held-out split.
+
+### The Model Collapse Problem
+- **Symptom**: Model predicts ~22.7°C for ALL inputs regardless of true temperature. Predicted std=0.24°C, correlation=-0.47 with true values.
+- **Root cause**: Fine-tuning the MobileNetV2 backbone with only 141 images causes immediate overfitting. The model learns to output the mean temperature instead of actual gauge readings.
+- **Architecture issue**: Sigmoid + Rescaling output layer is unstable with small datasets. The model collapses to a constant output to minimize loss.
+
+### Failed Approaches (Documented for Future Reference)
+1. **Comprehensive v1** (`train_gauge_comprehensive.py`): On-the-fly loading with `tf.numpy_function` + aggressive augmentation + AdamW + 5-fold CV. Failed due to:
+   - `tf.image.resize_with_pad` shape inference errors inside `tf.numpy_function`
+   - Double-scaling bug (normalized targets to [0,1] when model already had Rescaling layer)
+   - Horizontal flip corrupting labels (reverses needle direction)
+   - Val MAE diverged from 6.8°C to 15.9°C during fine-tuning
+
+2. **Comprehensive v2** (`train_gauge_comprehensive_v2.py`): Preloaded images + canonical baseline pipeline + frozen backbone. Still collapsed because:
+   - 256-unit head with alpha=1.0 = 328K trainable parameters for 141 images
+   - MSE loss with extreme sample weights (up to 25×) caused gradient explosions
+   - Even with frozen backbone, the oversized head overfit immediately
+
+3. **All-data baseline** (`train_all_data_baseline.py`): Proven canonical pipeline with merged data. Achieved 7.98°C MAE (same as canonical baseline on 141 images), but hard cases still 23.85°C.
+
+### Working Approach: Tiny MobileNetV2
+- **Model**: `build_mobilenetv2_tiny_regression_model()` (alpha=0.35, head=64, dropout=0.15)
+- **Parameters**: ~1.2M total, ~50K trainable (vs 3.5M/328K for alpha=1.0/256-head)
+- **Training**: Frozen backbone, MSE loss, 40 epochs, batch=8, LR=1e-4
+- **Key insight**: Smaller model = less overfitting. The tiny model is designed for STM32N6 deployment anyway.
+
+### Critical Hyperparameter Lessons
+| Parameter | Bad Value | Good Value | Why |
+|---|---|---|---|
+| Backbone | Unfrozen | Frozen | 141 images can't fine-tune 3M+ params |
+| Head size | 256 units | 64 units | Fewer params = less overfitting |
+| Alpha | 1.0 | 0.35 | Smaller backbone = fewer features to overfit |
+| Loss | Huber(delta=1.0) | MSE | Huber is too forgiving for 20-40°C errors |
+| Augmentation | Horizontal flip | No flip | Flip reverses needle direction, corrupts labels |
+| Sample weights | Uncapped (25×) | Capped at 5× | Extreme weights destabilize gradients |
+| LR warmup | 1e-3 | 5e-5 | Too high LR causes immediate divergence |
+| LR fine-tune | 1e-4 | 1e-5 (or don't fine-tune) | Any backbone LR causes collapse |
+
+### Architecture Lessons
+- **Sigmoid + Rescaling is problematic** for regression with small datasets. The sigmoid compresses gradients at extremes, making it hard to learn cold/hot values.
+- **Linear output head** (no sigmoid, no rescaling) would be better for small datasets, but the current model builder enforces sigmoid.
+- **MobileNetV2 features are sufficient** — the issue is not feature quality, it's the head/regression head capacity and training stability.
+
+### Next Steps for <5°C Target
+1. Run tiny model training and evaluate
+2. If still >5°C, consider:
+   - Custom model with linear output (no sigmoid compression)
+   - Needle-angle detection as intermediate representation
+   - Data augmentation focused on needle rotation (not photometric)
+   - Ensemble of multiple tiny models
+
+### Files Created This Session
+- `ml/scripts/train_gauge_comprehensive.py` — v1 (broken, on-the-fly loading)
+- `ml/scripts/train_gauge_comprehensive_v2.py` — v2 (preloaded, still collapsed)
+- `ml/scripts/train_all_data_baseline.py` — proven pipeline with all data
+- `ml/scripts/train_head_only.py` — frozen backbone + 256-head (still collapsed)
+- `ml/scripts/train_tiny_model.py` — tiny MobileNetV2 (current best hope)
+- `ml/scripts/analyze_predictions.py` — prediction analysis tool
+- `tmp/run_comprehensive_training.sh` — v1 runner
+- `tmp/run_comprehensive_v2.sh` — v2 runner
+- `tmp/run_all_data_baseline.sh` — all-data runner
+- `tmp/run_head_only.sh` — head-only runner
+- `tmp/run_tiny_model.sh` — tiny model runner
 
 ## Topic Files
 
@@ -484,3 +573,67 @@ The issue was that the `prefix` parameter (string literal) was being corrupted b
 - Refreshed firmware canonical model blob: irmware/stm32/n657/st_ai_output/atonbuf.xSPI2.raw.
 - Hard manifest eval snapshot (fixed-crop script): MAE ~9.91C on hard_cases_plus_board30_valid_with_new6.csv; target <5C not yet met.
 - WSL CUDA/GPU probe timed out in this session; packaging/export succeeded in WSL CPU path.
+
+## 2026-05-05 no-cal hard-case recovery + packaging
+- Re-evaluated candidate checkpoints on `ml/data/hard_cases_plus_board30_valid_with_new6.csv`.
+- Best current no-calibration checkpoint remains `ml/artifacts/training/no_cal_hardpush_gpu1/model.keras` with `n=57 MAE=5.15 bias=-2.35 std=5.44`.
+- Multiple additional fine-tunes (`no_cal_final_biasfix_v3_tail`, `v4_gentle`, `v5_headonly_tail`) regressed and were rejected.
+- Exported best checkpoint to int8:
+  - `ml/artifacts/deployment/no_cal_hardpush_gpu1_int8/model_int8.tflite`
+  - `ml/artifacts/deployment/no_cal_hardpush_gpu1_int8/metadata.json`
+- Packaged relocatable STM32N6 binary:
+  - `ml/artifacts/runtime/no_cal_hardpush_gpu1_int8_reloc/no_cal_hardpush_gpu1_int8_rel.bin`
+- Refreshed canonical flash blob:
+  - `firmware/stm32/n657/st_ai_output/atonbuf.xSPI2.raw`
+
+## 2026-05-05 OBB HardFault + Scalar Signature Mismatch
+
+**Symptom**:
+- OBB stage crashed with HardFault at `BFAR=0x70A11E80` right after `Stage inference run start`.
+- Scalar fallback sometimes failed with `xSPI2 stage 'scalar' signature mismatch`.
+
+**Root cause**:
+- Stage switch to scalar called `AppAI_ReconfigureXspi2ForRuntime()` (disables memory-mapped mode).
+- Scalar signature mismatch aborted early, leaving xSPI2 in indirect mode.
+- Next frame reused OBB `app_ai_loaded_xspi2_stage` fast-path (`already loaded`) and skipped MM re-enable.
+- OBB then faulted on first flash-weight read (`_mem_pool_xSPI2_mobilenetv2_obb_longterm + 0x311E80`).
+
+**Fix in `app_ai.c`**:
+1. Added `app_ai_xspi2_mm_enabled` runtime state flag.
+2. Clear MM flag on xSPI reconfigure/deinit paths; set flag on successful MM enable.
+3. In stage fast-path (`already loaded`), re-enable MM if it is off.
+4. In stage reconfigure path, clear `app_ai_loaded_xspi2_stage` before verify/reload.
+5. Made scalar signature mismatch non-fatal (warn + continue) to tolerate externally flashed scalar blobs.
+
+**Result**:
+- Prevents stale-stage/MM-off OBB HardFault loop.
+- Keeps scalar fallback usable after external reflashes with different blob signatures.
+
+## 2026-05-05 Scalar Zero Output Root Cause
+
+**Observed**: Scalar stage ran successfully but output tensor stayed constant at float `-0.0` (`00 00 00 80`).
+
+**Root cause**: The flashed canonical scalar blob (`st_ai_output/atonbuf.xSPI2.raw`) did not match the scalar package C runtime currently compiled into firmware.
+- Canonical blob: `3218865` bytes, tail `...00DB`
+- Package-matched blob (`prod_model_v0.2_raw_int8/..._atonbuf.xSPI2.raw`): `3218881` bytes, tail `...00DC`
+
+**Fix**:
+1. Flashed the package-matched scalar blob at `0x70200000`.
+2. Synced canonical `st_ai_output/atonbuf.xSPI2.raw` to that same package file to prevent regressions.
+
+- 2026-05-06: WSL GPU training fix for TensorFlow 2.21.0 in ml/.venv: export LD_LIBRARY_PATH to include /usr/lib/wsl/lib plus all .venv site-packages nvidia/*/lib paths before running training. Without this, TF reported 'Cannot dlopen some GPU libraries' and saw no GPU. Also set 'set -euo pipefail' in tmp/train_variant_a_gpu_v2.sh so pipeline failures are not masked by tee.
+
+- 2026-05-06: If commands/scripts show no output or appear stuck, immediately run 'wsl --shutdown' and retry. Treat WSL restart as first-line recovery on this machine.
+
+- 2026-05-06: Updated ml/.venv/bin/activate to auto-export LD_LIBRARY_PATH with /usr/lib/wsl/lib and .venv site-packages nvidia/*/lib paths, and to restore previous LD_LIBRARY_PATH on deactivate. This makes TF GPU detection automatic after source .venv/bin/activate.
+
+## 2026-05-06 WSL GPU + Retraining Blockers
+
+- Root freeze cause for `tmp/run_canonical_training.sh` was WSL GPU stack state. After `wsl --shutdown`, both `nvidia-smi` and TensorFlow GPU device enumeration recovered.
+- `scripts/train_hardcase_interval.py` currently cannot run in this checkout because `ml/data/raw/` is empty and training expects files like `ml/data/raw/PXL_*.jpg`.
+- The CVAT zip files in `ml/data/labelled/` currently contain `annotations.xml` only in this workspace (no raw image payload), so raw-image reconstruction was not possible from local files.
+- Fixed a real bug in `ml/scripts/train_canonical_baseline.py` dataset weighting path:
+  - changed `dataset.map(lambda x, y, w: ((x, y), w))`
+  - to `dataset.map(lambda x, y, w: (x, y, w))`
+  - This avoids Keras treating `(x, y)` as two model inputs.
+- Canonical retrain still needs a clean rerun after process cleanup; prior run got stuck during image preload after this fix.

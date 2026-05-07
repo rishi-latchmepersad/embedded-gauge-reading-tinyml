@@ -65,6 +65,12 @@
 #ifndef APP_AI_RESET_NETWORK_EACH_INFERENCE
 #define APP_AI_RESET_NETWORK_EACH_INFERENCE 0
 #endif
+/* The OBB stage currently faults on some boards when reading the xSPI2 OBB
+ * blob. Keep it behind a switch so we can run scalar inference reliably while
+ * we root-cause the OBB runtime issue. */
+#ifndef APP_AI_ENABLE_OBB_STAGE
+#define APP_AI_ENABLE_OBB_STAGE 1U
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -133,7 +139,13 @@
 /* Reject only extreme OBB crops that drift far from the stable training crop
  * size; moderate shape changes should stay on the fast OBB path. */
 #define APP_AI_OBB_TRAINING_CROP_MIN_RATIO 0.60f
-#define APP_AI_OBB_TRAINING_CROP_MAX_RATIO 1.40f
+#define APP_AI_OBB_TRAINING_CROP_MAX_RATIO 1.25f
+/* When OBB box size drifts, keep scalar dimensions on training crop but let
+ * OBB nudge the crop centre slightly instead of hard-falling to fixed crop. */
+#define APP_AI_OBB_CENTER_BLEND_NUMERATOR 1U
+#define APP_AI_OBB_CENTER_BLEND_DENOMINATOR 1U
+#define APP_AI_OBB_CENTER_MIN_RATIO 0.10f
+#define APP_AI_OBB_CENTER_MAX_RATIO 0.90f
 /* Match the Python rectifier evaluator: never let the predicted box collapse
  * below a tiny fraction of the canvas, or the scalar stage degenerates to a
  * 1x1 crop. */
@@ -214,6 +226,7 @@ static size_t app_ai_inference_burst_history_next_index = 0U;
 #endif
 static bool app_ai_npu_hw_initialized = false;
 static bool app_ai_xspi2_initialized = false;
+static bool app_ai_xspi2_mm_enabled = false;
 static const struct AppAI_ModelStageSpec *app_ai_loaded_xspi2_stage = NULL;
 static bool app_ai_forced_crop_active = false;
 static size_t app_ai_forced_crop_x_min = 0U;
@@ -637,6 +650,7 @@ static bool AppAI_EnsureXspi2MemoryReady(void)
 	 * write commands will fail.  Take it back to indirect mode first. DeInit
 	 * handles this cleanly regardless of the current BSP context state. */
 	(void)BSP_XSPI_NOR_DeInit(0U);
+	app_ai_xspi2_mm_enabled = false;
 
 	periph_clk.PeriphClockSelection = RCC_PERIPHCLK_XSPI2;
 	periph_clk.Xspi2ClockSelection = RCC_XSPI2CLKSOURCE_IC3;
@@ -682,6 +696,7 @@ static bool AppAI_ReconfigureXspi2ForRuntime(void)
 	 * re-initialize the peripheral into indirect/write mode if provisioning
 	 * is needed again after this reconfigure. */
 	app_ai_xspi2_initialized = false;
+	app_ai_xspi2_mm_enabled = false;
 	(void)DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: disable MM start.\r\n");
 	(void)BSP_XSPI_NOR_DisableMemoryMappedMode(0U);
 	(void)DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: disable MM OK.\r\n");
@@ -738,9 +753,11 @@ static bool AppAI_Xspi2EnableMemoryMappedMode(void)
 	(void)DebugConsole_WriteString("[AI] xSPI2 enable MM start.\r\n");
 	if (BSP_XSPI_NOR_EnableMemoryMappedMode(0U) != BSP_ERROR_NONE)
 	{
+		app_ai_xspi2_mm_enabled = false;
 		(void)DebugConsole_WriteString("[AI] xSPI2 enable MM failed.\r\n");
 		return false;
 	}
+	app_ai_xspi2_mm_enabled = true;
 	(void)DebugConsole_WriteString("[AI] xSPI2 enable MM OK.\r\n");
 	return true;
 }
@@ -2083,6 +2100,12 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 						   actual[4], actual[5], actual[6], actual[7]);
 			DebugConsole_WriteString(vlog);
 		}
+		if (!is_obb)
+		{
+			(void)DebugConsole_WriteString(
+				"[AI] scalar signature mismatch; continuing with flashed image.\r\n");
+			return true;
+		}
 		return false;
 	}
 
@@ -2096,6 +2119,12 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 						   stage->stage_label);
 			(void)DebugConsole_WriteString(vlog);
 #endif
+		}
+		if (!is_obb)
+		{
+			(void)DebugConsole_WriteString(
+				"[AI] scalar tail mismatch; continuing with flashed image.\r\n");
+			return true;
 		}
 		return false;
 	}
@@ -2657,6 +2686,15 @@ static bool AppAI_EnsureXspi2ModelImageReadyForStage(
 	if (app_ai_loaded_xspi2_stage == stage)
 	{
 		(void)DebugConsole_WriteString("[AI] xSPI2 stage already loaded.\r\n");
+		if (!app_ai_xspi2_mm_enabled)
+		{
+			(void)DebugConsole_WriteString(
+				"[AI] xSPI2 stage was loaded but MM was off; re-enabling MM.\r\n");
+			if (!AppAI_Xspi2EnableMemoryMappedMode())
+			{
+				return false;
+			}
+		}
 		return true;
 	}
 
@@ -2669,6 +2707,9 @@ static bool AppAI_EnsureXspi2ModelImageReadyForStage(
 		DebugConsole_WriteString("[AI] xSPI2 stage reconfigure FAILED.\r\n");
 		return false;
 	}
+	/* Any reconfigure invalidates the previously loaded stage/MM state until
+	 * this function verifies and re-enables mapped mode for the target stage. */
+	app_ai_loaded_xspi2_stage = NULL;
 	DebugConsole_WriteString("[AI] xSPI2 stage reconfigure OK.\r\n");
 
 	if (!AppAI_Xspi2ModelImageMatchesMappedFlashForStage(stage))
@@ -3153,6 +3194,8 @@ static bool AppAI_DecodeObbCropBox(
 	const float input_size_f = (float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
 	const size_t training_crop_width = (size_t)(((float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * (APP_AI_TRAINING_CROP_X_MAX_RATIO - APP_AI_TRAINING_CROP_X_MIN_RATIO)) + 0.5f);
 	const size_t training_crop_height = (size_t)(((float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * (APP_AI_TRAINING_CROP_Y_MAX_RATIO - APP_AI_TRAINING_CROP_Y_MIN_RATIO)) + 0.5f);
+	size_t training_center_x = 0U;
+	size_t training_center_y = 0U;
 	float center_x = 0.0f;
 	float center_y = 0.0f;
 	float box_w = 0.0f;
@@ -3390,14 +3433,98 @@ static bool AppAI_DecodeObbCropBox(
 
 		if ((crop_width_ratio < APP_AI_OBB_TRAINING_CROP_MIN_RATIO) || (crop_width_ratio > APP_AI_OBB_TRAINING_CROP_MAX_RATIO) || (crop_height_ratio < APP_AI_OBB_TRAINING_CROP_MIN_RATIO) || (crop_height_ratio > APP_AI_OBB_TRAINING_CROP_MAX_RATIO))
 		{
+			const float obb_center_blend_f =
+				((float)APP_AI_OBB_CENTER_BLEND_NUMERATOR) /
+				((float)APP_AI_OBB_CENTER_BLEND_DENOMINATOR);
+			float centered_x_min_f = 0.0f;
+			float centered_y_min_f = 0.0f;
+			float centered_x_max_f = 0.0f;
+			float centered_y_max_f = 0.0f;
+
 			DebugConsole_Printf(
-				"[AI] OBB crop outside training window: crop=%lux%lu train=%lux%lu ratio=%ld/%ld -> fixed training crop fallback.\r\n",
+				"[AI] OBB crop outside training window: crop=%lux%lu train=%lux%lu ratio=%ld/%ld -> centered training-size OBB fallback.\r\n",
 				(unsigned long)crop_out->width,
 				(unsigned long)crop_out->height,
 				(unsigned long)training_crop_width,
 				(unsigned long)training_crop_height,
 				crop_width_ratio_milli, crop_height_ratio_milli);
-			return false;
+
+			if ((center_x < APP_AI_OBB_CENTER_MIN_RATIO) ||
+				(center_x > APP_AI_OBB_CENTER_MAX_RATIO) ||
+				(center_y < APP_AI_OBB_CENTER_MIN_RATIO) ||
+				(center_y > APP_AI_OBB_CENTER_MAX_RATIO))
+			{
+				return false;
+			}
+
+			AppGaugeGeometry_TrainingCropCenter(
+				(size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
+				(size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS,
+				&training_center_x, &training_center_y);
+
+			centered_x_min_f =
+				((float)training_center_x) +
+				((((float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS) * center_x - (float)training_center_x) * obb_center_blend_f) -
+				(0.5f * (float)training_crop_width);
+			centered_y_min_f =
+				((float)training_center_y) +
+				((((float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS) * center_y - (float)training_center_y) * obb_center_blend_f) -
+				(0.5f * (float)training_crop_height);
+			centered_x_max_f = centered_x_min_f + (float)training_crop_width;
+			centered_y_max_f = centered_y_min_f + (float)training_crop_height;
+
+			if (centered_x_min_f < 0.0f)
+			{
+				centered_x_max_f -= centered_x_min_f;
+				centered_x_min_f = 0.0f;
+			}
+			if (centered_y_min_f < 0.0f)
+			{
+				centered_y_max_f -= centered_y_min_f;
+				centered_y_min_f = 0.0f;
+			}
+			if (centered_x_max_f > source_width_f)
+			{
+				const float shift = centered_x_max_f - source_width_f;
+				centered_x_min_f = (centered_x_min_f > shift) ? (centered_x_min_f - shift) : 0.0f;
+				centered_x_max_f = source_width_f;
+			}
+			if (centered_y_max_f > source_height_f)
+			{
+				const float shift = centered_y_max_f - source_height_f;
+				centered_y_min_f = (centered_y_min_f > shift) ? (centered_y_min_f - shift) : 0.0f;
+				centered_y_max_f = source_height_f;
+			}
+			if ((centered_x_max_f <= centered_x_min_f) ||
+				(centered_y_max_f <= centered_y_min_f))
+			{
+				return false;
+			}
+
+			crop_out->x_min = (size_t)floorf(centered_x_min_f);
+			crop_out->y_min = (size_t)floorf(centered_y_min_f);
+			crop_out->width = (size_t)ceilf(centered_x_max_f) - crop_out->x_min;
+			crop_out->height = (size_t)ceilf(centered_y_max_f) - crop_out->y_min;
+			if (crop_out->width == 0U)
+			{
+				crop_out->width = 1U;
+			}
+			if (crop_out->height == 0U)
+			{
+				crop_out->height = 1U;
+			}
+			if ((crop_out->x_min + crop_out->width) > (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS)
+			{
+				crop_out->width = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS - crop_out->x_min;
+			}
+			if ((crop_out->y_min + crop_out->height) > (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS)
+			{
+				crop_out->height = (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS - crop_out->y_min;
+			}
+			if ((crop_out->width == 0U) || (crop_out->height == 0U))
+			{
+				return false;
+			}
 		}
 	}
 
@@ -3503,7 +3630,13 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 								(uint32_t)((uintptr_t)input_ptr + input_len_bytes));
 	(void)DebugConsole_WriteString("[AI] Stage input cache clean OK.\r\n");
 
-	if (APP_AI_RESET_NETWORK_EACH_INFERENCE)
+	/* The OBB and scalar stages can return stale outputs when one-shot runtime
+	 * state is reused across stage switches, so reset both before epochs. */
+	const bool force_reset_stage =
+		(APP_AI_RESET_NETWORK_EACH_INFERENCE != 0) ||
+		(stage == &app_ai_obb_stage) ||
+		(stage == &app_ai_scalar_stage);
+	if (force_reset_stage)
 	{
 		(void)DebugConsole_WriteString("[AI] Stage network reset start.\r\n");
 		LL_ATON_RT_Reset_Network(stage->nn_instance);
@@ -4237,41 +4370,49 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		return false;
 	}
 
-	(void)DebugConsole_WriteString("[AI] Dry-run model init OK; launching OBB stage.\r\n");
-
-	if (AppAI_RunStageInference(&app_ai_obb_stage, frame_bytes, frame_size,
-								&full_frame_crop, &obb_output_info, &obb_output_value) &&
-		AppAI_DecodeObbCropBox(obb_output_info, &scalar_crop, &obb_box))
+	if (APP_AI_ENABLE_OBB_STAGE != 0U)
 	{
-		AppAI_LogObbResult(obb_output_info, &obb_box);
-		DebugConsole_Printf(
-			"[AI] OBB crop: x=%lu y=%lu w=%lu h=%lu\r\n",
-			(unsigned long)scalar_crop.x_min,
-			(unsigned long)scalar_crop.y_min,
-			(unsigned long)scalar_crop.width,
-			(unsigned long)scalar_crop.height);
+		(void)DebugConsole_WriteString("[AI] Dry-run model init OK; launching OBB stage.\r\n");
 
-		if (AppAI_RunStageInference(&app_ai_scalar_stage, frame_bytes, frame_size,
-									&scalar_crop, &scalar_output_info, &scalar_output_value))
+		if (AppAI_RunStageInference(&app_ai_obb_stage, frame_bytes, frame_size,
+									&full_frame_crop, &obb_output_info, &obb_output_value) &&
+			AppAI_DecodeObbCropBox(obb_output_info, &scalar_crop, &obb_box))
 		{
-			/* Log the inference result immediately after inference, before xSPI2
-			 * reconfiguration for the next stage. This avoids stale pointer issues
-			 * when the internal buffer info pointers become invalid after reconfigure. */
+			AppAI_LogObbResult(obb_output_info, &obb_box);
 			DebugConsole_Printf(
-				"[AI] Model output (cached): %.6f\r\n", scalar_output_value);
-			app_ai_last_inference_value =
-				AppAI_TraceAndApplyInferenceCalibration(scalar_output_value);
-			app_ai_last_inference_valid = true;
-			return true;
-		}
+				"[AI] OBB crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+				(unsigned long)scalar_crop.x_min,
+				(unsigned long)scalar_crop.y_min,
+				(unsigned long)scalar_crop.width,
+				(unsigned long)scalar_crop.height);
 
-		(void)DebugConsole_WriteString(
-			"[AI] OBB scalar stage failed; falling back to fixed training crop.\r\n");
+			if (AppAI_RunStageInference(&app_ai_scalar_stage, frame_bytes, frame_size,
+										&scalar_crop, &scalar_output_info, &scalar_output_value))
+			{
+				/* Log the inference result immediately after inference, before xSPI2
+				 * reconfiguration for the next stage. This avoids stale pointer issues
+				 * when the internal buffer info pointers become invalid after reconfigure. */
+				DebugConsole_Printf(
+					"[AI] Model output (cached): %.6f\r\n", scalar_output_value);
+				app_ai_last_inference_value =
+					AppAI_TraceAndApplyInferenceCalibration(scalar_output_value);
+				app_ai_last_inference_valid = true;
+				return true;
+			}
+
+			(void)DebugConsole_WriteString(
+				"[AI] OBB scalar stage failed; falling back to fixed training crop.\r\n");
+		}
+		else
+		{
+			(void)DebugConsole_WriteString(
+				"[AI] OBB stage or decode failed; falling back to fixed training crop.\r\n");
+		}
 	}
 	else
 	{
 		(void)DebugConsole_WriteString(
-			"[AI] OBB stage or decode failed; falling back to fixed training crop.\r\n");
+			"[AI] OBB stage disabled; using fixed training crop.\r\n");
 	}
 
 	(void)DebugConsole_WriteString(

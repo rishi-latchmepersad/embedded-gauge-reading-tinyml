@@ -77,7 +77,7 @@ def test_evaluate_manifest_counts_attempts_and_predictions(
 ) -> None:
     """The manifest evaluator should parse rows and produce predictions."""
     manifest_path = tmp_path / "manifest.csv"
-    manifest_path.write_text("image_path,value\ncaptured_images/example.png,12.5\n", encoding="utf-8")
+    manifest_path.write_text("image_path,value\nml/data/captured_images/example.png,12.5\n", encoding="utf-8")
 
     monkeypatch.setattr(
         manifest_eval,
@@ -110,4 +110,4 @@ def test_evaluate_manifest_counts_attempts_and_predictions(
     assert result.result.successful_samples == 1
     assert result.result.failed_samples == 0
     assert len(result.result.predictions) == 1
-    assert result.result.predictions[0].image_path.endswith("captured_images/example.png")
+    assert result.result.predictions[0].image_path.endswith("ml/data/captured_images/example.png")

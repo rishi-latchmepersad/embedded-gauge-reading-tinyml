@@ -140,6 +140,8 @@ class TrainConfig:
     mobilenet_pretrained: bool = DEFAULT_MOBILENET_PRETRAINED
     mobilenet_backbone_trainable: bool = DEFAULT_MOBILENET_BACKBONE_TRAINABLE
     mobilenet_warmup_epochs: int = DEFAULT_MOBILENET_WARMUP_EPOCHS
+    mobilenet_unfreeze_last_n: int = 0
+    mobilenet_freeze_batchnorm: bool = True
     mobilenet_alpha: float = DEFAULT_MOBILENET_ALPHA
     mobilenet_head_units: int = DEFAULT_MOBILENET_HEAD_UNITS
     mobilenet_head_dropout: float = DEFAULT_MOBILENET_HEAD_DROPOUT
@@ -237,9 +239,7 @@ def _validate_split_config(config: TrainConfig) -> None:
     if config.mixup_alpha < 0.0:
         raise ValueError("mixup_alpha must be >= 0.")
     if config.linear_output:
-        raise ValueError(
-            "linear_output=True is not supported in no-calibration mode."
-        )
+        raise ValueError("linear_output=True is not supported in no-calibration mode.")
     if config.interval_bin_width <= 0.0:
         raise ValueError("interval_bin_width must be > 0.")
     if config.interpolation_pair_strength < 0.0:
@@ -309,6 +309,39 @@ def _configure_training_runtime(config: TrainConfig) -> None:
         keras.mixed_precision.set_global_policy("mixed_float16")
     else:
         keras.mixed_precision.set_global_policy("float32")
+
+
+def _configure_mobilenet_backbone_trainability(
+    base_model: keras.Model,
+    *,
+    trainable: bool,
+    unfreeze_last_n: int = 0,
+    freeze_batchnorm: bool = True,
+) -> None:
+    """Apply a staged fine-tuning policy to a MobileNetV2 backbone.
+
+    We keep the pretrained backbone frozen during warmup, then optionally
+    unfreeze only the top-N layers for the low-LR fine-tune stage. BatchNorm
+    layers stay in inference mode during fine-tuning so their moving stats do
+    not drift on the small rectified dataset.
+    """
+    base_model.trainable = trainable
+
+    for layer in base_model.layers:
+        layer.trainable = trainable
+
+    if not trainable:
+        return
+
+    if unfreeze_last_n > 0:
+        cutoff = max(0, len(base_model.layers) - int(unfreeze_last_n))
+        for index, layer in enumerate(base_model.layers):
+            layer.trainable = index >= cutoff
+
+    if freeze_batchnorm:
+        for layer in base_model.layers:
+            if isinstance(layer, keras.layers.BatchNormalization):
+                layer.trainable = False
 
 
 def _log_runtime_state(config: TrainConfig) -> None:
@@ -3015,8 +3048,9 @@ def _compile_regression_model(
     interpolation_pair_scale: float = DEFAULT_INTERPOLATION_PAIR_SCALE,
 ) -> None:
     """Compile a scalar regression model with standard losses and metrics."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
         learning_rate=learning_rate,
+        weight_decay=1e-4,
         clipnorm=1.0,
     )
 
@@ -3042,8 +3076,9 @@ def _compile_fraction_model(
     fraction_loss_weight: float = DEFAULT_SWEEP_FRACTION_LOSS_WEIGHT,
 ) -> None:
     """Compile a sweep-fraction model with scalar and fraction losses."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
         learning_rate=learning_rate,
+        weight_decay=1e-4,
         clipnorm=1.0,
     )
 
@@ -3076,8 +3111,9 @@ def _compile_keypoint_model(
     heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
 ) -> None:
     """Compile a keypoint-auxiliary model with scalar and heatmap losses."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
         learning_rate=learning_rate,
+        weight_decay=1e-4,
         clipnorm=1.0,
     )
 
@@ -3112,8 +3148,9 @@ def _compile_geometry_model(
     value_loss_weight: float = DEFAULT_GEOMETRY_VALUE_LOSS_WEIGHT,
 ) -> None:
     """Compile a geometry detector with heatmap, coordinate, and value losses."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
         learning_rate=learning_rate,
+        weight_decay=1e-4,
         clipnorm=1.0,
     )
 
@@ -3157,8 +3194,9 @@ def _compile_geometry_uncertainty_model(
     high_quantile: float = DEFAULT_GEOMETRY_UNCERTAINTY_HIGH_QUANTILE,
 ) -> None:
     """Compile a geometry model with symmetric uncertainty bounds."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
         learning_rate=learning_rate,
+        weight_decay=1e-4,
         clipnorm=1.0,
     )
 
@@ -3206,8 +3244,9 @@ def _compile_rectifier_model(
     learning_rate: float,
 ) -> None:
     """Compile a rectifier model that regresses the normalized crop box."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
         learning_rate=learning_rate,
+        weight_decay=1e-4,
         clipnorm=1.0,
     )
 
@@ -3773,6 +3812,8 @@ def train(config: TrainConfig) -> TrainingResult:
                 head_units=config.mobilenet_head_units,
                 head_dropout=config.mobilenet_head_dropout,
                 linear_output=config.linear_output,
+                value_min=spec.min_value,
+                value_max=spec.max_value,
             )
         elif config.model_family == "mobilenet_v2_tiny":
             print("[TRAIN] Building tiny MobileNetV2 model...")
@@ -3781,10 +3822,12 @@ def train(config: TrainConfig) -> TrainingResult:
                 config.image_width,
                 pretrained=config.mobilenet_pretrained,
                 backbone_trainable=config.mobilenet_backbone_trainable,
-                alpha=config.mobilenet_alpha,
-                head_units=config.mobilenet_head_units,
-                head_dropout=config.mobilenet_head_dropout,
+                alpha=0.35,
+                head_units=64,
+                head_dropout=0.15,
                 linear_output=config.linear_output,
+                value_min=spec.min_value,
+                value_max=spec.max_value,
             )
         elif config.model_family == "mobilenet_v2_direction":
             print("[TRAIN] Building MobileNetV2 direction model...")
@@ -4115,7 +4158,12 @@ def train(config: TrainConfig) -> TrainingResult:
             f"warmup_epochs={warmup_epochs} "
             "backbone_trainable=False"
         )
-        backbone.trainable = False
+        _configure_mobilenet_backbone_trainability(
+            backbone,
+            trainable=False,
+            unfreeze_last_n=0,
+            freeze_batchnorm=config.mobilenet_freeze_batchnorm,
+        )
         if config.model_family in {"mobilenet_v2_direction", "compact_direction"}:
             _compile_direction_model(
                 model,
@@ -4203,6 +4251,13 @@ def train(config: TrainConfig) -> TrainingResult:
                 interpolation_pair_strength=config.interpolation_pair_strength,
                 interpolation_pair_scale=config.interpolation_pair_scale,
             )
+        if config.model_family.startswith("mobilenet_v2"):
+            _configure_mobilenet_backbone_trainability(
+                backbone,
+                trainable=False,
+                unfreeze_last_n=0,
+                freeze_batchnorm=config.mobilenet_freeze_batchnorm,
+            )
         warmup_history: keras.callbacks.History = model.fit(
             train_ds,
             validation_data=val_ds,
@@ -4217,7 +4272,13 @@ def train(config: TrainConfig) -> TrainingResult:
             f"fine_tune_epochs={config.epochs - warmup_epochs} "
             "backbone_trainable=True"
         )
-        backbone.trainable = True
+        if config.model_family.startswith("mobilenet_v2"):
+            _configure_mobilenet_backbone_trainability(
+                backbone,
+                trainable=True,
+                unfreeze_last_n=config.mobilenet_unfreeze_last_n,
+                freeze_batchnorm=config.mobilenet_freeze_batchnorm,
+            )
         if config.model_family in {"mobilenet_v2_direction", "compact_direction"}:
             _compile_direction_model(
                 model,
@@ -4431,4 +4492,3 @@ def train(config: TrainConfig) -> TrainingResult:
     )
 
     return result
-

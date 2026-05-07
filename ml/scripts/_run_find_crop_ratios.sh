@@ -8,7 +8,7 @@ import numpy as np
 from pathlib import Path
 from PIL import Image
 
-CAPTURES_DIR = Path("../captured_images")
+CAPTURES_DIR = Path("../ml/data/captured_images")
 IMAGE_SIZE = 224
 
 def load_yuv422(path, w=224, h=224):

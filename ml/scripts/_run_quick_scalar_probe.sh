@@ -12,7 +12,7 @@ from embedded_gauge_reading_tinyml.board_crop_compare import load_yuv422_capture
 
 SCALAR_TFLITE = Path("artifacts/deployment/prod_model_v0.2_raw_int8/model_int8.tflite")
 RECTIFIER_KERAS = Path("artifacts/training/mobilenetv2_rectifier_zoom_aug_v4/model.keras")
-CAPTURES_DIR  = Path("../captured_images")
+CAPTURES_DIR  = Path("../ml/data/captured_images")
 IMAGE_SIZE    = 224
 CROP_SCALE    = 1.25
 

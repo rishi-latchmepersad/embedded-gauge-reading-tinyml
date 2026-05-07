@@ -9,7 +9,7 @@ import numpy as np
 from pathlib import Path
 from PIL import Image, ImageDraw
 
-CAPTURES_DIR = Path("../captured_images")
+CAPTURES_DIR = Path("../ml/data/captured_images")
 IMAGE_SIZE = 224
 
 def load_yuv422(path, w=224, h=224):
@@ -43,7 +43,7 @@ def make_crop_img(rgb_224, x0r, y0r, x1r, y1r, label):
     return img
 
 # Load one training sample and one live capture
-train_img = np.array(Image.open("../captured_images/capture_p30c.jpg").convert('RGB').resize((224,224)))
+train_img = np.array(Image.open("../ml/data/captured_images/capture_p30c.jpg").convert('RGB').resize((224,224)))
 live_yuv = sorted(CAPTURES_DIR.glob("capture_2026-04-20_16-*.yuv422"))[0]
 live_img = load_yuv422(live_yuv)
 

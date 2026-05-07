@@ -81,7 +81,7 @@ def convert_latest_yuv422(captured_dir: Path, count: int = 10) -> None:
 
 if __name__ == "__main__":
     captured_dir = Path(
-        "D:/Projects/embedded-gauge-reading-tinyml/data/captured/images"
+        "D:/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images"
     )
 
     # Check if argument is a file path or count

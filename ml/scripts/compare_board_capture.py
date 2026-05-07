@@ -95,12 +95,12 @@ def parse_args() -> argparse.Namespace:
         "--capture-path",
         type=Path,
         default=None,
-        help="Path to a raw .yuv422 capture. Defaults to the newest file in data/captured/images.",
+        help="Path to a raw .yuv422 capture. Defaults to the newest file in ml/data/captured_images.",
     )
     parser.add_argument(
         "--captured-dir",
         type=Path,
-        default=REPO_ROOT / "data" / "captured" / "images",
+        default=PROJECT_ROOT / "ml" / "data" / "captured_images",
         help="Directory that contains the board capture files.",
     )
     parser.add_argument(

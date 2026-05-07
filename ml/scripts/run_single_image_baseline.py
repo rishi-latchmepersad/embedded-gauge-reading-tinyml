@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
         "--image-path",
         type=Path,
         required=True,
-        help="Image to analyze, for example captured_images/capture_0006.png.",
+        help="Image to analyze, for example ml/data/captured_images/capture_0006.png.",
     )
     parser.add_argument(
         "--gauge-id",

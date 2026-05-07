@@ -8,7 +8,7 @@ import sys, numpy as np
 from pathlib import Path
 from PIL import Image
 
-CAPTURES_DIR = Path("../captured_images")
+CAPTURES_DIR = Path("../ml/data/captured_images")
 IMAGE_SIZE = 224
 TX0, TY0, TX1, TY1 = int(0.103*224), int(0.254*224), int(0.794*224), int(0.803*224)
 

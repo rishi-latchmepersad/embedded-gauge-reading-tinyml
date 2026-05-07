@@ -18,7 +18,7 @@ bash scripts/wsl_ml.sh help
 bash scripts/wsl_ml.sh setup
 bash scripts/wsl_ml.sh gpu-check
 bash scripts/wsl_ml.sh baseline --max-samples 24
-bash scripts/wsl_ml.sh single-image --image-path ../data/captured/images/capture_0006.png
+bash scripts/wsl_ml.sh single-image --image-path ../ml/data/captured_images/capture_0006.png
 bash scripts/wsl_ml.sh train
 bash scripts/wsl_ml.sh fit-search
 bash scripts/wsl_ml.sh export

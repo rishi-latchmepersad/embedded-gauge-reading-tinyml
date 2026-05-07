@@ -121,6 +121,19 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_MOBILENET_WARMUP_EPOCHS,
         help="Warmup epochs with frozen MobileNetV2 backbone before fine-tuning.",
     )
+    parser.add_argument(
+        "--mobilenet-unfreeze-last-n",
+        type=int,
+        default=0,
+        help="Number of MobileNetV2 backbone layers to unfreeze during fine-tuning. "
+             "0 means unfreeze the full backbone.",
+    )
+    parser.add_argument(
+        "--mobilenet-freeze-batchnorm",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Keep MobileNetV2 BatchNorm layers in inference mode during fine-tuning.",
+    )
     parser.add_argument("--strict-labels", action="store_true")
     parser.add_argument(
         "--crop-pad-ratio", type=float, default=DEFAULT_CROP_PAD_RATIO
@@ -349,6 +362,8 @@ def main() -> None:
         mobilenet_pretrained=not args.no_mobilenet_pretrained,
         mobilenet_backbone_trainable=args.mobilenet_backbone_trainable,
         mobilenet_warmup_epochs=args.mobilenet_warmup_epochs,
+        mobilenet_unfreeze_last_n=args.mobilenet_unfreeze_last_n,
+        mobilenet_freeze_batchnorm=args.mobilenet_freeze_batchnorm,
         mobilenet_alpha=args.mobilenet_alpha,
         mobilenet_head_units=args.mobilenet_head_units,
         mobilenet_head_dropout=args.mobilenet_head_dropout,
@@ -398,6 +413,8 @@ def main() -> None:
         f"pretrained={config.mobilenet_pretrained} "
         f"backbone_trainable={config.mobilenet_backbone_trainable} "
         f"warmup_epochs={config.mobilenet_warmup_epochs} "
+        f"unfreeze_last_n={config.mobilenet_unfreeze_last_n} "
+        f"freeze_batchnorm={config.mobilenet_freeze_batchnorm} "
         f"alpha={config.mobilenet_alpha} "
         f"head_units={config.mobilenet_head_units} "
         f"head_dropout={config.mobilenet_head_dropout} "

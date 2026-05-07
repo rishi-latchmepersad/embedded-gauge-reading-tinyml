@@ -499,7 +499,7 @@ def test_run_single_image_baseline_on_clean_ideal_captures(
     expected_value: float,
 ) -> None:
     """The default baseline should stay usable on clean ideal captures."""
-    image_path = Path(__file__).resolve().parents[2] / "captured_images" / image_name
+    image_path = Path(__file__).resolve().parents[2] / "ml" / "data" / "captured_images" / image_name
     if not image_path.exists():
         pytest.skip(f"Missing clean capture fixture: {image_name}")
 

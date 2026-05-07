@@ -12,7 +12,7 @@ sys.path.insert(0, "src")
 import tensorflow as tf
 
 RECTIFIER_KERAS = Path("artifacts/training/mobilenetv2_rectifier_zoom_aug_v4/model.keras")
-CAPTURES_DIR = Path("../captured_images")
+CAPTURES_DIR = Path("../ml/data/captured_images")
 IMAGE_SIZE = 224
 CROP_SCALE = 1.25
 

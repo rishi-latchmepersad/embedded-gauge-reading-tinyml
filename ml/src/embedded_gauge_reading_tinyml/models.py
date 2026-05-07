@@ -578,11 +578,15 @@ def build_mobilenetv2_regression_model(
     head_units: int = 128,
     head_dropout: float = 0.2,
     linear_output: bool = False,
+    value_min: float = -30.0,
+    value_max: float = 50.0,
 ) -> keras.Model:
     """Build a transfer-learning regressor on top of MobileNetV2 features.
 
     Args:
         linear_output: Deprecated and unsupported in no-calibration mode.
+        value_min: Minimum gauge value for output scaling.
+        value_max: Maximum gauge value for output scaling.
     """
     if linear_output:
         raise ValueError(
@@ -603,9 +607,11 @@ def build_mobilenetv2_regression_model(
 
     # Sigmoid output bounded to [0,1], then rescaled to value range.
     x = keras.layers.Dense(1, activation="sigmoid", name="gauge_value_sigmoid")(x)
+    # Rescale sigmoid [0,1] output to [value_min, value_max]
+    span = value_max - value_min
     output = keras.layers.Rescaling(
-        scale=1.0,  # Will be set by training code via set_weights.
-        offset=0.0,
+        scale=span,
+        offset=value_min,
         name="gauge_value",
     )(x)
 
