@@ -35,7 +35,11 @@ SRC_DIR: Path = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from embedded_gauge_reading_tinyml.models import build_mobilenetv2_regression_model
+from embedded_gauge_reading_tinyml.models import (
+    build_mobilenetv2_interval_model,
+    build_mobilenetv2_ordinal_model,
+    build_mobilenetv2_regression_model,
+)
 from embedded_gauge_reading_tinyml.board_crop_compare import (
     load_rgb_image,
     resize_with_pad_rgb,
@@ -49,6 +53,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 IMAGE_SIZE = 224
+VALUE_MIN = -30.0
+VALUE_MAX = 50.0
 
 
 def _configure_mobilenet_backbone_trainability(
@@ -103,7 +109,9 @@ def load_scalar_manifest(file_path: Path, repo_root: Path) -> pd.DataFrame:
         raise ValueError(f"Manifest is missing value column: {file_path}")
 
     df = df.copy()
-    df["image_path"] = df["image_path"].apply(lambda p: normalize_path(str(p), repo_root))
+    df["image_path"] = df["image_path"].apply(
+        lambda p: normalize_path(str(p), repo_root)
+    )
     if "resolved_path" in df.columns:
         df["image_path_resolved"] = df["resolved_path"].astype(str)
     else:
@@ -111,8 +119,12 @@ def load_scalar_manifest(file_path: Path, repo_root: Path) -> pd.DataFrame:
             lambda p: str(resolve_full_path(p, repo_root))
         )
     df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    if "sample_weight" in df.columns:
+        df["sample_weight"] = pd.to_numeric(df["sample_weight"], errors="coerce")
     df = df.dropna(subset=["value"])
     df = df[df["image_path_resolved"].apply(lambda p: Path(p).exists())]
+    if "sample_weight" in df.columns:
+        df = df.dropna(subset=["sample_weight"])
     return df.reset_index(drop=True)
 
 
@@ -180,7 +192,9 @@ def merge_all_manifests(repo_root: Path) -> pd.DataFrame:
 
     merged = pd.concat(all_rows, ignore_index=True)
     logger.info(f"Merged dataset: {len(merged)} total images")
-    logger.info(f"Value range: {merged['value'].min():.1f} to {merged['value'].max():.1f}")
+    logger.info(
+        f"Value range: {merged['value'].min():.1f} to {merged['value'].max():.1f}"
+    )
     return merged
 
 
@@ -243,6 +257,47 @@ def compute_sample_weights(df: pd.DataFrame) -> np.ndarray:
     return weights.astype(np.float32)
 
 
+def _value_to_ordinal_threshold_vector(
+    value: float,
+    *,
+    value_min: float,
+    value_max: float,
+    threshold_step: float,
+) -> np.ndarray:
+    """Convert one scalar value into a cumulative ordinal-threshold vector."""
+    if threshold_step <= 0.0:
+        raise ValueError("threshold_step must be > 0.")
+    if value_max <= value_min:
+        raise ValueError("value_max must be > value_min.")
+
+    span = value_max - value_min
+    num_thresholds = max(int(np.ceil(span / threshold_step)), 2)
+    thresholds = value_min + (
+        np.arange(num_thresholds, dtype=np.float32) + 0.5
+    ) * np.float32(threshold_step)
+    return (np.float32(value) > thresholds).astype(np.float32)
+
+
+def _value_to_interval_index(
+    value: float,
+    *,
+    value_min: float,
+    value_max: float,
+    bin_width: float,
+) -> np.int32:
+    """Map one scalar value into a coarse interval-bin index."""
+    if bin_width <= 0.0:
+        raise ValueError("bin_width must be > 0.")
+    if value_max <= value_min:
+        raise ValueError("value_max must be > value_min.")
+
+    span = value_max - value_min
+    num_bins = max(int(np.ceil(span / bin_width)), 2)
+    raw_index = int(np.floor((float(value) - value_min) / bin_width))
+    clipped_index = int(np.clip(raw_index, 0, num_bins - 1))
+    return np.int32(clipped_index)
+
+
 def preprocess_image(
     image_path: str,
     target_size: tuple[int, int] = (224, 224),
@@ -279,6 +334,9 @@ def create_dataset(
     use_weights: bool = False,
     augment: bool = False,
     crop_boxes: dict[str, tuple[float, float, float, float]] | None = None,
+    aux_head_kind: str | None = None,
+    ordinal_threshold_step: float = 10.0,
+    interval_bin_width: float = 5.0,
 ) -> tf.data.Dataset:
     """Create a TensorFlow dataset from a DataFrame."""
     logger.info(f"Loading {len(df)} images into memory...")
@@ -305,17 +363,76 @@ def create_dataset(
     values = np.array(values, dtype=np.float32)
     logger.info(f"Successfully loaded {len(images)} images")
 
-    if use_weights and "sample_weight" in df.columns:
-        weights = df["sample_weight"].values[: len(images)].astype(np.float32)
-        dataset = tf.data.Dataset.from_tensor_slices((images, values, weights))
-        dataset = dataset.map(lambda x, y, w: (x, y, w))
+    if aux_head_kind is not None and aux_head_kind not in {"ordinal", "interval"}:
+        raise ValueError(f"Unsupported aux_head_kind: {aux_head_kind}")
+
+    if aux_head_kind == "ordinal":
+        ordinal_targets = np.stack(
+            [
+                _value_to_ordinal_threshold_vector(
+                    float(value),
+                    value_min=VALUE_MIN,
+                    value_max=VALUE_MAX,
+                    threshold_step=ordinal_threshold_step,
+                )
+                for value in values
+            ],
+            axis=0,
+        ).astype(np.float32)
+        targets: dict[str, np.ndarray] = {
+            "gauge_value": values,
+            "ordinal_logits": ordinal_targets,
+        }
+        if use_weights and "sample_weight" in df.columns:
+            weights = df["sample_weight"].values[: len(images)].astype(np.float32)
+            sample_weights: dict[str, np.ndarray] = {
+                "gauge_value": weights,
+                "ordinal_logits": weights,
+            }
+            dataset = tf.data.Dataset.from_tensor_slices((images, targets, sample_weights))
+        else:
+            dataset = tf.data.Dataset.from_tensor_slices((images, targets))
+    elif aux_head_kind == "interval":
+        interval_targets = np.asarray(
+            [
+                _value_to_interval_index(
+                    float(value),
+                    value_min=VALUE_MIN,
+                    value_max=VALUE_MAX,
+                    bin_width=interval_bin_width,
+                )
+                for value in values
+            ],
+            dtype=np.int32,
+        )
+        targets = {
+            "gauge_value": values,
+            "interval_logits": interval_targets,
+        }
+        if use_weights and "sample_weight" in df.columns:
+            weights = df["sample_weight"].values[: len(images)].astype(np.float32)
+            sample_weights = {
+                "gauge_value": weights,
+                "interval_logits": weights,
+            }
+            dataset = tf.data.Dataset.from_tensor_slices((images, targets, sample_weights))
+        else:
+            dataset = tf.data.Dataset.from_tensor_slices((images, targets))
     else:
-        dataset = tf.data.Dataset.from_tensor_slices((images, values))
+        if use_weights and "sample_weight" in df.columns:
+            weights = df["sample_weight"].values[: len(images)].astype(np.float32)
+            dataset = tf.data.Dataset.from_tensor_slices((images, values, weights))
+            dataset = dataset.map(lambda x, y, w: (x, y, w))
+        else:
+            dataset = tf.data.Dataset.from_tensor_slices((images, values))
 
     if shuffle:
-        dataset = dataset.shuffle(buffer_size=len(images), reshuffle_each_iteration=True)
+        dataset = dataset.shuffle(
+            buffer_size=len(images), reshuffle_each_iteration=True
+        )
 
     if augment:
+
         def _augment_strong(image: tf.Tensor) -> tf.Tensor:
             """Apply strong augmentation matching board camera reality."""
             image_shape = tf.shape(image)
@@ -324,8 +441,12 @@ def create_dataset(
 
             # Crop jitter
             scale = tf.random.uniform([], minval=0.90, maxval=1.0, dtype=tf.float32)
-            crop_h = tf.maximum(2, tf.cast(tf.cast(image_h, tf.float32) * scale, tf.int32))
-            crop_w = tf.maximum(2, tf.cast(tf.cast(image_w, tf.float32) * scale, tf.int32))
+            crop_h = tf.maximum(
+                2, tf.cast(tf.cast(image_h, tf.float32) * scale, tf.int32)
+            )
+            crop_w = tf.maximum(
+                2, tf.cast(tf.cast(image_w, tf.float32) * scale, tf.int32)
+            )
             image = tf.image.random_crop(image, size=[crop_h, crop_w, 3])
             image = tf.image.resize(image, [image_h, image_w])
 
@@ -337,10 +458,14 @@ def create_dataset(
 
             # Gamma augmentation
             gamma_dark = tf.random.uniform([], minval=1.0, maxval=2.2, dtype=tf.float32)
-            gamma_bright = tf.random.uniform([], minval=0.6, maxval=1.0, dtype=tf.float32)
+            gamma_bright = tf.random.uniform(
+                [], minval=0.6, maxval=1.0, dtype=tf.float32
+            )
             apply_dark = tf.random.uniform([]) < 0.25
             apply_bright = tf.random.uniform([]) < 0.25
-            gamma = tf.where(apply_dark, gamma_dark, tf.where(apply_bright, gamma_bright, 1.0))
+            gamma = tf.where(
+                apply_dark, gamma_dark, tf.where(apply_bright, gamma_bright, 1.0)
+            )
             image = tf.pow(image, gamma)
             image = tf.clip_by_value(image, 0.0, 1.0)
 
@@ -396,12 +521,17 @@ def train_all_data_baseline(
     learning_rate: float = 1e-4,
     fine_tune_lr: float = 1e-5,
     alpha: float = 1.0,
+    head_units: int = 128,
     dropout: float = 0.2,
     seed: int = 42,
     crop_boxes: dict[str, tuple[float, float, float, float]] | None = None,
     init_model_path: Path | None = None,
     mobilenet_unfreeze_last_n: int = 0,
     mobilenet_freeze_batchnorm: bool = True,
+    aux_head_kind: str | None = None,
+    ordinal_threshold_step: float = 10.0,
+    interval_bin_width: float = 5.0,
+    aux_loss_weight: float = 0.35,
 ) -> dict[str, Any]:
     """Train on all data using proven canonical baseline pipeline."""
     np.random.seed(seed)
@@ -415,7 +545,9 @@ def train_all_data_baseline(
     # Check if any bin has <2 samples — if so, use random split instead
     bin_counts = broad_bins.value_counts()
     if (bin_counts < 2).any():
-        logger.warning("Some bins have <2 samples, using random split instead of stratified")
+        logger.warning(
+            "Some bins have <2 samples, using random split instead of stratified"
+        )
         train_df, temp_df = train_test_split(df, test_size=0.30, random_state=seed)
         val_df, test_df = train_test_split(temp_df, test_size=0.50, random_state=seed)
     else:
@@ -423,8 +555,10 @@ def train_all_data_baseline(
             df, test_size=0.30, random_state=seed, stratify=broad_bins
         )
         val_df, test_df = train_test_split(
-            temp_df, test_size=0.50, random_state=seed,
-            stratify=(temp_df["value"] / 10).astype(int)
+            temp_df,
+            test_size=0.50,
+            random_state=seed,
+            stratify=(temp_df["value"] / 10).astype(int),
         )
 
     logger.info(f"Train: {len(train_df)} samples")
@@ -433,7 +567,13 @@ def train_all_data_baseline(
 
     # Compute sample weights using broader 10°C bins
     train_df = create_value_bins(train_df, bin_size=10.0)
-    train_df["sample_weight"] = compute_sample_weights(train_df)
+    bin_weights = compute_sample_weights(train_df)
+    if "sample_weight" in train_df.columns:
+        train_df["sample_weight"] = (
+            train_df["sample_weight"].astype(np.float32).values * bin_weights
+        )
+    else:
+        train_df["sample_weight"] = bin_weights
     logger.info(
         f"Sample weight range: {train_df['sample_weight'].min():.3f} to {train_df['sample_weight'].max():.3f}"
     )
@@ -446,6 +586,9 @@ def train_all_data_baseline(
         use_weights=True,
         augment=True,
         crop_boxes=crop_boxes,
+        aux_head_kind=aux_head_kind,
+        ordinal_threshold_step=ordinal_threshold_step,
+        interval_bin_width=interval_bin_width,
     )
     val_ds = create_dataset(
         val_df,
@@ -454,6 +597,9 @@ def train_all_data_baseline(
         use_weights=False,
         augment=False,
         crop_boxes=crop_boxes,
+        aux_head_kind=aux_head_kind,
+        ordinal_threshold_step=ordinal_threshold_step,
+        interval_bin_width=interval_bin_width,
     )
     test_ds = create_dataset(
         test_df,
@@ -462,20 +608,58 @@ def train_all_data_baseline(
         use_weights=False,
         augment=False,
         crop_boxes=crop_boxes,
+        aux_head_kind=aux_head_kind,
+        ordinal_threshold_step=ordinal_threshold_step,
+        interval_bin_width=interval_bin_width,
     )
 
     # Build model
-    logger.info(f"Building MobileNetV2 (alpha={alpha}, dropout={dropout})...")
-    model = build_mobilenetv2_regression_model(
-        image_height=IMAGE_SIZE,
-        image_width=IMAGE_SIZE,
-        alpha=alpha,
-        head_units=128,
-        head_dropout=dropout,
-        pretrained=True,
-        value_min=-30.0,
-        value_max=50.0,
-    )
+    if aux_head_kind == "ordinal":
+        logger.info(
+            f"Building MobileNetV2 ordinal model (alpha={alpha}, head_units={head_units}, "
+            f"dropout={dropout}, threshold_step={ordinal_threshold_step})..."
+        )
+        model = build_mobilenetv2_ordinal_model(
+            image_height=IMAGE_SIZE,
+            image_width=IMAGE_SIZE,
+            alpha=alpha,
+            head_units=head_units,
+            head_dropout=dropout,
+            pretrained=True,
+            value_min=VALUE_MIN,
+            value_max=VALUE_MAX,
+            threshold_step=ordinal_threshold_step,
+        )
+    elif aux_head_kind == "interval":
+        logger.info(
+            f"Building MobileNetV2 interval model (alpha={alpha}, head_units={head_units}, "
+            f"dropout={dropout}, bin_width={interval_bin_width})..."
+        )
+        model = build_mobilenetv2_interval_model(
+            image_height=IMAGE_SIZE,
+            image_width=IMAGE_SIZE,
+            alpha=alpha,
+            head_units=head_units,
+            head_dropout=dropout,
+            pretrained=True,
+            value_min=VALUE_MIN,
+            value_max=VALUE_MAX,
+            bin_width=interval_bin_width,
+        )
+    else:
+        logger.info(
+            f"Building MobileNetV2 (alpha={alpha}, head_units={head_units}, dropout={dropout})..."
+        )
+        model = build_mobilenetv2_regression_model(
+            image_height=IMAGE_SIZE,
+            image_width=IMAGE_SIZE,
+            alpha=alpha,
+            head_units=head_units,
+            head_dropout=dropout,
+            pretrained=True,
+            value_min=VALUE_MIN,
+            value_max=VALUE_MAX,
+        )
 
     if init_model_path is not None:
         if not init_model_path.exists():
@@ -489,18 +673,93 @@ def train_all_data_baseline(
                 "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input,
             },
         )
-        model.set_weights(init_model.get_weights())
-        logger.info("Loaded warm-start weights into the current model.")
+        loaded_layers = 0
+        skipped_layers = 0
+        source_layers = {layer.name: layer for layer in init_model.layers}
+        for layer in model.layers:
+            source_layer = source_layers.get(layer.name)
+            if source_layer is None:
+                continue
+            source_weights = source_layer.get_weights()
+            target_weights = layer.get_weights()
+            if not source_weights or not target_weights:
+                continue
+            if len(source_weights) != len(target_weights):
+                skipped_layers += 1
+                continue
+            if any(
+                source.shape != target.shape
+                for source, target in zip(source_weights, target_weights)
+            ):
+                skipped_layers += 1
+                continue
+            layer.set_weights(source_weights)
+            loaded_layers += 1
+        logger.info(
+            "Loaded warm-start weights into %d matching layers (%d skipped).",
+            loaded_layers,
+            skipped_layers,
+        )
 
-    model.compile(
-        optimizer=keras.optimizers.AdamW(
-            learning_rate=learning_rate,
+    def _compile_current_model(current_lr: float) -> None:
+        """Compile the current model with the right head-specific losses."""
+        optimizer = keras.optimizers.AdamW(
+            learning_rate=current_lr,
             weight_decay=1e-4,
             clipnorm=1.0,
-        ),
-        loss=keras.losses.Huber(delta=1.0),
-        metrics=["mae", "mse"],
-    )
+        )
+        if aux_head_kind == "ordinal":
+            model.compile(
+                optimizer=optimizer,
+                loss={
+                    "gauge_value": keras.losses.Huber(delta=1.0),
+                    "ordinal_logits": keras.losses.BinaryCrossentropy(from_logits=True),
+                },
+                loss_weights={
+                    "gauge_value": 1.0,
+                    "ordinal_logits": aux_loss_weight,
+                },
+                metrics={
+                    "gauge_value": [
+                        keras.metrics.MeanAbsoluteError(name="mae"),
+                        keras.metrics.MeanSquaredError(name="mse"),
+                    ],
+                    "ordinal_logits": [
+                        keras.metrics.BinaryAccuracy(name="acc", threshold=0.0),
+                    ],
+                },
+            )
+        elif aux_head_kind == "interval":
+            model.compile(
+                optimizer=optimizer,
+                loss={
+                    "gauge_value": keras.losses.Huber(delta=1.0),
+                    "interval_logits": keras.losses.SparseCategoricalCrossentropy(
+                        from_logits=True
+                    ),
+                },
+                loss_weights={
+                    "gauge_value": 1.0,
+                    "interval_logits": aux_loss_weight,
+                },
+                metrics={
+                    "gauge_value": [
+                        keras.metrics.MeanAbsoluteError(name="mae"),
+                        keras.metrics.MeanSquaredError(name="mse"),
+                    ],
+                    "interval_logits": [
+                        keras.metrics.SparseCategoricalAccuracy(name="acc"),
+                    ],
+                },
+            )
+        else:
+            model.compile(
+                optimizer=optimizer,
+                loss=keras.losses.Huber(delta=1.0),
+                metrics=["mae", "mse"],
+            )
+
+    _compile_current_model(learning_rate)
 
     # Find backbone
     base_model_name = f"mobilenetv2_{alpha:.2f}_224"
@@ -561,7 +820,9 @@ def train_all_data_baseline(
 
     # Phase 2: Fine-tune
     fine_tune_epochs = epochs - warmup_epochs
-    logger.info(f"\n=== Phase 2: Fine-tune ({fine_tune_epochs} epochs, unfrozen backbone) ===")
+    logger.info(
+        f"\n=== Phase 2: Fine-tune ({fine_tune_epochs} epochs, unfrozen backbone) ==="
+    )
 
     _configure_mobilenet_backbone_trainability(
         base_model,
@@ -569,15 +830,7 @@ def train_all_data_baseline(
         unfreeze_last_n=mobilenet_unfreeze_last_n,
         freeze_batchnorm=mobilenet_freeze_batchnorm,
     )
-    model.compile(
-        optimizer=keras.optimizers.AdamW(
-            learning_rate=fine_tune_lr,
-            weight_decay=1e-4,
-            clipnorm=1.0,
-        ),
-        loss=keras.losses.Huber(delta=1.0),
-        metrics=["mae", "mse"],
-    )
+    _compile_current_model(fine_tune_lr)
 
     history_finetune = model.fit(
         train_ds,
@@ -599,14 +852,22 @@ def train_all_data_baseline(
 
     # Save history
     history_combined = {
-        "warmup": {k: [float(v) for v in vals] for k, vals in history_warmup.history.items()},
-        "finetune": {k: [float(v) for v in vals] for k, vals in history_finetune.history.items()},
+        "warmup": {
+            k: [float(v) for v in vals] for k, vals in history_warmup.history.items()
+        },
+        "finetune": {
+            k: [float(v) for v in vals] for k, vals in history_finetune.history.items()
+        },
     }
     with open(output_dir / "history.json", "w") as f:
         json.dump(history_combined, f, indent=2)
 
     # Save predictions
-    predictions = model.predict(test_ds, verbose=1).flatten()
+    predictions_raw = model.predict(test_ds, verbose=1)
+    if isinstance(predictions_raw, dict):
+        predictions = np.asarray(predictions_raw["gauge_value"], dtype=np.float32).reshape(-1)
+    else:
+        predictions = np.asarray(predictions_raw, dtype=np.float32).reshape(-1)
     test_df = test_df.copy()
     test_df["prediction"] = predictions
     test_df["abs_error"] = np.abs(test_df["prediction"] - test_df["value"])
@@ -633,14 +894,23 @@ def train_all_data_baseline(
             logger.info(f"  {k}: {v:.2f}°C")
 
     with open(output_dir / "metrics.json", "w") as f:
-        json.dump(metrics, f, indent=2)
+        eval_metrics = {
+            f"eval_{key}": float(value)
+            for key, value in test_metrics.items()
+            if isinstance(value, (int, float, np.floating))
+        }
+        json.dump({**metrics, **eval_metrics}, f, indent=2)
 
     return {"model": model, "metrics": metrics, "output_dir": output_dir}
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train on all data using proven baseline pipeline")
-    parser.add_argument("--output-dir", type=str, required=True, help="Output directory")
+    parser = argparse.ArgumentParser(
+        description="Train on all data using proven baseline pipeline"
+    )
+    parser.add_argument(
+        "--output-dir", type=str, required=True, help="Output directory"
+    )
     parser.add_argument(
         "--manifest-path",
         type=str,
@@ -686,7 +956,40 @@ def main() -> None:
         default=True,
         help="Keep MobileNetV2 BatchNorm layers in inference mode during fine-tuning.",
     )
-    parser.add_argument("--alpha", type=float, default=1.0, help="MobileNetV2 width multiplier")
+    parser.add_argument(
+        "--alpha", type=float, default=1.0, help="MobileNetV2 width multiplier"
+    )
+    parser.add_argument(
+        "--head-units",
+        type=int,
+        default=128,
+        help="Dense units in the regression head.",
+    )
+    parser.add_argument(
+        "--aux-head-kind",
+        type=str,
+        default="none",
+        choices=["none", "ordinal", "interval"],
+        help="Optional auxiliary head to add to the scalar model.",
+    )
+    parser.add_argument(
+        "--ordinal-threshold-step",
+        type=float,
+        default=10.0,
+        help="Threshold spacing for the ordinal auxiliary head.",
+    )
+    parser.add_argument(
+        "--aux-loss-weight",
+        type=float,
+        default=0.35,
+        help="Loss weight for the auxiliary ordinal head.",
+    )
+    parser.add_argument(
+        "--interval-bin-width",
+        type=float,
+        default=5.0,
+        help="Bin width for the interval auxiliary head.",
+    )
     parser.add_argument("--dropout", type=float, default=0.2, help="Head dropout")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
@@ -729,12 +1032,17 @@ def main() -> None:
         learning_rate=args.learning_rate,
         fine_tune_lr=args.fine_tune_lr,
         alpha=args.alpha,
+        head_units=args.head_units,
         dropout=args.dropout,
         seed=args.seed,
         crop_boxes=crop_boxes,
         init_model_path=init_model_path,
         mobilenet_unfreeze_last_n=args.mobilenet_unfreeze_last_n,
         mobilenet_freeze_batchnorm=args.mobilenet_freeze_batchnorm,
+        aux_head_kind=None if args.aux_head_kind == "none" else args.aux_head_kind,
+        ordinal_threshold_step=args.ordinal_threshold_step,
+        interval_bin_width=args.interval_bin_width,
+        aux_loss_weight=args.aux_loss_weight,
     )
 
     logger.info(f"\n{'='*60}")

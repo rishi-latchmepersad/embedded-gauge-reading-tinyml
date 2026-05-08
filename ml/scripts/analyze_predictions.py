@@ -18,7 +18,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -52,15 +54,19 @@ def analyze_predictions(predictions_path: Path) -> None:
         if mask.any():
             subset = df[mask]
             errs = subset["abs_error"].values
-            logger.info(f"  {name}: n={len(subset)}, MAE={np.mean(errs):.2f}°C, "
-                       f"median={np.median(errs):.2f}°C, max={np.max(errs):.2f}°C, "
-                       f"% under 5°C={np.mean(errs < 5)*100:.1f}%")
+            logger.info(
+                f"  {name}: n={len(subset)}, MAE={np.mean(errs):.2f}°C, "
+                f"median={np.median(errs):.2f}°C, max={np.max(errs):.2f}°C, "
+                f"% under 5°C={np.mean(errs < 5)*100:.1f}%"
+            )
             # Show worst predictions
             worst = subset.nlargest(3, "abs_error")
             for _, row in worst.iterrows():
-                logger.info(f"    {Path(row['image_path']).name}: "
-                           f"true={row['value']:.1f}°C, pred={row['prediction']:.1f}°C, "
-                           f"error={row['abs_error']:.1f}°C")
+                logger.info(
+                    f"    {Path(row['image_path']).name}: "
+                    f"true={row['value']:.1f}°C, pred={row['prediction']:.1f}°C, "
+                    f"error={row['abs_error']:.1f}°C"
+                )
 
     # Check for systematic bias
     logger.info(f"\nSystematic bias analysis:")
@@ -68,12 +74,16 @@ def analyze_predictions(predictions_path: Path) -> None:
     for name, mask in ranges:
         if mask.any():
             bias = df[mask]["bias"].values
-            logger.info(f"  {name}: mean bias={np.mean(bias):.2f}°C "
-                       f"(positive = overpredicting)")
+            logger.info(
+                f"  {name}: mean bias={np.mean(bias):.2f}°C "
+                f"(positive = overpredicting)"
+            )
 
     # Check if model is collapsing to mid-range
     logger.info(f"\nPrediction distribution:")
-    logger.info(f"  Predicted range: {df['prediction'].min():.1f} to {df['prediction'].max():.1f}°C")
+    logger.info(
+        f"  Predicted range: {df['prediction'].min():.1f} to {df['prediction'].max():.1f}°C"
+    )
     logger.info(f"  Predicted mean: {df['prediction'].mean():.1f}°C")
     logger.info(f"  Predicted std: {df['prediction'].std():.1f}°C")
     logger.info(f"  True mean: {df['value'].mean():.1f}°C")

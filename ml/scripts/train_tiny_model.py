@@ -87,7 +87,9 @@ def load_scalar_manifest(file_path: Path, repo_root: Path) -> pd.DataFrame:
         raise ValueError(f"Manifest is missing value column: {file_path}")
 
     df = df.copy()
-    df["image_path"] = df["image_path"].apply(lambda p: normalize_path(str(p), repo_root))
+    df["image_path"] = df["image_path"].apply(
+        lambda p: normalize_path(str(p), repo_root)
+    )
     if "resolved_path" in df.columns:
         df["image_path_resolved"] = df["resolved_path"].astype(str)
     else:
@@ -131,7 +133,9 @@ def merge_all_manifests(repo_root: Path) -> pd.DataFrame:
 
     merged = pd.concat(all_rows, ignore_index=True)
     logger.info(f"Merged dataset: {len(merged)} total images")
-    logger.info(f"Value range: {merged['value'].min():.1f} to {merged['value'].max():.1f}")
+    logger.info(
+        f"Value range: {merged['value'].min():.1f} to {merged['value'].max():.1f}"
+    )
     return merged
 
 
@@ -177,7 +181,9 @@ def compute_sample_weights(df: pd.DataFrame) -> np.ndarray:
     return weights.astype(np.float32)
 
 
-def preprocess_image(image_path: str, target_size: tuple[int, int] = (224, 224)) -> np.ndarray:
+def preprocess_image(
+    image_path: str, target_size: tuple[int, int] = (224, 224)
+) -> np.ndarray:
     img = load_rgb_image(image_path)
     image_tensor = tf.convert_to_tensor(img, dtype=tf.uint8)
     resized = tf.image.resize_with_pad(
@@ -223,17 +229,24 @@ def create_dataset(
         dataset = tf.data.Dataset.from_tensor_slices((images, values))
 
     if shuffle:
-        dataset = dataset.shuffle(buffer_size=len(images), reshuffle_each_iteration=True)
+        dataset = dataset.shuffle(
+            buffer_size=len(images), reshuffle_each_iteration=True
+        )
 
     if augment:
+
         def _augment(image: tf.Tensor) -> tf.Tensor:
             image_shape = tf.shape(image)
             image_h = image_shape[0]
             image_w = image_shape[1]
 
             scale = tf.random.uniform([], minval=0.90, maxval=1.0, dtype=tf.float32)
-            crop_h = tf.maximum(2, tf.cast(tf.cast(image_h, tf.float32) * scale, tf.int32))
-            crop_w = tf.maximum(2, tf.cast(tf.cast(image_w, tf.float32) * scale, tf.int32))
+            crop_h = tf.maximum(
+                2, tf.cast(tf.cast(image_h, tf.float32) * scale, tf.int32)
+            )
+            crop_w = tf.maximum(
+                2, tf.cast(tf.cast(image_w, tf.float32) * scale, tf.int32)
+            )
             image = tf.image.random_crop(image, size=[crop_h, crop_w, 3])
             image = tf.image.resize(image, [image_h, image_w])
 
@@ -243,10 +256,14 @@ def create_dataset(
             image = tf.clip_by_value(image, 0.0, 1.0)
 
             gamma_dark = tf.random.uniform([], minval=1.0, maxval=2.2, dtype=tf.float32)
-            gamma_bright = tf.random.uniform([], minval=0.6, maxval=1.0, dtype=tf.float32)
+            gamma_bright = tf.random.uniform(
+                [], minval=0.6, maxval=1.0, dtype=tf.float32
+            )
             apply_dark = tf.random.uniform([]) < 0.25
             apply_bright = tf.random.uniform([]) < 0.25
-            gamma = tf.where(apply_dark, gamma_dark, tf.where(apply_bright, gamma_bright, 1.0))
+            gamma = tf.where(
+                apply_dark, gamma_dark, tf.where(apply_bright, gamma_bright, 1.0)
+            )
             image = tf.pow(image, gamma)
             image = tf.clip_by_value(image, 0.0, 1.0)
 
@@ -318,8 +335,10 @@ def train_tiny_model(
             df, test_size=0.30, random_state=seed, stratify=broad_bins
         )
         val_df, test_df = train_test_split(
-            temp_df, test_size=0.50, random_state=seed,
-            stratify=(temp_df["value"] / 10).astype(int)
+            temp_df,
+            test_size=0.50,
+            random_state=seed,
+            stratify=(temp_df["value"] / 10).astype(int),
         )
 
     logger.info(f"Train: {len(train_df)} samples")
@@ -334,9 +353,15 @@ def train_tiny_model(
     )
 
     # Create datasets
-    train_ds = create_dataset(train_df, batch_size, shuffle=True, use_weights=True, augment=True)
-    val_ds = create_dataset(val_df, batch_size, shuffle=False, use_weights=False, augment=False)
-    test_ds = create_dataset(test_df, batch_size, shuffle=False, use_weights=False, augment=False)
+    train_ds = create_dataset(
+        train_df, batch_size, shuffle=True, use_weights=True, augment=True
+    )
+    val_ds = create_dataset(
+        val_df, batch_size, shuffle=False, use_weights=False, augment=False
+    )
+    test_ds = create_dataset(
+        test_df, batch_size, shuffle=False, use_weights=False, augment=False
+    )
 
     # Build TINY model
     logger.info("Building tiny MobileNetV2 (alpha=0.35, head=64, dropout=0.15)...")
@@ -364,7 +389,9 @@ def train_tiny_model(
 
     # Count parameters
     total_params = model.count_params()
-    trainable_params = sum([keras.backend.count_params(w) for w in model.trainable_weights])
+    trainable_params = sum(
+        [keras.backend.count_params(w) for w in model.trainable_weights]
+    )
     non_trainable_params = total_params - trainable_params
     logger.info(f"Total params: {total_params:,}")
     logger.info(f"Trainable params: {trainable_params:,}")
@@ -502,7 +529,9 @@ def train_tiny_model(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train tiny MobileNetV2 model")
-    parser.add_argument("--output-dir", type=str, required=True, help="Output directory")
+    parser.add_argument(
+        "--output-dir", type=str, required=True, help="Output directory"
+    )
     parser.add_argument(
         "--manifest-path",
         type=str,

@@ -143,7 +143,9 @@ def merge_all_manifests(repo_root: Path) -> pd.DataFrame:
 
     merged = pd.concat(all_rows, ignore_index=True)
     logger.info(f"Merged dataset: {len(merged)} total images")
-    logger.info(f"Value range: {merged['value'].min():.1f} to {merged['value'].max():.1f}")
+    logger.info(
+        f"Value range: {merged['value'].min():.1f} to {merged['value'].max():.1f}"
+    )
     logger.info(f"Sources: {merged['source'].value_counts().to_dict()}")
 
     return merged
@@ -196,7 +198,9 @@ def compute_sample_weights(df: pd.DataFrame) -> np.ndarray:
     return weights.astype(np.float32)
 
 
-def preprocess_image(image_path: str, target_size: tuple[int, int] = (224, 224)) -> np.ndarray:
+def preprocess_image(
+    image_path: str, target_size: tuple[int, int] = (224, 224)
+) -> np.ndarray:
     """Load and preprocess an image for training.
 
     Uses tf.image.resize_with_pad for aspect-ratio-preserving resize.
@@ -256,6 +260,7 @@ def create_dataset(
         )
 
     if augment:
+
         def _augment_strong(image: tf.Tensor) -> tf.Tensor:
             """Apply strong augmentation matching board camera reality.
 
@@ -491,8 +496,12 @@ def train_fold(
     train_ds = create_dataset(
         train_df, batch_size, shuffle=True, use_weights=True, augment=True
     )
-    val_ds = create_dataset(val_df, batch_size, shuffle=False, use_weights=False, augment=False)
-    test_ds = create_dataset(test_df, batch_size, shuffle=False, use_weights=False, augment=False)
+    val_ds = create_dataset(
+        val_df, batch_size, shuffle=False, use_weights=False, augment=False
+    )
+    test_ds = create_dataset(
+        test_df, batch_size, shuffle=False, use_weights=False, augment=False
+    )
 
     # Build model
     model, base_model = build_and_compile_model(alpha=alpha, dropout=dropout, lr=5e-5)
@@ -571,12 +580,10 @@ def train_fold(
     # Save history
     history = {
         "warmup": {
-            k: [float(v) for v in vals]
-            for k, vals in history_warmup.history.items()
+            k: [float(v) for v in vals] for k, vals in history_warmup.history.items()
         },
         "finetune": {
-            k: [float(v) for v in vals]
-            for k, vals in history_finetune.history.items()
+            k: [float(v) for v in vals] for k, vals in history_finetune.history.items()
         },
     }
     with open(fold_dir / "history.json", "w") as f:
@@ -738,7 +745,9 @@ def train_final_model(
     train_ds = create_dataset(
         train_df, batch_size, shuffle=True, use_weights=True, augment=True
     )
-    val_ds = create_dataset(val_df, batch_size, shuffle=False, use_weights=False, augment=False)
+    val_ds = create_dataset(
+        val_df, batch_size, shuffle=False, use_weights=False, augment=False
+    )
 
     # Build model
     model, base_model = build_and_compile_model(alpha=alpha, dropout=dropout, lr=5e-5)
@@ -779,7 +788,9 @@ def train_final_model(
     )
 
     # Evaluate
-    full_ds = create_dataset(df, batch_size, shuffle=False, use_weights=False, augment=False)
+    full_ds = create_dataset(
+        df, batch_size, shuffle=False, use_weights=False, augment=False
+    )
     metrics, preds, errors = evaluate_model(model, full_ds, df)
 
     logger.info(f"\nFinal Model Metrics:")
@@ -805,16 +816,22 @@ def train_final_model(
 def main() -> None:
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Train comprehensive gauge model v2")
-    parser.add_argument("--output-dir", type=str, required=True, help="Output directory")
+    parser.add_argument(
+        "--output-dir", type=str, required=True, help="Output directory"
+    )
     parser.add_argument("--n-folds", type=int, default=5, help="Number of CV folds")
     parser.add_argument("--epochs", type=int, default=40, help="Total epochs")
     parser.add_argument("--warmup-epochs", type=int, default=8, help="Warmup epochs")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size")
-    parser.add_argument("--alpha", type=float, default=1.0, help="MobileNetV2 width multiplier")
+    parser.add_argument(
+        "--alpha", type=float, default=1.0, help="MobileNetV2 width multiplier"
+    )
     parser.add_argument("--dropout", type=float, default=0.2, help="Head dropout")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--skip-cv", action="store_true", help="Skip cross-validation")
-    parser.add_argument("--skip-final", action="store_true", help="Skip final model training")
+    parser.add_argument(
+        "--skip-final", action="store_true", help="Skip final model training"
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)

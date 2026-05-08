@@ -40,6 +40,7 @@ Usage:
   bash scripts/wsl_ml.sh train-mobilenetv2-rectifier-finetune [rectifier fine-tune args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectifier-hardcase-finetune [rectifier hard-case args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar [rectified-scalar args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar-interval [rectified interval args...]
   bash scripts/wsl_ml.sh eval-rectified-scalar [rectified eval args...]
   bash scripts/wsl_ml.sh eval-rectified-captures [capture eval args...]
   bash scripts/wsl_ml.sh sweep-rectified-scalar-crop-scale [sweep args...]
@@ -182,6 +183,10 @@ case "${cmd}" in
   train-mobilenetv2-rectified-scalar-pure)
     # Fine-tune the rectified scalar reader with the cleaner pure-model recipe.
     exec bash scripts/run_mobilenetv2_rectified_scalar_pure_finetune_v3.sh "$@"
+    ;;
+  train-mobilenetv2-rectified-scalar-interval)
+    # Fine-tune the rectified scalar reader with the interval auxiliary head.
+    exec bash scripts/run_mobilenetv2_rectified_scalar_interval_v9.sh "$@"
     ;;
   eval-rectified-scalar)
     # Evaluate the rectifier + scalar-reader chain on a labeled manifest.

@@ -40,7 +40,6 @@ echo "Using Python: $VENV_PATH"
 
 # Run the training script with hard-case focused configuration
 $VENV_PATH scripts/train_hardcase_interval.py \
-    --model-family mobilenet_v2_interval \
     --epochs 80 \
     --batch-size 8 \
     --learning-rate 0.0001 \

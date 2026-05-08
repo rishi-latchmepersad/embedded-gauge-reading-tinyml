@@ -637,3 +637,7 @@ The issue was that the `prefix` parameter (string literal) was being corrupted b
   - to `dataset.map(lambda x, y, w: (x, y, w))`
   - This avoids Keras treating `(x, y)` as two model inputs.
 - Canonical retrain still needs a clean rerun after process cleanup; prior run got stuck during image preload after this fix.
+- `ml/scripts/run_mobilenetv2_rectified_scalar_pure_finetune_v3.sh` now builds `data/rectified_scalar_strict_boxed_train_v4.csv` on every run and keeps only `ml/data/captured_images/...` rows that also appear in `ml/data/rectified_crop_boxes_v5_all.csv`.
+- The stricter v5 rectified recipe uses only `ml/data/captured_images/...` rows and excludes the holdout manifest, which currently yields 155 training rows with 8 unique label values. This is the better strict baseline than the 26-row boxed-only variant.
+- `ml/scripts/run_mobilenetv2_rectified_scalar_mixed_finetune_v6.sh` builds a weighted mixed manifest with the 155-row strict rectified pool plus the broader board30/full-labelled sources, deduped against the hard-case holdout. The resulting mix is 507 rows with 17 unique label values and should be the next hard-case-improvement run.
+- `ml/scripts/run_mobilenetv2_rectified_scalar_interval_v9.sh` adds an interval auxiliary head on top of the strict rectified warm start, but the hard-case-heavy mix still collapses toward the middle. Final metrics were `test_mae=18.55C`, `test_rmse=21.94C`, `test_hard_mae=38.63C`, and `test_pct_under_5c=11.7%`, so interval binning did not solve the cold-end/generalization gap.
