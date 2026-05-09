@@ -584,15 +584,10 @@ def build_mobilenetv2_regression_model(
     """Build a transfer-learning regressor on top of MobileNetV2 features.
 
     Args:
-        linear_output: Deprecated and unsupported in no-calibration mode.
+        linear_output: If True, use a linear output head on the normalized target.
         value_min: Minimum gauge value for output scaling.
         value_max: Maximum gauge value for output scaling.
     """
-    if linear_output:
-        raise ValueError(
-            "linear_output=True is no longer supported. "
-            "Use the bounded no-calibration output path."
-        )
     inputs, x, base_model = _build_mobilenetv2_backbone(
         image_height,
         image_width,
@@ -605,15 +600,24 @@ def build_mobilenetv2_regression_model(
     x = keras.layers.Dense(head_units, activation="swish")(x)
     x = keras.layers.Dropout(head_dropout)(x)
 
-    # Sigmoid output bounded to [0,1], then rescaled to value range.
-    x = keras.layers.Dense(1, activation="sigmoid", name="gauge_value_sigmoid")(x)
-    # Rescale sigmoid [0,1] output to [value_min, value_max]
     span = value_max - value_min
-    output = keras.layers.Rescaling(
-        scale=span,
-        offset=value_min,
-        name="gauge_value",
-    )(x)
+    if linear_output:
+        # Predict a normalized fraction directly and then map it back to Celsius.
+        x = keras.layers.Dense(1, activation="linear", name="gauge_value_linear")(x)
+        output = keras.layers.Rescaling(
+            scale=span,
+            offset=value_min,
+            name="gauge_value",
+        )(x)
+    else:
+        # Sigmoid output bounded to [0,1], then rescaled to value range.
+        x = keras.layers.Dense(1, activation="sigmoid", name="gauge_value_sigmoid")(x)
+        # Rescale sigmoid [0,1] output to [value_min, value_max].
+        output = keras.layers.Rescaling(
+            scale=span,
+            offset=value_min,
+            name="gauge_value",
+        )(x)
 
     model = keras.Model(
         inputs=inputs,

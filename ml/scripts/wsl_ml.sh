@@ -40,7 +40,15 @@ Usage:
   bash scripts/wsl_ml.sh train-mobilenetv2-rectifier-finetune [rectifier fine-tune args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectifier-hardcase-finetune [rectifier hard-case args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar [rectified-scalar args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar-linear [rectified-scalar linear args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar-tailbalanced [tail-balanced args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-synthetic-pretrain [synthetic pretrain args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar-from-synth [synthetic fine-tune args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar-from-hard-synth-previewaug [preview-heavy synthetic fine-tune args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar-raw-tail [raw-tail fine-tune args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar-interval [rectified interval args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-geometry-from-rectified-v5 [geometry args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-keypoint-from-rectified-v5 [keypoint args...]
   bash scripts/wsl_ml.sh eval-rectified-scalar [rectified eval args...]
   bash scripts/wsl_ml.sh eval-rectified-captures [capture eval args...]
   bash scripts/wsl_ml.sh sweep-rectified-scalar-crop-scale [sweep args...]
@@ -180,6 +188,30 @@ case "${cmd}" in
     # Fine-tune the scalar reader on rectifier-generated crops.
     exec bash scripts/run_mobilenetv2_rectified_scalar_finetune.sh "$@"
     ;;
+  train-mobilenetv2-rectified-scalar-linear)
+    # Fine-tune the scalar reader with a linear output head on rectified crops.
+    exec bash scripts/run_mobilenetv2_rectified_scalar_linear_v10.sh "$@"
+    ;;
+  train-mobilenetv2-rectified-scalar-tailbalanced)
+    # Train a tail-balanced rectified scalar model with explicit sample weights.
+    exec bash scripts/run_mobilenetv2_rectified_scalar_tailbalanced_v11.sh "$@"
+    ;;
+  train-mobilenetv2-synthetic-pretrain)
+    # Pretrain a MobileNetV2 scalar model on synthetic gauge renders.
+    exec bash scripts/run_mobilenetv2_synthetic_pretrain_v11.sh "$@"
+    ;;
+  train-mobilenetv2-rectified-scalar-from-synth)
+    # Fine-tune the rectified scalar model from the synthetic pretrain checkpoint.
+    exec bash scripts/run_mobilenetv2_rectified_scalar_from_synth_v12.sh "$@"
+    ;;
+  train-mobilenetv2-rectified-scalar-from-hard-synth-previewaug)
+    # Fine-tune the rectified scalar model from the hard synthetic checkpoint with preview-heavy augmentation.
+    exec bash scripts/run_mobilenetv2_rectified_scalar_from_hard_synth_previewaug_v14.sh "$@"
+    ;;
+  train-mobilenetv2-rectified-scalar-raw-tail)
+    # Fine-tune the rectified scalar model on the strict pool plus raw tail rows with valid boxes.
+    exec bash scripts/run_mobilenetv2_rectified_scalar_raw_tail_v17.sh "$@"
+    ;;
   train-mobilenetv2-rectified-scalar-pure)
     # Fine-tune the rectified scalar reader with the cleaner pure-model recipe.
     exec bash scripts/run_mobilenetv2_rectified_scalar_pure_finetune_v3.sh "$@"
@@ -187,6 +219,14 @@ case "${cmd}" in
   train-mobilenetv2-rectified-scalar-interval)
     # Fine-tune the rectified scalar reader with the interval auxiliary head.
     exec bash scripts/run_mobilenetv2_rectified_scalar_interval_v9.sh "$@"
+    ;;
+  train-mobilenetv2-geometry-from-rectified-v5)
+    # Fine-tune a geometry-first model from the rectified v5 scalar backbone.
+    exec bash scripts/run_mobilenetv2_geometry_from_rectified_v5.sh "$@"
+    ;;
+  train-mobilenetv2-keypoint-from-rectified-v5)
+    # Fine-tune a lighter keypoint-aware model from the rectified v5 mix.
+    exec bash scripts/run_mobilenetv2_keypoint_from_rectified_v5.sh "$@"
     ;;
   eval-rectified-scalar)
     # Evaluate the rectifier + scalar-reader chain on a labeled manifest.

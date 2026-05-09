@@ -238,8 +238,6 @@ def _validate_split_config(config: TrainConfig) -> None:
         raise ValueError("monotonic_pair_margin must be >= 0.")
     if config.mixup_alpha < 0.0:
         raise ValueError("mixup_alpha must be >= 0.")
-    if config.linear_output:
-        raise ValueError("linear_output=True is not supported in no-calibration mode.")
     if config.interval_bin_width <= 0.0:
         raise ValueError("interval_bin_width must be > 0.")
     if config.interpolation_pair_strength < 0.0:
@@ -3109,6 +3107,7 @@ def _compile_keypoint_model(
     *,
     learning_rate: float,
     heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
+    value_loss_weight: float = 1.0,
 ) -> None:
     """Compile a keypoint-auxiliary model with scalar and heatmap losses."""
     optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
@@ -3124,7 +3123,7 @@ def _compile_keypoint_model(
             "keypoint_heatmaps": keras.losses.MeanSquaredError(),
         },
         loss_weights={
-            "gauge_value": 1.0,
+            "gauge_value": value_loss_weight,
             "keypoint_heatmaps": heatmap_loss_weight,
         },
         metrics={
@@ -4184,6 +4183,7 @@ def train(config: TrainConfig) -> TrainingResult:
                 model,
                 learning_rate=config.learning_rate,
                 heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                value_loss_weight=config.geometry_value_loss_weight,
             )
         elif config.model_family == "compact_geometry":
             _compile_geometry_model(

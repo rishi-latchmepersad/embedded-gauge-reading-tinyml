@@ -134,6 +134,11 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Keep MobileNetV2 BatchNorm layers in inference mode during fine-tuning.",
     )
+    parser.add_argument(
+        "--linear-output",
+        action="store_true",
+        help="Use a linear regression head instead of the bounded sigmoid head.",
+    )
     parser.add_argument("--strict-labels", action="store_true")
     parser.add_argument(
         "--crop-pad-ratio", type=float, default=DEFAULT_CROP_PAD_RATIO
@@ -364,6 +369,7 @@ def main() -> None:
         mobilenet_warmup_epochs=args.mobilenet_warmup_epochs,
         mobilenet_unfreeze_last_n=args.mobilenet_unfreeze_last_n,
         mobilenet_freeze_batchnorm=args.mobilenet_freeze_batchnorm,
+        linear_output=args.linear_output,
         mobilenet_alpha=args.mobilenet_alpha,
         mobilenet_head_units=args.mobilenet_head_units,
         mobilenet_head_dropout=args.mobilenet_head_dropout,

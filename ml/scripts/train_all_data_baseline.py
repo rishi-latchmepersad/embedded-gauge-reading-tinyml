@@ -333,6 +333,7 @@ def create_dataset(
     shuffle: bool = False,
     use_weights: bool = False,
     augment: bool = False,
+    augment_mode: str = "standard",
     crop_boxes: dict[str, tuple[float, float, float, float]] | None = None,
     aux_head_kind: str | None = None,
     ordinal_threshold_step: float = 10.0,
@@ -432,6 +433,8 @@ def create_dataset(
         )
 
     if augment:
+        if augment_mode not in {"standard", "hard_preview"}:
+            raise ValueError(f"Unsupported augment_mode: {augment_mode}")
 
         def _augment_strong(image: tf.Tensor) -> tf.Tensor:
             """Apply strong augmentation matching board camera reality."""
@@ -496,16 +499,101 @@ def create_dataset(
             image = tf.clip_by_value(image, 0.0, 1.0)
             return image
 
+        def _augment_hard_preview(image: tf.Tensor) -> tf.Tensor:
+            """Apply heavier low-contrast augmentation for preview-style frames."""
+            image_shape = tf.shape(image)
+            image_h = image_shape[0]
+            image_w = image_shape[1]
+
+            # Preview frames tend to be slightly tighter and flatter, so we
+            # bias the crop jitter toward a smaller crop than the standard path.
+            scale = tf.random.uniform([], minval=0.82, maxval=0.98, dtype=tf.float32)
+            crop_h = tf.maximum(
+                2, tf.cast(tf.cast(image_h, tf.float32) * scale, tf.int32)
+            )
+            crop_w = tf.maximum(
+                2, tf.cast(tf.cast(image_w, tf.float32) * scale, tf.int32)
+            )
+            image = tf.image.random_crop(image, size=[crop_h, crop_w, 3])
+            image = tf.image.resize(image, [image_h, image_w])
+
+            # Preview-style captures usually have weaker chroma, so grayscale is
+            # a legitimate training signal rather than a destructive transform.
+            if tf.random.uniform([]) < 0.70:
+                image = tf.image.rgb_to_grayscale(image)
+                image = tf.image.grayscale_to_rgb(image)
+
+            # Flatten contrast and exposure more aggressively than the standard
+            # path so the model sees the low-contrast end of the distribution.
+            image = tf.image.random_brightness(image, max_delta=0.12)
+            image = tf.image.random_contrast(image, lower=0.55, upper=1.18)
+            image = tf.clip_by_value(image, 0.0, 1.0)
+
+            # Push a lot of samples darker than the default augmentation does.
+            gamma_dark = tf.random.uniform([], minval=1.15, maxval=2.40, dtype=tf.float32)
+            gamma_bright = tf.random.uniform([], minval=0.80, maxval=1.05, dtype=tf.float32)
+            apply_dark = tf.random.uniform([]) < 0.70
+            gamma = tf.where(apply_dark, gamma_dark, gamma_bright)
+            image = tf.pow(tf.clip_by_value(image, 0.0, 1.0), gamma)
+            image = tf.clip_by_value(image, 0.0, 1.0)
+
+            # Add a little blur by downsampling and upsampling; preview captures
+            # often have softer edges than the cleaner rectified images.
+            if tf.random.uniform([]) < 0.65:
+                down_h = tf.maximum(2, tf.cast(tf.cast(image_h, tf.float32) * 0.78, tf.int32))
+                down_w = tf.maximum(2, tf.cast(tf.cast(image_w, tf.float32) * 0.78, tf.int32))
+                image = tf.image.resize(image, [down_h, down_w], method="bilinear")
+                image = tf.image.resize(image, [image_h, image_w], method="bilinear")
+
+            # Keep the glare/noise path, but make it a bit more aggressive so the
+            # network learns to survive the reflective preview frames.
+            BLOB_RES = 32
+            mask = tf.zeros([BLOB_RES, BLOB_RES, 1], dtype=tf.float32)
+            for _ in range(4):
+                active = tf.cast(tf.random.uniform([]) < 0.65, tf.float32)
+                cx = tf.random.uniform([], 2, BLOB_RES - 2, dtype=tf.float32)
+                cy = tf.random.uniform([], 2, BLOB_RES - 2, dtype=tf.float32)
+                brightness = tf.random.uniform([], 0.55, 1.0) * active
+                cy_i = tf.cast(tf.round(cy), tf.int32)
+                cx_i = tf.cast(tf.round(cx), tf.int32)
+                idx = tf.stack([cy_i, cx_i, 0])
+                spot = tf.tensor_scatter_nd_update(
+                    tf.zeros([BLOB_RES, BLOB_RES, 1], dtype=tf.float32),
+                    [idx],
+                    [brightness],
+                )
+                mask = mask + spot
+            mask = tf.image.resize(mask, [image_h, image_w], method="bicubic")
+            mask = tf.clip_by_value(mask, 0.0, 1.0)
+            image = image + mask * (1.0 - image)
+            image = tf.clip_by_value(image, 0.0, 1.0)
+
+            image = image + tf.random.normal(tf.shape(image), stddev=0.02)
+            image = tf.clip_by_value(image, 0.0, 1.0)
+            return image
+
         if use_weights:
-            dataset = dataset.map(
-                lambda x, y, w: (_augment_strong(x), y, w),
-                num_parallel_calls=tf.data.AUTOTUNE,
-            )
+            if augment_mode == "hard_preview":
+                dataset = dataset.map(
+                    lambda x, y, w: (_augment_hard_preview(x), y, w),
+                    num_parallel_calls=tf.data.AUTOTUNE,
+                )
+            else:
+                dataset = dataset.map(
+                    lambda x, y, w: (_augment_strong(x), y, w),
+                    num_parallel_calls=tf.data.AUTOTUNE,
+                )
         else:
-            dataset = dataset.map(
-                lambda x, y: (_augment_strong(x), y),
-                num_parallel_calls=tf.data.AUTOTUNE,
-            )
+            if augment_mode == "hard_preview":
+                dataset = dataset.map(
+                    lambda x, y: (_augment_hard_preview(x), y),
+                    num_parallel_calls=tf.data.AUTOTUNE,
+                )
+            else:
+                dataset = dataset.map(
+                    lambda x, y: (_augment_strong(x), y),
+                    num_parallel_calls=tf.data.AUTOTUNE,
+                )
 
     dataset = dataset.batch(batch_size)
     dataset = dataset.prefetch(tf.data.AUTOTUNE)
@@ -528,10 +616,12 @@ def train_all_data_baseline(
     init_model_path: Path | None = None,
     mobilenet_unfreeze_last_n: int = 0,
     mobilenet_freeze_batchnorm: bool = True,
+    linear_output: bool = False,
     aux_head_kind: str | None = None,
     ordinal_threshold_step: float = 10.0,
     interval_bin_width: float = 5.0,
     aux_loss_weight: float = 0.35,
+    augment_mode: str = "standard",
 ) -> dict[str, Any]:
     """Train on all data using proven canonical baseline pipeline."""
     np.random.seed(seed)
@@ -585,6 +675,7 @@ def train_all_data_baseline(
         shuffle=True,
         use_weights=True,
         augment=True,
+        augment_mode=augment_mode,
         crop_boxes=crop_boxes,
         aux_head_kind=aux_head_kind,
         ordinal_threshold_step=ordinal_threshold_step,
@@ -596,6 +687,7 @@ def train_all_data_baseline(
         shuffle=False,
         use_weights=False,
         augment=False,
+        augment_mode=augment_mode,
         crop_boxes=crop_boxes,
         aux_head_kind=aux_head_kind,
         ordinal_threshold_step=ordinal_threshold_step,
@@ -607,6 +699,7 @@ def train_all_data_baseline(
         shuffle=False,
         use_weights=False,
         augment=False,
+        augment_mode=augment_mode,
         crop_boxes=crop_boxes,
         aux_head_kind=aux_head_kind,
         ordinal_threshold_step=ordinal_threshold_step,
@@ -657,6 +750,7 @@ def train_all_data_baseline(
             head_units=head_units,
             head_dropout=dropout,
             pretrained=True,
+            linear_output=linear_output,
             value_min=VALUE_MIN,
             value_max=VALUE_MAX,
         )
@@ -992,6 +1086,18 @@ def main() -> None:
     )
     parser.add_argument("--dropout", type=float, default=0.2, help="Head dropout")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument(
+        "--linear-output",
+        action="store_true",
+        help="Use a linear regression head instead of sigmoid-rescaled output.",
+    )
+    parser.add_argument(
+        "--augment-mode",
+        type=str,
+        choices=["standard", "hard_preview"],
+        default="standard",
+        help="Choose the train-time augmentation profile.",
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -1039,10 +1145,12 @@ def main() -> None:
         init_model_path=init_model_path,
         mobilenet_unfreeze_last_n=args.mobilenet_unfreeze_last_n,
         mobilenet_freeze_batchnorm=args.mobilenet_freeze_batchnorm,
+        linear_output=args.linear_output,
         aux_head_kind=None if args.aux_head_kind == "none" else args.aux_head_kind,
         ordinal_threshold_step=args.ordinal_threshold_step,
         interval_bin_width=args.interval_bin_width,
         aux_loss_weight=args.aux_loss_weight,
+        augment_mode=args.augment_mode,
     )
 
     logger.info(f"\n{'='*60}")
