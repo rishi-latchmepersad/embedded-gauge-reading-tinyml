@@ -12,6 +12,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
+import cv2
 import numpy as np
 import tensorflow as tf
 
@@ -24,6 +25,9 @@ if str(SRC_DIR) not in sys.path:
 from embedded_gauge_reading_tinyml.board_crop_compare import (  # noqa: E402
     load_rgb_image,
     resize_with_pad_rgb,
+)
+from embedded_gauge_reading_tinyml.models import (  # noqa: E402
+    GaugeValueFromSweepDistribution,
 )
 
 TRAINING_CROP_X_MIN: float = 0.1027
@@ -41,6 +45,21 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--crop-boxes", type=Path, required=True)
     parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument(
+        "--polar-dualview-model",
+        action="store_true",
+        help="Evaluate a model that takes both full-frame and polar-unwrapped inputs.",
+    )
+    parser.add_argument(
+        "--polar-only-model",
+        action="store_true",
+        help="Evaluate a model that takes a single polar-unwrapped input.",
+    )
+    parser.add_argument(
+        "--polar-sweep-distribution-model",
+        action="store_true",
+        help="Evaluate a single-input polar sweep-distribution model.",
+    )
     return parser.parse_args()
 
 
@@ -103,6 +122,7 @@ def _load_model(model_path: Path) -> tf.keras.Model:
         model_path,
         custom_objects={
             "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input,
+            "GaugeValueFromSweepDistribution": GaugeValueFromSweepDistribution,
         },
         compile=False,
         safe_mode=False,
@@ -128,6 +148,29 @@ def _prepare_input(
     """Crop and resize an image to the scalar model input shape."""
     cropped = resize_with_pad_rgb(image, crop_box_xyxy, image_size=image_size)
     return cropped.astype(np.float32) / 255.0
+
+
+def _prepare_polar_input(
+    image: np.ndarray,
+    crop_box_xyxy: tuple[float, float, float, float],
+    *,
+    image_size: int,
+) -> np.ndarray:
+    """Crop and warp an image into polar coordinates for the dual-view model."""
+    cropped = resize_with_pad_rgb(image, crop_box_xyxy, image_size=image_size)
+    height, width = cropped.shape[:2]
+    center = (float(width) * 0.5, float(height) * 0.5)
+    max_radius = max(1.0, float(min(height, width)) * 0.5)
+    polar = cv2.warpPolar(
+        cropped,
+        (image_size, image_size),
+        center,
+        max_radius,
+        cv2.WARP_POLAR_LINEAR | cv2.WARP_FILL_OUTLIERS,
+    )
+    if polar.shape[0] != image_size or polar.shape[1] != image_size:
+        polar = cv2.resize(polar, (image_size, image_size), interpolation=cv2.INTER_LINEAR)
+    return polar.astype(np.float32) / 255.0
 
 
 def main() -> None:
@@ -159,7 +202,34 @@ def main() -> None:
             _fixed_crop_box(width, height),
         )
         model_input = _prepare_input(image, crop_box, image_size=args.image_size)
-        pred_value = float(np.asarray(model.predict(model_input[None, ...], verbose=0)).reshape(-1)[0])
+        if args.polar_dualview_model:
+            polar_input = _prepare_polar_input(
+                image,
+                crop_box,
+                image_size=args.image_size,
+            )
+            pred_raw = model.predict(
+                {
+                    "full_image": model_input[None, ...],
+                    "polar_image": polar_input[None, ...],
+                },
+                verbose=0,
+            )
+        elif args.polar_only_model or args.polar_sweep_distribution_model:
+            polar_input = _prepare_polar_input(
+                image,
+                crop_box,
+                image_size=args.image_size,
+            )
+            pred_raw = model.predict(
+                {"polar_image": polar_input[None, ...]},
+                verbose=0,
+            )
+        else:
+            pred_raw = model.predict(model_input[None, ...], verbose=0)
+        if isinstance(pred_raw, dict):
+            pred_raw = pred_raw.get("gauge_value", next(iter(pred_raw.values())))
+        pred_value = float(np.asarray(pred_raw).reshape(-1)[0])
         abs_error = abs(pred_value - true_value)
 
         abs_errors.append(abs_error)

@@ -78,6 +78,8 @@ def parse_args() -> argparse.Namespace:
             "mobilenet_v2_geometry",
             "mobilenet_v2_geometry_uncertainty",
             "mobilenet_v2_obb",
+            "mobilenet_v2_obb_geometry",
+            "mobilenet_v2_bluraware_obb_geometry",
             "mobilenet_v2_rectifier",
             "mobilenet_v2_keypoint",
             "mobilenet_v2_interval",
@@ -472,6 +474,8 @@ def main() -> None:
                 "mobilenet_v2_detector",
                 "mobilenet_v2_geometry",
                 "mobilenet_v2_geometry_uncertainty",
+                "mobilenet_v2_obb_geometry",
+                "mobilenet_v2_bluraware_obb_geometry",
             }
             else "Keypoint head"
         )
@@ -488,6 +492,17 @@ def main() -> None:
             f"loss_weight={config.geometry_uncertainty_loss_weight} "
             f"low_q={config.geometry_uncertainty_low_quantile} "
             f"high_q={config.geometry_uncertainty_high_quantile}"
+        )
+    if config.model_family in {
+        "mobilenet_v2_obb_geometry",
+        "mobilenet_v2_bluraware_obb_geometry",
+    }:
+        print(
+            "[RUN] OBB-geometry head: "
+            f"heatmap_size={config.keypoint_heatmap_size} "
+            f"heatmap_loss_weight={config.keypoint_heatmap_loss_weight} "
+            f"coord_loss_weight={config.keypoint_coord_loss_weight} "
+            "obb_loss_weight=0.35"
         )
 
     # Execute training and evaluation.

@@ -28,13 +28,28 @@ from embedded_gauge_reading_tinyml.board_crop_compare import (  # noqa: E402
 from embedded_gauge_reading_tinyml.geometry_cascade import (  # noqa: E402
     source_xy_from_resized_xy,
 )
+from embedded_gauge_reading_tinyml.models import (  # noqa: E402
+    GaugeValueFromKeypoints,
+    SpatialSoftArgmax2D,
+)
 
 ObbModelKind = Literal["auto", "keras", "tflite"]
+ScalarModelKind = Literal["auto", "keras", "tflite"]
 
 
 @dataclass(slots=True)
 class ObbSession:
     """Hold the loaded OBB backend and its tensor details."""
+
+    kind: Literal["keras", "tflite"]
+    model: tf.keras.Model | tf.lite.Interpreter
+    input_details: dict[str, Any] | None = None
+    output_details: dict[str, Any] | None = None
+
+
+@dataclass(slots=True)
+class ScalarSession:
+    """Hold the loaded scalar backend and its tensor details."""
 
     kind: Literal["keras", "tflite"]
     model: tf.keras.Model | tf.lite.Interpreter
@@ -85,7 +100,16 @@ def _parse_args() -> argparse.Namespace:
         "--scalar-model",
         type=Path,
         required=True,
-        help="Path to the quantized scalar TFLite reader.",
+        help="Path to the scalar reader model (.keras or .tflite).",
+    )
+    parser.add_argument(
+        "--scalar-model-kind",
+        choices=["auto", "keras", "tflite"],
+        default="auto",
+        help=(
+            "Scalar backend to load. 'auto' picks TFLite for .tflite paths "
+            "and Keras otherwise."
+        ),
     )
     parser.add_argument(
         "--manifest",
@@ -171,6 +195,16 @@ def _resolve_obb_kind(model_path: Path, model_kind: ObbModelKind) -> Literal["ke
     return cast(Literal["keras", "tflite"], model_kind)
 
 
+def _resolve_scalar_kind(
+    model_path: Path,
+    model_kind: ScalarModelKind,
+) -> Literal["keras", "tflite"]:
+    """Pick the scalar backend from the CLI flag or the file suffix."""
+    if model_kind == "auto":
+        return "tflite" if model_path.suffix.lower() == ".tflite" else "keras"
+    return cast(Literal["keras", "tflite"], model_kind)
+
+
 def _load_obb_session(model_path: Path, model_kind: ObbModelKind) -> ObbSession:
     """Load the OBB backend with the right tensor handling."""
     resolved_kind = _resolve_obb_kind(model_path, model_kind)
@@ -197,6 +231,44 @@ def _load_obb_session(model_path: Path, model_kind: ObbModelKind) -> ObbSession:
     print(f"[OBB-EVAL] OBB input details: {input_details}", flush=True)
     print(f"[OBB-EVAL] OBB output details: {output_details}", flush=True)
     return ObbSession(
+        kind="tflite",
+        model=interpreter,
+        input_details=input_details,
+        output_details=output_details,
+    )
+
+
+def _load_scalar_session(
+    model_path: Path,
+    model_kind: ScalarModelKind,
+) -> ScalarSession:
+    """Load the scalar reader with the right tensor handling."""
+    resolved_kind = _resolve_scalar_kind(model_path, model_kind)
+    print(
+        f"[OBB-EVAL] Loading scalar reader from {model_path} as {resolved_kind}...",
+        flush=True,
+    )
+    if resolved_kind == "keras":
+        model = tf.keras.models.load_model(
+            model_path,
+            custom_objects={
+                "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input,
+                "SpatialSoftArgmax2D": SpatialSoftArgmax2D,
+                "GaugeValueFromKeypoints": GaugeValueFromKeypoints,
+            },
+            compile=False,
+            safe_mode=False,
+        )
+        print(f"[OBB-EVAL] Scalar reader loaded: {model.name}", flush=True)
+        return ScalarSession(kind="keras", model=model)
+
+    interpreter = tf.lite.Interpreter(model_path=str(model_path), num_threads=1)
+    interpreter.allocate_tensors()
+    input_details = interpreter.get_input_details()[0]
+    output_details = interpreter.get_output_details()[0]
+    print(f"[OBB-EVAL] Scalar input details: {input_details}", flush=True)
+    print(f"[OBB-EVAL] Scalar output details: {output_details}", flush=True)
+    return ScalarSession(
         kind="tflite",
         model=interpreter,
         input_details=input_details,
@@ -329,9 +401,7 @@ def _obb_params_to_crop_box(
 
 def _predict_obb_scalar(
     obb: ObbSession,
-    scalar_interpreter: tf.lite.Interpreter,
-    input_details: dict[str, Any],
-    output_details: dict[str, Any],
+    scalar: ScalarSession,
     image_path: Path,
     *,
     image_size: int,
@@ -378,11 +448,19 @@ def _predict_obb_scalar(
 
     crop = resize_with_pad_rgb(source_image, crop_box_xyxy, image_size=image_size)
     batch = np.expand_dims(crop.astype(np.float32) / 255.0, axis=0)
-    quantized_batch = _quantize_input(batch, input_details)
-    scalar_interpreter.set_tensor(int(input_details["index"]), quantized_batch)
-    scalar_interpreter.invoke()
-    raw_output = scalar_interpreter.get_tensor(int(output_details["index"]))[0][0]
-    prediction = _dequantize_output(raw_output, output_details)
+    if scalar.kind == "keras":
+        scalar_model = cast(tf.keras.Model, scalar.model)
+        scalar_prediction = scalar_model.predict(batch, verbose=0)
+        prediction = float(np.asarray(scalar_prediction).reshape(-1)[0])
+    else:
+        assert scalar.input_details is not None
+        assert scalar.output_details is not None
+        quantized_batch = _quantize_input(batch, scalar.input_details)
+        scalar_interpreter = cast(tf.lite.Interpreter, scalar.model)
+        scalar_interpreter.set_tensor(int(scalar.input_details["index"]), quantized_batch)
+        scalar_interpreter.invoke()
+        raw_output = scalar_interpreter.get_tensor(int(scalar.output_details["index"]))[0][0]
+        prediction = _dequantize_output(raw_output, scalar.output_details)
 
     return {
         "prediction": prediction,
@@ -397,9 +475,7 @@ def _predict_obb_scalar(
 def _run_obb_scalar_on_manifest(
     *,
     obb: ObbSession,
-    scalar_interpreter: tf.lite.Interpreter,
-    input_details: dict[str, Any],
-    output_details: dict[str, Any],
+    scalar: ScalarSession,
     items: list[tuple[Path, float]],
     image_size: int,
     obb_crop_scale: float,
@@ -435,9 +511,7 @@ def _run_obb_scalar_on_manifest(
             print(f"[OBB-EVAL] Predicting {image_path.name}...", flush=True)
             pred = _predict_obb_scalar(
                 obb,
-                scalar_interpreter,
-                input_details,
-                output_details,
+                scalar,
                 image_path,
                 image_size=image_size,
                 obb_crop_scale=obb_crop_scale,
@@ -495,21 +569,12 @@ def main() -> None:
     """Run the OBB cascade benchmark and print a summary table."""
     args = _parse_args()
     obb = _load_obb_session(args.obb_model, args.obb_model_kind)
+    scalar = _load_scalar_session(args.scalar_model, args.scalar_model_kind)
     items = _load_manifest(args.manifest)
-
-    print(f"[OBB-EVAL] Loading scalar reader from {args.scalar_model}...", flush=True)
-    scalar_interpreter = tf.lite.Interpreter(model_path=str(args.scalar_model), num_threads=1)
-    scalar_interpreter.allocate_tensors()
-    input_details = scalar_interpreter.get_input_details()[0]
-    output_details = scalar_interpreter.get_output_details()[0]
-    print(f"[OBB-EVAL] Scalar input details: {input_details}", flush=True)
-    print(f"[OBB-EVAL] Scalar output details: {output_details}", flush=True)
 
     rows = _run_obb_scalar_on_manifest(
         obb=obb,
-        scalar_interpreter=scalar_interpreter,
-        input_details=input_details,
-        output_details=output_details,
+        scalar=scalar,
         items=items,
         image_size=args.image_size,
         obb_crop_scale=args.obb_crop_scale,

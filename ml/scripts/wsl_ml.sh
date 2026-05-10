@@ -45,10 +45,27 @@ Usage:
   bash scripts/wsl_ml.sh train-mobilenetv2-synthetic-pretrain [synthetic pretrain args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar-from-synth [synthetic fine-tune args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar-from-hard-synth-previewaug [preview-heavy synthetic fine-tune args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar-full-labelled [full CVAT-labelled fine-tune args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar-from-geometry [geometry-derived rectified fine-tune args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar-all-data [all-data V5 args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar-combined [combined real + synthetic args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-sweep-distribution [sweep-distribution args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-polar-sweep-distribution [polar sweep-distribution args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar-raw-tail [raw-tail fine-tune args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-geometry-raw-cvat [raw CVAT geometry args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-rectified-scalar-interval [rectified interval args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-dual-resolution-interval [dual-resolution interval args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-polar-dualview [polar dual-view args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-polar-only [polar only args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-geometry-from-rectified-v5 [geometry args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-geometry-literature [geometry literature args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-geometry-localizer-only [geometry localizer args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-obb-localizer [obb localizer args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-keypoint-from-rectified-v5 [keypoint args...]
+  bash scripts/wsl_ml.sh eval-mobilenetv2-geometry-cascade [geometry cascade eval args...]
+  bash scripts/wsl_ml.sh eval-mobilenetv2-geometry-cascade-strict-reader [geometry cascade strict-reader args...]
+  bash scripts/wsl_ml.sh eval-mobilenetv2-obb-cascade-strict-reader [obb cascade strict-reader args...]
+  bash scripts/wsl_ml.sh sweep-obb-localizer-strict-reader-crop-scale [obb crop-scale sweep args...]
   bash scripts/wsl_ml.sh eval-rectified-scalar [rectified eval args...]
   bash scripts/wsl_ml.sh eval-rectified-captures [capture eval args...]
   bash scripts/wsl_ml.sh sweep-rectified-scalar-crop-scale [sweep args...]
@@ -208,9 +225,49 @@ case "${cmd}" in
     # Fine-tune the rectified scalar model from the hard synthetic checkpoint with preview-heavy augmentation.
     exec bash scripts/run_mobilenetv2_rectified_scalar_from_hard_synth_previewaug_v14.sh "$@"
     ;;
+  train-mobilenetv2-rectified-scalar-full-labelled)
+    # Fine-tune the rectified scalar model on the full CVAT-labelled raw pool.
+    exec bash scripts/run_mobilenetv2_rectified_scalar_full_labelled_v18.sh "$@"
+    ;;
+  train-mobilenetv2-rectified-scalar-from-geometry)
+    # Fine-tune the strict rectified scalar model using geometry-derived crops.
+    exec bash scripts/run_mobilenetv2_rectified_scalar_from_geometry_v19.sh "$@"
+    ;;
+  train-mobilenetv2-rectified-scalar-all-data)
+    # Train the V5-style rectified scalar model on synthetic + full real data.
+    exec bash scripts/run_mobilenetv2_rectified_scalar_all_data_v21.sh "$@"
+    ;;
+  train-mobilenetv2-rectified-scalar-combined)
+    # Train the strict v5 scalar model on a weighted real + synthetic combined manifest.
+    exec bash scripts/run_mobilenetv2_rectified_scalar_combined_v22.sh "$@"
+    ;;
+  train-mobilenetv2-sweep-distribution)
+    # Train the sweep-distribution reader on the widest deduped real + synthetic pool.
+    exec bash scripts/run_mobilenetv2_sweep_distribution_v35.sh "$@"
+    ;;
+  train-mobilenetv2-polar-sweep-distribution)
+    # Train the polar sweep-distribution reader on the broad real + synthetic pool.
+    exec bash scripts/run_mobilenetv2_polar_sweep_distribution_v36.sh "$@"
+    ;;
+  train-mobilenetv2-rectified-scalar-all-sources)
+    # Train the strict v5 scalar model on the widest deduped real + synthetic pool.
+    exec bash scripts/run_mobilenetv2_rectified_scalar_all_sources_v24.sh "$@"
+    ;;
+  train-mobilenetv2-rectified-scalar-hardtail-specialist)
+    # Train a hard-tail specialist rectified scalar model from the strict v5 backbone.
+    exec bash scripts/run_mobilenetv2_rectified_scalar_hardtail_specialist_v25.sh "$@"
+    ;;
+  train-mobilenetv2-rectified-scalar-curriculum)
+    # Train the strict v5 scalar model with a two-stage cold-tail curriculum.
+    exec bash scripts/run_mobilenetv2_rectified_scalar_curriculum_v23.sh "$@"
+    ;;
   train-mobilenetv2-rectified-scalar-raw-tail)
     # Fine-tune the rectified scalar model on the strict pool plus raw tail rows with valid boxes.
     exec bash scripts/run_mobilenetv2_rectified_scalar_raw_tail_v17.sh "$@"
+    ;;
+  train-mobilenetv2-geometry-raw-cvat)
+    # Train a geometry-first model directly on the raw CVAT-labelled gauge images.
+    exec bash scripts/run_mobilenetv2_geometry_raw_cvat_v18.sh "$@"
     ;;
   train-mobilenetv2-rectified-scalar-pure)
     # Fine-tune the rectified scalar reader with the cleaner pure-model recipe.
@@ -220,13 +277,45 @@ case "${cmd}" in
     # Fine-tune the rectified scalar reader with the interval auxiliary head.
     exec bash scripts/run_mobilenetv2_rectified_scalar_interval_v9.sh "$@"
     ;;
+  train-mobilenetv2-dual-resolution-interval)
+    # Train the new dual-resolution MobileNetV2 interval model on all sources.
+    exec bash scripts/run_mobilenetv2_dual_resolution_interval_v26.sh "$@"
+    ;;
+  train-mobilenetv2-polar-dualview)
+    # Train the new polar-dualview MobileNetV2 model on all sources.
+    exec bash scripts/run_mobilenetv2_polar_dualview_v27.sh "$@"
+    ;;
+  train-mobilenetv2-polar-only)
+    # Train the simpler single-input polar MobileNetV2 model on all sources.
+    exec bash scripts/run_mobilenetv2_polar_only_v28.sh "$@"
+    ;;
   train-mobilenetv2-geometry-from-rectified-v5)
     # Fine-tune a geometry-first model from the rectified v5 scalar backbone.
     exec bash scripts/run_mobilenetv2_geometry_from_rectified_v5.sh "$@"
     ;;
+  train-mobilenetv2-geometry-literature)
+    # Train the literature-backed geometry-first MobileNetV2 model.
+    exec bash scripts/run_mobilenetv2_geometry_literature_v29.sh "$@"
+    ;;
+  train-mobilenetv2-geometry-localizer-only)
+    # Train the geometry-only localizer used as stage one in the two-stage cascade.
+    exec bash scripts/run_mobilenetv2_geometry_localizer_only_v30.sh "$@"
+    ;;
+  train-mobilenetv2-obb-localizer)
+    # Train the OBB localizer used as the first stage in the two-stage cascade.
+    exec bash scripts/run_mobilenetv2_obb_localizer_v31.sh "$@"
+    ;;
+  train-mobilenetv2-bluraware-obb-geometry)
+    # Train the blur-aware OBB-geometry model with raw + sharpened views.
+    exec bash scripts/run_mobilenetv2_bluraware_obb_geometry_v34.sh "$@"
+    ;;
   train-mobilenetv2-keypoint-from-rectified-v5)
     # Fine-tune a lighter keypoint-aware model from the rectified v5 mix.
     exec bash scripts/run_mobilenetv2_keypoint_from_rectified_v5.sh "$@"
+    ;;
+  eval-mobilenetv2-geometry-cascade)
+    # Evaluate the raw-CVAT geometry model as the cascade front-end.
+    exec bash scripts/run_mobilenetv2_geometry_cascade_eval_v20.sh "$@"
     ;;
   eval-rectified-scalar)
     # Evaluate the rectifier + scalar-reader chain on a labeled manifest.
@@ -287,6 +376,26 @@ case "${cmd}" in
   eval-cascade)
     # Evaluate the keypoint-gated cascade against a labeled manifest.
     exec "${POETRY_BIN}" run python scripts/eval_keypoint_reader_cascade_on_manifest.py "$@"
+    ;;
+  eval-mobilenetv2-geometry-cascade-strict-reader)
+    # Evaluate the geometry localizer with the strict v5 scalar reader.
+    exec bash scripts/run_geometry_localizer_strict_reader_cascade_v30.sh "$@"
+    ;;
+  eval-mobilenetv2-obb-geometry-cascade-strict-reader)
+    # Evaluate the new OBB-geometry localizer with the strict v5 scalar reader.
+    exec bash scripts/run_mobilenetv2_obb_geometry_cascade_eval_v32.sh "$@"
+    ;;
+  eval-mobilenetv2-obb-cascade-strict-reader)
+    # Evaluate the OBB localizer with the strict scalar reader.
+    exec bash scripts/run_obb_localizer_strict_reader_cascade_v31.sh "$@"
+    ;;
+  eval-mobilenetv2-bluraware-obb-geometry-self)
+    # Evaluate the blur-aware OBB-geometry localizer using its own value head.
+    exec bash scripts/run_mobilenetv2_bluraware_obb_geometry_self_cascade_v34.sh "$@"
+    ;;
+  sweep-obb-localizer-strict-reader-crop-scale)
+    # Sweep OBB crop scales against the hard-case manifest.
+    exec bash scripts/sweep_obb_localizer_strict_reader_crop_scale_v32.sh "$@"
     ;;
   fit-search)
     # Probe candidate MobileNetV2 widths against the STM32N6 relocatable fit.

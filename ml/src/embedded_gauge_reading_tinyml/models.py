@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import keras
+import numpy as np
 import tensorflow as tf
 
 
@@ -145,6 +146,212 @@ def _build_mobilenetv2_backbone(
 
     x = base_model(x, training=backbone_trainable)
     return inputs, x, base_model
+
+
+def _build_mobilenetv2_dual_resolution_backbone(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool,
+    backbone_trainable: bool,
+    alpha: float,
+    crop_ratio: float,
+) -> tuple[keras.KerasTensor, keras.KerasTensor, keras.Model]:
+    """Build a shared-weight full-frame and center-crop MobileNetV2 backbone.
+
+    The full branch preserves global context and dial framing, while the
+    center-crop branch zooms into the pointer and inner Celsius arc. Sharing
+    the same MobileNetV2 weights keeps the model compact enough for the 4 GB
+    GPU while still giving the head two complementary views of the gauge.
+    """
+    if not (0.1 < crop_ratio <= 1.0):
+        raise ValueError("crop_ratio must be in the range (0.1, 1.0].")
+
+    crop_height = max(32, int(round(image_height * crop_ratio)))
+    crop_width = max(32, int(round(image_width * crop_ratio)))
+
+    inputs = keras.Input(shape=(image_height, image_width, 3), name="image")
+
+    # The full-frame branch keeps the entire dial, background cues, and label
+    # context that help disambiguate the reading on noisy preview captures.
+    full_branch = keras.layers.Rescaling(
+        1.0 / 127.5,
+        offset=-1.0,
+        name="dualres_full_preprocess",
+    )(inputs)
+
+    # The center-crop branch zooms in on the dial face and pointer, which is
+    # where the hard-case errors tend to hide in our sample images.
+    crop_branch = keras.layers.CenterCrop(
+        crop_height,
+        crop_width,
+        name="dualres_center_crop",
+    )(inputs)
+    crop_branch = keras.layers.Resizing(
+        image_height,
+        image_width,
+        interpolation="bilinear",
+        name="dualres_center_resize",
+    )(crop_branch)
+    crop_branch = keras.layers.Rescaling(
+        1.0 / 127.5,
+        offset=-1.0,
+        name="dualres_crop_preprocess",
+    )(crop_branch)
+
+    base_model = keras.applications.MobileNetV2(
+        include_top=False,
+        weights="imagenet" if pretrained else None,
+        input_shape=(image_height, image_width, 3),
+        alpha=alpha,
+    )
+    base_model.trainable = backbone_trainable
+
+    full_maps = base_model(full_branch, training=backbone_trainable)
+    crop_maps = base_model(crop_branch, training=backbone_trainable)
+
+    full_gap = keras.layers.GlobalAveragePooling2D(name="dualres_full_gap")(full_maps)
+    full_gmp = keras.layers.GlobalMaxPooling2D(name="dualres_full_gmp")(full_maps)
+    crop_gap = keras.layers.GlobalAveragePooling2D(name="dualres_crop_gap")(crop_maps)
+    crop_gmp = keras.layers.GlobalMaxPooling2D(name="dualres_crop_gmp")(crop_maps)
+
+    # Compare the global view against the zoomed view so the head can learn
+    # when the needle geometry disagrees with the surrounding dial context.
+    gap_delta = keras.layers.Subtract(name="dualres_gap_delta")([full_gap, crop_gap])
+    gmp_delta = keras.layers.Subtract(name="dualres_gmp_delta")([full_gmp, crop_gmp])
+
+    features = keras.layers.Concatenate(name="dualres_features")(
+        [full_gap, full_gmp, crop_gap, crop_gmp, gap_delta, gmp_delta]
+    )
+    features = keras.layers.LayerNormalization(name="dualres_features_norm")(features)
+    return inputs, features, base_model
+
+
+def _build_mobilenetv2_polar_dualview_backbone(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool,
+    backbone_trainable: bool,
+    alpha: float,
+) -> tuple[dict[str, keras.KerasTensor], keras.KerasTensor, keras.Model]:
+    """Build a shared-weight full-frame and polar-unwrapped MobileNetV2 backbone.
+
+    The full view preserves the original framing, while the polar view turns the
+    circular gauge face into a rectangular angle-versus-radius image. That makes
+    the needle position easier for a CNN to model because the circular geometry
+    is flattened into a more linear representation.
+    """
+    full_input = keras.Input(shape=(image_height, image_width, 3), name="full_image")
+    polar_input = keras.Input(
+        shape=(image_height, image_width, 3), name="polar_image"
+    )
+
+    # Keep the preprocessing identical across both branches so the shared
+    # MobileNetV2 trunk sees consistent input scaling.
+    full_branch = keras.layers.Rescaling(
+        1.0 / 127.5,
+        offset=-1.0,
+        name="polar_full_preprocess",
+    )(full_input)
+    polar_branch = keras.layers.Rescaling(
+        1.0 / 127.5,
+        offset=-1.0,
+        name="polar_view_preprocess",
+    )(polar_input)
+
+    base_model = keras.applications.MobileNetV2(
+        include_top=False,
+        weights="imagenet" if pretrained else None,
+        input_shape=(image_height, image_width, 3),
+        alpha=alpha,
+    )
+    base_model.trainable = backbone_trainable
+
+    full_maps = base_model(full_branch, training=backbone_trainable)
+    polar_maps = base_model(polar_branch, training=backbone_trainable)
+
+    full_gap = keras.layers.GlobalAveragePooling2D(name="polar_full_gap")(full_maps)
+    full_gmp = keras.layers.GlobalMaxPooling2D(name="polar_full_gmp")(full_maps)
+    polar_gap = keras.layers.GlobalAveragePooling2D(name="polar_view_gap")(polar_maps)
+    polar_gmp = keras.layers.GlobalMaxPooling2D(name="polar_view_gmp")(polar_maps)
+
+    # Encourage the head to learn whether the polar view and the raw view agree.
+    gap_delta = keras.layers.Subtract(name="polar_gap_delta")([full_gap, polar_gap])
+    gmp_delta = keras.layers.Subtract(name="polar_gmp_delta")([full_gmp, polar_gmp])
+    gap_mean = keras.layers.Average(name="polar_gap_mean")([full_gap, polar_gap])
+    gmp_mean = keras.layers.Average(name="polar_gmp_mean")([full_gmp, polar_gmp])
+    gap_abs_delta = keras.layers.Lambda(
+        lambda tensors: tf.abs(tensors[0] - tensors[1]),
+        name="polar_gap_abs_delta",
+    )([full_gap, polar_gap])
+    gmp_abs_delta = keras.layers.Lambda(
+        lambda tensors: tf.abs(tensors[0] - tensors[1]),
+        name="polar_gmp_abs_delta",
+    )([full_gmp, polar_gmp])
+
+    features = keras.layers.Concatenate(name="polar_dualview_features")(
+        [
+            full_gap,
+            full_gmp,
+            polar_gap,
+            polar_gmp,
+            gap_delta,
+            gmp_delta,
+            gap_mean,
+            gmp_mean,
+            gap_abs_delta,
+            gmp_abs_delta,
+        ]
+    )
+    features = keras.layers.LayerNormalization(name="polar_dualview_features_norm")(
+        features
+    )
+    return {"full_image": full_input, "polar_image": polar_input}, features, base_model
+
+
+def _build_mobilenetv2_polar_backbone(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool,
+    backbone_trainable: bool,
+    alpha: float,
+) -> tuple[keras.KerasTensor, keras.KerasTensor, keras.Model]:
+    """Build a single-input polar-unwrapped MobileNetV2 backbone.
+
+    The polar projection keeps the gauge geometry but flattens the circular dial
+    into an angle-versus-radius grid. That is simpler than the dual-view branch
+    and avoids the extra data plumbing that has been slowing our experiments.
+    """
+    polar_input = keras.Input(shape=(image_height, image_width, 3), name="polar_image")
+
+    # MobileNetV2 expects the usual [-1, 1] preprocessing.
+    polar_branch = keras.layers.Rescaling(
+        1.0 / 127.5,
+        offset=-1.0,
+        name="polar_preprocess",
+    )(polar_input)
+
+    base_model = keras.applications.MobileNetV2(
+        include_top=False,
+        weights="imagenet" if pretrained else None,
+        input_shape=(image_height, image_width, 3),
+        alpha=alpha,
+    )
+    base_model.trainable = backbone_trainable
+
+    polar_maps = base_model(polar_branch, training=backbone_trainable)
+    polar_gap = keras.layers.GlobalAveragePooling2D(name="polar_gap")(polar_maps)
+    polar_gmp = keras.layers.GlobalMaxPooling2D(name="polar_gmp")(polar_maps)
+
+    # Combine average and max pooled views so the head can keep both context and
+    # sharp pointer/tick responses.
+    features = keras.layers.Concatenate(name="polar_features")(
+        [polar_gap, polar_gmp]
+    )
+    features = keras.layers.LayerNormalization(name="polar_features_norm")(features)
+    return polar_input, features, base_model
 
 
 def _mobilenetv2_model_name(
@@ -337,6 +544,38 @@ def _build_keypoint_heatmap_head(
     return heatmaps
 
 
+def _build_pointer_mask_head(
+    features: keras.KerasTensor,
+    *,
+    mask_size: int,
+) -> keras.KerasTensor:
+    """Decode a dense pointer-mask prediction from shared spatial features."""
+    if mask_size < 4:
+        raise ValueError("mask_size must be >= 4.")
+
+    x = keras.layers.Conv2D(128, 3, padding="same", use_bias=False)(features)
+    x = _norm(x)
+    x = keras.layers.Activation("swish")(x)
+    x = keras.layers.UpSampling2D(size=2, interpolation="bilinear")(x)
+
+    x = keras.layers.Conv2D(64, 3, padding="same", use_bias=False)(x)
+    x = _norm(x)
+    x = keras.layers.Activation("swish")(x)
+    x = keras.layers.Resizing(
+        mask_size,
+        mask_size,
+        interpolation="bilinear",
+        name="pointer_mask_resize",
+    )(x)
+    pointer_mask = keras.layers.Conv2D(
+        1,
+        1,
+        activation="sigmoid",
+        name="pointer_mask",
+    )(x)
+    return pointer_mask
+
+
 @keras.saving.register_keras_serializable(package="embedded_gauge_reading_tinyml")
 class SpatialSoftArgmax2D(keras.layers.Layer):
     """Convert per-keypoint heatmaps into soft coordinates."""
@@ -452,6 +691,73 @@ class GaugeValueFromKeypoints(keras.layers.Layer):
                 "value_max": self.value_max,
                 "min_angle_rad": self.min_angle_rad,
                 "sweep_rad": self.sweep_rad,
+            }
+        )
+        return config
+
+
+@keras.saving.register_keras_serializable(package="embedded_gauge_reading_tinyml")
+class GaugeValueFromSweepDistribution(keras.layers.Layer):
+    """Convert a sweep-distribution logit vector into a calibrated gauge value.
+
+    The layer treats the output logits as a soft distribution across bins that
+    span the known gauge range. We then take the expectation over the bin
+    centers and map that fraction back into Celsius.
+    """
+
+    def __init__(
+        self,
+        *,
+        value_min: float,
+        value_max: float,
+        num_bins: int,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        if value_max <= value_min:
+            raise ValueError("value_max must be > value_min.")
+        if num_bins < 2:
+            raise ValueError("num_bins must be >= 2.")
+        self.value_min = float(value_min)
+        self.value_max = float(value_max)
+        self.num_bins = int(num_bins)
+        self._bin_centers: tf.Tensor | None = None
+
+    def build(self, input_shape: tf.TensorShape) -> None:
+        """Precompute normalized bin centers used by the expectation layer."""
+        if len(input_shape) != 2:
+            raise ValueError("Sweep distribution logits must be rank 2.")
+        channels = input_shape[-1]
+        if channels is not None and int(channels) != self.num_bins:
+            raise ValueError("Logit dimension must match num_bins.")
+
+        self._bin_centers = tf.linspace(
+            tf.constant(0.0, dtype=tf.float32),
+            tf.constant(1.0, dtype=tf.float32),
+            self.num_bins,
+        )
+        super().build(input_shape)
+
+    def call(self, inputs: tf.Tensor) -> tf.Tensor:
+        """Map a distribution over sweep bins into a Celsius prediction."""
+        if self._bin_centers is None:
+            raise RuntimeError("GaugeValueFromSweepDistribution was not built.")
+
+        logits = tf.cast(inputs, tf.float32)
+        probs = tf.nn.softmax(logits, axis=-1)
+        fraction = tf.reduce_sum(probs * self._bin_centers, axis=-1)
+        span = self.value_max - self.value_min
+        value = self.value_min + fraction * span
+        return tf.expand_dims(value, axis=-1)
+
+    def get_config(self) -> dict[str, object]:
+        """Serialize the layer config for saved models."""
+        config = super().get_config()
+        config.update(
+            {
+                "value_min": self.value_min,
+                "value_max": self.value_max,
+                "num_bins": self.num_bins,
             }
         )
         return config
@@ -860,6 +1166,383 @@ def build_mobilenetv2_fraction_model(
     return model
 
 
+def build_mobilenetv2_dual_resolution_regression_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 0.35,
+    head_units: int = 96,
+    head_dropout: float = 0.2,
+    crop_ratio: float = 0.78,
+    linear_output: bool = True,
+    value_min: float = -30.0,
+    value_max: float = 50.0,
+) -> keras.Model:
+    """Build a dual-resolution MobileNetV2 regressor for gauge value."""
+    inputs, features, base_model = _build_mobilenetv2_dual_resolution_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+        crop_ratio=crop_ratio,
+    )
+
+    x = keras.layers.Dense(head_units * 2, activation="swish")(features)
+    x = keras.layers.Dropout(head_dropout)(x)
+    x = keras.layers.Dense(head_units, activation="swish")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+
+    span = value_max - value_min
+    if linear_output:
+        x = keras.layers.Dense(1, activation="linear", name="gauge_value_linear")(x)
+        output = keras.layers.Rescaling(
+            scale=span,
+            offset=value_min,
+            name="gauge_value",
+        )(x)
+    else:
+        x = keras.layers.Dense(1, activation="sigmoid", name="gauge_value_sigmoid")(x)
+        output = keras.layers.Rescaling(
+            scale=span,
+            offset=value_min,
+            name="gauge_value",
+        )(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs=output,
+        name=_mobilenetv2_model_name(
+            regression_kind="dualres",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_dual_resolution_interval_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    bin_width: float = 5.0,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 0.35,
+    head_units: int = 96,
+    head_dropout: float = 0.2,
+    crop_ratio: float = 0.78,
+) -> keras.Model:
+    """Build a dual-resolution MobileNetV2 model with interval supervision."""
+    inputs, features, base_model = _build_mobilenetv2_dual_resolution_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+        crop_ratio=crop_ratio,
+    )
+
+    x = keras.layers.Dense(head_units * 2, activation="swish")(features)
+    x = keras.layers.Dropout(head_dropout)(x)
+    x = keras.layers.Dense(head_units, activation="swish")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+
+    span = value_max - value_min
+    num_bins = int(math.ceil(span / bin_width))
+    if num_bins < 2:
+        raise ValueError("Interval model needs at least two bins.")
+
+    interval_logits = keras.layers.Dense(
+        num_bins,
+        name="interval_logits",
+    )(x)
+    gauge_value, interval_probs = _build_interval_hybrid_head(
+        x,
+        interval_logits,
+        value_min=value_min,
+        value_max=value_max,
+        bin_width=bin_width,
+    )
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "interval_logits": interval_logits,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="dualres_interval",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    setattr(model, "_mobilenet_interval_probs", interval_probs)
+    return model
+
+
+def build_mobilenetv2_polar_dualview_regression_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+    linear_output: bool = False,
+    value_min: float = -30.0,
+    value_max: float = 50.0,
+) -> keras.Model:
+    """Build a polar-dualview MobileNetV2 regressor for gauge value.
+
+    The full-frame branch keeps the broader scene context while the polar branch
+    turns the circular dial into a flattened angle/radius image. This is a
+    better fit for the gauge geometry than another center-crop-only variant.
+    """
+    inputs, features, base_model = _build_mobilenetv2_polar_dualview_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    x = keras.layers.Dense(head_units, activation="swish", name="polar_dense")(features)
+    x = keras.layers.Dropout(head_dropout, name="polar_dropout")(x)
+
+    span = value_max - value_min
+    if linear_output:
+        # Predict an unrestricted normalized scalar and map it back to Celsius.
+        x = keras.layers.Dense(
+            1,
+            activation="linear",
+            name="gauge_value_linear",
+        )(x)
+    else:
+        # Keep a bounded head when the caller wants the older sigmoid behavior.
+        x = keras.layers.Dense(
+            1,
+            activation="sigmoid",
+            name="gauge_value_sigmoid",
+        )(x)
+
+    output = keras.layers.Rescaling(
+        scale=span,
+        offset=value_min,
+        name="gauge_value",
+    )(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs=output,
+        name=_mobilenetv2_model_name(
+            regression_kind="polar_dualview",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_polar_regression_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+    linear_output: bool = False,
+    value_min: float = -30.0,
+    value_max: float = 50.0,
+) -> keras.Model:
+    """Build a single-input polar-unwrapped MobileNetV2 regressor.
+
+    Compared with the dual-view branch, this version keeps one input tensor and
+    one shared MobileNetV2 trunk. It is less expressive, but it is much easier
+    to train, debug, and export on the constrained WSL/GPU setup we have here.
+    """
+    inputs, features, base_model = _build_mobilenetv2_polar_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    x = keras.layers.Dense(head_units, activation="swish", name="polar_dense")(features)
+    x = keras.layers.Dropout(head_dropout, name="polar_dropout")(x)
+
+    span = value_max - value_min
+    if linear_output:
+        # Predict a normalized scalar directly and then map it back to Celsius.
+        x = keras.layers.Dense(
+            1,
+            activation="linear",
+            name="gauge_value_linear",
+        )(x)
+    else:
+        # Keep the older bounded form if the caller wants a sigmoid output.
+        x = keras.layers.Dense(
+            1,
+            activation="sigmoid",
+            name="gauge_value_sigmoid",
+        )(x)
+
+    output = keras.layers.Rescaling(
+        scale=span,
+        offset=value_min,
+        name="gauge_value",
+    )(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs=output,
+        name=_mobilenetv2_model_name(
+            regression_kind="polar",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_polar_sweep_distribution_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    num_bins: int = 81,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a polar gauge reader with a distributional sweep head.
+
+    The polar warp flattens the circular dial into an angle-versus-radius view,
+    while the sweep distribution head preserves ordinal structure better than a
+    plain scalar regressor. This keeps the model compact but more geometry-aware
+    than the earlier polar-only baseline.
+    """
+    inputs, features, base_model = _build_mobilenetv2_polar_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    # The polar backbone already returns a pooled 2D feature vector, so the
+    # distribution head can work directly from that compact representation.
+    sweep_features = keras.layers.Dropout(head_dropout)(features)
+    sweep_features = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="polar_sweep_dense",
+    )(sweep_features)
+    sweep_features = keras.layers.Dropout(head_dropout)(sweep_features)
+    sweep_distribution_logits = keras.layers.Dense(
+        num_bins,
+        name="sweep_distribution_logits",
+    )(sweep_features)
+    gauge_value = GaugeValueFromSweepDistribution(
+        value_min=value_min,
+        value_max=value_max,
+        num_bins=num_bins,
+        name="gauge_value",
+    )(sweep_distribution_logits)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "sweep_distribution_logits": sweep_distribution_logits,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="polar_sweep_distribution",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_sweep_distribution_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    num_bins: int = 81,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a gauge reader that predicts a smooth sweep distribution.
+
+    The network learns a value distribution over the known Celsius range and a
+    deterministic expectation layer turns that distribution back into the final
+    scalar temperature. This is a more geometry-aware alternative to direct
+    scalar regression.
+    """
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    features = keras.layers.GlobalAveragePooling2D(name="sweep_distribution_gap")(x)
+    features = keras.layers.Dropout(head_dropout)(features)
+    features = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="sweep_distribution_dense",
+    )(features)
+    features = keras.layers.Dropout(head_dropout)(features)
+    sweep_distribution_logits = keras.layers.Dense(
+        num_bins,
+        name="sweep_distribution_logits",
+    )(features)
+    gauge_value = GaugeValueFromSweepDistribution(
+        value_min=value_min,
+        value_max=value_max,
+        num_bins=num_bins,
+        name="gauge_value",
+    )(sweep_distribution_logits)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "sweep_distribution_logits": sweep_distribution_logits,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="sweep_distribution",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
 def build_mobilenetv2_keypoint_model(
     image_height: int,
     image_width: int,
@@ -1101,6 +1784,350 @@ def build_mobilenetv2_geometry_uncertainty_model(
         },
         name=_mobilenetv2_model_name(
             regression_kind="geometry_uncertainty",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_obb_geometry_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    min_angle_rad: float,
+    sweep_rad: float,
+    heatmap_size: int = 28,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a joint OBB-plus-geometry model for detector-style gauge reading.
+
+    The OBB branch encourages the network to stay aware of the full dial extent,
+    while the keypoint branch turns that localized view into an explicit pointer
+    geometry and the final Celsius value. This keeps the architecture closer to
+    the recent literature than a pure scalar head.
+    """
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    pooled_features = keras.layers.GlobalAveragePooling2D(
+        name="obb_geometry_pooled_features"
+    )(x)
+    pooled_features = keras.layers.Dropout(head_dropout)(pooled_features)
+    obb_features = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="obb_geometry_dense",
+    )(pooled_features)
+    obb_features = keras.layers.Dropout(head_dropout)(obb_features)
+
+    # Keep the OBB branch compact and directly supervised so it stays useful as
+    # a localizer instead of competing with the geometry head for capacity.
+    center_xy = keras.layers.Dense(
+        2,
+        activation="sigmoid",
+        name="obb_center_xy",
+    )(obb_features)
+    size_wh = keras.layers.Dense(
+        2,
+        activation="sigmoid",
+        name="obb_size_wh",
+    )(obb_features)
+    angle_raw = keras.layers.Dense(
+        2,
+        name="obb_angle_raw",
+    )(obb_features)
+    angle_sincos = keras.layers.UnitNormalization(
+        axis=-1,
+        name="obb_angle_sincos",
+    )(angle_raw)
+    obb_params = keras.layers.Concatenate(name="obb_params")(
+        [center_xy, size_wh, angle_sincos]
+    )
+
+    # The geometry branch reuses the dense feature map and predicts heatmaps
+    # for the needle center/tip, which the soft-argmax layer turns into explicit
+    # coordinates. That gives the final value a structural path rather than a
+    # pure scalar shortcut.
+    heatmaps = _build_keypoint_heatmap_head(
+        x,
+        heatmap_size=heatmap_size,
+        num_keypoints=2,
+    )
+    keypoints = SpatialSoftArgmax2D(
+        heatmap_size=heatmap_size,
+        num_keypoints=2,
+        name="keypoint_coords",
+    )(heatmaps)
+    gauge_value = GaugeValueFromKeypoints(
+        value_min=value_min,
+        value_max=value_max,
+        min_angle_rad=min_angle_rad,
+        sweep_rad=sweep_rad,
+        name="gauge_value",
+    )(keypoints)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "keypoint_heatmaps": heatmaps,
+            "keypoint_coords": keypoints,
+            "obb_params": obb_params,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="obb_geometry",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_obb_mask_geometry_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    min_angle_rad: float,
+    sweep_rad: float,
+    heatmap_size: int = 28,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build an OBB-plus-mask model that combines localization and segmentation."""
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    pooled_features = keras.layers.GlobalAveragePooling2D(
+        name="obb_mask_pooled_features"
+    )(x)
+    pooled_features = keras.layers.Dropout(head_dropout)(pooled_features)
+    obb_features = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="obb_mask_dense",
+    )(pooled_features)
+    obb_features = keras.layers.Dropout(head_dropout)(obb_features)
+
+    center_xy = keras.layers.Dense(
+        2,
+        activation="sigmoid",
+        name="obb_center_xy",
+    )(obb_features)
+    size_wh = keras.layers.Dense(
+        2,
+        activation="sigmoid",
+        name="obb_size_wh",
+    )(obb_features)
+    angle_raw = keras.layers.Dense(
+        2,
+        name="obb_angle_raw",
+    )(obb_features)
+    angle_sincos = keras.layers.UnitNormalization(
+        axis=-1,
+        name="obb_angle_sincos",
+    )(angle_raw)
+    obb_params = keras.layers.Concatenate(name="obb_params")(
+        [center_xy, size_wh, angle_sincos]
+    )
+
+    heatmaps = _build_keypoint_heatmap_head(
+        x,
+        heatmap_size=heatmap_size,
+        num_keypoints=2,
+    )
+    keypoints = SpatialSoftArgmax2D(
+        heatmap_size=heatmap_size,
+        num_keypoints=2,
+        name="keypoint_coords",
+    )(heatmaps)
+    pointer_mask = _build_pointer_mask_head(
+        x,
+        mask_size=heatmap_size,
+    )
+    gauge_value = GaugeValueFromKeypoints(
+        value_min=value_min,
+        value_max=value_max,
+        min_angle_rad=min_angle_rad,
+        sweep_rad=sweep_rad,
+        name="gauge_value",
+    )(keypoints)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "keypoint_heatmaps": heatmaps,
+            "keypoint_coords": keypoints,
+            "pointer_mask": pointer_mask,
+            "obb_params": obb_params,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="obb_mask_geometry",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def _build_unsharp_mask_branch(
+    inputs: keras.KerasTensor,
+    *,
+    name_prefix: str,
+) -> keras.KerasTensor:
+    """Create a blur-aware branch by subtracting a fixed Gaussian blur."""
+    blur_kernel = np.array(
+        [
+            [1.0, 2.0, 1.0],
+            [2.0, 4.0, 2.0],
+            [1.0, 2.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    blur_kernel /= np.sum(blur_kernel)
+    blur_kernel = blur_kernel[:, :, np.newaxis, np.newaxis]
+    blur_kernel = np.repeat(blur_kernel, repeats=3, axis=2)
+
+    blurred = keras.layers.DepthwiseConv2D(
+        3,
+        padding="same",
+        use_bias=False,
+        trainable=False,
+        depthwise_initializer=keras.initializers.Constant(blur_kernel),
+        name=f"{name_prefix}_fixed_blur",
+    )(inputs)
+    detail = keras.layers.Subtract(name=f"{name_prefix}_detail")([inputs, blurred])
+    # A plain residual sum keeps the enhancement branch serializable while
+    # still emphasizing edges and thin pointer structure.
+    return keras.layers.Add(name=f"{name_prefix}_unsharp_mask")([inputs, detail])
+
+
+def build_mobilenetv2_bluraware_obb_geometry_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    min_angle_rad: float,
+    sweep_rad: float,
+    heatmap_size: int = 28,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a blur-aware OBB-geometry model with raw and sharpened views."""
+    inputs, _, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    raw_branch = keras.layers.Rescaling(
+        1.0 / 127.5,
+        offset=-1.0,
+        name="bluraware_raw_preprocess",
+    )(inputs)
+    enhanced_branch = _build_unsharp_mask_branch(
+        raw_branch,
+        name_prefix="bluraware",
+    )
+
+    raw_maps = base_model(raw_branch, training=backbone_trainable)
+    enhanced_maps = base_model(enhanced_branch, training=backbone_trainable)
+    x = keras.layers.Average(name="bluraware_feature_average")(
+        [raw_maps, enhanced_maps]
+    )
+
+    pooled_features = keras.layers.GlobalAveragePooling2D(
+        name="obb_geometry_pooled_features"
+    )(x)
+    pooled_features = keras.layers.Dropout(head_dropout)(pooled_features)
+    obb_features = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="obb_geometry_dense",
+    )(pooled_features)
+    obb_features = keras.layers.Dropout(head_dropout)(obb_features)
+
+    center_xy = keras.layers.Dense(
+        2,
+        activation="sigmoid",
+        name="obb_center_xy",
+    )(obb_features)
+    size_wh = keras.layers.Dense(
+        2,
+        activation="sigmoid",
+        name="obb_size_wh",
+    )(obb_features)
+    angle_raw = keras.layers.Dense(
+        2,
+        name="obb_angle_raw",
+    )(obb_features)
+    angle_sincos = keras.layers.UnitNormalization(
+        axis=-1,
+        name="obb_angle_sincos",
+    )(angle_raw)
+    obb_params = keras.layers.Concatenate(name="obb_params")(
+        [center_xy, size_wh, angle_sincos]
+    )
+
+    heatmaps = _build_keypoint_heatmap_head(
+        x,
+        heatmap_size=heatmap_size,
+        num_keypoints=2,
+    )
+    keypoints = SpatialSoftArgmax2D(
+        heatmap_size=heatmap_size,
+        num_keypoints=2,
+        name="keypoint_coords",
+    )(heatmaps)
+    gauge_value = GaugeValueFromKeypoints(
+        value_min=value_min,
+        value_max=value_max,
+        min_angle_rad=min_angle_rad,
+        sweep_rad=sweep_rad,
+        name="gauge_value",
+    )(keypoints)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "keypoint_heatmaps": heatmaps,
+            "keypoint_coords": keypoints,
+            "obb_params": obb_params,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="bluraware_obb_geometry",
             alpha=alpha,
             head_units=head_units,
         ),

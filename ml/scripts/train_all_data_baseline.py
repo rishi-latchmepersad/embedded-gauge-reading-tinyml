@@ -25,8 +25,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+import cv2
 from sklearn.model_selection import train_test_split
 from tensorflow import keras
+from PIL import Image, ImageOps
 
 # Add ml/src to path
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
@@ -36,13 +38,18 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from embedded_gauge_reading_tinyml.models import (
+    build_mobilenetv2_dual_resolution_interval_model,
+    build_mobilenetv2_dual_resolution_regression_model,
     build_mobilenetv2_interval_model,
+    build_mobilenetv2_polar_regression_model,
+    build_mobilenetv2_polar_sweep_distribution_model,
+    build_mobilenetv2_polar_dualview_regression_model,
+    build_mobilenetv2_sweep_distribution_model,
     build_mobilenetv2_ordinal_model,
     build_mobilenetv2_regression_model,
 )
 from embedded_gauge_reading_tinyml.board_crop_compare import (
     load_rgb_image,
-    resize_with_pad_rgb,
 )
 
 # Configure logging
@@ -98,6 +105,32 @@ def normalize_path(path_str: str, repo_root: Path) -> str:
 def resolve_full_path(normalized_path: str, repo_root: Path) -> Path:
     """Resolve normalized path to absolute Path."""
     return repo_root / normalized_path
+
+
+def _load_cropped_pil_image(
+    image_path: str,
+    crop_box_xyxy: tuple[float, float, float, float] | None = None,
+) -> Image.Image:
+    """Load an image from disk and apply an optional crop box.
+
+    We reuse this helper for both the normal scalar view and the new
+    polar-unwrapped view so the two branches stay spatially aligned.
+    """
+    img = load_rgb_image(image_path)
+    pil_image = Image.fromarray(img, mode="RGB")
+    if crop_box_xyxy is None:
+        return pil_image
+
+    x0, y0, x1, y1 = crop_box_xyxy
+    left = max(0, int(np.floor(x0)))
+    top = max(0, int(np.floor(y0)))
+    right = min(pil_image.width, int(np.ceil(x1)))
+    bottom = min(pil_image.height, int(np.ceil(y1)))
+    if right <= left:
+        right = min(pil_image.width, left + 1)
+    if bottom <= top:
+        bottom = min(pil_image.height, top + 1)
+    return pil_image.crop((left, top, right, bottom))
 
 
 def load_scalar_manifest(file_path: Path, repo_root: Path) -> pd.DataFrame:
@@ -298,6 +331,35 @@ def _value_to_interval_index(
     return np.int32(clipped_index)
 
 
+def _value_to_sweep_distribution(
+    value: float,
+    *,
+    value_min: float,
+    value_max: float,
+    num_bins: int,
+    sigma_bins: float,
+) -> np.ndarray:
+    """Convert one scalar value into a smooth sweep-bin distribution target."""
+    if num_bins < 2:
+        raise ValueError("num_bins must be >= 2.")
+    if sigma_bins <= 0.0:
+        raise ValueError("sigma_bins must be > 0.")
+    if value_max <= value_min:
+        raise ValueError("value_max must be > value_min.")
+
+    span = value_max - value_min
+    fraction = float(np.clip((float(value) - value_min) / span, 0.0, 1.0))
+    center_bin = fraction * float(num_bins - 1)
+    bin_indices = np.arange(num_bins, dtype=np.float32)
+    distribution = np.exp(
+        -0.5 * ((bin_indices - np.float32(center_bin)) / np.float32(sigma_bins)) ** 2
+    )
+    total = float(np.sum(distribution))
+    if total > 0.0:
+        distribution /= np.float32(total)
+    return distribution.astype(np.float32)
+
+
 def preprocess_image(
     image_path: str,
     target_size: tuple[int, int] = (224, 224),
@@ -308,292 +370,685 @@ def preprocess_image(
     When a rectifier crop is available, we crop first so the scalar model sees
     the same board-aligned framing it will receive at inference time.
     """
-    img = load_rgb_image(image_path)
-    if crop_box_xyxy is None:
-        image_tensor = tf.convert_to_tensor(img, dtype=tf.uint8)
-        resized = tf.image.resize_with_pad(
-            tf.cast(image_tensor, tf.float32),
-            target_size[0],
-            target_size[1],
-            method="bilinear",
-        )
-    else:
-        resized = tf.convert_to_tensor(
-            resize_with_pad_rgb(img, crop_box_xyxy, image_size=target_size[0]),
-            dtype=tf.float32,
-        )
-    img_resized = np.clip(np.rint(resized.numpy()), 0.0, 255.0).astype(np.uint8)
+    pil_image = _load_cropped_pil_image(image_path, crop_box_xyxy)
+
+    resized = ImageOps.pad(
+        pil_image,
+        target_size,
+        method=Image.BILINEAR,
+        color=(0, 0, 0),
+        centering=(0.5, 0.5),
+    )
+    img_resized = np.asarray(resized, dtype=np.uint8)
     img_normalized = img_resized.astype(np.float32) / 255.0
     return img_normalized
+
+
+def preprocess_polar_image(
+    image_path: str,
+    target_size: tuple[int, int] = (224, 224),
+    crop_box_xyxy: tuple[float, float, float, float] | None = None,
+) -> np.ndarray:
+    """Load and polar-unwarp an image for the dual-view gauge model.
+
+    The gauge face is roughly circular, so a polar projection turns the dial
+    into a more linear angle-versus-radius image. That makes the needle and
+    tick structure easier for the CNN to separate.
+    """
+    pil_image = _load_cropped_pil_image(image_path, crop_box_xyxy)
+    rgb_image = np.asarray(pil_image, dtype=np.uint8)
+    if rgb_image.size == 0:
+        raise ValueError(f"Image is empty after cropping: {image_path}")
+
+    height, width = rgb_image.shape[:2]
+    center = (float(width) * 0.5, float(height) * 0.5)
+    max_radius = max(1.0, float(min(height, width)) * 0.5)
+    polar_width = int(target_size[1])
+    polar_height = int(target_size[0])
+
+    # OpenCV maps angle across the horizontal axis and radius down the vertical
+    # axis, which flattens the dial into a rectangular "spoke band" image.
+    polar_image = cv2.warpPolar(
+        rgb_image,
+        (polar_width, polar_height),
+        center,
+        max_radius,
+        cv2.WARP_POLAR_LINEAR | cv2.WARP_FILL_OUTLIERS,
+    )
+    if polar_image.shape[0] != polar_height or polar_image.shape[1] != polar_width:
+        polar_image = cv2.resize(
+            polar_image,
+            (polar_width, polar_height),
+            interpolation=cv2.INTER_LINEAR,
+        )
+
+    polar_normalized = polar_image.astype(np.float32) / 255.0
+    return polar_normalized
 
 
 def create_dataset(
     df: pd.DataFrame,
     batch_size: int,
     shuffle: bool = False,
+    repeat: bool = False,
     use_weights: bool = False,
     augment: bool = False,
     augment_mode: str = "standard",
     crop_boxes: dict[str, tuple[float, float, float, float]] | None = None,
     aux_head_kind: str | None = None,
+    polar_only_model: bool = False,
+    polar_dualview_model: bool = False,
+    polar_sweep_distribution_model: bool = False,
     ordinal_threshold_step: float = 10.0,
     interval_bin_width: float = 5.0,
+    sweep_distribution_bins: int = 81,
+    sweep_distribution_sigma_bins: float = 1.75,
 ) -> tf.data.Dataset:
-    """Create a TensorFlow dataset from a DataFrame."""
-    logger.info(f"Loading {len(df)} images into memory...")
-    images = []
-    values = []
+    """Create a TensorFlow dataset from a DataFrame.
 
-    for idx, row in df.iterrows():
+    The loader keeps only metadata in memory and streams the image pixels from
+    disk through a generator. That avoids the large one-shot tensor material-
+    ization step that was stalling the dual-resolution runs.
+    """
+    logger.info(f"Loading {len(df)} images into memory...")
+    loaded_records: list[
+        tuple[str, float, float | None, tuple[float, float, float, float] | None]
+    ] = []
+
+    for index, (_, row) in enumerate(df.iterrows(), start=1):
         try:
+            if index == 1 or index % 100 == 0:
+                logger.info(
+                    "  ...loaded %d/%d images so far (next=%s)",
+                    index - 1,
+                    len(df),
+                    row["image_path_resolved"],
+                )
             crop_box = None
             if crop_boxes is not None:
                 crop_box = crop_boxes.get(str(row["image_path_resolved"]))
-            img = preprocess_image(
-                row["image_path_resolved"],
-                (224, 224),
-                crop_box_xyxy=crop_box,
+            # We validate the image path up front so bad files are skipped early.
+            if polar_only_model or polar_sweep_distribution_model:
+                _ = preprocess_polar_image(
+                    row["image_path_resolved"],
+                    (224, 224),
+                    crop_box_xyxy=crop_box,
+                )
+            else:
+                _ = preprocess_image(
+                    row["image_path_resolved"],
+                    (224, 224),
+                    crop_box_xyxy=crop_box,
+                )
+            sample_weight = (
+                float(row["sample_weight"]) if use_weights and "sample_weight" in df.columns else None
             )
-            images.append(img)
-            values.append(float(row["value"]))
+            loaded_records.append(
+                (
+                    str(row["image_path_resolved"]),
+                    float(row["value"]),
+                    sample_weight,
+                    crop_box,
+                )
+            )
         except Exception as e:
             logger.warning(f"Failed to load {row['image_path_resolved']}: {e}")
             continue
 
-    images = np.array(images, dtype=np.float32)
-    values = np.array(values, dtype=np.float32)
-    logger.info(f"Successfully loaded {len(images)} images")
+    logger.info(f"Successfully loaded {len(loaded_records)} images")
 
-    if aux_head_kind is not None and aux_head_kind not in {"ordinal", "interval"}:
+    if aux_head_kind is not None and aux_head_kind not in {
+        "ordinal",
+        "interval",
+        "sweep_distribution",
+    }:
         raise ValueError(f"Unsupported aux_head_kind: {aux_head_kind}")
+    if polar_sweep_distribution_model and aux_head_kind not in {None, "sweep_distribution"}:
+        raise ValueError(
+            "polar_sweep_distribution_model currently supports sweep_distribution "
+            "targets only."
+        )
+    if (polar_only_model or polar_sweep_distribution_model) and augment:
+        logger.info(
+            "Polar-geometry model requested with augmentation; disabling "
+            "augmentation to keep the simplified pipeline stable."
+        )
+        augment = False
 
-    if aux_head_kind == "ordinal":
-        ordinal_targets = np.stack(
-            [
-                _value_to_ordinal_threshold_vector(
-                    float(value),
+    ordinal_target_dim = max(
+        int(np.ceil((VALUE_MAX - VALUE_MIN) / ordinal_threshold_step)), 2
+    )
+    interval_target_dim = max(
+        int(np.ceil((VALUE_MAX - VALUE_MIN) / interval_bin_width)), 2
+    )
+
+    def _record_generator() -> Any:
+        """Yield preprocessed images and the matching training targets."""
+        for image_path, value, sample_weight, crop_box in loaded_records:
+            if polar_only_model or polar_sweep_distribution_model:
+                polar_image = preprocess_polar_image(
+                    image_path,
+                    (224, 224),
+                    crop_box_xyxy=crop_box,
+                )
+            else:
+                image = preprocess_image(
+                    image_path,
+                    (224, 224),
+                    crop_box_xyxy=crop_box,
+                )
+            if polar_dualview_model:
+                polar_image = preprocess_polar_image(
+                    image_path,
+                    (224, 224),
+                    crop_box_xyxy=crop_box,
+                )
+            if aux_head_kind == "ordinal":
+                ordinal_target = _value_to_ordinal_threshold_vector(
+                    value,
                     value_min=VALUE_MIN,
                     value_max=VALUE_MAX,
                     threshold_step=ordinal_threshold_step,
+                ).astype(np.float32)
+                target = {
+                    "gauge_value": np.float32(value),
+                    "ordinal_logits": ordinal_target,
+                }
+                if use_weights and sample_weight is not None:
+                    weights = {
+                        "gauge_value": np.float32(sample_weight),
+                        "ordinal_logits": np.float32(sample_weight),
+                    }
+                    if polar_dualview_model:
+                        yield {
+                            "full_image": image,
+                            "polar_image": polar_image,
+                        }, target, weights
+                    elif polar_only_model or polar_sweep_distribution_model:
+                        yield {"polar_image": polar_image}, target, weights
+                    else:
+                        yield image, target, weights
+                else:
+                    if polar_dualview_model:
+                        yield {
+                            "full_image": image,
+                            "polar_image": polar_image,
+                        }, target
+                    elif polar_only_model or polar_sweep_distribution_model:
+                        yield {"polar_image": polar_image}, target
+                    else:
+                        yield image, target
+            elif aux_head_kind == "interval":
+                interval_target = np.int32(
+                    _value_to_interval_index(
+                        value,
+                        value_min=VALUE_MIN,
+                        value_max=VALUE_MAX,
+                        bin_width=interval_bin_width,
+                    )
                 )
-                for value in values
-            ],
-            axis=0,
-        ).astype(np.float32)
-        targets: dict[str, np.ndarray] = {
-            "gauge_value": values,
-            "ordinal_logits": ordinal_targets,
-        }
-        if use_weights and "sample_weight" in df.columns:
-            weights = df["sample_weight"].values[: len(images)].astype(np.float32)
-            sample_weights: dict[str, np.ndarray] = {
-                "gauge_value": weights,
-                "ordinal_logits": weights,
-            }
-            dataset = tf.data.Dataset.from_tensor_slices((images, targets, sample_weights))
-        else:
-            dataset = tf.data.Dataset.from_tensor_slices((images, targets))
-    elif aux_head_kind == "interval":
-        interval_targets = np.asarray(
-            [
-                _value_to_interval_index(
-                    float(value),
+                target = {
+                    "gauge_value": np.float32(value),
+                    "interval_logits": interval_target,
+                }
+                if use_weights and sample_weight is not None:
+                    weights = {
+                        "gauge_value": np.float32(sample_weight),
+                        "interval_logits": np.float32(sample_weight),
+                    }
+                    if polar_dualview_model:
+                        yield {
+                            "full_image": image,
+                            "polar_image": polar_image,
+                        }, target, weights
+                    elif polar_only_model or polar_sweep_distribution_model:
+                        yield {"polar_image": polar_image}, target, weights
+                    else:
+                        yield image, target, weights
+                else:
+                    if polar_dualview_model:
+                        yield {
+                            "full_image": image,
+                            "polar_image": polar_image,
+                        }, target
+                    elif polar_only_model or polar_sweep_distribution_model:
+                        yield {"polar_image": polar_image}, target
+                    else:
+                        yield image, target
+            elif aux_head_kind == "sweep_distribution":
+                sweep_distribution_target = _value_to_sweep_distribution(
+                    value,
                     value_min=VALUE_MIN,
                     value_max=VALUE_MAX,
-                    bin_width=interval_bin_width,
-                )
-                for value in values
-            ],
-            dtype=np.int32,
-        )
-        targets = {
-            "gauge_value": values,
-            "interval_logits": interval_targets,
+                    num_bins=sweep_distribution_bins,
+                    sigma_bins=sweep_distribution_sigma_bins,
+                ).astype(np.float32)
+                target = {
+                    "gauge_value": np.float32(value),
+                    "sweep_distribution_logits": sweep_distribution_target,
+                }
+                if use_weights and sample_weight is not None:
+                    weights = {
+                        "gauge_value": np.float32(sample_weight),
+                        "sweep_distribution_logits": np.float32(sample_weight),
+                    }
+                    if polar_dualview_model:
+                        yield {
+                            "full_image": image,
+                            "polar_image": polar_image,
+                        }, target, weights
+                    elif polar_only_model or polar_sweep_distribution_model:
+                        yield {"polar_image": polar_image}, target, weights
+                    else:
+                        yield image, target, weights
+                else:
+                    if polar_dualview_model:
+                        yield {
+                            "full_image": image,
+                            "polar_image": polar_image,
+                        }, target
+                    elif polar_only_model or polar_sweep_distribution_model:
+                        yield {"polar_image": polar_image}, target
+                    else:
+                        yield image, target
+            else:
+                if use_weights and sample_weight is not None:
+                    if polar_dualview_model:
+                        yield (
+                            {
+                                "full_image": image,
+                                "polar_image": polar_image,
+                            },
+                            np.float32(value),
+                            np.float32(sample_weight),
+                        )
+                    elif polar_only_model or polar_sweep_distribution_model:
+                        yield {"polar_image": polar_image}, np.float32(value), np.float32(sample_weight)
+                    else:
+                        yield image, np.float32(value), np.float32(sample_weight)
+                else:
+                    if polar_dualview_model:
+                        yield {
+                            "full_image": image,
+                            "polar_image": polar_image,
+                        }, np.float32(value)
+                    elif polar_only_model or polar_sweep_distribution_model:
+                        yield {"polar_image": polar_image}, np.float32(value)
+                    else:
+                        yield image, np.float32(value)
+
+    if polar_dualview_model:
+        image_spec: Any = {
+            "full_image": tf.TensorSpec(shape=(224, 224, 3), dtype=tf.float32),
+            "polar_image": tf.TensorSpec(shape=(224, 224, 3), dtype=tf.float32),
+        }
+    elif polar_only_model or polar_sweep_distribution_model:
+        image_spec = {
+            "polar_image": tf.TensorSpec(shape=(224, 224, 3), dtype=tf.float32)
+        }
+    else:
+        image_spec = tf.TensorSpec(shape=(224, 224, 3), dtype=tf.float32)
+    if aux_head_kind == "ordinal":
+        target_spec = {
+            "gauge_value": tf.TensorSpec(shape=(), dtype=tf.float32),
+            "ordinal_logits": tf.TensorSpec(
+                shape=(ordinal_target_dim,), dtype=tf.float32
+            ),
         }
         if use_weights and "sample_weight" in df.columns:
-            weights = df["sample_weight"].values[: len(images)].astype(np.float32)
-            sample_weights = {
-                "gauge_value": weights,
-                "interval_logits": weights,
+            weight_spec = {
+                "gauge_value": tf.TensorSpec(shape=(), dtype=tf.float32),
+                "ordinal_logits": tf.TensorSpec(shape=(), dtype=tf.float32),
             }
-            dataset = tf.data.Dataset.from_tensor_slices((images, targets, sample_weights))
+            dataset = tf.data.Dataset.from_generator(
+                _record_generator,
+                output_signature=(image_spec, target_spec, weight_spec),
+            )
         else:
-            dataset = tf.data.Dataset.from_tensor_slices((images, targets))
+            dataset = tf.data.Dataset.from_generator(
+                _record_generator,
+                output_signature=(image_spec, target_spec),
+            )
+    elif aux_head_kind == "interval":
+        target_spec = {
+            "gauge_value": tf.TensorSpec(shape=(), dtype=tf.float32),
+            "interval_logits": tf.TensorSpec(shape=(), dtype=tf.int32),
+        }
+        if use_weights and "sample_weight" in df.columns:
+            weight_spec = {
+                "gauge_value": tf.TensorSpec(shape=(), dtype=tf.float32),
+                "interval_logits": tf.TensorSpec(shape=(), dtype=tf.float32),
+            }
+            dataset = tf.data.Dataset.from_generator(
+                _record_generator,
+                output_signature=(image_spec, target_spec, weight_spec),
+            )
+        else:
+            dataset = tf.data.Dataset.from_generator(
+                _record_generator,
+                output_signature=(image_spec, target_spec),
+            )
+    elif aux_head_kind == "sweep_distribution":
+        target_spec = {
+            "gauge_value": tf.TensorSpec(shape=(), dtype=tf.float32),
+            "sweep_distribution_logits": tf.TensorSpec(
+                shape=(sweep_distribution_bins,), dtype=tf.float32
+            ),
+        }
+        if use_weights and "sample_weight" in df.columns:
+            weight_spec = {
+                "gauge_value": tf.TensorSpec(shape=(), dtype=tf.float32),
+                "sweep_distribution_logits": tf.TensorSpec(
+                    shape=(), dtype=tf.float32
+                ),
+            }
+            dataset = tf.data.Dataset.from_generator(
+                _record_generator,
+                output_signature=(image_spec, target_spec, weight_spec),
+            )
+        else:
+            dataset = tf.data.Dataset.from_generator(
+                _record_generator,
+                output_signature=(image_spec, target_spec),
+            )
     else:
         if use_weights and "sample_weight" in df.columns:
-            weights = df["sample_weight"].values[: len(images)].astype(np.float32)
-            dataset = tf.data.Dataset.from_tensor_slices((images, values, weights))
+            dataset = tf.data.Dataset.from_generator(
+                _record_generator,
+                output_signature=(
+                    image_spec,
+                    tf.TensorSpec(shape=(), dtype=tf.float32),
+                    tf.TensorSpec(shape=(), dtype=tf.float32),
+                ),
+            )
             dataset = dataset.map(lambda x, y, w: (x, y, w))
         else:
-            dataset = tf.data.Dataset.from_tensor_slices((images, values))
+            dataset = tf.data.Dataset.from_generator(
+                _record_generator,
+                output_signature=(
+                    image_spec,
+                    tf.TensorSpec(shape=(), dtype=tf.float32),
+                ),
+            )
 
     if shuffle:
         dataset = dataset.shuffle(
-            buffer_size=len(images), reshuffle_each_iteration=True
+            buffer_size=len(loaded_records), reshuffle_each_iteration=True
         )
+
+    if repeat:
+        # Keep training streams alive across epochs when Keras needs multiple passes.
+        dataset = dataset.repeat()
 
     if augment:
         if augment_mode not in {"standard", "hard_preview"}:
             raise ValueError(f"Unsupported augment_mode: {augment_mode}")
+        if polar_dualview_model:
+            def _apply_shared_color_aug(
+                image: tf.Tensor,
+                *,
+                brightness_delta: tf.Tensor,
+                contrast_factor: tf.Tensor,
+                saturation_factor: tf.Tensor,
+                gamma: tf.Tensor,
+                noise_std: float,
+                blur_scale: float | None,
+            ) -> tf.Tensor:
+                """Apply the same photometric perturbation recipe to one image."""
+                image = tf.image.adjust_brightness(image, brightness_delta)
+                image = tf.image.adjust_contrast(image, contrast_factor)
+                image = tf.image.adjust_saturation(image, saturation_factor)
+                image = tf.clip_by_value(image, 0.0, 1.0)
+                image = tf.pow(tf.clip_by_value(image, 0.0, 1.0), gamma)
 
-        def _augment_strong(image: tf.Tensor) -> tf.Tensor:
-            """Apply strong augmentation matching board camera reality."""
-            image_shape = tf.shape(image)
-            image_h = image_shape[0]
-            image_w = image_shape[1]
+                if blur_scale is not None:
+                    image_shape = tf.shape(image)
+                    image_h = image_shape[0]
+                    image_w = image_shape[1]
+                    down_h = tf.maximum(
+                        2, tf.cast(tf.cast(image_h, tf.float32) * blur_scale, tf.int32)
+                    )
+                    down_w = tf.maximum(
+                        2, tf.cast(tf.cast(image_w, tf.float32) * blur_scale, tf.int32)
+                    )
+                    image = tf.image.resize(image, [down_h, down_w], method="bilinear")
+                    image = tf.image.resize(image, [image_h, image_w], method="bilinear")
 
-            # Crop jitter
-            scale = tf.random.uniform([], minval=0.90, maxval=1.0, dtype=tf.float32)
-            crop_h = tf.maximum(
-                2, tf.cast(tf.cast(image_h, tf.float32) * scale, tf.int32)
-            )
-            crop_w = tf.maximum(
-                2, tf.cast(tf.cast(image_w, tf.float32) * scale, tf.int32)
-            )
-            image = tf.image.random_crop(image, size=[crop_h, crop_w, 3])
-            image = tf.image.resize(image, [image_h, image_w])
+                image = image + tf.random.normal(tf.shape(image), stddev=noise_std)
+                return tf.clip_by_value(image, 0.0, 1.0)
 
-            # Brightness / exposure
-            image = tf.image.random_brightness(image, max_delta=0.20)
-            image = tf.image.random_contrast(image, lower=0.75, upper=1.25)
-            image = tf.image.random_saturation(image, lower=0.85, upper=1.15)
-            image = tf.clip_by_value(image, 0.0, 1.0)
+            def _augment_dualview_inputs(
+                inputs: dict[str, tf.Tensor],
+            ) -> dict[str, tf.Tensor]:
+                """Augment the paired full and polar views with shared settings."""
+                if augment_mode == "hard_preview":
+                    brightness_delta = tf.random.uniform([], minval=-0.12, maxval=0.05)
+                    contrast_factor = tf.random.uniform([], minval=0.60, maxval=1.12)
+                    saturation_factor = tf.random.uniform([], minval=0.82, maxval=1.05)
+                    gamma = tf.where(
+                        tf.random.uniform([]) < 0.75,
+                        tf.random.uniform([], minval=1.10, maxval=2.30),
+                        tf.random.uniform([], minval=0.80, maxval=1.02),
+                    )
+                    noise_std = 0.020
+                    blur_scale = 0.82 if tf.random.uniform([]) < 0.65 else None
+                else:
+                    brightness_delta = tf.random.uniform([], minval=-0.18, maxval=0.18)
+                    contrast_factor = tf.random.uniform([], minval=0.75, maxval=1.25)
+                    saturation_factor = tf.random.uniform([], minval=0.85, maxval=1.15)
+                    gamma = tf.where(
+                        tf.random.uniform([]) < 0.25,
+                        tf.random.uniform([], minval=1.00, maxval=2.20),
+                        tf.where(
+                            tf.random.uniform([]) < 0.25,
+                            tf.random.uniform([], minval=0.60, maxval=1.00),
+                            1.0,
+                        ),
+                    )
+                    noise_std = 0.015
+                    blur_scale = None
 
-            # Gamma augmentation
-            gamma_dark = tf.random.uniform([], minval=1.0, maxval=2.2, dtype=tf.float32)
-            gamma_bright = tf.random.uniform(
-                [], minval=0.6, maxval=1.0, dtype=tf.float32
-            )
-            apply_dark = tf.random.uniform([]) < 0.25
-            apply_bright = tf.random.uniform([]) < 0.25
-            gamma = tf.where(
-                apply_dark, gamma_dark, tf.where(apply_bright, gamma_bright, 1.0)
-            )
-            image = tf.pow(image, gamma)
-            image = tf.clip_by_value(image, 0.0, 1.0)
-
-            # Glare blobs
-            BLOB_RES = 32
-            mask = tf.zeros([BLOB_RES, BLOB_RES, 1], dtype=tf.float32)
-            for _ in range(3):
-                active = tf.cast(tf.random.uniform([]) < 0.5, tf.float32)
-                cx = tf.random.uniform([], 2, BLOB_RES - 2, dtype=tf.float32)
-                cy = tf.random.uniform([], 2, BLOB_RES - 2, dtype=tf.float32)
-                brightness = tf.random.uniform([], 0.5, 1.0) * active
-                cy_i = tf.cast(tf.round(cy), tf.int32)
-                cx_i = tf.cast(tf.round(cx), tf.int32)
-                idx = tf.stack([cy_i, cx_i, 0])
-                spot = tf.tensor_scatter_nd_update(
-                    tf.zeros([BLOB_RES, BLOB_RES, 1], dtype=tf.float32),
-                    [idx],
-                    [brightness],
+                full_image = _apply_shared_color_aug(
+                    inputs["full_image"],
+                    brightness_delta=brightness_delta,
+                    contrast_factor=contrast_factor,
+                    saturation_factor=saturation_factor,
+                    gamma=gamma,
+                    noise_std=noise_std,
+                    blur_scale=blur_scale,
                 )
-                mask = mask + spot
-            mask = tf.image.resize(mask, [image_h, image_w], method="bicubic")
-            mask = tf.clip_by_value(mask, 0.0, 1.0)
-            image = image + mask * (1.0 - image)
-            image = tf.clip_by_value(image, 0.0, 1.0)
-
-            # Gaussian noise
-            image = image + tf.random.normal(tf.shape(image), stddev=0.015)
-            image = tf.clip_by_value(image, 0.0, 1.0)
-            return image
-
-        def _augment_hard_preview(image: tf.Tensor) -> tf.Tensor:
-            """Apply heavier low-contrast augmentation for preview-style frames."""
-            image_shape = tf.shape(image)
-            image_h = image_shape[0]
-            image_w = image_shape[1]
-
-            # Preview frames tend to be slightly tighter and flatter, so we
-            # bias the crop jitter toward a smaller crop than the standard path.
-            scale = tf.random.uniform([], minval=0.82, maxval=0.98, dtype=tf.float32)
-            crop_h = tf.maximum(
-                2, tf.cast(tf.cast(image_h, tf.float32) * scale, tf.int32)
-            )
-            crop_w = tf.maximum(
-                2, tf.cast(tf.cast(image_w, tf.float32) * scale, tf.int32)
-            )
-            image = tf.image.random_crop(image, size=[crop_h, crop_w, 3])
-            image = tf.image.resize(image, [image_h, image_w])
-
-            # Preview-style captures usually have weaker chroma, so grayscale is
-            # a legitimate training signal rather than a destructive transform.
-            if tf.random.uniform([]) < 0.70:
-                image = tf.image.rgb_to_grayscale(image)
-                image = tf.image.grayscale_to_rgb(image)
-
-            # Flatten contrast and exposure more aggressively than the standard
-            # path so the model sees the low-contrast end of the distribution.
-            image = tf.image.random_brightness(image, max_delta=0.12)
-            image = tf.image.random_contrast(image, lower=0.55, upper=1.18)
-            image = tf.clip_by_value(image, 0.0, 1.0)
-
-            # Push a lot of samples darker than the default augmentation does.
-            gamma_dark = tf.random.uniform([], minval=1.15, maxval=2.40, dtype=tf.float32)
-            gamma_bright = tf.random.uniform([], minval=0.80, maxval=1.05, dtype=tf.float32)
-            apply_dark = tf.random.uniform([]) < 0.70
-            gamma = tf.where(apply_dark, gamma_dark, gamma_bright)
-            image = tf.pow(tf.clip_by_value(image, 0.0, 1.0), gamma)
-            image = tf.clip_by_value(image, 0.0, 1.0)
-
-            # Add a little blur by downsampling and upsampling; preview captures
-            # often have softer edges than the cleaner rectified images.
-            if tf.random.uniform([]) < 0.65:
-                down_h = tf.maximum(2, tf.cast(tf.cast(image_h, tf.float32) * 0.78, tf.int32))
-                down_w = tf.maximum(2, tf.cast(tf.cast(image_w, tf.float32) * 0.78, tf.int32))
-                image = tf.image.resize(image, [down_h, down_w], method="bilinear")
-                image = tf.image.resize(image, [image_h, image_w], method="bilinear")
-
-            # Keep the glare/noise path, but make it a bit more aggressive so the
-            # network learns to survive the reflective preview frames.
-            BLOB_RES = 32
-            mask = tf.zeros([BLOB_RES, BLOB_RES, 1], dtype=tf.float32)
-            for _ in range(4):
-                active = tf.cast(tf.random.uniform([]) < 0.65, tf.float32)
-                cx = tf.random.uniform([], 2, BLOB_RES - 2, dtype=tf.float32)
-                cy = tf.random.uniform([], 2, BLOB_RES - 2, dtype=tf.float32)
-                brightness = tf.random.uniform([], 0.55, 1.0) * active
-                cy_i = tf.cast(tf.round(cy), tf.int32)
-                cx_i = tf.cast(tf.round(cx), tf.int32)
-                idx = tf.stack([cy_i, cx_i, 0])
-                spot = tf.tensor_scatter_nd_update(
-                    tf.zeros([BLOB_RES, BLOB_RES, 1], dtype=tf.float32),
-                    [idx],
-                    [brightness],
+                polar_image = _apply_shared_color_aug(
+                    inputs["polar_image"],
+                    brightness_delta=brightness_delta,
+                    contrast_factor=contrast_factor,
+                    saturation_factor=saturation_factor,
+                    gamma=gamma,
+                    noise_std=noise_std,
+                    blur_scale=blur_scale,
                 )
-                mask = mask + spot
-            mask = tf.image.resize(mask, [image_h, image_w], method="bicubic")
-            mask = tf.clip_by_value(mask, 0.0, 1.0)
-            image = image + mask * (1.0 - image)
-            image = tf.clip_by_value(image, 0.0, 1.0)
+                return {"full_image": full_image, "polar_image": polar_image}
 
-            image = image + tf.random.normal(tf.shape(image), stddev=0.02)
-            image = tf.clip_by_value(image, 0.0, 1.0)
-            return image
-
-        if use_weights:
-            if augment_mode == "hard_preview":
+            if use_weights:
                 dataset = dataset.map(
-                    lambda x, y, w: (_augment_hard_preview(x), y, w),
+                    lambda x, y, w: (_augment_dualview_inputs(x), y, w),
                     num_parallel_calls=tf.data.AUTOTUNE,
                 )
             else:
                 dataset = dataset.map(
-                    lambda x, y, w: (_augment_strong(x), y, w),
+                    lambda x, y: (_augment_dualview_inputs(x), y),
                     num_parallel_calls=tf.data.AUTOTUNE,
                 )
         else:
-            if augment_mode == "hard_preview":
-                dataset = dataset.map(
-                    lambda x, y: (_augment_hard_preview(x), y),
-                    num_parallel_calls=tf.data.AUTOTUNE,
+            def _augment_strong(image: tf.Tensor) -> tf.Tensor:
+                """Apply strong augmentation matching board camera reality."""
+                image_shape = tf.shape(image)
+                image_h = image_shape[0]
+                image_w = image_shape[1]
+
+                # Crop jitter
+                scale = tf.random.uniform([], minval=0.90, maxval=1.0, dtype=tf.float32)
+                crop_h = tf.maximum(
+                    2, tf.cast(tf.cast(image_h, tf.float32) * scale, tf.int32)
                 )
+                crop_w = tf.maximum(
+                    2, tf.cast(tf.cast(image_w, tf.float32) * scale, tf.int32)
+                )
+                image = tf.image.random_crop(image, size=[crop_h, crop_w, 3])
+                image = tf.image.resize(image, [image_h, image_w])
+
+                # Brightness / exposure
+                image = tf.image.random_brightness(image, max_delta=0.20)
+                image = tf.image.random_contrast(image, lower=0.75, upper=1.25)
+                image = tf.image.random_saturation(image, lower=0.85, upper=1.15)
+                image = tf.clip_by_value(image, 0.0, 1.0)
+
+                # Gamma augmentation
+                gamma_dark = tf.random.uniform(
+                    [], minval=1.0, maxval=2.2, dtype=tf.float32
+                )
+                gamma_bright = tf.random.uniform(
+                    [], minval=0.6, maxval=1.0, dtype=tf.float32
+                )
+                apply_dark = tf.random.uniform([]) < 0.25
+                apply_bright = tf.random.uniform([]) < 0.25
+                gamma = tf.where(
+                    apply_dark, gamma_dark, tf.where(apply_bright, gamma_bright, 1.0)
+                )
+                image = tf.pow(image, gamma)
+                image = tf.clip_by_value(image, 0.0, 1.0)
+
+                # Glare blobs
+                BLOB_RES = 32
+                mask = tf.zeros([BLOB_RES, BLOB_RES, 1], dtype=tf.float32)
+                for _ in range(3):
+                    active = tf.cast(tf.random.uniform([]) < 0.5, tf.float32)
+                    cx = tf.random.uniform([], 2, BLOB_RES - 2, dtype=tf.float32)
+                    cy = tf.random.uniform([], 2, BLOB_RES - 2, dtype=tf.float32)
+                    brightness = tf.random.uniform([], 0.5, 1.0) * active
+                    cy_i = tf.cast(tf.round(cy), tf.int32)
+                    cx_i = tf.cast(tf.round(cx), tf.int32)
+                    idx = tf.stack([cy_i, cx_i, 0])
+                    spot = tf.tensor_scatter_nd_update(
+                        tf.zeros([BLOB_RES, BLOB_RES, 1], dtype=tf.float32),
+                        [idx],
+                        [brightness],
+                    )
+                    mask = mask + spot
+                mask = tf.image.resize(mask, [image_h, image_w], method="bicubic")
+                mask = tf.clip_by_value(mask, 0.0, 1.0)
+                image = image + mask * (1.0 - image)
+                image = tf.clip_by_value(image, 0.0, 1.0)
+
+                # Gaussian noise
+                image = image + tf.random.normal(tf.shape(image), stddev=0.015)
+                image = tf.clip_by_value(image, 0.0, 1.0)
+                return image
+
+            def _augment_hard_preview(image: tf.Tensor) -> tf.Tensor:
+                """Apply heavier low-contrast augmentation for preview-style frames."""
+                image_shape = tf.shape(image)
+                image_h = image_shape[0]
+                image_w = image_shape[1]
+
+                # Preview frames tend to be slightly tighter and flatter, so we
+                # bias the crop jitter toward a smaller crop than the standard path.
+                scale = tf.random.uniform([], minval=0.82, maxval=0.98, dtype=tf.float32)
+                crop_h = tf.maximum(
+                    2, tf.cast(tf.cast(image_h, tf.float32) * scale, tf.int32)
+                )
+                crop_w = tf.maximum(
+                    2, tf.cast(tf.cast(image_w, tf.float32) * scale, tf.int32)
+                )
+                image = tf.image.random_crop(image, size=[crop_h, crop_w, 3])
+                image = tf.image.resize(image, [image_h, image_w])
+
+                # Preview-style captures usually have weaker chroma, so grayscale is
+                # a legitimate training signal rather than a destructive transform.
+                if tf.random.uniform([]) < 0.70:
+                    image = tf.image.rgb_to_grayscale(image)
+                    image = tf.image.grayscale_to_rgb(image)
+
+                # Flatten contrast and exposure more aggressively than the standard
+                # path so the model sees the low-contrast end of the distribution.
+                image = tf.image.random_brightness(image, max_delta=0.12)
+                image = tf.image.random_contrast(image, lower=0.55, upper=1.18)
+                image = tf.clip_by_value(image, 0.0, 1.0)
+
+                # Push a lot of samples darker than the default augmentation does.
+                gamma_dark = tf.random.uniform(
+                    [], minval=1.15, maxval=2.40, dtype=tf.float32
+                )
+                gamma_bright = tf.random.uniform(
+                    [], minval=0.80, maxval=1.05, dtype=tf.float32
+                )
+                apply_dark = tf.random.uniform([]) < 0.70
+                gamma = tf.where(apply_dark, gamma_dark, gamma_bright)
+                image = tf.pow(tf.clip_by_value(image, 0.0, 1.0), gamma)
+                image = tf.clip_by_value(image, 0.0, 1.0)
+
+                # Add a little blur by downsampling and upsampling; preview captures
+                # often have softer edges than the cleaner rectified images.
+                if tf.random.uniform([]) < 0.65:
+                    down_h = tf.maximum(
+                        2,
+                        tf.cast(tf.cast(image_h, tf.float32) * 0.78, tf.int32),
+                    )
+                    down_w = tf.maximum(
+                        2,
+                        tf.cast(tf.cast(image_w, tf.float32) * 0.78, tf.int32),
+                    )
+                    image = tf.image.resize(image, [down_h, down_w], method="bilinear")
+                    image = tf.image.resize(image, [image_h, image_w], method="bilinear")
+
+                # Keep the glare/noise path, but make it a bit more aggressive so the
+                # network learns to survive the reflective preview frames.
+                BLOB_RES = 32
+                mask = tf.zeros([BLOB_RES, BLOB_RES, 1], dtype=tf.float32)
+                for _ in range(4):
+                    active = tf.cast(tf.random.uniform([]) < 0.65, tf.float32)
+                    cx = tf.random.uniform([], 2, BLOB_RES - 2, dtype=tf.float32)
+                    cy = tf.random.uniform([], 2, BLOB_RES - 2, dtype=tf.float32)
+                    brightness = tf.random.uniform([], 0.55, 1.0) * active
+                    cy_i = tf.cast(tf.round(cy), tf.int32)
+                    cx_i = tf.cast(tf.round(cx), tf.int32)
+                    idx = tf.stack([cy_i, cx_i, 0])
+                    spot = tf.tensor_scatter_nd_update(
+                        tf.zeros([BLOB_RES, BLOB_RES, 1], dtype=tf.float32),
+                        [idx],
+                        [brightness],
+                    )
+                    mask = mask + spot
+                mask = tf.image.resize(mask, [image_h, image_w], method="bicubic")
+                mask = tf.clip_by_value(mask, 0.0, 1.0)
+                image = image + mask * (1.0 - image)
+                image = tf.clip_by_value(image, 0.0, 1.0)
+
+                image = image + tf.random.normal(tf.shape(image), stddev=0.02)
+                image = tf.clip_by_value(image, 0.0, 1.0)
+                return image
+
+            if use_weights:
+                if augment_mode == "hard_preview":
+                    dataset = dataset.map(
+                        lambda x, y, w: (_augment_hard_preview(x), y, w),
+                        num_parallel_calls=tf.data.AUTOTUNE,
+                    )
+                else:
+                    dataset = dataset.map(
+                        lambda x, y, w: (_augment_strong(x), y, w),
+                        num_parallel_calls=tf.data.AUTOTUNE,
+                    )
             else:
-                dataset = dataset.map(
-                    lambda x, y: (_augment_strong(x), y),
-                    num_parallel_calls=tf.data.AUTOTUNE,
-                )
+                if augment_mode == "hard_preview":
+                    dataset = dataset.map(
+                        lambda x, y: (_augment_hard_preview(x), y),
+                        num_parallel_calls=tf.data.AUTOTUNE,
+                    )
+                else:
+                    dataset = dataset.map(
+                        lambda x, y: (_augment_strong(x), y),
+                        num_parallel_calls=tf.data.AUTOTUNE,
+                    )
 
     dataset = dataset.batch(batch_size)
     dataset = dataset.prefetch(tf.data.AUTOTUNE)
@@ -618,8 +1073,15 @@ def train_all_data_baseline(
     mobilenet_freeze_batchnorm: bool = True,
     linear_output: bool = False,
     aux_head_kind: str | None = None,
+    dual_resolution_model: bool = False,
+    polar_only_model: bool = False,
+    polar_dualview_model: bool = False,
+    polar_sweep_distribution_model: bool = False,
+    dual_resolution_crop_ratio: float = 0.78,
     ordinal_threshold_step: float = 10.0,
     interval_bin_width: float = 5.0,
+    sweep_distribution_bins: int = 81,
+    sweep_distribution_sigma_bins: float = 1.75,
     aux_loss_weight: float = 0.35,
     augment_mode: str = "standard",
 ) -> dict[str, Any]:
@@ -627,6 +1089,34 @@ def train_all_data_baseline(
     np.random.seed(seed)
     tf.random.set_seed(seed)
     keras.utils.set_random_seed(seed)
+
+    if sum(
+        int(flag)
+        for flag in [
+            dual_resolution_model,
+            polar_only_model,
+            polar_dualview_model,
+            polar_sweep_distribution_model,
+        ]
+    ) > 1:
+        raise ValueError(
+            "dual_resolution_model, polar_only_model, polar_dualview_model, and "
+            "polar_sweep_distribution_model "
+            "cannot be enabled together"
+        )
+    if (polar_dualview_model or polar_only_model) and aux_head_kind is not None:
+        raise ValueError(
+            "polar-specific models currently support scalar regression only"
+        )
+    if polar_sweep_distribution_model and aux_head_kind not in {None, "sweep_distribution"}:
+        raise ValueError(
+            "polar_sweep_distribution_model currently supports sweep_distribution "
+            "targets only"
+        )
+    if sweep_distribution_bins < 2:
+        raise ValueError("sweep_distribution_bins must be >= 2.")
+    if sweep_distribution_sigma_bins <= 0.0:
+        raise ValueError("sweep_distribution_sigma_bins must be > 0.")
 
     # Create split: 70/15/15
     # Use broader 10°C bins for stratification to avoid single-sample bins
@@ -668,43 +1158,70 @@ def train_all_data_baseline(
         f"Sample weight range: {train_df['sample_weight'].min():.3f} to {train_df['sample_weight'].max():.3f}"
     )
 
+    # Keep the polar-geometry paths augmentation-light so we can isolate the
+    # geometry change before adding more knobs.
+    train_augment = not (
+        polar_dualview_model or polar_only_model or polar_sweep_distribution_model
+    )
+
     # Create datasets
     train_ds = create_dataset(
         train_df,
         batch_size,
         shuffle=True,
+        repeat=True,
         use_weights=True,
-        augment=True,
+        augment=train_augment,
         augment_mode=augment_mode,
         crop_boxes=crop_boxes,
         aux_head_kind=aux_head_kind,
+        polar_only_model=polar_only_model,
+        polar_dualview_model=polar_dualview_model,
+        polar_sweep_distribution_model=polar_sweep_distribution_model,
         ordinal_threshold_step=ordinal_threshold_step,
         interval_bin_width=interval_bin_width,
+        sweep_distribution_bins=sweep_distribution_bins,
+        sweep_distribution_sigma_bins=sweep_distribution_sigma_bins,
     )
     val_ds = create_dataset(
         val_df,
         batch_size,
         shuffle=False,
+        repeat=False,
         use_weights=False,
         augment=False,
         augment_mode=augment_mode,
         crop_boxes=crop_boxes,
         aux_head_kind=aux_head_kind,
+        polar_only_model=polar_only_model,
+        polar_dualview_model=polar_dualview_model,
+        polar_sweep_distribution_model=polar_sweep_distribution_model,
         ordinal_threshold_step=ordinal_threshold_step,
         interval_bin_width=interval_bin_width,
+        sweep_distribution_bins=sweep_distribution_bins,
+        sweep_distribution_sigma_bins=sweep_distribution_sigma_bins,
     )
     test_ds = create_dataset(
         test_df,
         batch_size,
         shuffle=False,
+        repeat=False,
         use_weights=False,
         augment=False,
         augment_mode=augment_mode,
         crop_boxes=crop_boxes,
         aux_head_kind=aux_head_kind,
+        polar_only_model=polar_only_model,
+        polar_dualview_model=polar_dualview_model,
+        polar_sweep_distribution_model=polar_sweep_distribution_model,
         ordinal_threshold_step=ordinal_threshold_step,
         interval_bin_width=interval_bin_width,
+        sweep_distribution_bins=sweep_distribution_bins,
+        sweep_distribution_sigma_bins=sweep_distribution_sigma_bins,
     )
+
+    # Avoid duplicating the ImageNet bootstrap when a warm-start checkpoint is provided.
+    use_pretrained_backbone = init_model_path is None
 
     # Build model
     if aux_head_kind == "ordinal":
@@ -718,82 +1235,197 @@ def train_all_data_baseline(
             alpha=alpha,
             head_units=head_units,
             head_dropout=dropout,
-            pretrained=True,
+            pretrained=use_pretrained_backbone,
             value_min=VALUE_MIN,
             value_max=VALUE_MAX,
             threshold_step=ordinal_threshold_step,
         )
     elif aux_head_kind == "interval":
+        if dual_resolution_model:
+            logger.info(
+                "Building MobileNetV2 dual-resolution interval model "
+                f"(alpha={alpha}, head_units={head_units}, crop_ratio={dual_resolution_crop_ratio:.2f}, "
+                f"dropout={dropout}, bin_width={interval_bin_width})..."
+            )
+            model = build_mobilenetv2_dual_resolution_interval_model(
+                image_height=IMAGE_SIZE,
+                image_width=IMAGE_SIZE,
+                alpha=alpha,
+                head_units=head_units,
+                head_dropout=dropout,
+                pretrained=use_pretrained_backbone,
+                value_min=VALUE_MIN,
+                value_max=VALUE_MAX,
+                bin_width=interval_bin_width,
+                crop_ratio=dual_resolution_crop_ratio,
+            )
+        else:
+            logger.info(
+                f"Building MobileNetV2 interval model (alpha={alpha}, head_units={head_units}, "
+                f"dropout={dropout}, bin_width={interval_bin_width})..."
+            )
+            model = build_mobilenetv2_interval_model(
+                image_height=IMAGE_SIZE,
+                image_width=IMAGE_SIZE,
+                alpha=alpha,
+                head_units=head_units,
+                head_dropout=dropout,
+                pretrained=use_pretrained_backbone,
+                value_min=VALUE_MIN,
+                value_max=VALUE_MAX,
+                bin_width=interval_bin_width,
+            )
+    elif aux_head_kind == "sweep_distribution" and not polar_sweep_distribution_model:
         logger.info(
-            f"Building MobileNetV2 interval model (alpha={alpha}, head_units={head_units}, "
-            f"dropout={dropout}, bin_width={interval_bin_width})..."
+            "Building MobileNetV2 sweep-distribution model "
+            f"(alpha={alpha}, head_units={head_units}, dropout={dropout}, "
+            f"bins={sweep_distribution_bins}, sigma={sweep_distribution_sigma_bins})..."
         )
-        model = build_mobilenetv2_interval_model(
+        model = build_mobilenetv2_sweep_distribution_model(
             image_height=IMAGE_SIZE,
             image_width=IMAGE_SIZE,
             alpha=alpha,
             head_units=head_units,
             head_dropout=dropout,
-            pretrained=True,
+            pretrained=use_pretrained_backbone,
             value_min=VALUE_MIN,
             value_max=VALUE_MAX,
-            bin_width=interval_bin_width,
+            num_bins=sweep_distribution_bins,
+        )
+    elif polar_sweep_distribution_model:
+        logger.info(
+            "Building MobileNetV2 polar sweep-distribution model "
+            f"(alpha={alpha}, head_units={head_units}, dropout={dropout}, "
+            f"bins={sweep_distribution_bins}, sigma={sweep_distribution_sigma_bins})..."
+        )
+        model = build_mobilenetv2_polar_sweep_distribution_model(
+            image_height=IMAGE_SIZE,
+            image_width=IMAGE_SIZE,
+            alpha=alpha,
+            head_units=head_units,
+            head_dropout=dropout,
+            pretrained=use_pretrained_backbone,
+            value_min=VALUE_MIN,
+            value_max=VALUE_MAX,
+            num_bins=sweep_distribution_bins,
         )
     else:
-        logger.info(
-            f"Building MobileNetV2 (alpha={alpha}, head_units={head_units}, dropout={dropout})..."
-        )
-        model = build_mobilenetv2_regression_model(
-            image_height=IMAGE_SIZE,
-            image_width=IMAGE_SIZE,
-            alpha=alpha,
-            head_units=head_units,
-            head_dropout=dropout,
-            pretrained=True,
-            linear_output=linear_output,
-            value_min=VALUE_MIN,
-            value_max=VALUE_MAX,
-        )
+        if polar_only_model:
+            logger.info(
+                "Building MobileNetV2 polar-only model "
+                f"(alpha={alpha}, head_units={head_units}, dropout={dropout}, "
+                f"linear_output={linear_output})..."
+            )
+            model = build_mobilenetv2_polar_regression_model(
+                image_height=IMAGE_SIZE,
+                image_width=IMAGE_SIZE,
+                alpha=alpha,
+                head_units=head_units,
+                head_dropout=dropout,
+                pretrained=use_pretrained_backbone,
+                linear_output=linear_output,
+                value_min=VALUE_MIN,
+                value_max=VALUE_MAX,
+            )
+        elif polar_dualview_model:
+            logger.info(
+                "Building MobileNetV2 polar-dualview model "
+                f"(alpha={alpha}, head_units={head_units}, dropout={dropout}, "
+                f"linear_output={linear_output})..."
+            )
+            model = build_mobilenetv2_polar_dualview_regression_model(
+                image_height=IMAGE_SIZE,
+                image_width=IMAGE_SIZE,
+                alpha=alpha,
+                head_units=head_units,
+                head_dropout=dropout,
+                pretrained=use_pretrained_backbone,
+                linear_output=linear_output,
+                value_min=VALUE_MIN,
+                value_max=VALUE_MAX,
+            )
+        elif dual_resolution_model:
+            logger.info(
+                "Building MobileNetV2 dual-resolution model "
+                f"(alpha={alpha}, head_units={head_units}, crop_ratio={dual_resolution_crop_ratio:.2f}, "
+                f"dropout={dropout}, linear_output={linear_output})..."
+            )
+            model = build_mobilenetv2_dual_resolution_regression_model(
+                image_height=IMAGE_SIZE,
+                image_width=IMAGE_SIZE,
+                alpha=alpha,
+                head_units=head_units,
+                head_dropout=dropout,
+                pretrained=use_pretrained_backbone,
+                linear_output=linear_output,
+                value_min=VALUE_MIN,
+                value_max=VALUE_MAX,
+                crop_ratio=dual_resolution_crop_ratio,
+            )
+        else:
+            logger.info(
+                f"Building MobileNetV2 (alpha={alpha}, head_units={head_units}, dropout={dropout})..."
+            )
+            model = build_mobilenetv2_regression_model(
+                image_height=IMAGE_SIZE,
+                image_width=IMAGE_SIZE,
+                alpha=alpha,
+                head_units=head_units,
+                head_dropout=dropout,
+                pretrained=use_pretrained_backbone,
+                linear_output=linear_output,
+                value_min=VALUE_MIN,
+                value_max=VALUE_MAX,
+            )
 
     if init_model_path is not None:
         if not init_model_path.exists():
             raise FileNotFoundError(f"Init model not found: {init_model_path}")
         logger.info(f"Warm-starting from init model: {init_model_path}")
-        init_model = keras.models.load_model(
-            init_model_path,
-            compile=False,
-            safe_mode=False,
-            custom_objects={
-                "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input,
-            },
-        )
-        loaded_layers = 0
-        skipped_layers = 0
-        source_layers = {layer.name: layer for layer in init_model.layers}
-        for layer in model.layers:
-            source_layer = source_layers.get(layer.name)
-            if source_layer is None:
-                continue
-            source_weights = source_layer.get_weights()
-            target_weights = layer.get_weights()
-            if not source_weights or not target_weights:
-                continue
-            if len(source_weights) != len(target_weights):
-                skipped_layers += 1
-                continue
-            if any(
-                source.shape != target.shape
-                for source, target in zip(source_weights, target_weights)
-            ):
-                skipped_layers += 1
-                continue
-            layer.set_weights(source_weights)
-            loaded_layers += 1
-        logger.info(
-            "Loaded warm-start weights into %d matching layers (%d skipped).",
-            loaded_layers,
-            skipped_layers,
-        )
+        if init_model_path.name.endswith(".weights.h5"):
+            # Weights-only checkpoints avoid the heavier full-model deserialization path.
+            # We allow shape mismatches so the shared MobileNetV2 trunk is reused
+            # while the new dual-resolution heads are initialized fresh.
+            model.load_weights(str(init_model_path), skip_mismatch=True)
+            logger.info(
+                "Loaded warm-start weights from weights-only checkpoint with skip_mismatch=True."
+            )
+        else:
+            init_model = keras.models.load_model(
+                init_model_path,
+                compile=False,
+                safe_mode=False,
+                custom_objects={
+                    "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input,
+                },
+            )
+            loaded_layers = 0
+            skipped_layers = 0
+            source_layers = {layer.name: layer for layer in init_model.layers}
+            for layer in model.layers:
+                source_layer = source_layers.get(layer.name)
+                if source_layer is None:
+                    continue
+                source_weights = source_layer.get_weights()
+                target_weights = layer.get_weights()
+                if not source_weights or not target_weights:
+                    continue
+                if len(source_weights) != len(target_weights):
+                    skipped_layers += 1
+                    continue
+                if any(
+                    source.shape != target.shape
+                    for source, target in zip(source_weights, target_weights)
+                ):
+                    skipped_layers += 1
+                    continue
+                layer.set_weights(source_weights)
+                loaded_layers += 1
+            logger.info(
+                "Loaded warm-start weights into %d matching layers (%d skipped).",
+                loaded_layers,
+                skipped_layers,
+            )
 
     def _compile_current_model(current_lr: float) -> None:
         """Compile the current model with the right head-specific losses."""
@@ -820,6 +1452,29 @@ def train_all_data_baseline(
                     ],
                     "ordinal_logits": [
                         keras.metrics.BinaryAccuracy(name="acc", threshold=0.0),
+                    ],
+                },
+            )
+        elif aux_head_kind == "sweep_distribution":
+            model.compile(
+                optimizer=optimizer,
+                loss={
+                    "gauge_value": keras.losses.Huber(delta=1.0),
+                    "sweep_distribution_logits": keras.losses.CategoricalCrossentropy(
+                        from_logits=True
+                    ),
+                },
+                loss_weights={
+                    "gauge_value": 1.0,
+                    "sweep_distribution_logits": aux_loss_weight,
+                },
+                metrics={
+                    "gauge_value": [
+                        keras.metrics.MeanAbsoluteError(name="mae"),
+                        keras.metrics.MeanSquaredError(name="mse"),
+                    ],
+                    "sweep_distribution_logits": [
+                        keras.metrics.CategoricalAccuracy(name="acc"),
                     ],
                 },
             )
@@ -877,24 +1532,27 @@ def train_all_data_baseline(
     # Callbacks
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / "best_weights.weights.h5"
+    monitor_metric = "val_gauge_value_mae" if aux_head_kind is not None else "val_mae"
 
     callbacks = [
         keras.callbacks.ModelCheckpoint(
             filepath=str(checkpoint_path),
-            monitor="val_mae",
+            monitor=monitor_metric,
             mode="min",
             save_best_only=True,
             save_weights_only=True,
             verbose=1,
         ),
         keras.callbacks.EarlyStopping(
-            monitor="val_mae",
+            monitor=monitor_metric,
+            mode="min",
             patience=15,
             restore_best_weights=True,
             verbose=1,
         ),
         keras.callbacks.ReduceLROnPlateau(
-            monitor="val_mae",
+            monitor=monitor_metric,
+            mode="min",
             factor=0.5,
             patience=5,
             min_lr=1e-7,
@@ -907,6 +1565,8 @@ def train_all_data_baseline(
     history_warmup = model.fit(
         train_ds,
         validation_data=val_ds,
+        steps_per_epoch=int(np.ceil(len(train_df) / batch_size)),
+        validation_steps=int(np.ceil(len(val_df) / batch_size)),
         epochs=warmup_epochs,
         callbacks=callbacks,
         verbose=1,
@@ -929,6 +1589,8 @@ def train_all_data_baseline(
     history_finetune = model.fit(
         train_ds,
         validation_data=val_ds,
+        steps_per_epoch=int(np.ceil(len(train_df) / batch_size)),
+        validation_steps=int(np.ceil(len(val_df) / batch_size)),
         epochs=epochs,
         initial_epoch=warmup_epochs,
         callbacks=callbacks,
@@ -1018,6 +1680,12 @@ def main() -> None:
         help="Optional CSV of rectifier crop boxes keyed by image_path.",
     )
     parser.add_argument(
+        "--no-gpu-memory-growth",
+        action="store_true",
+        default=False,
+        help="Skip TensorFlow GPU memory-growth probing for WSL stability.",
+    )
+    parser.add_argument(
         "--init-model",
         type=str,
         default=None,
@@ -1060,10 +1728,16 @@ def main() -> None:
         help="Dense units in the regression head.",
     )
     parser.add_argument(
+        "--dual-resolution-crop-ratio",
+        type=float,
+        default=0.78,
+        help="Center-crop ratio used by the dual-resolution branch.",
+    )
+    parser.add_argument(
         "--aux-head-kind",
         type=str,
         default="none",
-        choices=["none", "ordinal", "interval"],
+        choices=["none", "ordinal", "interval", "sweep_distribution"],
         help="Optional auxiliary head to add to the scalar model.",
     )
     parser.add_argument(
@@ -1084,12 +1758,44 @@ def main() -> None:
         default=5.0,
         help="Bin width for the interval auxiliary head.",
     )
+    parser.add_argument(
+        "--sweep-distribution-bins",
+        type=int,
+        default=81,
+        help="Number of bins used by the sweep-distribution auxiliary head.",
+    )
+    parser.add_argument(
+        "--sweep-distribution-sigma-bins",
+        type=float,
+        default=1.75,
+        help="Gaussian width, in bins, used to build the sweep-distribution target.",
+    )
     parser.add_argument("--dropout", type=float, default=0.2, help="Head dropout")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
         "--linear-output",
         action="store_true",
         help="Use a linear regression head instead of sigmoid-rescaled output.",
+    )
+    parser.add_argument(
+        "--dual-resolution-model",
+        action="store_true",
+        help="Use the new dual-resolution MobileNetV2 architecture.",
+    )
+    parser.add_argument(
+        "--polar-dualview-model",
+        action="store_true",
+        help="Use the new full-frame + polar-unwrapped MobileNetV2 architecture.",
+    )
+    parser.add_argument(
+        "--polar-only-model",
+        action="store_true",
+        help="Use a single-input polar-unwrapped MobileNetV2 architecture.",
+    )
+    parser.add_argument(
+        "--polar-sweep-distribution-model",
+        action="store_true",
+        help="Use a single-input polar sweep-distribution MobileNetV2 architecture.",
     )
     parser.add_argument(
         "--augment-mode",
@@ -1103,12 +1809,16 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    gpus = tf.config.list_physical_devices("GPU")
-    for gpu in gpus:
-        try:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        except RuntimeError:
-            pass
+    if args.no_gpu_memory_growth:
+        # WSL can stall on the GPU probe, so let TensorFlow initialize lazily.
+        gpus = []
+    else:
+        gpus = tf.config.list_physical_devices("GPU")
+        for gpu in gpus:
+            try:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            except RuntimeError:
+                pass
 
     logger.info(f"TensorFlow version: {tf.__version__}")
     logger.info(f"GPUs available: {len(gpus)}")
@@ -1147,8 +1857,15 @@ def main() -> None:
         mobilenet_freeze_batchnorm=args.mobilenet_freeze_batchnorm,
         linear_output=args.linear_output,
         aux_head_kind=None if args.aux_head_kind == "none" else args.aux_head_kind,
+        dual_resolution_model=args.dual_resolution_model,
+        polar_only_model=args.polar_only_model,
+        polar_dualview_model=args.polar_dualview_model,
+        polar_sweep_distribution_model=args.polar_sweep_distribution_model,
+        dual_resolution_crop_ratio=args.dual_resolution_crop_ratio,
         ordinal_threshold_step=args.ordinal_threshold_step,
         interval_bin_width=args.interval_bin_width,
+        sweep_distribution_bins=args.sweep_distribution_bins,
+        sweep_distribution_sigma_bins=args.sweep_distribution_sigma_bins,
         aux_loss_weight=args.aux_loss_weight,
         augment_mode=args.augment_mode,
     )

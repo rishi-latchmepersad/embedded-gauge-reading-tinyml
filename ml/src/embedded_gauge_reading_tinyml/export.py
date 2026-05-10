@@ -21,6 +21,7 @@ import tensorflow as tf
 from embedded_gauge_reading_tinyml.dataset import load_dataset
 from embedded_gauge_reading_tinyml.models import (
     GaugeValueFromKeypoints,
+    GaugeValueFromSweepDistribution,
     SpatialSoftArgmax2D,
 )
 from embedded_gauge_reading_tinyml.gauge.processing import load_gauge_specs
@@ -89,6 +90,7 @@ def _load_model(model_path: Path, *, legacy_mobilenetv2_preprocess: bool) -> ker
         "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input,
         "SpatialSoftArgmax2D": SpatialSoftArgmax2D,
         "GaugeValueFromKeypoints": GaugeValueFromKeypoints,
+        "GaugeValueFromSweepDistribution": GaugeValueFromSweepDistribution,
     }
     if legacy_mobilenetv2_preprocess:
         print("[EXPORT] Legacy MobileNetV2 preprocess support enabled.", flush=True)

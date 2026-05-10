@@ -23,6 +23,10 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 VALUE_MIN: Final[float] = -30.0
 VALUE_MAX: Final[float] = 50.0
 
+# Match the real gauge's lower-arc layout instead of the earlier top-arc toy dial.
+GAUGE_SWEEP_START_DEG: Final[float] = 225.0
+GAUGE_SWEEP_END_DEG: Final[float] = 315.0
+
 
 @dataclass(frozen=True)
 class SyntheticSpec:
@@ -42,7 +46,7 @@ class SyntheticSpec:
 def _value_to_angle_deg(value: float) -> float:
     """Map a Celsius value onto the synthetic gauge sweep in image coordinates."""
     fraction = (value - VALUE_MIN) / (VALUE_MAX - VALUE_MIN)
-    return (135.0 + 270.0 * fraction) % 360.0
+    return GAUGE_SWEEP_START_DEG + (GAUGE_SWEEP_END_DEG - GAUGE_SWEEP_START_DEG) * fraction
 
 
 def _sample_value(rng: np.random.Generator, profile: str) -> float:
@@ -150,18 +154,20 @@ def _draw_dial_face(image: Image.Image, spec: SyntheticSpec, rng: np.random.Gene
     draw.ellipse(subdial_bbox, fill=(225, 223, 218), outline=(55, 55, 55), width=2)
 
     # Tick marks on the main temperature sweep.
+    # The real gauge uses a lower arc, so we place the synthetic scale there too.
     _draw_ticks(
         draw,
         center_x=spec.center_x,
         center_y=spec.center_y,
         radius=spec.radius * 0.92,
-        start_deg=135.0,
-        end_deg=45.0 + 360.0,
+        start_deg=GAUGE_SWEEP_START_DEG,
+        end_deg=GAUGE_SWEEP_END_DEG,
     )
 
     # A few labels help keep the synthetic images less toy-like.
+    # Keep the endpoints on the lower edge of the dial to mirror the real gauge.
     font = ImageFont.load_default()
-    for label_deg, label in [(135.0, "-30"), (225.0, "0"), (315.0, "30"), (45.0, "50")]:
+    for label_deg, label in [(225.0, "-30"), (255.0, "0"), (285.0, "30"), (315.0, "50")]:
         angle = math.radians(label_deg)
         text_radius = spec.radius * 0.72
         tx = spec.center_x + math.cos(angle) * text_radius

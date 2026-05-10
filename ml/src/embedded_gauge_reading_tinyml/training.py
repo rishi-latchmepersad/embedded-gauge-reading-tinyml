@@ -79,6 +79,8 @@ from embedded_gauge_reading_tinyml.models import (
     build_mobilenetv2_geometry_model,
     build_mobilenetv2_geometry_uncertainty_model,
     build_mobilenetv2_keypoint_model,
+    build_mobilenetv2_bluraware_obb_geometry_model,
+    build_mobilenetv2_obb_geometry_model,
     build_mobilenetv2_interval_model,
     build_mobilenetv2_ordinal_model,
     build_needle_direction_model,
@@ -134,6 +136,8 @@ class TrainConfig:
         "mobilenet_v2_geometry_uncertainty",
         "mobilenet_v2_keypoint",
         "mobilenet_v2_obb",
+        "mobilenet_v2_obb_geometry",
+        "mobilenet_v2_bluraware_obb_geometry",
         "mobilenet_v2_interval",
         "mobilenet_v2_ordinal",
     ] = DEFAULT_MODEL_FAMILY
@@ -1699,6 +1703,64 @@ def _load_crop_with_geometry_weight(
     return image, targets, sample_weights
 
 
+def _load_crop_with_obb_geometry_target(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    heatmaps: tf.Tensor,
+    coords: tf.Tensor,
+    obb_params: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
+    """Load/crop one image and attach joint OBB + geometry targets."""
+    image, targets = _load_crop_with_geometry_target(
+        image_path,
+        value,
+        heatmaps,
+        coords,
+        crop_box_xyxy,
+        image_height,
+        image_width,
+    )
+    targets["obb_params"] = tf.cast(obb_params, tf.float32)
+    return image, targets
+
+
+def _load_crop_with_obb_geometry_weight(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    heatmaps: tf.Tensor,
+    coords: tf.Tensor,
+    obb_params: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+    weight: tf.Tensor,
+    heatmap_weight: tf.Tensor,
+    coord_weight: tf.Tensor,
+    obb_weight: tf.Tensor,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
+    """Load/crop one image and attach joint OBB + geometry targets plus weights."""
+    image, targets = _load_crop_with_obb_geometry_target(
+        image_path,
+        value,
+        heatmaps,
+        coords,
+        obb_params,
+        crop_box_xyxy,
+        image_height,
+        image_width,
+    )
+    sample_weights = {
+        "gauge_value": weight,
+        "keypoint_heatmaps": heatmap_weight,
+        "keypoint_coords": coord_weight,
+        "obb_params": obb_weight,
+    }
+    return image, targets, sample_weights
+
+
 def _load_crop_with_geometry_uncertainty_weight(
     image_path: tf.Tensor,
     value: tf.Tensor,
@@ -1983,6 +2045,7 @@ def _build_tf_dataset(
         "geometry_uncertainty",
         "rectifier_box",
         "obb",
+        "obb_geometry",
     ] = "value",
     value_range: tuple[float, float] | None = None,
 ) -> tf.data.Dataset:
@@ -2008,6 +2071,18 @@ def _build_tf_dataset(
         targets = np.array([e.crop_box_xyxy for e in examples], dtype=np.float32)
     elif target_kind == "obb":
         values = np.array([e.value for e in examples], dtype=np.float32)
+        targets = np.array(
+            [
+                (
+                    e.obb_params
+                    if e.obb_params is not None
+                    else np.zeros((6,), dtype=np.float32)
+                )
+                for e in examples
+            ],
+            dtype=np.float32,
+        )
+    elif target_kind == "obb_geometry":
         targets = np.array(
             [
                 (
@@ -2449,6 +2524,124 @@ def _build_tf_dataset(
                 lambda img, y, w: (_augment_image(img), y, w),
                 num_parallel_calls=tf.data.AUTOTUNE,
             )
+    elif training and target_kind == "obb_geometry":
+        if config.mixup_alpha > 0.0:
+            raise ValueError(
+                "MixUp is not supported for OBB-geometry targets yet."
+            )
+        weights = _compute_edge_weights(examples, config.edge_focus_strength)
+        heatmap_weights = np.array(
+            [
+                np.full(
+                    (config.keypoint_heatmap_size, config.keypoint_heatmap_size),
+                    fill_value=(
+                        weight if example.keypoint_heatmaps is not None else 0.0
+                    ),
+                    dtype=np.float32,
+                )
+                for example, weight in zip(examples, weights, strict=True)
+            ],
+            dtype=np.float32,
+        )
+        heatmaps = np.array(
+            [
+                (
+                    example.keypoint_heatmaps
+                    if example.keypoint_heatmaps is not None
+                    else np.zeros(
+                        (
+                            config.keypoint_heatmap_size,
+                            config.keypoint_heatmap_size,
+                            2,
+                        ),
+                        dtype=np.float32,
+                    )
+                )
+                for example in examples
+            ],
+            dtype=np.float32,
+        )
+        coords = np.array(
+            [
+                (
+                    example.keypoint_coords
+                    if example.keypoint_coords is not None
+                    else np.zeros((2, 2), dtype=np.float32)
+                )
+                for example in examples
+            ],
+            dtype=np.float32,
+        )
+        obb_targets = np.array(
+            [
+                (
+                    example.obb_params
+                    if example.obb_params is not None
+                    else np.zeros((6,), dtype=np.float32)
+                )
+                for example in examples
+            ],
+            dtype=np.float32,
+        )
+        coord_weights = np.array(
+            [
+                np.full(
+                    (2,),
+                    fill_value=weight if example.keypoint_coords is not None else 0.0,
+                    dtype=np.float32,
+                )
+                for example, weight in zip(examples, weights, strict=True)
+            ],
+            dtype=np.float32,
+        )
+        obb_weights = np.array(
+            [
+                np.float32(weight if example.obb_params is not None else 0.0)
+                for example, weight in zip(examples, weights, strict=True)
+            ],
+            dtype=np.float32,
+        )
+        dataset = tf.data.Dataset.from_tensor_slices(
+            (
+                paths,
+                targets,
+                heatmaps,
+                coords,
+                obb_targets,
+                boxes,
+                weights,
+                heatmap_weights,
+                coord_weights,
+                obb_weights,
+            )
+        )
+        dataset = dataset.shuffle(
+            buffer_size=max(len(examples), 1),
+            seed=config.seed,
+            reshuffle_each_iteration=True,
+        )
+        dataset = dataset.map(
+            lambda p, y, h, c, o, b, w, hw, cw, ow: _load_crop_with_obb_geometry_weight(
+                p,
+                y,
+                h,
+                c,
+                o,
+                b,
+                config.image_height,
+                config.image_width,
+                w,
+                hw,
+                cw,
+                ow,
+            ),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+        if config.augment_training:
+            dataset = dataset.map(
+                lambda img, y, w: (_augment_image(img), y, w),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
     elif training and target_kind == "rectifier_box":
         if config.mixup_alpha > 0.0:
             raise ValueError("MixUp is not supported for rectifier-box targets yet.")
@@ -2720,6 +2913,63 @@ def _build_tf_dataset(
                     y,
                     h,
                     c,
+                    b,
+                    config.image_height,
+                    config.image_width,
+                ),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+        elif target_kind == "obb_geometry":
+            heatmaps = np.array(
+                [
+                    (
+                        example.keypoint_heatmaps
+                        if example.keypoint_heatmaps is not None
+                        else np.zeros(
+                            (
+                                config.keypoint_heatmap_size,
+                                config.keypoint_heatmap_size,
+                                2,
+                            ),
+                            dtype=np.float32,
+                        )
+                    )
+                    for example in examples
+                ],
+                dtype=np.float32,
+            )
+            coords = np.array(
+                [
+                    (
+                        example.keypoint_coords
+                        if example.keypoint_coords is not None
+                        else np.zeros((2, 2), dtype=np.float32)
+                    )
+                    for example in examples
+                ],
+                dtype=np.float32,
+            )
+            obb_targets = np.array(
+                [
+                    (
+                        example.obb_params
+                        if example.obb_params is not None
+                        else np.zeros((6,), dtype=np.float32)
+                    )
+                    for example in examples
+                ],
+                dtype=np.float32,
+            )
+            dataset = tf.data.Dataset.from_tensor_slices(
+                (paths, targets, heatmaps, coords, obb_targets, boxes)
+            )
+            dataset = dataset.map(
+                lambda p, y, h, c, o, b: _load_crop_with_obb_geometry_target(
+                    p,
+                    y,
+                    h,
+                    c,
+                    o,
                     b,
                     config.image_height,
                     config.image_width,
@@ -3288,6 +3538,56 @@ def _compile_obb_model(
     )
 
 
+def _compile_obb_geometry_model(
+    model: keras.Model,
+    *,
+    learning_rate: float,
+    obb_loss_weight: float = 0.35,
+    heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
+    coord_loss_weight: float = DEFAULT_KEYPOINT_COORD_LOSS_WEIGHT,
+    value_loss_weight: float = 1.0,
+) -> None:
+    """Compile a detector-plus-geometry model with OBB and keypoint losses."""
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
+        learning_rate=learning_rate,
+        weight_decay=1e-4,
+        clipnorm=1.0,
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss={
+            "gauge_value": keras.losses.MeanSquaredError(),
+            "keypoint_heatmaps": keras.losses.MeanSquaredError(),
+            "keypoint_coords": keras.losses.MeanSquaredError(),
+            "obb_params": keras.losses.Huber(delta=0.05),
+        },
+        loss_weights={
+            "gauge_value": value_loss_weight,
+            "keypoint_heatmaps": heatmap_loss_weight,
+            "keypoint_coords": coord_loss_weight,
+            "obb_params": obb_loss_weight,
+        },
+        metrics={
+            "gauge_value": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+                keras.metrics.RootMeanSquaredError(name="rmse"),
+            ],
+            "keypoint_heatmaps": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+            ],
+            "keypoint_coords": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+                _make_keypoint_angle_mae_metric(),
+            ],
+            "obb_params": [
+                keras.metrics.MeanAbsoluteError(name="obb_params_mae"),
+                keras.metrics.RootMeanSquaredError(name="obb_params_rmse"),
+            ],
+        },
+    )
+
+
 def _compile_interval_model(
     model: keras.Model,
     *,
@@ -3599,39 +3899,30 @@ def train(config: TrainConfig) -> TrainingResult:
             "geometry_uncertainty",
             "ordinal_thresholds",
             "rectifier_box",
-        ] = (
-            "value"
-            if config.model_family == "mobilenet_v2_rectifier"
-            else (
-                "needle_unit_xy"
-                if config.model_family
-                in {"mobilenet_v2_direction", "compact_direction"}
-                else (
-                    "sweep_fraction"
-                    if config.model_family == "mobilenet_v2_fraction"
-                    else (
-                        "keypoint_heatmaps"
-                        if config.model_family
-                        in {"mobilenet_v2_keypoint", "mobilenet_v2_detector"}
-                        else (
-                            "geometry_uncertainty"
-                            if config.model_family
-                            == "mobilenet_v2_geometry_uncertainty"
-                            else (
-                                "geometry"
-                                if config.model_family
-                                in {"mobilenet_v2_geometry", "compact_geometry"}
-                                else (
-                                    "ordinal_thresholds"
-                                    if config.model_family == "mobilenet_v2_ordinal"
-                                    else "value"
-                                )
-                            )
-                        )
-                    )
-                )
-            )
-        )
+            "obb",
+            "obb_geometry",
+        ]
+        if config.model_family == "mobilenet_v2_rectifier":
+            hard_case_target_kind = "value"
+        elif config.model_family in {"mobilenet_v2_direction", "compact_direction"}:
+            hard_case_target_kind = "needle_unit_xy"
+        elif config.model_family == "mobilenet_v2_fraction":
+            hard_case_target_kind = "sweep_fraction"
+        elif config.model_family in {"mobilenet_v2_keypoint", "mobilenet_v2_detector"}:
+            hard_case_target_kind = "keypoint_heatmaps"
+        elif config.model_family == "mobilenet_v2_geometry_uncertainty":
+            hard_case_target_kind = "geometry_uncertainty"
+        elif config.model_family in {"mobilenet_v2_geometry", "compact_geometry"}:
+            hard_case_target_kind = "geometry"
+        elif config.model_family in {
+            "mobilenet_v2_obb_geometry",
+            "mobilenet_v2_bluraware_obb_geometry",
+        }:
+            hard_case_target_kind = "obb_geometry"
+        elif config.model_family == "mobilenet_v2_ordinal":
+            hard_case_target_kind = "ordinal_thresholds"
+        else:
+            hard_case_target_kind = "value"
         hard_case_examples: list[TrainingExample] = _load_hard_case_examples(
             hard_case_manifest_path,
             image_height=config.image_height,
@@ -3900,6 +4191,38 @@ def train(config: TrainConfig) -> TrainingResult:
                 head_units=config.mobilenet_head_units,
                 head_dropout=config.mobilenet_head_dropout,
             )
+        elif config.model_family == "mobilenet_v2_obb_geometry":
+            print("[TRAIN] Building MobileNetV2 OBB-geometry model...")
+            model = build_mobilenetv2_obb_geometry_model(
+                config.image_height,
+                config.image_width,
+                value_min=spec.min_value,
+                value_max=spec.max_value,
+                min_angle_rad=spec.min_angle_rad,
+                sweep_rad=spec.sweep_rad,
+                heatmap_size=config.keypoint_heatmap_size,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
+            )
+        elif config.model_family == "mobilenet_v2_bluraware_obb_geometry":
+            print("[TRAIN] Building MobileNetV2 blur-aware OBB-geometry model...")
+            model = build_mobilenetv2_bluraware_obb_geometry_model(
+                config.image_height,
+                config.image_width,
+                value_min=spec.min_value,
+                value_max=spec.max_value,
+                min_angle_rad=spec.min_angle_rad,
+                sweep_rad=spec.sweep_rad,
+                heatmap_size=config.keypoint_heatmap_size,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
+            )
         elif config.model_family == "mobilenet_v2_obb":
             print("[TRAIN] Building MobileNetV2 OBB localizer model...")
             model = build_mobilenetv2_obb_model(
@@ -3979,6 +4302,8 @@ def train(config: TrainConfig) -> TrainingResult:
         "geometry_uncertainty",
         "rectifier_box",
         "obb",
+        "obb_geometry",
+        "bluraware_obb_geometry",
     ] = (
         "needle_unit_xy"
         if config.model_family in {"mobilenet_v2_direction", "compact_direction"}
@@ -3999,17 +4324,25 @@ def train(config: TrainConfig) -> TrainingResult:
                             "obb"
                             if config.model_family == "mobilenet_v2_obb"
                             else (
-                                "geometry"
+                                "obb_geometry"
                                 if config.model_family
-                                in {"mobilenet_v2_geometry", "compact_geometry"}
+                                in {
+                                    "mobilenet_v2_obb_geometry",
+                                    "mobilenet_v2_bluraware_obb_geometry",
+                                }
                                 else (
-                                    "ordinal_thresholds"
-                                    if config.model_family == "mobilenet_v2_ordinal"
+                                    "geometry"
+                                    if config.model_family
+                                    in {"mobilenet_v2_geometry", "compact_geometry"}
                                     else (
-                                        "interval_value"
-                                        if config.model_family
-                                        in {"mobilenet_v2_interval", "compact_interval"}
-                                        else "value"
+                                        "ordinal_thresholds"
+                                        if config.model_family == "mobilenet_v2_ordinal"
+                                        else (
+                                            "interval_value"
+                                            if config.model_family
+                                            in {"mobilenet_v2_interval", "compact_interval"}
+                                            else "value"
+                                        )
                                     )
                                 )
                             )
@@ -4037,6 +4370,7 @@ def train(config: TrainConfig) -> TrainingResult:
                 "geometry_uncertainty",
                 "rectifier_box",
                 "obb",
+                "obb_geometry",
             }
             else None
         ),
@@ -4107,6 +4441,8 @@ def train(config: TrainConfig) -> TrainingResult:
                 "mobilenet_v2_keypoint",
                 "mobilenet_v2_detector",
                 "mobilenet_v2_geometry",
+                "mobilenet_v2_obb_geometry",
+                "mobilenet_v2_bluraware_obb_geometry",
             }
             else (
                 "val_obb_params_mae"
@@ -4130,6 +4466,8 @@ def train(config: TrainConfig) -> TrainingResult:
             "mobilenet_v2_geometry",
             "mobilenet_v2_geometry_uncertainty",
             "mobilenet_v2_obb",
+            "mobilenet_v2_obb_geometry",
+            "mobilenet_v2_bluraware_obb_geometry",
             "mobilenet_v2_rectifier",
             "mobilenet_v2_keypoint",
             "mobilenet_v2_interval",
@@ -4211,6 +4549,22 @@ def train(config: TrainConfig) -> TrainingResult:
                 uncertainty_loss_weight=config.geometry_uncertainty_loss_weight,
                 low_quantile=config.geometry_uncertainty_low_quantile,
                 high_quantile=config.geometry_uncertainty_high_quantile,
+            )
+        elif config.model_family == "mobilenet_v2_obb_geometry":
+            _compile_obb_geometry_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                coord_loss_weight=config.keypoint_coord_loss_weight,
+                value_loss_weight=config.geometry_value_loss_weight,
+            )
+        elif config.model_family == "mobilenet_v2_bluraware_obb_geometry":
+            _compile_obb_geometry_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                coord_loss_weight=config.keypoint_coord_loss_weight,
+                value_loss_weight=config.geometry_value_loss_weight,
             )
         elif config.model_family == "mobilenet_v2_obb":
             _compile_obb_model(
@@ -4327,6 +4681,22 @@ def train(config: TrainConfig) -> TrainingResult:
                 low_quantile=config.geometry_uncertainty_low_quantile,
                 high_quantile=config.geometry_uncertainty_high_quantile,
             )
+        elif config.model_family == "mobilenet_v2_obb_geometry":
+            _compile_obb_geometry_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                coord_loss_weight=config.keypoint_coord_loss_weight,
+                value_loss_weight=config.geometry_value_loss_weight,
+            )
+        elif config.model_family == "mobilenet_v2_bluraware_obb_geometry":
+            _compile_obb_geometry_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                coord_loss_weight=config.keypoint_coord_loss_weight,
+                value_loss_weight=config.geometry_value_loss_weight,
+            )
         elif config.model_family == "mobilenet_v2_obb":
             _compile_obb_model(
                 model,
@@ -4425,6 +4795,22 @@ def train(config: TrainConfig) -> TrainingResult:
                 uncertainty_loss_weight=config.geometry_uncertainty_loss_weight,
                 low_quantile=config.geometry_uncertainty_low_quantile,
                 high_quantile=config.geometry_uncertainty_high_quantile,
+            )
+        elif config.model_family == "mobilenet_v2_obb_geometry":
+            _compile_obb_geometry_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                coord_loss_weight=config.keypoint_coord_loss_weight,
+                value_loss_weight=config.geometry_value_loss_weight,
+            )
+        elif config.model_family == "mobilenet_v2_bluraware_obb_geometry":
+            _compile_obb_geometry_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                coord_loss_weight=config.keypoint_coord_loss_weight,
+                value_loss_weight=config.geometry_value_loss_weight,
             )
         elif config.model_family == "mobilenet_v2_obb":
             _compile_obb_model(
