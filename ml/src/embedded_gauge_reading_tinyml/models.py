@@ -697,6 +697,119 @@ class GaugeValueFromKeypoints(keras.layers.Layer):
 
 
 @keras.saving.register_keras_serializable(package="embedded_gauge_reading_tinyml")
+class GaugeValueFromRelationKeypoints(keras.layers.Layer):
+    """Infer the gauge value from a learned relation over four geometry landmarks.
+
+    The layer keeps the familiar gauge range calibration, but it exposes the
+    network to all four predicted landmarks at once: center, tip, sweep-min,
+    and sweep-max. That gives the model a direct place to learn the pointer-to-
+    scale relation described in the recent gauge-reading literature.
+    """
+
+    def __init__(
+        self,
+        *,
+        value_min: float,
+        value_max: float,
+        head_units: int = 64,
+        dropout: float = 0.1,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        if value_max <= value_min:
+            raise ValueError("value_max must be > value_min.")
+        if head_units < 8:
+            raise ValueError("head_units must be >= 8.")
+        if dropout < 0.0 or dropout >= 1.0:
+            raise ValueError("dropout must be in [0, 1).")
+        self.value_min = float(value_min)
+        self.value_max = float(value_max)
+        self.head_units = int(head_units)
+        self.dropout = float(dropout)
+        self._scale = float(self.value_max - self.value_min)
+        self._dense_1: keras.layers.Dense | None = None
+        self._dense_2: keras.layers.Dense | None = None
+        self._dropout: keras.layers.Dropout | None = None
+        self._raw_out: keras.layers.Dense | None = None
+
+    def build(self, input_shape: tf.TensorShape) -> None:
+        """Create the small relation MLP the first time the layer is built."""
+        if len(input_shape) != 3 or int(input_shape[-1]) != 2:
+            raise ValueError("Relation keypoints must have shape (batch, 4, 2).")
+        self._dense_1 = keras.layers.Dense(
+            self.head_units,
+            activation="swish",
+            name=f"{self.name}_dense_1",
+        )
+        self._dense_2 = keras.layers.Dense(
+            max(self.head_units // 2, 8),
+            activation="swish",
+            name=f"{self.name}_dense_2",
+        )
+        self._dropout = keras.layers.Dropout(self.dropout)
+        self._raw_out = keras.layers.Dense(1, name=f"{self.name}_raw")
+        super().build(input_shape)
+
+    def call(self, inputs: tf.Tensor, training: bool | None = None) -> tf.Tensor:
+        """Map four landmark coordinates to a normalized scalar value."""
+        if self._dense_1 is None or self._dense_2 is None or self._raw_out is None:
+            raise RuntimeError("GaugeValueFromRelationKeypoints was not built correctly.")
+
+        keypoints = tf.cast(inputs, tf.float32)
+        center = keypoints[:, 0, :]
+        tip = keypoints[:, 1, :]
+        sweep_min = keypoints[:, 2, :]
+        sweep_max = keypoints[:, 3, :]
+
+        tip_vec = tip - center
+        min_vec = sweep_min - center
+        max_vec = sweep_max - center
+
+        def _pair_features(vec_a: tf.Tensor, vec_b: tf.Tensor) -> tf.Tensor:
+            dot = tf.reduce_sum(vec_a * vec_b, axis=-1, keepdims=True)
+            cross = vec_a[:, 0:1] * vec_b[:, 1:2] - vec_a[:, 1:2] * vec_b[:, 0:1]
+            norm_a = tf.norm(vec_a, axis=-1, keepdims=True)
+            norm_b = tf.norm(vec_b, axis=-1, keepdims=True)
+            angle = tf.atan2(cross, dot)
+            return tf.concat([dot, cross, norm_a, norm_b, angle], axis=-1)
+
+        features = tf.concat(
+            [
+                tip_vec,
+                min_vec,
+                max_vec,
+                _pair_features(tip_vec, min_vec),
+                _pair_features(tip_vec, max_vec),
+                _pair_features(min_vec, max_vec),
+            ],
+            axis=-1,
+        )
+        x = self._dense_1(features)
+        if self._dropout is not None:
+            x = self._dropout(x, training=training)
+        x = self._dense_2(x)
+        if self._dropout is not None:
+            x = self._dropout(x, training=training)
+        raw = self._raw_out(x)
+        normalized = keras.activations.sigmoid(raw)
+        value = self.value_min + normalized * self._scale
+        return tf.cast(value, tf.float32)
+
+    def get_config(self) -> dict[str, object]:
+        """Serialize the relation head configuration."""
+        config = super().get_config()
+        config.update(
+            {
+                "value_min": self.value_min,
+                "value_max": self.value_max,
+                "head_units": self.head_units,
+                "dropout": self.dropout,
+            }
+        )
+        return config
+
+
+@keras.saving.register_keras_serializable(package="embedded_gauge_reading_tinyml")
 class GaugeValueFromSweepDistribution(keras.layers.Layer):
     """Convert a sweep-distribution logit vector into a calibrated gauge value.
 
@@ -1911,8 +2024,12 @@ def build_mobilenetv2_obb_mask_geometry_model(
     alpha: float = 1.0,
     head_units: int = 128,
     head_dropout: float = 0.2,
+    num_keypoints: int = 2,
 ) -> keras.Model:
     """Build an OBB-plus-mask model that combines localization and segmentation."""
+    if num_keypoints < 2:
+        raise ValueError("num_keypoints must be >= 2.")
+
     inputs, x, base_model = _build_mobilenetv2_backbone(
         image_height,
         image_width,
@@ -1957,11 +2074,11 @@ def build_mobilenetv2_obb_mask_geometry_model(
     heatmaps = _build_keypoint_heatmap_head(
         x,
         heatmap_size=heatmap_size,
-        num_keypoints=2,
+        num_keypoints=num_keypoints,
     )
     keypoints = SpatialSoftArgmax2D(
         heatmap_size=heatmap_size,
-        num_keypoints=2,
+        num_keypoints=num_keypoints,
         name="keypoint_coords",
     )(heatmaps)
     pointer_mask = _build_pointer_mask_head(
@@ -1987,6 +2104,124 @@ def build_mobilenetv2_obb_mask_geometry_model(
         },
         name=_mobilenetv2_model_name(
             regression_kind="obb_mask_geometry",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_obb_relation_geometry_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    min_angle_rad: float,
+    sweep_rad: float,
+    heatmap_size: int = 28,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a blur-aware OBB-plus-relation model.
+
+    This keeps the proven OBB relation family but adds a lightweight unsharp
+    branch so low-contrast crops and preview frames have a better chance of
+    surfacing the pointer/scale structure the reader needs.
+    """
+    if heatmap_size < 4:
+        raise ValueError("heatmap_size must be >= 4.")
+
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    raw_branch = keras.layers.Rescaling(
+        1.0 / 127.5,
+        offset=-1.0,
+        name="obb_relation_raw_preprocess",
+    )(inputs)
+    enhanced_branch = _build_unsharp_mask_branch(
+        raw_branch,
+        name_prefix="obb_relation",
+    )
+
+    raw_maps = base_model(raw_branch, training=backbone_trainable)
+    enhanced_maps = base_model(enhanced_branch, training=backbone_trainable)
+    x = keras.layers.Average(name="obb_relation_feature_average")(
+        [raw_maps, enhanced_maps]
+    )
+
+    pooled_features = keras.layers.GlobalAveragePooling2D(
+        name="obb_relation_pooled_features"
+    )(x)
+    pooled_features = keras.layers.Dropout(head_dropout)(pooled_features)
+    obb_features = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="obb_relation_dense",
+    )(pooled_features)
+    obb_features = keras.layers.Dropout(head_dropout)(obb_features)
+
+    center_xy = keras.layers.Dense(
+        2,
+        activation="sigmoid",
+        name="obb_center_xy",
+    )(obb_features)
+    size_wh = keras.layers.Dense(
+        2,
+        activation="sigmoid",
+        name="obb_size_wh",
+    )(obb_features)
+    angle_raw = keras.layers.Dense(2, name="obb_angle_raw")(obb_features)
+    angle_sincos = keras.layers.UnitNormalization(axis=-1, name="obb_angle_sincos")(
+        angle_raw
+    )
+    obb_params = keras.layers.Concatenate(name="obb_params")(
+        [center_xy, size_wh, angle_sincos]
+    )
+
+    heatmaps = _build_keypoint_heatmap_head(
+        x,
+        heatmap_size=heatmap_size,
+        num_keypoints=4,
+    )
+    keypoints = SpatialSoftArgmax2D(
+        heatmap_size=heatmap_size,
+        num_keypoints=4,
+        name="keypoint_coords",
+    )(heatmaps)
+    pointer_mask = _build_pointer_mask_head(
+        x,
+        mask_size=heatmap_size,
+    )
+    gauge_value = GaugeValueFromRelationKeypoints(
+        value_min=value_min,
+        value_max=value_max,
+        head_units=head_units,
+        dropout=head_dropout,
+        name="gauge_value",
+    )(keypoints)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "keypoint_heatmaps": heatmaps,
+            "keypoint_coords": keypoints,
+            "pointer_mask": pointer_mask,
+            "obb_params": obb_params,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="obb_relation_geometry",
             alpha=alpha,
             head_units=head_units,
         ),
@@ -2128,6 +2363,421 @@ def build_mobilenetv2_bluraware_obb_geometry_model(
         },
         name=_mobilenetv2_model_name(
             regression_kind="bluraware_obb_geometry",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_bluraware_obb_relation_geometry_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    min_angle_rad: float,
+    sweep_rad: float,
+    heatmap_size: int = 28,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a blur-aware OBB reader with relation keypoints and mask output.
+
+    This variant keeps the OBB backbone intact, adds a fixed unsharp-mask
+    branch for low-contrast crops, and then learns pointer-mask plus relation
+    geometry outputs on top. The design mirrors the recent literature trend:
+    localize first, then reason about the pointer/scale relation explicitly.
+    """
+    if heatmap_size < 4:
+        raise ValueError("heatmap_size must be >= 4.")
+
+    inputs, _, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    raw_branch = keras.layers.Rescaling(
+        1.0 / 127.5,
+        offset=-1.0,
+        name="bluraware_relation_raw_preprocess",
+    )(inputs)
+    enhanced_branch = _build_unsharp_mask_branch(
+        raw_branch,
+        name_prefix="bluraware_relation",
+    )
+
+    raw_maps = base_model(raw_branch, training=backbone_trainable)
+    enhanced_maps = base_model(enhanced_branch, training=backbone_trainable)
+    x = keras.layers.Average(name="bluraware_relation_feature_average")(
+        [raw_maps, enhanced_maps]
+    )
+
+    pooled_features = keras.layers.GlobalAveragePooling2D(
+        name="obb_relation_pooled_features"
+    )(x)
+    pooled_features = keras.layers.Dropout(head_dropout)(pooled_features)
+    obb_features = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="obb_relation_dense",
+    )(pooled_features)
+    obb_features = keras.layers.Dropout(head_dropout)(obb_features)
+
+    center_xy = keras.layers.Dense(
+        2,
+        activation="sigmoid",
+        name="obb_center_xy",
+    )(obb_features)
+    size_wh = keras.layers.Dense(
+        2,
+        activation="sigmoid",
+        name="obb_size_wh",
+    )(obb_features)
+    angle_raw = keras.layers.Dense(2, name="obb_angle_raw")(obb_features)
+    angle_sincos = keras.layers.UnitNormalization(
+        axis=-1,
+        name="obb_angle_sincos",
+    )(angle_raw)
+    obb_params = keras.layers.Concatenate(name="obb_params")(
+        [center_xy, size_wh, angle_sincos]
+    )
+
+    heatmaps = _build_keypoint_heatmap_head(
+        x,
+        heatmap_size=heatmap_size,
+        num_keypoints=4,
+    )
+    keypoints = SpatialSoftArgmax2D(
+        heatmap_size=heatmap_size,
+        num_keypoints=4,
+        name="keypoint_coords",
+    )(heatmaps)
+    pointer_mask = _build_pointer_mask_head(
+        x,
+        mask_size=heatmap_size,
+    )
+    gauge_value = GaugeValueFromRelationKeypoints(
+        value_min=value_min,
+        value_max=value_max,
+        head_units=head_units,
+        dropout=head_dropout,
+        name="gauge_value",
+    )(keypoints)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "keypoint_heatmaps": heatmaps,
+            "keypoint_coords": keypoints,
+            "pointer_mask": pointer_mask,
+            "obb_params": obb_params,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="bluraware_obb_relation_geometry",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_bluraware_obb_sequence_geometry_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    min_angle_rad: float,
+    sweep_rad: float,
+    heatmap_size: int = 28,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a blur-aware OBB sequence-geometry model.
+
+    This keeps the OBB front-end fixed, adds a cheap unsharp-mask branch for
+    preview-like crops, and learns the pointer sequence with four keypoints
+    plus a pointer mask. The value head still converts keypoints into the final
+    gauge reading, which matches the literature-backed geometry-first pattern.
+    """
+    if heatmap_size < 4:
+        raise ValueError("heatmap_size must be >= 4.")
+
+    inputs, _, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    # Blend the raw crop with a lightly sharpened view so low-contrast frames
+    # still expose thin pointer structure to the shared MobileNet backbone.
+    raw_branch = keras.layers.Rescaling(
+        1.0 / 127.5,
+        offset=-1.0,
+        name="bluraware_sequence_raw_preprocess",
+    )(inputs)
+    enhanced_branch = _build_unsharp_mask_branch(
+        raw_branch,
+        name_prefix="bluraware_sequence",
+    )
+
+    raw_maps = base_model(raw_branch, training=backbone_trainable)
+    enhanced_maps = base_model(enhanced_branch, training=backbone_trainable)
+    x = keras.layers.Average(name="bluraware_sequence_feature_average")(
+        [raw_maps, enhanced_maps]
+    )
+
+    pooled_features = keras.layers.GlobalAveragePooling2D(
+        name="obb_sequence_pooled_features"
+    )(x)
+    pooled_features = keras.layers.Dropout(head_dropout)(pooled_features)
+    obb_features = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="obb_sequence_dense",
+    )(pooled_features)
+    obb_features = keras.layers.Dropout(head_dropout)(obb_features)
+
+    center_xy = keras.layers.Dense(
+        2,
+        activation="sigmoid",
+        name="obb_center_xy",
+    )(obb_features)
+    size_wh = keras.layers.Dense(
+        2,
+        activation="sigmoid",
+        name="obb_size_wh",
+    )(obb_features)
+    angle_raw = keras.layers.Dense(
+        2,
+        name="obb_angle_raw",
+    )(obb_features)
+    angle_sincos = keras.layers.UnitNormalization(
+        axis=-1,
+        name="obb_angle_sincos",
+    )(angle_raw)
+    obb_params = keras.layers.Concatenate(name="obb_params")(
+        [center_xy, size_wh, angle_sincos]
+    )
+
+    heatmaps = _build_keypoint_heatmap_head(
+        x,
+        heatmap_size=heatmap_size,
+        num_keypoints=4,
+    )
+    keypoints = SpatialSoftArgmax2D(
+        heatmap_size=heatmap_size,
+        num_keypoints=4,
+        name="keypoint_coords",
+    )(heatmaps)
+    pointer_mask = _build_pointer_mask_head(
+        x,
+        mask_size=heatmap_size,
+    )
+    gauge_value = GaugeValueFromKeypoints(
+        value_min=value_min,
+        value_max=value_max,
+        min_angle_rad=min_angle_rad,
+        sweep_rad=sweep_rad,
+        name="gauge_value",
+    )(keypoints)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "keypoint_heatmaps": heatmaps,
+            "keypoint_coords": keypoints,
+            "pointer_mask": pointer_mask,
+            "obb_params": obb_params,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="bluraware_obb_sequence_geometry",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_bluraware_reader_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+    linear_output: bool = False,
+    value_min: float = -30.0,
+    value_max: float = 50.0,
+) -> keras.Model:
+    """Build a blur-aware reader that fuses raw and unsharp-masked views.
+
+    The recent gauge-reading papers consistently favor geometry-aware readers,
+    but our board path already has a strong OBB localizer. This reader keeps the
+    crop fixed and spends its capacity on low-contrast detail recovery by fusing
+    the raw crop with a lightweight unsharp-mask branch before the scalar head.
+    """
+    inputs, _, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    raw_branch = keras.layers.Rescaling(
+        1.0 / 127.5,
+        offset=-1.0,
+        name="bluraware_reader_raw_preprocess",
+    )(inputs)
+    enhanced_branch = _build_unsharp_mask_branch(
+        raw_branch,
+        name_prefix="bluraware_reader",
+    )
+
+    raw_maps = base_model(raw_branch, training=backbone_trainable)
+    enhanced_maps = base_model(enhanced_branch, training=backbone_trainable)
+    x = keras.layers.Average(name="bluraware_reader_feature_average")(
+        [raw_maps, enhanced_maps]
+    )
+
+    x = keras.layers.GlobalAveragePooling2D(
+        name="bluraware_reader_pooled_features"
+    )(x)
+    x = keras.layers.Dropout(head_dropout, name="bluraware_reader_dropout_1")(x)
+    x = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="bluraware_reader_dense",
+    )(x)
+    x = keras.layers.Dropout(head_dropout, name="bluraware_reader_dropout_2")(x)
+
+    span = value_max - value_min
+    if linear_output:
+        gauge_value = keras.layers.Dense(
+            1,
+            activation="linear",
+            name="gauge_value_linear",
+        )(x)
+    else:
+        gauge_value = keras.layers.Dense(
+            1,
+            activation="sigmoid",
+            name="gauge_value_sigmoid",
+        )(x)
+
+    gauge_value = keras.layers.Rescaling(
+        scale=span,
+        offset=value_min,
+        name="gauge_value",
+    )(gauge_value)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs=gauge_value,
+        name=_mobilenetv2_model_name(
+            regression_kind="bluraware_reader",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_bluraware_reader_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+    linear_output: bool = False,
+    value_min: float = -30.0,
+    value_max: float = 50.0,
+) -> keras.Model:
+    """Build a blur-aware scalar reader with raw and sharpened crop branches."""
+    inputs, _, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    raw_branch = keras.layers.Rescaling(
+        1.0 / 127.5,
+        offset=-1.0,
+        name="bluraware_reader_raw_preprocess",
+    )(inputs)
+    enhanced_branch = _build_unsharp_mask_branch(
+        raw_branch,
+        name_prefix="bluraware_reader",
+    )
+
+    raw_maps = base_model(raw_branch, training=backbone_trainable)
+    enhanced_maps = base_model(enhanced_branch, training=backbone_trainable)
+    x = keras.layers.Average(name="bluraware_reader_feature_average")(
+        [raw_maps, enhanced_maps]
+    )
+
+    x = keras.layers.GlobalAveragePooling2D(
+        name="bluraware_reader_pooled_features"
+    )(x)
+    x = keras.layers.Dropout(head_dropout, name="bluraware_reader_dropout_1")(x)
+    x = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="bluraware_reader_dense",
+    )(x)
+    x = keras.layers.Dropout(head_dropout, name="bluraware_reader_dropout_2")(x)
+
+    span = value_max - value_min
+    if linear_output:
+        x = keras.layers.Dense(
+            1,
+            activation="linear",
+            name="gauge_value_linear",
+        )(x)
+    else:
+        x = keras.layers.Dense(
+            1,
+            activation="sigmoid",
+            name="gauge_value_sigmoid",
+        )(x)
+
+    output = keras.layers.Rescaling(
+        scale=span,
+        offset=value_min,
+        name="gauge_value",
+    )(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs=output,
+        name=_mobilenetv2_model_name(
+            regression_kind="bluraware_reader",
             alpha=alpha,
             head_units=head_units,
         ),

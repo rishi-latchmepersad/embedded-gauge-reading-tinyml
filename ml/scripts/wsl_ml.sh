@@ -309,6 +309,10 @@ case "${cmd}" in
     # Train the blur-aware OBB-geometry model with raw + sharpened views.
     exec bash scripts/run_mobilenetv2_bluraware_obb_geometry_v34.sh "$@"
     ;;
+  train-mobilenetv2-bluraware-obb-relation-geometry)
+    # Train the blur-aware OBB-relation-geometry reader with explicit masks.
+    exec bash scripts/run_mobilenetv2_bluraware_obb_relation_geometry_v42.sh "$@"
+    ;;
   train-mobilenetv2-keypoint-from-rectified-v5)
     # Fine-tune a lighter keypoint-aware model from the rectified v5 mix.
     exec bash scripts/run_mobilenetv2_keypoint_from_rectified_v5.sh "$@"

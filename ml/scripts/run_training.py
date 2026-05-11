@@ -77,9 +77,14 @@ def parse_args() -> argparse.Namespace:
             "mobilenet_v2_detector",
             "mobilenet_v2_geometry",
             "mobilenet_v2_geometry_uncertainty",
+            "mobilenet_v2_bluraware_reader",
             "mobilenet_v2_obb",
             "mobilenet_v2_obb_geometry",
+            "mobilenet_v2_obb_mask_geometry",
+            "mobilenet_v2_obb_sequence_geometry",
+            "mobilenet_v2_obb_relation_geometry",
             "mobilenet_v2_bluraware_obb_geometry",
+            "mobilenet_v2_bluraware_obb_relation_geometry",
             "mobilenet_v2_rectifier",
             "mobilenet_v2_keypoint",
             "mobilenet_v2_interval",
@@ -469,6 +474,10 @@ def main() -> None:
         head_label = (
             "Rectifier head"
             if config.model_family == "mobilenet_v2_rectifier"
+            else "Blur-aware reader"
+            if config.model_family == "mobilenet_v2_bluraware_reader"
+            else "Blur-aware OBB relation geometry head"
+            if config.model_family == "mobilenet_v2_bluraware_obb_relation_geometry"
             else "Geometry head"
             if config.model_family in {
                 "mobilenet_v2_detector",
@@ -476,6 +485,9 @@ def main() -> None:
                 "mobilenet_v2_geometry_uncertainty",
                 "mobilenet_v2_obb_geometry",
                 "mobilenet_v2_bluraware_obb_geometry",
+                "mobilenet_v2_bluraware_obb_relation_geometry",
+                "mobilenet_v2_obb_sequence_geometry",
+                "mobilenet_v2_obb_relation_geometry",
             }
             else "Keypoint head"
         )
@@ -496,6 +508,9 @@ def main() -> None:
     if config.model_family in {
         "mobilenet_v2_obb_geometry",
         "mobilenet_v2_bluraware_obb_geometry",
+        "mobilenet_v2_bluraware_obb_relation_geometry",
+        "mobilenet_v2_obb_sequence_geometry",
+        "mobilenet_v2_obb_relation_geometry",
     }:
         print(
             "[RUN] OBB-geometry head: "
@@ -503,6 +518,13 @@ def main() -> None:
             f"heatmap_loss_weight={config.keypoint_heatmap_loss_weight} "
             f"coord_loss_weight={config.keypoint_coord_loss_weight} "
             "obb_loss_weight=0.35"
+        )
+    if config.model_family == "mobilenet_v2_bluraware_reader":
+        print(
+            "[RUN] Blur-aware reader head: "
+            f"linear_output={config.linear_output} "
+            f"head_units={config.mobilenet_head_units} "
+            f"dropout={config.mobilenet_head_dropout}"
         )
 
     # Execute training and evaluation.

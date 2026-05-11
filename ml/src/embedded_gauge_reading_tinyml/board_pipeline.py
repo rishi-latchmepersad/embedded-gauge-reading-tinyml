@@ -23,6 +23,7 @@ from numpy.typing import NDArray
 from PIL import Image
 import tensorflow as tf
 
+from embedded_gauge_reading_tinyml import models as model_layers
 from embedded_gauge_reading_tinyml.board_crop_compare import (
     load_rgb_image,
     load_yuv422_capture_as_rgb,
@@ -43,10 +44,13 @@ TRAINING_CROP_Y_MIN_RATIO: Final[float] = 0.2573
 TRAINING_CROP_X_MAX_RATIO: Final[float] = 0.7987
 TRAINING_CROP_Y_MAX_RATIO: Final[float] = 0.8071
 
-OBB_CROP_SCALE: Final[float] = 1.20
+OBB_CROP_SCALE: Final[float] = 1.30
 OBB_MIN_BOX_RATIO: Final[float] = 0.05
-OBB_TRAINING_CROP_MIN_RATIO: Final[float] = 0.60
-OBB_TRAINING_CROP_MAX_RATIO: Final[float] = 1.40
+# The hard-tail captures we care about often land around 0.18-0.20 of the
+# rectified training crop size. The old 0.60 minimum forced those cases into the
+# rectifier fallback even when the OBB crop was otherwise plausible.
+OBB_TRAINING_CROP_MIN_RATIO: Final[float] = 0.15
+OBB_TRAINING_CROP_MAX_RATIO: Final[float] = 1.60
 OBB_MIN_CROP_SIZE_PIXELS: Final[float] = 48.0
 
 RECTIFIER_MIN_BOX_RATIO: Final[float] = 0.05
@@ -409,6 +413,9 @@ def load_model_session(model_path: Path, model_kind: ModelKind = "auto") -> Mode
             model_path,
             custom_objects={
                 "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input,
+                "SpatialSoftArgmax2D": model_layers.SpatialSoftArgmax2D,
+                "GaugeValueFromKeypoints": model_layers.GaugeValueFromKeypoints,
+                "GaugeValueFromRelationKeypoints": model_layers.GaugeValueFromRelationKeypoints,
             },
             compile=False,
             safe_mode=False,
