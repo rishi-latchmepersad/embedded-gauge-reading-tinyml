@@ -19,6 +19,7 @@ import zipfile
 import keras
 import h5py
 import tensorflow as tf
+import numpy as np
 
 # Add `ml/src` to sys.path so this script works from the `ml/` directory.
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
@@ -87,27 +88,51 @@ def _load_model(model_path: Path, *, legacy_mobilenetv2_preprocess: bool) -> ker
     }
     if legacy_mobilenetv2_preprocess:
         print("[REPACK] Legacy MobileNetV2 preprocess support enabled.", flush=True)
-    model = keras.models.load_model(model_path, custom_objects=custom_objects)
+    # We only need the trained weights for deployment, so avoid deserializing
+    # the training-time compile state and any custom loss symbols.
+    model = keras.models.load_model(
+        model_path,
+        custom_objects=custom_objects,
+        compile=False,
+    )
     print(f"[REPACK] Loaded model '{model.name}'.", flush=True)
     model.summary()
     return model
 
 
-def _build_clean_model(image_height: int, image_width: int) -> keras.Model:
-    """Build an equivalent model graph that uses only serializable layers.
+def _infer_piecewise_knot_count(source_model: keras.Model) -> int:
+    """Infer how many learned spline knots the calibrated source model uses."""
+    return sum(
+        1 for layer in source_model.layers if layer.name.startswith("value_calibration_shift_")
+    )
 
-    The original artifact already expects normalized `[0, 1]` image inputs.
-    We keep that contract, then map the input to the MobileNetV2 domain with
-    two standard `Rescaling` layers instead of the legacy Lambda helper.
+
+def _weight_key(name: str) -> str:
+    """Normalize a TensorFlow variable name down to a stable layer-local key."""
+    # Keras variables may be exposed as either bare names such as `kernel` or
+    # scoped names such as `dense/kernel:0`. We only care about the layer-local
+    # suffix when matching quantized source tensors to the clean deployment graph.
+    return name.rsplit("/", 1)[-1].split(":", 1)[0]
+
+
+def _build_clean_model(
+    image_height: int,
+    image_width: int,
+    *,
+    piecewise_knot_count: int,
+) -> keras.Model:
+    """Build a serializable graph that mirrors the source piecewise calibrator.
+
+    The source winner carries a piecewise-linear calibration head. We rebuild the
+    same structure with standard Dense/ReLU/Concatenate layers so the trained
+    weights can be transferred verbatim, while still avoiding any legacy Lambda
+    or custom op usage in the export graph.
     """
     inputs = keras.Input(shape=(image_height, image_width, 3), name="image")
 
-    # Mirror the legacy artifact: first restore pixel scale, then apply the
-    # MobileNetV2 [-1, 1] normalization in a serializable way.
+    # Mirror the legacy preprocessing contract in a serializable way.
     x = keras.layers.Rescaling(255.0, name="to_255")(inputs)
-    x = keras.layers.Rescaling(1.0 / 127.5, offset=-1.0, name="mobilenetv2_preprocess")(
-        x
-    )
+    x = keras.layers.Rescaling(1.0 / 127.5, offset=-1.0, name="mobilenetv2_preprocess")(x)
 
     base_model = keras.applications.MobileNetV2(
         include_top=False,
@@ -120,31 +145,131 @@ def _build_clean_model(image_height: int, image_width: int) -> keras.Model:
     x = keras.layers.Dropout(0.2, name="dropout")(x)
     x = keras.layers.Dense(128, activation="swish", name="dense")(x)
     x = keras.layers.Dropout(0.2, name="dropout_1")(x)
-    x = keras.layers.Dense(1, name="gauge_value")(x)
-    output = keras.layers.Dense(1, name="value_calibration")(x)
+    base_output = keras.layers.Dense(1, name="gauge_value")(x)
 
-    model = keras.Model(
+    if piecewise_knot_count < 1:
+        raise ValueError("piecewise_knot_count must be at least 1.")
+
+    basis_terms: list[keras.layers.Layer] = [base_output]
+    for knot_index in range(piecewise_knot_count):
+        shifted = keras.layers.Dense(
+            1,
+            use_bias=True,
+            kernel_initializer=keras.initializers.Constant([[1.0]]),
+            bias_initializer="zeros",
+            trainable=False,
+            name=f"value_calibration_shift_{knot_index}",
+        )(base_output)
+        basis_terms.append(
+            keras.layers.ReLU(name=f"value_calibration_relu_{knot_index}")(shifted)
+        )
+
+    features = keras.layers.Concatenate(name="value_calibration_features")(basis_terms)
+    output = keras.layers.Dense(1, name="value_calibration")(features)
+
+    return keras.Model(
         inputs=inputs,
         outputs=output,
-        name="mobilenetv2_gauge_regressor_calibrated_clean",
+        name="mobilenetv2_gauge_regressor_piecewise_calibrated_clean",
     )
-    return model
 
 
 def _transfer_weights(source_model: keras.Model, target_model: keras.Model) -> None:
-    """Copy trained weights from the loaded model into the clean graph."""
-    source_weights = source_model.get_weights()
-    target_weights = target_model.get_weights()
-    if len(source_weights) != len(target_weights):
-        raise RuntimeError(
-            "Weight tensor count mismatch between source and clean model: "
-            f"{len(source_weights)} vs {len(target_weights)}"
-        )
-    target_model.set_weights(source_weights)
+    """Copy trained weights from the loaded model into the clean graph.
+
+    The source artifact carries a few extra bookkeeping tensors from its QAT
+    serialization path, so we transfer weights layer-by-layer and allow the
+    clean deployment graph to ignore source-only extras.
+    """
+    transferred_tensors = 0
+    skipped_layers: list[str] = []
+
+    def _transfer_layer(source_layer: keras.layers.Layer, target_layer: keras.layers.Layer) -> None:
+        """Transfer one layer, recursing into nested models when needed."""
+        nonlocal transferred_tensors
+
+        if isinstance(source_layer, keras.Model) and isinstance(target_layer, keras.Model):
+            source_nested_layers_by_name: dict[str, keras.layers.Layer] = {
+                layer.name: layer for layer in source_layer.layers
+            }
+            for nested_target_layer in target_layer.layers:
+                nested_source_layer = source_nested_layers_by_name.get(nested_target_layer.name)
+                if nested_source_layer is None:
+                    continue
+                _transfer_layer(nested_source_layer, nested_target_layer)
+            return
+
+        source_weights = source_layer.get_weights()
+        target_weights = target_layer.get_weights()
+        if not source_weights and not target_weights:
+            return
+
+        source_weight_map: dict[str, np.ndarray] = {
+            _weight_key(variable.name): array
+            for variable, array in zip(source_layer.weights, source_weights)
+        }
+
+        remapped_target_weights: list[np.ndarray] = []
+        missing_weight_names: list[str] = []
+        for target_variable in target_layer.weights:
+            target_key = _weight_key(target_variable.name)
+            source_value = source_weight_map.get(target_key)
+            if source_value is None:
+                missing_weight_names.append(target_key)
+                continue
+            remapped_target_weights.append(source_value)
+
+        if missing_weight_names:
+            raise RuntimeError(
+                f"Layer '{target_layer.name}' is missing source tensor(s) {missing_weight_names}."
+            )
+
+        if len(source_weights) < len(target_weights):
+            raise RuntimeError(
+                "Source layer has fewer weights than target layer: "
+                f"{target_layer.name} ({len(source_weights)} < {len(target_weights)})"
+            )
+
+        if any(
+            src_array.shape != tgt_array.shape
+            for src_array, tgt_array in zip(remapped_target_weights, target_weights)
+        ):
+            raise RuntimeError(
+                f"Weight shape mismatch for layer '{target_layer.name}'."
+            )
+
+        target_layer.set_weights(remapped_target_weights)
+        transferred_tensors += len(remapped_target_weights)
+
+        source_only_tensors = len(source_weights) - len(remapped_target_weights)
+        if source_only_tensors > 0:
+            print(
+                f"[REPACK] Layer '{target_layer.name}' has {source_only_tensors} "
+                "extra source tensor(s); copied the matching named weights.",
+                flush=True,
+            )
+
+    source_layers_by_name: dict[str, keras.layers.Layer] = {
+        layer.name: layer for layer in source_model.layers
+    }
+
+    for target_layer in target_model.layers:
+        source_layer = source_layers_by_name.get(target_layer.name)
+        if source_layer is None:
+            skipped_layers.append(target_layer.name)
+            continue
+
+        _transfer_layer(source_layer, target_layer)
+
     print(
-        f"[REPACK] Transferred {len(source_weights)} weight tensors into clean model.",
+        f"[REPACK] Transferred {transferred_tensors} weight tensors into clean model.",
         flush=True,
     )
+    if skipped_layers:
+        print(
+            f"[REPACK] Skipped {len(skipped_layers)} clean-layer placeholders without source matches.",
+            flush=True,
+        )
 
 
 def _strip_key_recursive(value: Any, key: str) -> int:
@@ -227,7 +352,13 @@ def main() -> None:
         args.model,
         legacy_mobilenetv2_preprocess=args.legacy_mobilenetv2_preprocess,
     )
-    clean_model = _build_clean_model(args.image_height, args.image_width)
+    knot_count = _infer_piecewise_knot_count(source_model)
+    print(f"[REPACK] Source piecewise knot count: {knot_count}", flush=True)
+    clean_model = _build_clean_model(
+        args.image_height,
+        args.image_width,
+        piecewise_knot_count=knot_count,
+    )
     print("[REPACK] Built clean serializable model graph.", flush=True)
     _transfer_weights(source_model, clean_model)
 

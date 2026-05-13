@@ -316,6 +316,13 @@ def build_dataset(
 
     rows: list[dict[str, str]] = []
     for index in range(num_samples):
+        # Emit a small progress heartbeat so long synthetic runs do not look frozen.
+        if index == 0 or (index + 1) % 50 == 0:
+            print(
+                f"[SYNTH] Rendering {index + 1}/{num_samples} "
+                f"({profile_mode}) samples...",
+                flush=True,
+            )
         profile = "hard" if profile_mode == "hard" else "standard"
         spec = _make_spec(rng, image_size, profile)
         image = _render_synthetic_sample(spec, rng)
@@ -333,6 +340,12 @@ def build_dataset(
         writer = csv.DictWriter(handle, fieldnames=["image_path", "value"])
         writer.writeheader()
         writer.writerows(rows)
+
+    print(
+        f"[SYNTH] Finished {profile_mode} dataset: "
+        f"{num_samples} images -> {manifest_path}",
+        flush=True,
+    )
 
 
 def parse_args() -> argparse.Namespace:

@@ -74,6 +74,8 @@ Usage:
   bash scripts/wsl_ml.sh package-prod-v0-2 [prod v0.2 package args...]
   bash scripts/wsl_ml.sh export-prod-v0-3-obb [prod v0.3 obb export args...]
   bash scripts/wsl_ml.sh package-prod-v0-3-obb [prod v0.3 obb package args...]
+  bash scripts/wsl_ml.sh export-prod-v0-4-scalar [prod v0.4 scalar export args...]
+  bash scripts/wsl_ml.sh package-prod-v0-4-scalar [prod v0.4 scalar package args...]
   bash scripts/wsl_ml.sh export-rectifier [rectifier export args...]
   bash scripts/wsl_ml.sh package-rectifier [rectifier package args...]
   bash scripts/wsl_ml.sh export-rectified-scalar [rectified scalar export args...]
@@ -356,6 +358,14 @@ case "${cmd}" in
   package-prod-v0-3-obb)
     # Package the prod-v0.3 OBB localizer and refresh the canonical xSPI2 blob.
     exec bash scripts/run_board_package_prod_model_v0_3_obb_raw_int8.sh "$@"
+    ;;
+  export-prod-v0-4-scalar)
+    # Export the prod-v0.4 scalar winner to board-ready TFLite artifacts.
+    exec bash scripts/run_board_export_prod_model_v0_4_scalar.sh "$@"
+    ;;
+  package-prod-v0-4-scalar)
+    # Package the prod-v0.4 scalar winner and refresh the canonical xSPI2 blob.
+    exec bash scripts/run_board_package_prod_model_v0_4_scalar_raw_int8.sh "$@"
     ;;
   export-rectifier)
     # Export the rectifier stage to board-ready TFLite artifacts.

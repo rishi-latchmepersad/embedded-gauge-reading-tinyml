@@ -5,6 +5,23 @@ Keep this file short, and put detailed notes in the topical files below.
 
 - The target for reading is the inner dial of the gauge, as that is the one calibrated for Celsius (C).
 
+## 2026-05-13 Dual-Resolution Interval Recipe
+
+- The strongest learned reader so far is `mobilenet_v2_dualres_interval` with the new tensor-safe `CenterCropResize` layer, CBAM + Coordinate Attention on both MobileNetV2 branches, `range_aware_sampling=True`, and a lower `interval_loss_weight` (`0.10`).
+- Best hard-case-only direct training result so far: `test_mae=16.38C`, `test_rmse=19.74C` on `16` hard-case test samples.
+- On the same hard-case manifest, the prod v0.3 calibrated OBB baseline came out worse at `calibrated_mae=19.20C` when the piecewise calibration JSON was flattened and applied to the TFLite model.
+- The main CLI now exposes `--range-aware-sampling`, `--cold-tail-fraction`, `--hot-tail-fraction`, `--oversampling-factor`, and `--interval-loss-weight`, so future runs can reuse the better recipe without editing code.
+
+## 2026-05-13 Prod v0.4 Scalar Winner
+
+- The current prod v0.4 scalar winner is `scalar_qat_headonly_from_best_board30`.
+- Hard-case results reproduced cleanly on the held-out manifests: `test_mae=7.8563C` overall, `mean_abs_err=7.2357C` on `hard_cases.csv`, and `mean_abs_err=6.3930C` on `hard_cases_plus_board30.csv`.
+- The winning Keras artifact needed a sanitizing repack step before export because it still carried a legacy MobileNetV2 preprocess Lambda and QAT bookkeeping tensors.
+- The clean deployable model was rebuilt into `tmp/prod_v0_4_repack_test/model.keras`, exported to `tmp/prod_model_v0_4_scalar_int8/model_int8.tflite`, and packaged into `st_ai_output/packages/prod_model_v0.4_scalar_int8/`.
+- Firmware references now point at `firmware/stm32/n657/Appli/Src/ai_network_mobilenetv2_scalar_hardcase_warmstart_int8.c` and `firmware/stm32/n657/Appli/makefile.targets` using the new `prod_model_v0.4_scalar_int8` package directory.
+- The v0.4 board path does not need a separate post-hoc calibration layer at the model level, but the board package still depends on the repack/export sanitizing step to stay CubeAI-friendly.
+- The exported int8 package builds cleanly for the board, but the offline rescoring script still needs a sanity pass before we trust it as a numeric regression check; use on-device validation as the next accuracy gate.
+
 ## 2026-05-04 INA219 Power Metrics Integration
 
 **Hardware**: INA219 power sensor module at I2C address 0x40 (shared with DS3231 RTC on I2C1), 0.1 ohm shunt resistor.
@@ -665,3 +682,25 @@ The issue was that the `prefix` parameter (string literal) was being corrupted b
   - The hard replay traces showed the important failure mode: the OBB crop now usually gets through, but the reader still collapses toward low/near-zero predictions on the cold and preview-heavy samples. So the current bottleneck is reader robustness on the hard tail, not the crop guard alone.
   - The best current practical deployment baseline remains the OBB localizer plus the better rectified scalar reader / OBB-cascade path (around `8.1181C` MAE on the hard manifest with `OBB_CROP_SCALE=1.30`), not the newer geometry-heavy readers.
   - Overall lesson: the literature-backed geometry/keypoint/sequence ideas do help on the easy split and as pretrainers, but none of them have yet beaten the simpler OBB + rectified scalar cascade on the hard manifest. The cold tail still needs either better reader robustness or more representative hard-tail data.
+
+## 2026-05-12 Dual-Resolution Interval Reader
+
+- Added a new embedded-friendly CNN candidate, `mobilenet_v2_dualres_interval`, that reuses the existing dual-resolution MobileNetV2 backbone and trains a distributional interval head instead of a naked scalar regressor.
+- The training CLI now supports `--hard-case-eval-manifest`, which reserves a manifest entirely for validation/test and keeps those hard cases out of the training pool.
+- This is the cleanest path for the next reader experiment: train on the full non-hard labelled pool, hold the hard cases out for evaluation only, and compare the new dual-resolution interval model against the current scalar production path.
+
+## 2026-05-13 Reproducible Hard-Case Winner
+
+- The current hard-case winner is the head-only QAT recipe in `ml/scripts/run_scalar_qat_headonly_from_best_board30.sh`.
+- Exact winning settings:
+  - base model: `artifacts/training/scalar_full_finetune_from_best_board30_piecewise_calibrated/model.keras`
+  - `--freeze-backbone`
+  - `--no-augment-training`
+  - `--batch-size 8`
+  - `--seed 21`
+  - `--hard-case-manifest data/hard_cases_plus_board30.csv`
+  - `--hard-case-repeat 8`
+  - `--edge-focus-strength 1.5`
+  - `--epochs 4`
+  - `--learning-rate 5e-7`
+- That run logged `test_metrics.mae=7.8563C` and hard-case `mean_abs_err=7.0800C`, so keep this recipe as the current hard-case reference point.

@@ -33,6 +33,7 @@ from embedded_gauge_reading_tinyml.presets import (
     DEFAULT_MOBILENET_HEAD_UNITS,
     DEFAULT_MOBILENET_WARMUP_EPOCHS,
     DEFAULT_INTERVAL_BIN_WIDTH,
+    DEFAULT_INTERVAL_LOSS_WEIGHT,
     DEFAULT_INTERPOLATION_PAIR_SCALE,
     DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
     DEFAULT_KEYPOINT_HEATMAP_SIZE,
@@ -72,6 +73,7 @@ def parse_args() -> argparse.Namespace:
             "compact_geometry",
             "mobilenet_v2",
             "mobilenet_v2_tiny",
+            "mobilenet_v2_dualres_interval",
             "mobilenet_v2_direction",
             "mobilenet_v2_fraction",
             "mobilenet_v2_detector",
@@ -170,6 +172,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional CSV manifest of extra hard board captures to upweight.",
     )
     parser.add_argument(
+        "--hard-case-eval-manifest",
+        type=Path,
+        default=None,
+        help="Optional CSV manifest reserved entirely for hard-case validation/test.",
+    )
+    parser.add_argument(
         "--val-fraction",
         type=float,
         default=DEFAULT_VAL_FRACTION,
@@ -247,6 +255,36 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_INTERVAL_BIN_WIDTH,
         help="Width of the coarse temperature bins used by the hybrid interval head.",
+    )
+    parser.add_argument(
+        "--interval-loss-weight",
+        type=float,
+        default=DEFAULT_INTERVAL_LOSS_WEIGHT,
+        help="Loss weight applied to the interval-classification branch.",
+    )
+    parser.add_argument(
+        "--range-aware-sampling",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Oversample cold and hot tails of the training range.",
+    )
+    parser.add_argument(
+        "--cold-tail-fraction",
+        type=float,
+        default=0.15,
+        help="Fraction of the value range treated as the cold tail.",
+    )
+    parser.add_argument(
+        "--hot-tail-fraction",
+        type=float,
+        default=0.15,
+        help="Fraction of the value range treated as the hot tail.",
+    )
+    parser.add_argument(
+        "--oversampling-factor",
+        type=float,
+        default=3.0,
+        help="Tail oversampling multiplier used with range-aware sampling.",
     )
     parser.add_argument(
         "--ordinal-threshold-step",
@@ -380,6 +418,9 @@ def main() -> None:
         mobilenet_alpha=args.mobilenet_alpha,
         mobilenet_head_units=args.mobilenet_head_units,
         mobilenet_head_dropout=args.mobilenet_head_dropout,
+        hard_case_eval_manifest=str(args.hard_case_eval_manifest)
+        if args.hard_case_eval_manifest
+        else None,
         hard_case_manifest=str(args.hard_case_manifest) if args.hard_case_manifest else None,
         hard_case_repeat=args.hard_case_repeat,
         val_manifest=str(args.val_manifest) if args.val_manifest else None,
@@ -399,11 +440,16 @@ def main() -> None:
         monotonic_pair_margin=args.monotonic_pair_margin,
         mixup_alpha=args.mixup_alpha,
         interval_bin_width=args.interval_bin_width,
+        interval_loss_weight=args.interval_loss_weight,
         interpolation_pair_strength=args.interpolation_pair_strength,
         interpolation_pair_scale=args.interpolation_pair_scale,
         ordinal_threshold_step=args.ordinal_threshold_step,
         ordinal_loss_weight=args.ordinal_loss_weight,
         sweep_fraction_loss_weight=args.sweep_fraction_loss_weight,
+        range_aware_sampling=args.range_aware_sampling,
+        cold_tail_fraction=args.cold_tail_fraction,
+        hot_tail_fraction=args.hot_tail_fraction,
+        oversampling_factor=args.oversampling_factor,
         keypoint_heatmap_size=args.keypoint_heatmap_size,
         keypoint_heatmap_loss_weight=args.keypoint_heatmap_loss_weight,
         keypoint_coord_loss_weight=args.keypoint_coord_loss_weight,
@@ -435,6 +481,7 @@ def main() -> None:
     )
     print(
         "[RUN] Manifest inputs: "
+        f"hard_case_eval_manifest={config.hard_case_eval_manifest} "
         f"hard_case_manifest={config.hard_case_manifest} "
         f"val_fraction={config.val_fraction} "
         f"test_fraction={config.test_fraction} "
@@ -449,7 +496,15 @@ def main() -> None:
     print(
         "[RUN] MixUp / interval: "
         f"mixup_alpha={config.mixup_alpha} "
-        f"interval_bin_width={config.interval_bin_width}"
+        f"interval_bin_width={config.interval_bin_width} "
+        f"interval_loss_weight={config.interval_loss_weight}"
+    )
+    print(
+        "[RUN] Range-aware sampling: "
+        f"enabled={config.range_aware_sampling} "
+        f"cold_tail_fraction={config.cold_tail_fraction} "
+        f"hot_tail_fraction={config.hot_tail_fraction} "
+        f"oversampling_factor={config.oversampling_factor}"
     )
     print(
         "[RUN] Interpolation pairs: "

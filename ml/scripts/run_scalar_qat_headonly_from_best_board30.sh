@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Head-only quantization-aware fine-tune for the strongest scalar MobileNetV2 model.
-# This is a more conservative follow-up to the full-network QAT run.
+# Exact head-only QAT recipe that produced the 7.0800C hard-case MAE winner.
+# We keep the winning knobs explicit here so the run can be reproduced later.
 REPO_ROOT="/mnt/d/Projects/embedded-gauge-reading-tinyml/ml"
 LOG_DIR="${REPO_ROOT}/artifacts/training_logs"
 LOG_FILE="${LOG_DIR}/scalar_qat_headonly_from_best_board30.log"
@@ -34,9 +34,11 @@ echo "[WRAPPER] Log file: ${LOG_FILE}"
 
 "${POETRY_BIN}" run python -u scripts/train_scalar_qat_from_best.py \
   --base-model "${BASE_MODEL_LOCAL}" \
+  --batch-size 8 \
   --device gpu \
   --freeze-backbone \
   --no-augment-training \
+  --seed 21 \
   --hard-case-manifest data/hard_cases_plus_board30.csv \
   --hard-case-repeat 8 \
   --edge-focus-strength 1.5 \

@@ -1,0 +1,54 @@
+"""Debug script to check dataset shapes."""
+import sys
+from pathlib import Path
+
+# Add ml/src to path.
+PROJECT_ROOT = Path(__file__).resolve().parent
+SRC_DIR = PROJECT_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+import cv2
+
+REPO_ROOT = PROJECT_ROOT.parent
+
+def resolve_full_path(path_str: str, repo_root: Path) -> Path:
+    p = Path(path_str)
+    if p.is_absolute():
+        return p
+    return repo_root / p
+
+# Load manifest
+manifest_path = PROJECT_ROOT / "artifacts" / "polar_masks" / "manifest.csv"
+df = pd.read_csv(manifest_path)
+print(f"Loaded manifest: {len(df)} rows")
+
+# Load first 8 masks
+masks = []
+for idx, row in df.head(8).iterrows():
+    mask_path = resolve_full_path(row["mask_path"], REPO_ROOT)
+    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+    mask = mask.astype(np.float32) / 255.0
+    mask = cv2.resize(mask, (224, 224))
+    masks.append(mask[..., np.newaxis])
+
+masks_arr = np.array(masks, dtype=np.float32)
+print(f"masks_arr shape: {masks_arr.shape}")
+
+# Create dataset
+x = np.random.rand(8, 224, 224, 3).astype(np.float32)
+y = np.random.rand(8).astype(np.float32)
+
+dataset = tf.data.Dataset.from_tensor_slices((x, y, masks_arr))
+dataset = dataset.map(lambda a, b, c: (a, {"gauge_value": b, "needle_mask": c}))
+dataset = dataset.batch(8)
+
+for batch_x, batch_y in dataset.take(1):
+    print(f"Batch target keys: {list(batch_y.keys())}")
+    for k, v in batch_y.items():
+        print(f"  {k}: shape={v.shape}, dtype={v.dtype}")
+
+print("\nSUCCESS")

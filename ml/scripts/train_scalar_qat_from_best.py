@@ -62,6 +62,18 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--learning-rate", type=float, default=1e-6)
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=8,
+        help="Training batch size used for the QAT run.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=21,
+        help="Random seed used for dataset splitting and model initialization.",
+    )
+    parser.add_argument(
         "--hard-case-manifest",
         type=Path,
         default=PROJECT_ROOT / "data" / "hard_cases_plus_board30.csv",
@@ -188,8 +200,10 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     config = TrainConfig(
+        batch_size=args.batch_size,
         epochs=args.epochs,
         learning_rate=args.learning_rate,
+        seed=args.seed,
         device=args.device,
         augment_training=not args.no_augment_training,
         hard_case_manifest=str(args.hard_case_manifest),
@@ -205,8 +219,10 @@ def main() -> None:
     print(
         "[QAT] Fine-tune job: "
         f"base_model={args.base_model} "
+        f"batch_size={config.batch_size} "
         f"epochs={config.epochs} "
         f"learning_rate={config.learning_rate} "
+        f"seed={config.seed} "
         f"device={config.device}",
         flush=True,
     )
@@ -240,6 +256,9 @@ def main() -> None:
     examples, dropped_out_of_sweep = _build_training_examples(
         samples,
         spec,
+        image_height=config.image_height,
+        image_width=config.image_width,
+        keypoint_heatmap_size=config.keypoint_heatmap_size,
         strict_labels=config.strict_labels,
         crop_pad_ratio=config.crop_pad_ratio,
     )

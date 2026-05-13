@@ -42,6 +42,7 @@ from embedded_gauge_reading_tinyml.presets import (
     DEFAULT_IMAGE_WIDTH,
     DEFAULT_LEARNING_RATE,
     DEFAULT_LIBRARY_DEVICE,
+    DEFAULT_INTERVAL_LOSS_WEIGHT,
     DEFAULT_MOBILENET_BACKBONE_TRAINABLE,
     DEFAULT_MOBILENET_PRETRAINED,
     DEFAULT_MOBILENET_WARMUP_EPOCHS,
@@ -70,6 +71,7 @@ from embedded_gauge_reading_tinyml.models import (
     SpatialSoftArgmax2D,
     build_compact_interval_model,
     build_compact_geometry_model,
+    build_mobilenetv2_dual_resolution_interval_model,
     build_mobilenetv2_rectifier_model,
     build_mobilenetv2_obb_model,
     build_mobilenetv2_regression_model,
@@ -134,6 +136,7 @@ class TrainConfig:
         "compact_geometry",
         "mobilenet_v2",
         "mobilenet_v2_tiny",
+        "mobilenet_v2_dualres_interval",
         "mobilenet_v2_direction",
         "mobilenet_v2_fraction",
         "mobilenet_v2_detector",
@@ -159,6 +162,7 @@ class TrainConfig:
     mobilenet_alpha: float = DEFAULT_MOBILENET_ALPHA
     mobilenet_head_units: int = DEFAULT_MOBILENET_HEAD_UNITS
     mobilenet_head_dropout: float = DEFAULT_MOBILENET_HEAD_DROPOUT
+    hard_case_eval_manifest: str | None = None
     hard_case_manifest: str | None = None
     hard_case_repeat: int = 0
     val_manifest: str | None = None
@@ -173,6 +177,7 @@ class TrainConfig:
     ordinal_threshold_step: float = DEFAULT_ORDINAL_THRESHOLD_STEP
     ordinal_loss_weight: float = DEFAULT_ORDINAL_LOSS_WEIGHT
     sweep_fraction_loss_weight: float = DEFAULT_SWEEP_FRACTION_LOSS_WEIGHT
+    interval_loss_weight: float = DEFAULT_INTERVAL_LOSS_WEIGHT
     keypoint_heatmap_size: int = DEFAULT_KEYPOINT_HEATMAP_SIZE
     keypoint_heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT
     keypoint_coord_loss_weight: float = DEFAULT_KEYPOINT_COORD_LOSS_WEIGHT
@@ -265,6 +270,8 @@ def _validate_split_config(config: TrainConfig) -> None:
         raise ValueError("ordinal_loss_weight must be >= 0.")
     if config.sweep_fraction_loss_weight < 0.0:
         raise ValueError("sweep_fraction_loss_weight must be >= 0.")
+    if config.interval_loss_weight < 0.0:
+        raise ValueError("interval_loss_weight must be >= 0.")
     if config.keypoint_heatmap_size < 4:
         raise ValueError("keypoint_heatmap_size must be >= 4.")
     if config.keypoint_heatmap_loss_weight < 0.0:
@@ -283,6 +290,18 @@ def _validate_split_config(config: TrainConfig) -> None:
     ):
         raise ValueError(
             "geometry_uncertainty_low_quantile must be < geometry_uncertainty_high_quantile."
+        )
+    if config.linear_output:
+        raise ValueError("linear_output=True is not supported in no-calibration mode.")
+    if config.hard_case_eval_manifest is not None and config.hard_case_manifest is not None:
+        raise ValueError(
+            "Use either hard_case_eval_manifest or hard_case_manifest, not both."
+        )
+    if config.hard_case_eval_manifest is not None and (
+        config.val_manifest is not None or config.test_manifest is not None
+    ):
+        raise ValueError(
+            "hard_case_eval_manifest cannot be combined with val_manifest or test_manifest."
         )
 
 
@@ -401,6 +420,41 @@ def _log_model_choice(config: TrainConfig) -> None:
         f"batch_size={config.batch_size} "
         f"epochs={config.epochs}"
     )
+
+
+def _hard_case_target_kind_for_model_family(model_family: str) -> str:
+    """Return the target schema used by the hard-case manifest loader."""
+    if model_family in {"mobilenet_v2_direction", "compact_direction"}:
+        return "needle_unit_xy"
+    if model_family == "mobilenet_v2_fraction":
+        return "sweep_fraction"
+    if model_family in {"mobilenet_v2_keypoint", "mobilenet_v2_detector"}:
+        return "keypoint_heatmaps"
+    if model_family == "mobilenet_v2_geometry_uncertainty":
+        return "geometry_uncertainty"
+    if model_family == "mobilenet_v2_bluraware_reader":
+        return "value"
+    if model_family in {"mobilenet_v2_geometry", "compact_geometry"}:
+        return "geometry"
+    if model_family == "mobilenet_v2_obb":
+        return "obb"
+    if model_family in {
+        "mobilenet_v2_obb_geometry",
+        "mobilenet_v2_bluraware_obb_geometry",
+    }:
+        return "obb_geometry"
+    if model_family in {
+        "mobilenet_v2_obb_mask_geometry",
+        "mobilenet_v2_obb_sequence_geometry",
+        "mobilenet_v2_obb_relation_geometry",
+        "mobilenet_v2_bluraware_obb_relation_geometry",
+    }:
+        return "obb_mask_geometry"
+    if model_family in {"mobilenet_v2_interval", "compact_interval", "mobilenet_v2_dualres_interval"}:
+        return "interval_value"
+    if model_family == "mobilenet_v2_ordinal":
+        return "ordinal_thresholds"
+    return "value"
 
 
 def _compute_crop_box(
@@ -4149,7 +4203,7 @@ def _compile_interval_model(
     learning_rate: float,
     monotonic_pair_strength: float = 0.0,
     monotonic_pair_margin: float = 0.0,
-    interval_loss_weight: float = 0.25,
+    interval_loss_weight: float = DEFAULT_INTERVAL_LOSS_WEIGHT,
 ) -> None:
     """Compile the hybrid interval model with scalar and coarse-bin losses."""
     optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
@@ -4428,18 +4482,80 @@ def train(config: TrainConfig) -> TrainingResult:
         f"examples={len(examples)} dropped_out_of_sweep={dropped_out_of_sweep}"
     )
 
-    print("[TRAIN] step: split-examples", flush=True)
-    print("[TRAIN] Splitting dataset...")
-    split: DatasetSplit = _split_examples(examples, config)
     example_lookup: dict[str, TrainingExample] = {}
     for example in examples:
         example_lookup[example.image_path] = example
         example_lookup[str(Path(example.image_path).resolve())] = example
         example_lookup[Path(example.image_path).name] = example
-    reserved_names: set[str] = {
-        Path(example.image_path).name
-        for example in split.val_examples + split.test_examples
-    }
+
+    if config.hard_case_eval_manifest is not None:
+        print("[TRAIN] step: split-hard-case-eval", flush=True)
+        hard_case_eval_manifest_path: Path = Path(config.hard_case_eval_manifest)
+        if not hard_case_eval_manifest_path.is_absolute():
+            hard_case_eval_manifest_path = ML_ROOT / hard_case_eval_manifest_path
+        hard_case_eval_target_kind: str = _hard_case_target_kind_for_model_family(
+            config.model_family
+        )
+        hard_case_eval_examples: list[TrainingExample] = _load_hard_case_examples(
+            hard_case_eval_manifest_path,
+            image_height=config.image_height,
+            image_width=config.image_width,
+            value_range=(spec.min_value, spec.max_value),
+            target_kind=hard_case_eval_target_kind,
+            spec=spec if hard_case_eval_target_kind == "needle_unit_xy" else None,
+            example_lookup=example_lookup,
+        )
+        if len(hard_case_eval_examples) < 2:
+            raise ValueError(
+                "hard_case_eval_manifest needs at least 2 examples so val/test can be split."
+            )
+
+        hard_case_eval_names: set[str] = {
+            Path(example.image_path).name for example in hard_case_eval_examples
+        }
+        train_examples: list[TrainingExample] = [
+            example
+            for example in examples
+            if Path(example.image_path).name not in hard_case_eval_names
+        ]
+        if len(train_examples) < 1:
+            raise ValueError(
+                "hard_case_eval_manifest consumed all examples; check manifest paths."
+            )
+
+        eval_test_fraction: float = config.test_fraction / (
+            config.val_fraction + config.test_fraction
+        )
+        eval_train_examples, eval_test_examples = train_test_split(
+            hard_case_eval_examples,
+            test_size=eval_test_fraction,
+            random_state=config.seed,
+            shuffle=True,
+        )
+        split = DatasetSplit(
+            train_examples=train_examples,
+            val_examples=list(eval_train_examples),
+            test_examples=list(eval_test_examples),
+        )
+        print(
+            "[TRAIN] hard-case eval split: "
+            f"train={len(split.train_examples)} "
+            f"val={len(split.val_examples)} "
+            f"test={len(split.test_examples)}",
+            flush=True,
+        )
+        reserved_names: set[str] = {
+            Path(example.image_path).name
+            for example in split.val_examples + split.test_examples
+        }
+    else:
+        print("[TRAIN] step: split-examples", flush=True)
+        print("[TRAIN] Splitting dataset...", flush=True)
+        split = _split_examples(examples, config)
+        reserved_names = {
+            Path(example.image_path).name
+            for example in split.val_examples + split.test_examples
+        }
 
     if config.model_family == "mobilenet_v2_obb" and config.hard_case_manifest:
         raise ValueError(
@@ -4452,56 +4568,9 @@ def train(config: TrainConfig) -> TrainingResult:
         hard_case_manifest_path: Path = Path(config.hard_case_manifest)
         if not hard_case_manifest_path.is_absolute():
             hard_case_manifest_path = ML_ROOT / hard_case_manifest_path
-        hard_case_target_kind: Literal[
-            "value",
-            "needle_unit_xy",
-            "sweep_fraction",
-            "keypoint_heatmaps",
-            "geometry",
-            "geometry_uncertainty",
-            "ordinal_thresholds",
-            "rectifier_box",
-        "obb",
-        "obb_geometry",
-        "obb_mask_geometry",
-        "obb_relation_geometry",
-    ]
-        if config.model_family == "mobilenet_v2_rectifier":
-            hard_case_target_kind = "value"
-        elif config.model_family in {"mobilenet_v2_direction", "compact_direction"}:
-            hard_case_target_kind = "needle_unit_xy"
-        elif config.model_family == "mobilenet_v2_fraction":
-            hard_case_target_kind = "sweep_fraction"
-        elif config.model_family in {"mobilenet_v2_keypoint", "mobilenet_v2_detector"}:
-            hard_case_target_kind = "keypoint_heatmaps"
-        elif config.model_family == "mobilenet_v2_geometry_uncertainty":
-            hard_case_target_kind = "geometry_uncertainty"
-        elif config.model_family == "mobilenet_v2_bluraware_reader":
-            hard_case_target_kind = "value"
-        elif config.model_family in {"mobilenet_v2_geometry", "compact_geometry"}:
-            hard_case_target_kind = "geometry"
-        elif config.model_family in {
-            "mobilenet_v2_obb_geometry",
-            "mobilenet_v2_obb_mask_geometry",
-            "mobilenet_v2_obb_sequence_geometry",
-            "mobilenet_v2_obb_relation_geometry",
-            "mobilenet_v2_bluraware_obb_geometry",
-            "mobilenet_v2_bluraware_obb_relation_geometry",
-        }:
-            hard_case_target_kind = (
-                "obb_mask_geometry"
-                if config.model_family
-                in {
-                    "mobilenet_v2_obb_mask_geometry",
-                    "mobilenet_v2_obb_sequence_geometry",
-                    "mobilenet_v2_obb_relation_geometry",
-                }
-                else "obb_geometry"
-            )
-        elif config.model_family == "mobilenet_v2_ordinal":
-            hard_case_target_kind = "ordinal_thresholds"
-        else:
-            hard_case_target_kind = "value"
+        hard_case_target_kind: str = _hard_case_target_kind_for_model_family(
+            config.model_family
+        )
         hard_case_examples: list[TrainingExample] = _load_hard_case_examples(
             hard_case_manifest_path,
             image_height=config.image_height,
@@ -4627,6 +4696,7 @@ def train(config: TrainConfig) -> TrainingResult:
             init_model_path = ML_ROOT / init_model_path
         if config.model_family in {
             "mobilenet_v2_interval",
+            "mobilenet_v2_dualres_interval",
             "compact_interval",
             "compact_geometry",
             "mobilenet_v2_geometry_uncertainty",
@@ -4663,6 +4733,20 @@ def train(config: TrainConfig) -> TrainingResult:
                 value_min=spec.min_value,
                 value_max=spec.max_value,
                 bin_width=config.interval_bin_width,
+            )
+        elif config.model_family == "mobilenet_v2_dualres_interval":
+            print("[TRAIN] Building MobileNetV2 dual-resolution interval model...")
+            model = build_mobilenetv2_dual_resolution_interval_model(
+                config.image_height,
+                config.image_width,
+                value_min=spec.min_value,
+                value_max=spec.max_value,
+                bin_width=config.interval_bin_width,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
             )
         elif config.model_family == "compact_geometry":
             print("[TRAIN] Building compact CNN geometry model...")
@@ -4935,6 +5019,20 @@ def train(config: TrainConfig) -> TrainingResult:
                 head_units=config.mobilenet_head_units,
                 head_dropout=config.mobilenet_head_dropout,
             )
+        elif config.model_family == "mobilenet_v2_dualres_interval":
+            print("[TRAIN] Building MobileNetV2 dual-resolution interval model...")
+            model = build_mobilenetv2_dual_resolution_interval_model(
+                config.image_height,
+                config.image_width,
+                value_min=spec.min_value,
+                value_max=spec.max_value,
+                bin_width=config.interval_bin_width,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=0.35,
+                head_units=96,
+                head_dropout=0.2,
+            )
         elif config.model_family == "mobilenet_v2_ordinal":
             print("[TRAIN] Building MobileNetV2 ordinal model...")
             model = build_mobilenetv2_ordinal_model(
@@ -5011,15 +5109,19 @@ def train(config: TrainConfig) -> TrainingResult:
                                         in {"mobilenet_v2_geometry", "compact_geometry"}
                                         else (
                                             "ordinal_thresholds"
-                                            if config.model_family == "mobilenet_v2_ordinal"
-                                            else (
-                                                "interval_value"
-                                                if config.model_family
-                                                in {"mobilenet_v2_interval", "compact_interval"}
-                                                else "value"
-                                            )
+                                        if config.model_family == "mobilenet_v2_ordinal"
+                                        else (
+                                            "interval_value"
+                                            if config.model_family
+                                            in {
+                                                "mobilenet_v2_interval",
+                                                "compact_interval",
+                                                "mobilenet_v2_dualres_interval",
+                                            }
+                                            else "value"
                                         )
                                     )
+                                )
                                 )
                             )
                         )
@@ -5112,6 +5214,7 @@ def train(config: TrainConfig) -> TrainingResult:
             if config.model_family
             in {
                 "mobilenet_v2_interval",
+                "mobilenet_v2_dualres_interval",
                 "compact_interval",
                 "compact_geometry",
                 "mobilenet_v2_geometry_uncertainty",
@@ -5143,6 +5246,7 @@ def train(config: TrainConfig) -> TrainingResult:
         in {
             "mobilenet_v2",
             "mobilenet_v2_tiny",
+            "mobilenet_v2_dualres_interval",
             "mobilenet_v2_direction",
             "mobilenet_v2_fraction",
             "mobilenet_v2_detector",
@@ -5158,6 +5262,7 @@ def train(config: TrainConfig) -> TrainingResult:
             "mobilenet_v2_rectifier",
             "mobilenet_v2_keypoint",
             "mobilenet_v2_interval",
+            "mobilenet_v2_dualres_interval",
             "mobilenet_v2_ordinal",
         }
         and config.mobilenet_pretrained
@@ -5294,12 +5399,16 @@ def train(config: TrainConfig) -> TrainingResult:
                 model,
                 learning_rate=config.learning_rate,
             )
-        elif config.model_family == "mobilenet_v2_interval":
+        elif config.model_family in {
+            "mobilenet_v2_interval",
+            "mobilenet_v2_dualres_interval",
+        }:
             _compile_interval_model(
                 model,
                 learning_rate=config.learning_rate,
                 monotonic_pair_strength=config.monotonic_pair_strength,
                 monotonic_pair_margin=config.monotonic_pair_margin,
+                interval_loss_weight=config.interval_loss_weight,
             )
         elif config.model_family == "compact_interval":
             _compile_interval_model(
@@ -5307,6 +5416,7 @@ def train(config: TrainConfig) -> TrainingResult:
                 learning_rate=config.learning_rate,
                 monotonic_pair_strength=config.monotonic_pair_strength,
                 monotonic_pair_margin=config.monotonic_pair_margin,
+                interval_loss_weight=config.interval_loss_weight,
             )
         elif config.model_family == "mobilenet_v2_ordinal":
             _compile_ordinal_model(
@@ -5456,12 +5566,16 @@ def train(config: TrainConfig) -> TrainingResult:
                 model,
                 learning_rate=config.learning_rate,
             )
-        elif config.model_family == "mobilenet_v2_interval":
+        elif config.model_family in {
+            "mobilenet_v2_interval",
+            "mobilenet_v2_dualres_interval",
+        }:
             _compile_interval_model(
                 model,
                 learning_rate=config.learning_rate,
                 monotonic_pair_strength=config.monotonic_pair_strength,
                 monotonic_pair_margin=config.monotonic_pair_margin,
+                interval_loss_weight=config.interval_loss_weight,
             )
         elif config.model_family == "compact_interval":
             _compile_interval_model(
@@ -5469,6 +5583,7 @@ def train(config: TrainConfig) -> TrainingResult:
                 learning_rate=config.learning_rate,
                 monotonic_pair_strength=config.monotonic_pair_strength,
                 monotonic_pair_margin=config.monotonic_pair_margin,
+                interval_loss_weight=config.interval_loss_weight,
             )
         elif config.model_family == "mobilenet_v2_ordinal":
             _compile_ordinal_model(
@@ -5584,7 +5699,10 @@ def train(config: TrainConfig) -> TrainingResult:
                 model,
                 learning_rate=config.learning_rate,
             )
-        elif config.model_family == "mobilenet_v2_interval":
+        elif config.model_family in {
+            "mobilenet_v2_interval",
+            "mobilenet_v2_dualres_interval",
+        }:
             _compile_interval_model(
                 model,
                 learning_rate=config.learning_rate,

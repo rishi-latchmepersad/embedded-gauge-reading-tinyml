@@ -14,6 +14,7 @@ import embedded_gauge_reading_tinyml.training as training
 from embedded_gauge_reading_tinyml.models import (
     build_compact_interval_model,
     build_compact_geometry_model,
+    build_mobilenetv2_dual_resolution_interval_model,
     build_mobilenetv2_direction_model,
     build_mobilenetv2_geometry_uncertainty_model,
     build_mobilenetv2_obb_model,
@@ -117,6 +118,7 @@ def test_train_config_defaults_match_strong_mobilenetv2_preset() -> None:
     assert config.mobilenet_alpha == pytest.approx(1.0)
     assert config.mobilenet_head_units == 128
     assert config.mobilenet_head_dropout == pytest.approx(0.2)
+    assert config.interval_loss_weight == pytest.approx(0.10)
     assert config.geometry_uncertainty_loss_weight == pytest.approx(0.25)
     assert config.geometry_uncertainty_low_quantile == pytest.approx(0.10)
     assert config.geometry_uncertainty_high_quantile == pytest.approx(0.90)
@@ -157,6 +159,25 @@ def test_build_mobilenetv2_regression_model_rejects_linear_output() -> None:
             backbone_trainable=False,
             linear_output=True,
         )
+
+
+def test_build_mobilenetv2_dual_resolution_interval_model_outputs_scalar_and_bins() -> None:
+    """Dual-resolution interval CNN should emit a scalar value and bin logits."""
+    model = build_mobilenetv2_dual_resolution_interval_model(
+        image_height=32,
+        image_width=32,
+        value_min=-30.0,
+        value_max=50.0,
+        bin_width=10.0,
+        pretrained=False,
+        backbone_trainable=False,
+    )
+    batch: tf.Tensor = tf.zeros((2, 32, 32, 3), dtype=tf.float32)
+    outputs = model(batch)
+
+    assert model.name == "mobilenetv2_dualres_interval_regressor_a035_h096"
+    assert outputs["gauge_value"].shape == (2, 1)
+    assert outputs["interval_logits"].shape == (2, 8)
 
 
 def test_build_compact_interval_model_outputs_scalar_and_bins() -> None:
@@ -995,6 +1016,149 @@ def test_train_raises_for_unknown_gauge_id(monkeypatch: pytest.MonkeyPatch) -> N
         training.train(training.TrainConfig(gauge_id="missing_gauge"))
 
 
+def test_train_uses_hard_case_eval_manifest_for_eval_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hard-case eval manifests should stay out of the training pool."""
+    spec: GaugeSpec = _make_spec()
+
+    label_summary: LabelSummary = LabelSummary(
+        total_samples=10,
+        in_sweep=9,
+        out_of_sweep=1,
+        min_fraction=0.0,
+        max_fraction=1.0,
+    )
+
+    train_examples: list[training.TrainingExample] = [
+        training.TrainingExample("train_a.jpg", 1.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("train_b.jpg", 2.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("train_c.jpg", 3.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("hard_a.jpg", -30.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("hard_b.jpg", 50.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+    ]
+    hard_case_examples: list[training.TrainingExample] = [
+        training.TrainingExample("hard_a.jpg", -30.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("hard_b.jpg", 50.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("hard_c.jpg", -10.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("hard_d.jpg", 10.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+    ]
+
+    class _FakeHistory:
+        """Small stand-in for keras.callbacks.History."""
+
+        def __init__(self) -> None:
+            self.history: dict[str, list[float]] = {"loss": [1.0], "val_loss": [1.2]}
+
+    class _FakeModel:
+        """Small stand-in for a compiled dual-resolution interval model."""
+
+        def compile(self, **kwargs: Any) -> None:
+            _ = kwargs
+
+        def fit(
+            self,
+            train_ds: Any,
+            validation_data: Any,
+            epochs: int,
+            callbacks: list[Any],
+            verbose: int,
+        ) -> _FakeHistory:
+            assert train_ds is not None
+            assert validation_data is not None
+            assert epochs == 1
+            assert len(callbacks) == 2
+            assert verbose == 2
+            return _FakeHistory()
+
+        def evaluate(
+            self, test_ds: Any, return_dict: bool, verbose: int
+        ) -> dict[str, float]:
+            assert test_ds is not None
+            assert return_dict is True
+            assert verbose == 0
+            return {"loss": 1.0, "mae": 0.5, "rmse": 0.75}
+
+    fake_model = _FakeModel()
+    seen_batches: list[tuple[bool, str, set[str]]] = []
+
+    def _build_tf_dataset_stub(
+        examples: list[training.TrainingExample],
+        config: training.TrainConfig,
+        training: bool,
+        target_kind: str = "value",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        assert target_kind == "interval_value"
+        seen_batches.append(
+            (training, target_kind, {Path(example.image_path).name for example in examples})
+        )
+        return {"n": len(examples), "train": training, "target_kind": target_kind}
+
+    def _fail_split(*args: Any, **kwargs: Any) -> Any:
+        _ = (args, kwargs)
+        raise AssertionError("_split_examples should not be called for hard_case_eval_manifest")
+
+    monkeypatch.setattr(training, "load_gauge_specs", lambda: {spec.gauge_id: spec})
+    monkeypatch.setattr(
+        training, "load_dataset", lambda labelled_dir, raw_dir: [object()] * 10
+    )
+    monkeypatch.setattr(
+        training, "summarize_label_sweep", lambda samples, spec: label_summary
+    )
+    monkeypatch.setattr(
+        training,
+        "_build_training_examples",
+        lambda samples, spec, **kwargs: (train_examples, 1),
+    )
+    monkeypatch.setattr(training, "_split_examples", _fail_split)
+    monkeypatch.setattr(
+        training,
+        "_load_hard_case_examples",
+        lambda *args, **kwargs: hard_case_examples,
+    )
+    monkeypatch.setattr(training, "_build_tf_dataset", _build_tf_dataset_stub)
+    monkeypatch.setattr(
+        training,
+        "build_mobilenetv2_dual_resolution_interval_model",
+        lambda *args, **kwargs: fake_model,
+    )
+    monkeypatch.setattr(
+        training,
+        "_compute_mean_baseline_mae",
+        lambda train_examples, test_examples: 2.5,
+    )
+
+    result: training.TrainingResult = training.train(
+        training.TrainConfig(
+            epochs=1,
+            model_family="mobilenet_v2_dualres_interval",
+            hard_case_eval_manifest="ml/data/hard_cases.csv",
+            mobilenet_backbone_trainable=False,
+            mobilenet_warmup_epochs=0,
+        )
+    )
+
+    assert result.model is fake_model
+    assert result.dropped_out_of_sweep == 1
+    assert result.baseline_test_mae == pytest.approx(2.5)
+    assert result.test_metrics == {
+        "loss": 1.0,
+        "mae": 0.5,
+        "rmse": 0.75,
+        "baseline_mae_mean_predictor": 2.5,
+    }
+    assert len(seen_batches) == 3
+    train_call = next(entry for entry in seen_batches if entry[0] is True)
+    eval_calls = [entry for entry in seen_batches if entry[0] is False]
+    assert len(eval_calls) == 2
+    val_call, test_call = eval_calls
+    assert train_call[2] == {"train_a.jpg", "train_b.jpg", "train_c.jpg"}
+    assert val_call[2] | test_call[2] == {"hard_a.jpg", "hard_b.jpg", "hard_c.jpg", "hard_d.jpg"}
+    assert train_call[2].isdisjoint(val_call[2])
+    assert train_call[2].isdisjoint(test_call[2])
+
+
 def test_train_raises_when_no_samples_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
     """train should fail when dataset loading returns an empty list."""
     spec: GaugeSpec = _make_spec()
@@ -1218,6 +1382,125 @@ def test_train_happy_path_with_compact_interval_mocks(
 
     result: training.TrainingResult = training.train(
         training.TrainConfig(epochs=1, model_family="compact_interval")
+    )
+
+    assert result.model is fake_model
+    assert result.label_summary == label_summary
+    assert result.dropped_out_of_sweep == 1
+    assert result.baseline_test_mae == pytest.approx(2.5)
+    assert result.test_metrics == {
+        "loss": 1.0,
+        "mae": 0.5,
+        "rmse": 0.75,
+        "baseline_mae_mean_predictor": 2.5,
+    }
+
+
+def test_train_happy_path_with_mobilenetv2_dualres_interval_mocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """train should route through the dual-resolution interval MobileNetV2 family."""
+    spec: GaugeSpec = _make_spec()
+
+    label_summary: LabelSummary = LabelSummary(
+        total_samples=10,
+        in_sweep=9,
+        out_of_sweep=1,
+        min_fraction=0.0,
+        max_fraction=1.0,
+    )
+
+    examples: list[training.TrainingExample] = [
+        training.TrainingExample("a.jpg", 1.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("b.jpg", 2.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("c.jpg", 3.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("d.jpg", 4.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+    ]
+    split: training.DatasetSplit = training.DatasetSplit(
+        train_examples=examples[:2],
+        val_examples=examples[2:3],
+        test_examples=examples[3:],
+    )
+
+    class _FakeHistory:
+        """Small stand-in for keras.callbacks.History."""
+
+        def __init__(self) -> None:
+            self.history: dict[str, list[float]] = {"loss": [1.0], "val_loss": [1.2]}
+
+    class _FakeModel:
+        """Small stand-in for a compiled dual-resolution interval model."""
+
+        def compile(self, **kwargs: Any) -> None:
+            _ = kwargs
+
+        def fit(
+            self,
+            train_ds: Any,
+            validation_data: Any,
+            epochs: int,
+            callbacks: list[Any],
+            verbose: int,
+        ) -> _FakeHistory:
+            assert train_ds is not None
+            assert validation_data is not None
+            assert epochs == 1
+            assert len(callbacks) == 2
+            assert verbose == 2
+            return _FakeHistory()
+
+        def evaluate(
+            self, test_ds: Any, return_dict: bool, verbose: int
+        ) -> dict[str, float]:
+            assert test_ds is not None
+            assert return_dict is True
+            assert verbose == 0
+            return {"loss": 1.0, "mae": 0.5, "rmse": 0.75}
+
+    fake_model = _FakeModel()
+
+    def _build_tf_dataset_stub(
+        examples: list[training.TrainingExample],
+        config: training.TrainConfig,
+        training: bool,
+        target_kind: str = "value",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        assert target_kind == "interval_value"
+        return {"n": len(examples), "train": training, "target_kind": target_kind}
+
+    monkeypatch.setattr(training, "load_gauge_specs", lambda: {spec.gauge_id: spec})
+    monkeypatch.setattr(
+        training, "load_dataset", lambda labelled_dir, raw_dir: [object()] * 10
+    )
+    monkeypatch.setattr(
+        training, "summarize_label_sweep", lambda samples, spec: label_summary
+    )
+    monkeypatch.setattr(
+        training,
+        "_build_training_examples",
+        lambda samples, spec, **kwargs: (examples, 1),
+    )
+    monkeypatch.setattr(training, "_split_examples", lambda examples, config: split)
+    monkeypatch.setattr(training, "_build_tf_dataset", _build_tf_dataset_stub)
+    monkeypatch.setattr(
+        training,
+        "build_mobilenetv2_dual_resolution_interval_model",
+        lambda *args, **kwargs: fake_model,
+    )
+    monkeypatch.setattr(
+        training,
+        "_compute_mean_baseline_mae",
+        lambda train_examples, test_examples: 2.5,
+    )
+
+    result: training.TrainingResult = training.train(
+        training.TrainConfig(
+            epochs=1,
+            model_family="mobilenet_v2_dualres_interval",
+            mobilenet_backbone_trainable=False,
+            mobilenet_warmup_epochs=0,
+        )
     )
 
     assert result.model is fake_model

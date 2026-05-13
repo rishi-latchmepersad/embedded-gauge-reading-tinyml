@@ -9,6 +9,194 @@ import numpy as np
 import tensorflow as tf
 
 
+@keras.saving.register_keras_serializable(package="embedded_gauge_reading_tinyml")
+class CBAMBlock(keras.layers.Layer):
+    """Convolutional Block Attention Module (Woo et al., ECCV 2018).
+
+    Applies channel attention followed by spatial attention to refine feature maps.
+    This helps the model focus on the needle region and suppress background clutter.
+    """
+
+    def __init__(
+        self,
+        reduction_ratio: int = 16,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.reduction_ratio = reduction_ratio
+
+    def build(self, input_shape: tf.TensorShape) -> None:
+        channels = int(input_shape[-1])
+        self._channel_avg = keras.layers.GlobalAveragePooling2D(
+            name=f"{self.name}_ch_avg"
+        )
+        self._channel_max = keras.layers.GlobalMaxPooling2D(name=f"{self.name}_ch_max")
+        reduced = max(channels // self.reduction_ratio, 4)
+        self._mlp_shared = keras.Sequential(
+            [
+                keras.layers.Dense(reduced, activation="swish", use_bias=False),
+                keras.layers.Dense(channels, use_bias=False),
+            ],
+            name=f"{self.name}_ch_mlp",
+        )
+        self._spatial_conv = keras.layers.Conv2D(
+            1,
+            kernel_size=7,
+            padding="same",
+            activation="sigmoid",
+            use_bias=False,
+            name=f"{self.name}_spatial_conv",
+        )
+        super().build(input_shape)
+
+    def call(self, inputs: tf.Tensor) -> tf.Tensor:
+        # Channel attention: squeeze + excite via shared MLP
+        avg_pool = self._channel_avg(inputs)  # (B, C)
+        max_pool = self._channel_max(inputs)  # (B, C)
+        avg_out = self._mlp_shared(avg_pool)  # (B, C)
+        max_out = self._mlp_shared(max_pool)  # (B, C)
+        channel_attn = keras.activations.sigmoid(avg_out + max_out)  # (B, C)
+        channel_attn = channel_attn[:, tf.newaxis, tf.newaxis, :]  # (B, 1, 1, C)
+        x = inputs * channel_attn
+
+        # Spatial attention: concatenate avg/max pooled channels, then conv
+        spatial_avg = tf.reduce_mean(x, axis=-1, keepdims=True)  # (B, H, W, 1)
+        spatial_max = tf.reduce_max(x, axis=-1, keepdims=True)  # (B, H, W, 1)
+        spatial_concat = tf.concat([spatial_avg, spatial_max], axis=-1)  # (B, H, W, 2)
+        spatial_attn = self._spatial_conv(spatial_concat)  # (B, H, W, 1)
+        x = x * spatial_attn
+        return x
+
+    def get_config(self) -> dict[str, object]:
+        config = super().get_config()
+        config.update({"reduction_ratio": self.reduction_ratio})
+        return config
+
+
+@keras.saving.register_keras_serializable(package="embedded_gauge_reading_tinyml")
+class CoordinateAttention(keras.layers.Layer):
+    """Coordinate Attention (Hou et al., CVPR 2021).
+
+    Encodes position information via 1D horizontal and vertical pooling,
+    then applies attention to the feature map. Better than CBAM for
+    position-sensitive tasks like needle angle regression.
+    """
+
+    def __init__(
+        self,
+        reduction_ratio: int = 16,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.reduction_ratio = reduction_ratio
+
+    def build(self, input_shape: tf.TensorShape) -> None:
+        _, h, w, c = input_shape
+        reduced = max(c // self.reduction_ratio, 4)
+        self._conv1 = keras.layers.Conv2D(
+            reduced,
+            kernel_size=1,
+            use_bias=False,
+            name=f"{self.name}_conv1",
+        )
+        self._bn1 = keras.layers.BatchNormalization(
+            momentum=0.9, epsilon=1e-3, name=f"{self.name}_bn1"
+        )
+        self._conv_h = keras.layers.Conv2D(
+            c, kernel_size=1, use_bias=False, name=f"{self.name}_conv_h"
+        )
+        self._conv_w = keras.layers.Conv2D(
+            c, kernel_size=1, use_bias=False, name=f"{self.name}_conv_w"
+        )
+        super().build(input_shape)
+
+    def call(self, inputs: tf.Tensor) -> tf.Tensor:
+        _, h, w, c = tf.unstack(tf.shape(inputs))
+        # Horizontal (x-direction) pooling: (B, 1, W, C)
+        x_h = tf.reduce_mean(inputs, axis=1, keepdims=True)
+        # Vertical (y-direction) pooling: (B, H, 1, C)
+        x_w = tf.reduce_mean(inputs, axis=2, keepdims=True)
+        # Permute for concat: (B, 1, W, C) -> (B, H, 1, C) via transpose trick
+        x_w_perm = tf.transpose(x_w, [0, 2, 1, 3])  # (B, 1, H, C)
+        # Concat along spatial dim: (B, 1, W+H, C)
+        concat = tf.concat([x_h, x_w_perm], axis=2)
+        # 1x1 conv + BN + swish
+        fused = self._conv1(concat)
+        fused = self._bn1(fused)
+        fused = keras.activations.swish(fused)
+        # Split back
+        split_h, split_w = tf.split(fused, [w, h], axis=2)
+        # (B, 1, W, C) -> (B, H, W, C) via broadcast
+        attn_h = keras.activations.sigmoid(self._conv_h(split_h))
+        attn_w = keras.activations.sigmoid(
+            self._conv_w(tf.transpose(split_w, [0, 2, 1, 3]))
+        )
+        return inputs * attn_h * attn_w
+
+    def get_config(self) -> dict[str, object]:
+        config = super().get_config()
+        config.update({"reduction_ratio": self.reduction_ratio})
+        return config
+
+
+@keras.saving.register_keras_serializable(package="embedded_gauge_reading_tinyml")
+class CenterCropResize(keras.layers.Layer):
+    """Center-crop a tensor and resize it back to a fixed model input size.
+
+    Keras' preprocessing `CenterCrop` layer requires a fully static spatial
+    shape at call time. Some of our dual-resolution traces surface a symbolic
+    spatial shape, so we do the same operation with TensorFlow image ops.
+    """
+
+    def __init__(
+        self,
+        crop_height: int,
+        crop_width: int,
+        target_height: int,
+        target_width: int,
+        *,
+        interpolation: str = "bilinear",
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        if crop_height < 1 or crop_width < 1:
+            raise ValueError("crop_height and crop_width must be >= 1.")
+        if target_height < 1 or target_width < 1:
+            raise ValueError("target_height and target_width must be >= 1.")
+        self.crop_height = int(crop_height)
+        self.crop_width = int(crop_width)
+        self.target_height = int(target_height)
+        self.target_width = int(target_width)
+        self.interpolation = str(interpolation)
+
+    def call(self, inputs: tf.Tensor) -> tf.Tensor:
+        """Apply a centered crop and then resize to the model input size."""
+        cropped = tf.image.resize_with_crop_or_pad(
+            inputs,
+            self.crop_height,
+            self.crop_width,
+        )
+        return tf.image.resize(
+            cropped,
+            [self.target_height, self.target_width],
+            method=self.interpolation,
+        )
+
+    def get_config(self) -> dict[str, object]:
+        """Serialize the crop/resize parameters with the layer."""
+        config = super().get_config()
+        config.update(
+            {
+                "crop_height": self.crop_height,
+                "crop_width": self.crop_width,
+                "target_height": self.target_height,
+                "target_width": self.target_width,
+                "interpolation": self.interpolation,
+            }
+        )
+        return config
+
+
 def _norm(x: keras.KerasTensor) -> keras.KerasTensor:
     """Apply convolution-friendly normalization for image features."""
     return keras.layers.BatchNormalization(momentum=0.9, epsilon=1e-3)(x)
@@ -182,17 +370,14 @@ def _build_mobilenetv2_dual_resolution_backbone(
 
     # The center-crop branch zooms in on the dial face and pointer, which is
     # where the hard-case errors tend to hide in our sample images.
-    crop_branch = keras.layers.CenterCrop(
+    crop_branch = CenterCropResize(
         crop_height,
         crop_width,
-        name="dualres_center_crop",
-    )(inputs)
-    crop_branch = keras.layers.Resizing(
         image_height,
         image_width,
         interpolation="bilinear",
-        name="dualres_center_resize",
-    )(crop_branch)
+        name="dualres_center_crop_resize",
+    )(inputs)
     crop_branch = keras.layers.Rescaling(
         1.0 / 127.5,
         offset=-1.0,
@@ -209,6 +394,19 @@ def _build_mobilenetv2_dual_resolution_backbone(
 
     full_maps = base_model(full_branch, training=backbone_trainable)
     crop_maps = base_model(crop_branch, training=backbone_trainable)
+
+    # Refine each view before pooling so the head sees a cleaner needle-focused
+    # representation rather than raw backbone activations.
+    full_maps = CBAMBlock(reduction_ratio=8, name="dualres_full_cbam")(full_maps)
+    full_maps = CoordinateAttention(
+        reduction_ratio=8,
+        name="dualres_full_coordattn",
+    )(full_maps)
+    crop_maps = CBAMBlock(reduction_ratio=8, name="dualres_crop_cbam")(crop_maps)
+    crop_maps = CoordinateAttention(
+        reduction_ratio=8,
+        name="dualres_crop_coordattn",
+    )(crop_maps)
 
     full_gap = keras.layers.GlobalAveragePooling2D(name="dualres_full_gap")(full_maps)
     full_gmp = keras.layers.GlobalMaxPooling2D(name="dualres_full_gmp")(full_maps)
@@ -243,9 +441,7 @@ def _build_mobilenetv2_polar_dualview_backbone(
     is flattened into a more linear representation.
     """
     full_input = keras.Input(shape=(image_height, image_width, 3), name="full_image")
-    polar_input = keras.Input(
-        shape=(image_height, image_width, 3), name="polar_image"
-    )
+    polar_input = keras.Input(shape=(image_height, image_width, 3), name="polar_image")
 
     # Keep the preprocessing identical across both branches so the shared
     # MobileNetV2 trunk sees consistent input scaling.
@@ -347,9 +543,7 @@ def _build_mobilenetv2_polar_backbone(
 
     # Combine average and max pooled views so the head can keep both context and
     # sharp pointer/tick responses.
-    features = keras.layers.Concatenate(name="polar_features")(
-        [polar_gap, polar_gmp]
-    )
+    features = keras.layers.Concatenate(name="polar_features")([polar_gap, polar_gmp])
     features = keras.layers.LayerNormalization(name="polar_features_norm")(features)
     return polar_input, features, base_model
 
@@ -753,7 +947,9 @@ class GaugeValueFromRelationKeypoints(keras.layers.Layer):
     def call(self, inputs: tf.Tensor, training: bool | None = None) -> tf.Tensor:
         """Map four landmark coordinates to a normalized scalar value."""
         if self._dense_1 is None or self._dense_2 is None or self._raw_out is None:
-            raise RuntimeError("GaugeValueFromRelationKeypoints was not built correctly.")
+            raise RuntimeError(
+                "GaugeValueFromRelationKeypoints was not built correctly."
+            )
 
         keypoints = tf.cast(inputs, tf.float32)
         center = keypoints[:, 0, :]
@@ -1007,6 +1203,8 @@ def build_mobilenetv2_regression_model(
         value_min: Minimum gauge value for output scaling.
         value_max: Maximum gauge value for output scaling.
     """
+    if linear_output:
+        raise ValueError("linear_output=True is no longer supported")
     inputs, x, base_model = _build_mobilenetv2_backbone(
         image_height,
         image_width,
@@ -1310,19 +1508,25 @@ def build_mobilenetv2_dual_resolution_regression_model(
 
     span = value_max - value_min
     if linear_output:
-        x = keras.layers.Dense(1, activation="linear", name="gauge_value_linear")(x)
-        output = keras.layers.Rescaling(
-            scale=span,
-            offset=value_min,
-            name="gauge_value",
+        # Predict an unrestricted normalized scalar and map it back to Celsius.
+        x = keras.layers.Dense(
+            1,
+            activation="linear",
+            name="gauge_value_linear",
         )(x)
     else:
-        x = keras.layers.Dense(1, activation="sigmoid", name="gauge_value_sigmoid")(x)
-        output = keras.layers.Rescaling(
-            scale=span,
-            offset=value_min,
-            name="gauge_value",
+        # Keep a bounded head when the caller wants the older sigmoid behavior.
+        x = keras.layers.Dense(
+            1,
+            activation="sigmoid",
+            name="gauge_value_sigmoid",
         )(x)
+
+    output = keras.layers.Rescaling(
+        scale=span,
+        offset=value_min,
+        name="gauge_value",
+    )(x)
 
     model = keras.Model(
         inputs=inputs,
@@ -2181,10 +2385,14 @@ def build_mobilenetv2_obb_relation_geometry_model(
         activation="sigmoid",
         name="obb_size_wh",
     )(obb_features)
-    angle_raw = keras.layers.Dense(2, name="obb_angle_raw")(obb_features)
-    angle_sincos = keras.layers.UnitNormalization(axis=-1, name="obb_angle_sincos")(
-        angle_raw
-    )
+    angle_raw = keras.layers.Dense(
+        2,
+        name="obb_angle_raw",
+    )(obb_features)
+    angle_sincos = keras.layers.UnitNormalization(
+        axis=-1,
+        name="obb_angle_sincos",
+    )(angle_raw)
     obb_params = keras.layers.Concatenate(name="obb_params")(
         [center_xy, size_wh, angle_sincos]
     )
@@ -2441,7 +2649,10 @@ def build_mobilenetv2_bluraware_obb_relation_geometry_model(
         activation="sigmoid",
         name="obb_size_wh",
     )(obb_features)
-    angle_raw = keras.layers.Dense(2, name="obb_angle_raw")(obb_features)
+    angle_raw = keras.layers.Dense(
+        2,
+        name="obb_angle_raw",
+    )(obb_features)
     angle_sincos = keras.layers.UnitNormalization(
         axis=-1,
         name="obb_angle_sincos",
@@ -2660,9 +2871,7 @@ def build_mobilenetv2_bluraware_reader_model(
         [raw_maps, enhanced_maps]
     )
 
-    x = keras.layers.GlobalAveragePooling2D(
-        name="bluraware_reader_pooled_features"
-    )(x)
+    x = keras.layers.GlobalAveragePooling2D(name="bluraware_reader_pooled_features")(x)
     x = keras.layers.Dropout(head_dropout, name="bluraware_reader_dropout_1")(x)
     x = keras.layers.Dense(
         head_units,
@@ -2742,9 +2951,7 @@ def build_mobilenetv2_bluraware_reader_model(
         [raw_maps, enhanced_maps]
     )
 
-    x = keras.layers.GlobalAveragePooling2D(
-        name="bluraware_reader_pooled_features"
-    )(x)
+    x = keras.layers.GlobalAveragePooling2D(name="bluraware_reader_pooled_features")(x)
     x = keras.layers.Dropout(head_dropout, name="bluraware_reader_dropout_1")(x)
     x = keras.layers.Dense(
         head_units,
@@ -2892,6 +3099,537 @@ def build_mobilenetv2_obb_model(
             alpha=alpha,
             head_units=head_units,
         ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def _build_mobilenetv2_multi_scale_backbone(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool,
+    backbone_trainable: bool,
+    alpha: float,
+) -> tuple[keras.KerasTensor, list[keras.KerasTensor], keras.Model]:
+    """Build a MobileNetV2 backbone that exposes multi-scale feature maps.
+
+    Returns early, mid, and late features so the head can fuse information
+    at multiple resolutions — critical for needle detection where both
+    global dial context and local pointer detail matter.
+    """
+    inputs = keras.Input(shape=(image_height, image_width, 3), name="image")
+
+    # The pipeline emits [0, 1] floats; MobileNetV2 expects [-1, 1].
+    x = keras.layers.Rescaling(1.0 / 127.5, offset=-1.0, name="mobilenetv2_preprocess")(
+        inputs
+    )
+
+    base_model = keras.applications.MobileNetV2(
+        include_top=False,
+        weights="imagenet" if pretrained else None,
+        input_shape=(image_height, image_width, 3),
+        alpha=alpha,
+    )
+    base_model.trainable = backbone_trainable
+
+    # Build a multi-output feature extractor from the base model.
+    # We extract intermediate activations from specific MobileNetV2 blocks:
+    #   block_1_project_BN → early features (56x56)
+    #   block_3_project_BN → mid features (28x28)
+    #   block_6_project_BN → late features (14x14)
+    #   final output       → final features (7x7)
+    early_layer = base_model.get_layer("block_1_project_BN")
+    mid_layer = base_model.get_layer("block_3_project_BN")
+    late_layer = base_model.get_layer("block_6_project_BN")
+
+    feature_model = keras.Model(
+        inputs=base_model.inputs,
+        outputs=[
+            early_layer.output,
+            mid_layer.output,
+            late_layer.output,
+            base_model.output,
+        ],
+        name="mobilenetv2_multiscale",
+    )
+    feature_model.trainable = backbone_trainable
+
+    early, mid, late, final = feature_model(x, training=backbone_trainable)
+    return inputs, [early, mid, late, final], base_model
+
+
+def _cbam_refine(
+    features: list[keras.KerasTensor],
+    base_channels: int = 64,
+) -> keras.KerasTensor:
+    """Fuse multi-scale features with CBAM attention and upsampling.
+
+    Each scale gets CBAM-refined, upsampled to the largest spatial size,
+    then concatenated for the regression head.
+    """
+    refined: list[keras.KerasTensor] = []
+
+    for i, feat in enumerate(features):
+        # Project to consistent channel count
+        channels = max(base_channels // (2 ** max(i - 1, 0)), 16)
+        x = keras.layers.Conv2D(
+            channels, 1, padding="same", use_bias=False, name=f"ms_proj_{i}"
+        )(feat)
+        x = keras.layers.BatchNormalization(
+            momentum=0.9, epsilon=1e-3, name=f"ms_proj_bn_{i}"
+        )(x)
+        x = keras.layers.Activation("swish")(x)
+        # CBAM attention
+        x = CBAMBlock(reduction_ratio=8, name=f"ms_cbam_{i}")(x)
+        # Upsample to match the spatial size of the earliest (largest) feature.
+        # We use Resizing with the static spatial dims from the first feature.
+        if i > 0:
+            target_h = int(features[0].shape[1])
+            target_w = int(features[0].shape[2])
+            x = keras.layers.Resizing(
+                target_h,
+                target_w,
+                interpolation="bilinear",
+                name=f"ms_resize_{i}",
+            )(x)
+        refined.append(x)
+
+    # Concatenate all refined scales
+    fused = keras.layers.Concatenate(name="ms_fused")(refined)
+    # Final refinement conv
+    fused = keras.layers.Conv2D(
+        base_channels * 2, 3, padding="same", use_bias=False, name="ms_fusion_conv"
+    )(fused)
+    fused = keras.layers.BatchNormalization(
+        momentum=0.9, epsilon=1e-3, name="ms_fusion_bn"
+    )(fused)
+    fused = keras.layers.Activation("swish")(fused)
+    return fused
+
+
+def build_mobilenetv2_enhanced_regression_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = True,
+    alpha: float = 1.0,
+    head_units: int = 256,
+    head_dropout: float = 0.3,
+    value_min: float = -30.0,
+    value_max: float = 50.0,
+    use_multi_scale: bool = True,
+    use_coord_attention: bool = False,
+) -> keras.Model:
+    """Build an enhanced MobileNetV2 regressor with multi-scale features and attention.
+
+    Architecture improvements over the baseline mobilenet_v2:
+    1. Multi-scale feature fusion — combines early/mid/late MobileNetV2 features
+       so the head sees both fine needle detail and global dial context.
+    2. CBAM attention — channel + spatial attention at each scale to suppress
+       background clutter and highlight the needle region.
+    3. Wider head — 256 units with 0.3 dropout for more capacity.
+    4. LayerNorm + residual connections in the head for training stability.
+    5. Linear output — no sigmoid saturation at temperature extremes.
+    6. Auxiliary sweep-fraction head — provides geometric supervision.
+
+    Reference: Woo et al. "CBAM" (ECCV 2018), Hou et al. "Coordinate Attention" (CVPR 2021)
+    """
+    span = value_max - value_min
+
+    if use_multi_scale:
+        # Multi-scale backbone with feature pyramid
+        inputs, multi_scale_features, base_model = (
+            _build_mobilenetv2_multi_scale_backbone(
+                image_height,
+                image_width,
+                pretrained=pretrained,
+                backbone_trainable=backbone_trainable,
+                alpha=alpha,
+            )
+        )
+        # Fuse multi-scale features with CBAM
+        spatial_features = _cbam_refine(multi_scale_features, base_channels=64)
+        # Global pooling for regression head
+        x = keras.layers.GlobalAveragePooling2D(name="enhanced_gap")(spatial_features)
+        # Also keep max-pooled features for sharper responses
+        x_max = keras.layers.GlobalMaxPooling2D(name="enhanced_gmp")(spatial_features)
+        x = keras.layers.Concatenate(name="enhanced_pool_fusion")([x, x_max])
+    else:
+        # Standard backbone with coordinate attention on final features
+        inputs, final_features, base_model = _build_mobilenetv2_backbone(
+            image_height,
+            image_width,
+            pretrained=pretrained,
+            backbone_trainable=backbone_trainable,
+            alpha=alpha,
+        )
+        if use_coord_attention:
+            final_features = CoordinateAttention(
+                reduction_ratio=16, name="enhanced_coord_attn"
+            )(final_features)
+        x = keras.layers.GlobalAveragePooling2D(name="enhanced_gap")(final_features)
+        x_max = keras.layers.GlobalMaxPooling2D(name="enhanced_gmp")(final_features)
+        x = keras.layers.Concatenate(name="enhanced_pool_fusion")([x, x_max])
+
+    # Wider, deeper regression head with LayerNorm for stability
+    x = keras.layers.LayerNormalization(name="enhanced_head_norm_0")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+    x = keras.layers.Dense(head_units, activation="swish", name="enhanced_dense_1")(x)
+    x = keras.layers.LayerNormalization(name="enhanced_head_norm_1")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+    x = keras.layers.Dense(
+        head_units // 2, activation="swish", name="enhanced_dense_2"
+    )(x)
+    x = keras.layers.LayerNormalization(name="enhanced_head_norm_2")(x)
+    x = keras.layers.Dropout(head_dropout * 0.5)(x)
+
+    # Main scalar output — linear (no sigmoid) to avoid saturation at extremes
+    main_output = keras.layers.Dense(1, name="gauge_value_raw")(x)
+    gauge_value = keras.layers.Rescaling(
+        scale=span, offset=value_min, name="gauge_value"
+    )(main_output)
+
+    # Auxiliary sweep-fraction head for geometric supervision
+    fraction_logit = keras.layers.Dense(1, name="sweep_fraction_raw")(x)
+    sweep_fraction = keras.layers.Activation("sigmoid", name="sweep_fraction")(
+        fraction_logit
+    )
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "sweep_fraction": sweep_fraction,
+        },
+        name=f"mobilenetv2_enhanced_gauge_regressor",
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_enhanced_ensemble_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = True,
+    alpha: float = 1.0,
+    head_units: int = 256,
+    head_dropout: float = 0.3,
+    value_min: float = -30.0,
+    value_max: float = 50.0,
+    num_heads: int = 3,
+) -> keras.Model:
+    """Build an enhanced MobileNetV2 with multi-head ensemble.
+
+    Uses a shared backbone with multiple independent regression heads.
+    At inference, heads are averaged for a more robust prediction.
+    Each head gets its own dropout pattern for diversity.
+    """
+    span = value_max - value_min
+
+    inputs, multi_scale_features, base_model = _build_mobilenetv2_multi_scale_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    spatial_features = _cbam_refine(multi_scale_features, base_channels=64)
+    x = keras.layers.GlobalAveragePooling2D(name="ensemble_gap")(spatial_features)
+    x_max = keras.layers.GlobalMaxPooling2D(name="ensemble_gmp")(spatial_features)
+    shared = keras.layers.Concatenate(name="ensemble_pool_fusion")([x, x_max])
+    shared = keras.layers.LayerNormalization(name="ensemble_shared_norm")(shared)
+
+    head_outputs: list[keras.KerasTensor] = []
+    for i in range(num_heads):
+        h = keras.layers.Dropout(head_dropout, name=f"ensemble_head_{i}_drop_1")(shared)
+        h = keras.layers.Dense(head_units, use_bias=False, name=f"ensemble_dense_{i}")(
+            h
+        )
+        h = keras.layers.LayerNormalization(name=f"ensemble_ln_{i}")(h)
+        h = keras.layers.Activation("swish")(h)
+        h = keras.layers.Dropout(head_dropout)(h)
+
+        h_linear = keras.layers.Dense(
+            1, activation="linear", name=f"gauge_value_head_{i}_linear"
+        )(h)
+        h_out = keras.layers.Rescaling(
+            scale=span, offset=value_min, name=f"gauge_value_head_{i}"
+        )(h_linear)
+        head_outputs.append(h_out)
+
+    # Average all heads
+    if num_heads > 1:
+        avg_raw = keras.layers.Average(name="ensemble_avg")(head_outputs)
+    else:
+        avg_raw = head_outputs[0]
+
+    gauge_value = keras.layers.Rescaling(
+        scale=span, offset=value_min, name="gauge_value"
+    )(avg_raw)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={"gauge_value": gauge_value},
+        name=f"mobilenetv2_enhanced_ensemble_{num_heads}h_gauge_regressor",
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_sota_multiscale_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = True,
+    alpha: float = 1.0,
+    head_units: int = 256,
+    head_dropout: float = 0.3,
+    value_min: float = -30.0,
+    value_max: float = 50.0,
+) -> keras.Model:
+    """Build SOTA model with multi-scale features and dual attention.
+
+    This model incorporates the best practices from gauge-reading literature:
+    1. Multi-scale feature fusion (FPN-style)
+    2. CBAM + Coordinate Attention
+    3. Wide head with LayerNorm
+    4. Linear output (no saturation)
+    5. Auxiliary sweep fraction head
+
+    Args:
+        image_height: Input image height
+        image_width: Input image width
+        pretrained: Use ImageNet weights
+        backbone_trainable: Fine-tune backbone
+        alpha: MobileNetV2 width multiplier
+        head_units: Head FC layer units
+        head_dropout: Dropout rate
+        value_min: Minimum temperature value
+        value_max: Maximum temperature value
+
+    Returns:
+        Keras model with gauge_value output
+    """
+    span = value_max - value_min
+
+    # Build multi-scale backbone
+    inputs, multi_scale_features, base_model = _build_mobilenetv2_multi_scale_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    # Fuse multi-scale features with CBAM
+    spatial_features = _cbam_refine(multi_scale_features, base_channels=64)
+
+    # Global pooling fusion
+    x = keras.layers.GlobalAveragePooling2D(name="sota_gap")(spatial_features)
+    x_max = keras.layers.GlobalMaxPooling2D(name="sota_gmp")(spatial_features)
+    x = keras.layers.Concatenate(name="sota_pool_fusion")([x, x_max])
+
+    # Wide head with LayerNorm
+    x = keras.layers.Dense(head_units, use_bias=False, name="sota_dense_1")(x)
+    x = keras.layers.LayerNormalization(name="sota_ln_1")(x)
+    x = keras.layers.Activation("swish")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+
+    x = keras.layers.Dense(head_units // 2, use_bias=False, name="sota_dense_2")(x)
+    x = keras.layers.LayerNormalization(name="sota_ln_2")(x)
+    x = keras.layers.Activation("swish")(x)
+    x = keras.layers.Dropout(head_dropout * 0.5)(x)
+
+    # Linear output head
+    gauge_value_linear = keras.layers.Dense(
+        1, activation="linear", name="gauge_value_linear"
+    )(x)
+    gauge_value = keras.layers.Rescaling(
+        scale=span, offset=value_min, name="gauge_value"
+    )(gauge_value_linear)
+
+    # Auxiliary sweep fraction head for geometric supervision
+    sweep_fraction_logits = keras.layers.Dense(1, name="sweep_fraction_logits")(x)
+    sweep_fraction = keras.layers.Activation("sigmoid", name="sweep_fraction")(
+        sweep_fraction_logits
+    )
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "sweep_fraction": sweep_fraction,
+        },
+        name="mobilenetv2_sota_multiscale",
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_sota_ensemble_model(
+    image_height: int,
+    image_width: int,
+    *,
+    num_heads: int = 3,
+    pretrained: bool = True,
+    backbone_trainable: bool = True,
+    alpha: float = 1.0,
+    head_units: int = 192,
+    head_dropout: float = 0.25,
+    value_min: float = -30.0,
+    value_max: float = 50.0,
+) -> keras.Model:
+    """Build ensemble model with multiple independent heads.
+
+    Ensemble averaging reduces variance and improves generalization,
+    especially on hard cases. Each head sees the same multi-scale
+    features but learns independent weights.
+    """
+    span = value_max - value_min
+
+    # Build shared multi-scale backbone
+    inputs, multi_scale_features, base_model = _build_mobilenetv2_multi_scale_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    # Fuse features
+    spatial_features = _cbam_refine(multi_scale_features, base_channels=64)
+    x = keras.layers.GlobalAveragePooling2D(name="ensemble_gap")(spatial_features)
+
+    # Create multiple independent heads
+    head_outputs = []
+    for i in range(num_heads):
+        h = keras.layers.Dense(head_units, use_bias=False, name=f"ensemble_dense_{i}")(
+            x
+        )
+        h = keras.layers.LayerNormalization(name=f"ensemble_ln_{i}")(h)
+        h = keras.layers.Activation("swish")(h)
+        h = keras.layers.Dropout(head_dropout)(h)
+
+        h_linear = keras.layers.Dense(
+            1, activation="linear", name=f"gauge_value_head_{i}_linear"
+        )(h)
+        h_out = keras.layers.Rescaling(
+            scale=span, offset=value_min, name=f"gauge_value_head_{i}"
+        )(h_linear)
+        head_outputs.append(h_out)
+
+    # Average ensemble predictions
+    if len(head_outputs) > 1:
+        gauge_value = keras.layers.Average(name="gauge_value_ensemble")(head_outputs)
+    else:
+        gauge_value = head_outputs[0]
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            **{f"gauge_value_head_{i}": head_outputs[i] for i in range(num_heads)},
+        },
+        name=f"mobilenetv2_sota_ensemble_{num_heads}h",
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_uncertainty_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = True,
+    alpha: float = 1.0,
+    head_units: int = 256,
+    head_dropout: float = 0.3,
+    value_min: float = -30.0,
+    value_max: float = 50.0,
+) -> keras.Model:
+    """Build model with uncertainty estimation via quantile regression.
+
+    Predicts median, lower, and upper quantiles to estimate
+    prediction uncertainty. Useful for identifying hard cases
+    and low-confidence predictions.
+
+    Args:
+        image_height: Input image height
+        image_width: Input image width
+        pretrained: Use ImageNet weights
+        backbone_trainable: Fine-tune backbone
+        alpha: MobileNetV2 width multiplier
+        head_units: Head FC layer units
+        head_dropout: Dropout rate
+        value_min: Minimum temperature value
+        value_max: Maximum temperature value
+
+    Returns:
+        Keras model with gauge_value and uncertainty bounds
+    """
+    span = value_max - value_min
+
+    # Build multi-scale backbone
+    inputs, multi_scale_features, base_model = _build_mobilenetv2_multi_scale_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    # Fuse features
+    spatial_features = _cbam_refine(multi_scale_features, base_channels=64)
+    x = keras.layers.GlobalAveragePooling2D(name="uncertainty_gap")(spatial_features)
+    x_max = keras.layers.GlobalMaxPooling2D(name="uncertainty_gmp")(spatial_features)
+    x = keras.layers.Concatenate(name="uncertainty_pool_fusion")([x, x_max])
+
+    # Wide head
+    x = keras.layers.Dense(head_units, use_bias=False, name="uncertainty_dense_1")(x)
+    x = keras.layers.LayerNormalization(name="uncertainty_ln_1")(x)
+    x = keras.layers.Activation("swish")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+
+    x = keras.layers.Dense(head_units // 2, use_bias=False, name="uncertainty_dense_2")(
+        x
+    )
+    x = keras.layers.LayerNormalization(name="uncertainty_ln_2")(x)
+    x = keras.layers.Activation("swish")(x)
+    x = keras.layers.Dropout(head_dropout * 0.5)(x)
+
+    # Predict median (main value)
+    median_linear = keras.layers.Dense(1, activation="linear", name="median_linear")(x)
+    gauge_value = keras.layers.Rescaling(
+        scale=span, offset=value_min, name="gauge_value"
+    )(median_linear)
+
+    # Predict uncertainty bounds (learned offsets)
+    # Use softplus to ensure positive intervals
+    lower_offset = keras.layers.Dense(1, activation="softplus", name="lower_offset")(x)
+    upper_offset = keras.layers.Dense(1, activation="softplus", name="upper_offset")(x)
+
+    # Compute bounds
+    gauge_value_lower = keras.layers.Subtract(name="gauge_value_lower")(
+        [gauge_value, lower_offset]
+    )
+    gauge_value_upper = keras.layers.Add(name="gauge_value_upper")(
+        [gauge_value, upper_offset]
+    )
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "gauge_value_lower": gauge_value_lower,
+            "gauge_value_upper": gauge_value_upper,
+        },
+        name="mobilenetv2_sota_uncertainty",
     )
     setattr(model, "_mobilenet_backbone", base_model)
     return model

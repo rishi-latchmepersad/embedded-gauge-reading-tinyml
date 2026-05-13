@@ -86,6 +86,7 @@ def parse_args() -> argparse.Namespace:
             "compact",
             "mobilenet_v2",
             "mobilenet_v2_tiny",
+            "mobilenet_v2_dualres_interval",
         ],
         default="mobilenet_v2",
         help="Select model architecture family.",
@@ -169,6 +170,12 @@ def parse_args() -> argparse.Namespace:
         help="Path to test manifest CSV.",
     )
     parser.add_argument(
+        "--hard-case-eval-manifest",
+        type=str,
+        default=None,
+        help="Path to a manifest reserved entirely for hard-case validation/test.",
+    )
+    parser.add_argument(
         "--artifacts-dir",
         type=str,
         default=None,
@@ -230,6 +237,7 @@ def main() -> None:
         mobilenet_alpha=args.mobilenet_alpha,
         mobilenet_head_units=args.mobilenet_head_units,
         mobilenet_head_dropout=args.mobilenet_head_dropout,
+        hard_case_eval_manifest=args.hard_case_eval_manifest,
         val_manifest=args.val_manifest,
         test_manifest=args.test_manifest,
         range_aware_sampling=args.range_aware_sampling,
