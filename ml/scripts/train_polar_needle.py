@@ -211,7 +211,9 @@ def preprocess_polar_image(image_path: str, polar_size: int = 224) -> np.ndarray
         cv2.WARP_POLAR_LINEAR | cv2.WARP_FILL_OUTLIERS,
     )
     if polar.shape[0] != polar_size or polar.shape[1] != polar_size:
-        polar = cv2.resize(polar, (polar_size, polar_size), interpolation=cv2.INTER_LINEAR)
+        polar = cv2.resize(
+            polar, (polar_size, polar_size), interpolation=cv2.INTER_LINEAR
+        )
 
     return polar.astype(np.float32) / 255.0
 
@@ -244,6 +246,7 @@ def create_polar_dataset(
                 mask_path = str(resolve_full_path(row["mask_path"], REPO_ROOT))
                 if Path(mask_path).exists():
                     import cv2
+
                     mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
                     if mask is not None:
                         mask = cv2.resize(mask, (polar_size, polar_size))
@@ -253,9 +256,13 @@ def create_polar_dataset(
                             mask = mask[..., np.newaxis]
                         masks.append(mask)
                     else:
-                        masks.append(np.zeros((polar_size, polar_size, 1), dtype=np.float32))
+                        masks.append(
+                            np.zeros((polar_size, polar_size, 1), dtype=np.float32)
+                        )
                 else:
-                    masks.append(np.zeros((polar_size, polar_size, 1), dtype=np.float32))
+                    masks.append(
+                        np.zeros((polar_size, polar_size, 1), dtype=np.float32)
+                    )
             elif has_masks:
                 masks.append(np.zeros((polar_size, polar_size, 1), dtype=np.float32))
         except Exception as e:
@@ -270,26 +277,38 @@ def create_polar_dataset(
         masks_arr = np.array(masks, dtype=np.float32)
         if use_weights and "sample_weight" in df.columns:
             weights = df["sample_weight"].values[: len(polar_images)].astype(np.float32)
-            dataset = tf.data.Dataset.from_tensor_slices((polar_images, values, masks_arr, weights))
+            dataset = tf.data.Dataset.from_tensor_slices(
+                (polar_images, values, masks_arr, weights)
+            )
             dataset = dataset.map(
                 lambda x, y, m, w: (
                     x,
-                    {"gauge_value": y, "needle_mask": m},  # Dict order matches model.output_names
+                    {
+                        "gauge_value": y,
+                        "needle_mask": m,
+                    },  # Dict order matches model.output_names
                     {"gauge_value": w, "needle_mask": w},
                 )
             )
         else:
-            dataset = tf.data.Dataset.from_tensor_slices((polar_images, values, masks_arr))
+            dataset = tf.data.Dataset.from_tensor_slices(
+                (polar_images, values, masks_arr)
+            )
             dataset = dataset.map(
                 lambda x, y, m: (
                     x,
-                    {"gauge_value": y, "needle_mask": m},  # Dict order matches model.output_names
+                    {
+                        "gauge_value": y,
+                        "needle_mask": m,
+                    },  # Dict order matches model.output_names
                 )
             )
     else:
         if use_weights and "sample_weight" in df.columns:
             weights = df["sample_weight"].values[: len(polar_images)].astype(np.float32)
-            dataset = tf.data.Dataset.from_tensor_slices((polar_images, values, weights))
+            dataset = tf.data.Dataset.from_tensor_slices(
+                (polar_images, values, weights)
+            )
             dataset = dataset.map(
                 lambda x, y, w: (
                     x,
@@ -388,21 +407,43 @@ def train_polar_model(
     )
 
     # Check if masks are available.
-    has_masks = "mask_path_resolved" in df.columns and df["mask_path_resolved"].notna().any()
+    has_masks = (
+        "mask_path_resolved" in df.columns and df["mask_path_resolved"].notna().any()
+    )
     if has_masks:
-        logger.info(f"Masks available for {df['mask_path_resolved'].notna().sum()} samples")
+        logger.info(
+            f"Masks available for {df['mask_path_resolved'].notna().sum()} samples"
+        )
     else:
         logger.info("No masks available, training with temperature supervision only")
 
     # Create datasets.
     train_ds = create_polar_dataset(
-        train_df, batch_size, shuffle=True, use_weights=True, augment=True, has_masks=has_masks, polar_size=IMAGE_SIZE
+        train_df,
+        batch_size,
+        shuffle=True,
+        use_weights=True,
+        augment=True,
+        has_masks=has_masks,
+        polar_size=IMAGE_SIZE,
     )
     val_ds = create_polar_dataset(
-        val_df, batch_size, shuffle=False, use_weights=False, augment=False, has_masks=has_masks, polar_size=IMAGE_SIZE
+        val_df,
+        batch_size,
+        shuffle=False,
+        use_weights=False,
+        augment=False,
+        has_masks=has_masks,
+        polar_size=IMAGE_SIZE,
     )
     test_ds = create_polar_dataset(
-        test_df, batch_size, shuffle=False, use_weights=False, augment=False, has_masks=has_masks, polar_size=IMAGE_SIZE
+        test_df,
+        batch_size,
+        shuffle=False,
+        use_weights=False,
+        augment=False,
+        has_masks=has_masks,
+        polar_size=IMAGE_SIZE,
     )
 
     # Build model.
@@ -527,7 +568,7 @@ def train_polar_model(
 
     metrics = {
         "test_mae": float(np.mean(errors)),
-        "test_rmse": float(np.sqrt(np.mean(errors ** 2))),
+        "test_rmse": float(np.sqrt(np.mean(errors**2))),
         "test_max_error": float(np.max(errors)),
         "test_median_error": float(np.median(errors)),
         "test_std": float(np.std(errors)),
@@ -535,9 +576,11 @@ def train_polar_model(
         "test_hard_mae": float(np.mean(hard_errors)) if len(hard_errors) > 0 else None,
         "test_hard_max": float(np.max(hard_errors)) if len(hard_errors) > 0 else None,
         "predicted_std": float(np.std(gauge_preds)),
-        "correlation": float(np.corrcoef(test_df["value"], gauge_preds)[0, 1])
-        if len(gauge_preds) > 1
-        else 0.0,
+        "correlation": (
+            float(np.corrcoef(test_df["value"], gauge_preds)[0, 1])
+            if len(gauge_preds) > 1
+            else 0.0
+        ),
     }
 
     logger.info("\n=== Final Metrics ===")

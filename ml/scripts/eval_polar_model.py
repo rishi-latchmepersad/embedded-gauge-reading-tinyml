@@ -54,7 +54,9 @@ def load_manifest(file_path: Path, repo_root: Path) -> pd.DataFrame:
         df = df.rename(columns={"label": "value"})
     if "image_path" not in df.columns and "path" in df.columns:
         df = df.rename(columns={"path": "image_path"})
-    df["image_path"] = df["image_path"].apply(lambda p: normalize_path(str(p), repo_root))
+    df["image_path"] = df["image_path"].apply(
+        lambda p: normalize_path(str(p), repo_root)
+    )
     df["image_path_resolved"] = df["image_path"].apply(
         lambda p: str(resolve_full_path(p, repo_root))
     )
@@ -91,7 +93,9 @@ def evaluate_polar_model(
     polar_images = []
     for idx, row in df.iterrows():
         try:
-            polar_img = polar_project_image_path(row["image_path_resolved"], polar_size=polar_size)
+            polar_img = polar_project_image_path(
+                row["image_path_resolved"], polar_size=polar_size
+            )
             polar_images.append(polar_img)
         except Exception as exc:
             print(f"  Skip failed projection: {row['image_path_resolved']} ({exc})")
@@ -118,7 +122,7 @@ def evaluate_polar_model(
         "model": str(model_path),
         "samples": int(len(df)),
         "mae": float(np.mean(errors)),
-        "rmse": float(np.sqrt(np.mean(errors ** 2))),
+        "rmse": float(np.sqrt(np.mean(errors**2))),
         "max_error": float(np.max(errors)),
         "median_error": float(np.median(errors)),
         "std": float(np.std(errors)),
@@ -126,9 +130,11 @@ def evaluate_polar_model(
         "hard_mae": float(np.mean(hard_errors)) if len(hard_errors) > 0 else None,
         "hard_max": float(np.max(hard_errors)) if len(hard_errors) > 0 else None,
         "predicted_std": float(np.std(gauge_preds)),
-        "correlation": float(np.corrcoef(df["value"], gauge_preds)[0, 1])
-        if len(gauge_preds) > 1
-        else 0.0,
+        "correlation": (
+            float(np.corrcoef(df["value"], gauge_preds)[0, 1])
+            if len(gauge_preds) > 1
+            else 0.0
+        ),
     }
 
     print("\n=== Evaluation Results ===")

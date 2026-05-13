@@ -1,4 +1,5 @@
 """Debug script to check dataset shapes."""
+
 import sys
 from pathlib import Path
 
@@ -15,11 +16,13 @@ import cv2
 
 REPO_ROOT = PROJECT_ROOT.parent
 
+
 def resolve_full_path(path_str: str, repo_root: Path) -> Path:
     p = Path(path_str)
     if p.is_absolute():
         return p
     return repo_root / p
+
 
 # Load manifest
 manifest_path = PROJECT_ROOT / "artifacts" / "polar_masks" / "manifest.csv"

@@ -1,4 +1,5 @@
 """Debug script to check data shapes before training."""
+
 import sys
 from pathlib import Path
 
@@ -15,11 +16,13 @@ from embedded_gauge_reading_tinyml.polar_projection import polar_project_image_p
 
 REPO_ROOT = PROJECT_ROOT.parent
 
+
 def resolve_full_path(path_str: str, repo_root: Path) -> Path:
     p = Path(path_str)
     if p.is_absolute():
         return p
     return repo_root / p
+
 
 # Load manifest
 manifest_path = PROJECT_ROOT / "artifacts" / "polar_masks" / "manifest.csv"
@@ -35,20 +38,21 @@ masks = []
 for idx, row in df.head(5).iterrows():
     image_path = resolve_full_path(row["image_path"], REPO_ROOT)
     mask_path = resolve_full_path(row["mask_path"], REPO_ROOT)
-    
+
     print(f"\nSample {idx}:")
     print(f"  image_path: {image_path}")
     print(f"  mask_path: {mask_path}")
     print(f"  value: {row['value']}")
-    
+
     # Load polar image
     polar_img = polar_project_image_path(image_path, polar_size=224)
     print(f"  polar_img shape: {polar_img.shape}, dtype: {polar_img.dtype}")
     polar_images.append(polar_img)
     values.append(float(row["value"]))
-    
+
     # Load mask
     import cv2
+
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
     print(f"  mask raw shape: {mask.shape}, dtype: {mask.dtype}")
     mask = mask.astype(np.float32) / 255.0

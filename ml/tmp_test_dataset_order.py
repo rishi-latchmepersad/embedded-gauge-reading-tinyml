@@ -11,11 +11,11 @@ dataset = dataset.map(lambda x, y, m: (x, {"gauge_value": y, "needle_mask": m}))
 dataset = dataset.batch(4)
 
 for batch_x, batch_y in dataset.take(1):
-    print('Keys in batch_y:', list(batch_y.keys()))
+    print("Keys in batch_y:", list(batch_y.keys()))
     for k, v in batch_y.items():
-        print(f'  {k}: shape={v.shape}')
-    
+        print(f"  {k}: shape={v.shape}")
+
     # Check if order matches Python dict order
-    print('Items in order:')
+    print("Items in order:")
     for k, v in batch_y.items():
-        print(f'  {k}: {v.shape}')
+        print(f"  {k}: {v.shape}")

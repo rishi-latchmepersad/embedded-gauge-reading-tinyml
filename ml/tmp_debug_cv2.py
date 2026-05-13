@@ -1,4 +1,5 @@
 """Debug script to check cv2.resize behavior on 3D arrays."""
+
 import numpy as np
 import cv2
 

@@ -1,11 +1,14 @@
 import sys
-sys.path.insert(0, 'src')
-from embedded_gauge_reading_tinyml.polar_model import build_polar_needle_segmentation_model
+
+sys.path.insert(0, "src")
+from embedded_gauge_reading_tinyml.polar_model import (
+    build_polar_needle_segmentation_model,
+)
 import numpy as np
 import tensorflow as tf
 
 model = build_polar_needle_segmentation_model(polar_size=224, base_filters=32, depth=4)
-print('Model output_names:', model.output_names)
+print("Model output_names:", model.output_names)
 
 # Create synthetic data
 N = 16
@@ -20,10 +23,10 @@ dataset = dataset.batch(8)
 
 # Compile
 model.compile(
-    optimizer='adam',
+    optimizer="adam",
     loss={
-        "gauge_value": 'mse',
-        "needle_mask": 'binary_crossentropy',
+        "gauge_value": "mse",
+        "needle_mask": "binary_crossentropy",
     },
     loss_weights={
         "gauge_value": 1.0,
@@ -33,15 +36,15 @@ model.compile(
 
 # Test one batch
 for batch_x, batch_y in dataset.take(1):
-    print('Target keys:', list(batch_y.keys()))
+    print("Target keys:", list(batch_y.keys()))
     for k, v in batch_y.items():
-        print(f'  {k}: shape={v.shape}')
-    
+        print(f"  {k}: shape={v.shape}")
+
     # Try train_on_batch
     loss = model.train_on_batch(batch_x, batch_y)
-    print('train_on_batch loss:', loss)
+    print("train_on_batch loss:", loss)
 
 # Try fit for 1 epoch
-print('Trying model.fit() for 1 epoch...')
+print("Trying model.fit() for 1 epoch...")
 model.fit(dataset, epochs=1)
-print('SUCCESS')
+print("SUCCESS")

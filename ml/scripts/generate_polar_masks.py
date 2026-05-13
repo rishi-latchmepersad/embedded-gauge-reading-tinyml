@@ -129,7 +129,13 @@ def generate_polar_masks(
     with open(manifest_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["image_path", "mask_path", "original_path", "value", "angle_deg"],
+            fieldnames=[
+                "image_path",
+                "mask_path",
+                "original_path",
+                "value",
+                "angle_deg",
+            ],
         )
         writer.writeheader()
         writer.writerows(rows)

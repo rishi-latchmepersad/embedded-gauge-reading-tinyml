@@ -1,4 +1,5 @@
 """Debug script to reproduce the exact training setup."""
+
 import sys
 from pathlib import Path
 
@@ -14,15 +15,19 @@ import tensorflow as tf
 import cv2
 import keras
 
-from embedded_gauge_reading_tinyml.polar_model import build_polar_needle_segmentation_model
+from embedded_gauge_reading_tinyml.polar_model import (
+    build_polar_needle_segmentation_model,
+)
 
 REPO_ROOT = PROJECT_ROOT.parent
+
 
 def resolve_full_path(path_str: str, repo_root: Path) -> Path:
     p = Path(path_str)
     if p.is_absolute():
         return p
     return repo_root / p
+
 
 # Load manifest
 manifest_path = PROJECT_ROOT / "artifacts" / "polar_masks" / "manifest.csv"
@@ -37,14 +42,14 @@ masks = []
 for idx, row in df.head(8).iterrows():
     image_path = resolve_full_path(row["image_path"], REPO_ROOT)
     mask_path = resolve_full_path(row["mask_path"], REPO_ROOT)
-    
+
     # Load polar image
     polar_img = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
     polar_img = cv2.cvtColor(polar_img, cv2.COLOR_BGR2RGB)
     polar_img = polar_img.astype(np.float32) / 255.0
     polar_images.append(polar_img)
     values.append(float(row["value"]))
-    
+
     # Load mask
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
     mask = mask.astype(np.float32) / 255.0

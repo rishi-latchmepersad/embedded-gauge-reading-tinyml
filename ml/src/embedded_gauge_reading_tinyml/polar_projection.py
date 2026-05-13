@@ -64,7 +64,9 @@ def polar_project_image(
 
     # Ensure correct shape and normalize.
     if polar.shape[0] != polar_size or polar.shape[1] != polar_size:
-        polar = cv2.resize(polar, (polar_size, polar_size), interpolation=cv2.INTER_LINEAR)
+        polar = cv2.resize(
+            polar, (polar_size, polar_size), interpolation=cv2.INTER_LINEAR
+        )
 
     return polar.astype(np.float32) / 255.0
 
@@ -114,7 +116,7 @@ def needle_mask_from_polar(
 
     yy, xx = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
     dist_sq = (xx - center_x) ** 2
-    mask = np.exp(-dist_sq / (2.0 * mask_sigma ** 2))
+    mask = np.exp(-dist_sq / (2.0 * mask_sigma**2))
     return mask[..., np.newaxis].astype(np.float32)
 
 
