@@ -23,12 +23,12 @@ uint8_t camera_capture_buffers[CAMERA_CAPTURE_BUFFER_COUNT][CAMERA_CAPTURE_BUFFE
 /* Keep a private AI snapshot so preprocessing can run without racing the
  * capture DMA buffer that the camera thread continues to own. */
 uint8_t camera_ai_frame_snapshot[CAMERA_CAPTURE_BUFFER_SIZE_BYTES]
-		__attribute__((aligned(__SCB_DCACHE_LINE_SIZE)));
+		__attribute__((section(".noncacheable"), aligned(__SCB_DCACHE_LINE_SIZE)));
 
 /* Keep a second private snapshot for the classical baseline worker so the two
  * inference paths never race over the same copied frame. */
 uint8_t camera_baseline_frame_snapshot[CAMERA_CAPTURE_BUFFER_SIZE_BYTES]
-		__attribute__((aligned(__SCB_DCACHE_LINE_SIZE)));
+		__attribute__((section(".noncacheable"), aligned(__SCB_DCACHE_LINE_SIZE)));
 
 /* Keep the CPU write-probe scratch separate from the live DMA frame. */
 uint32_t camera_capture_write_probe_words[2U];

@@ -138,6 +138,20 @@ def _parse_args() -> argparse.Namespace:
         help="Global optimization objective for model generation.",
     )
     parser.add_argument(
+        "--input-data-type",
+        type=str,
+        choices=["float32", "int8", "uint8"],
+        default="float32",
+        help="Tensor data type to expose for the generated model input.",
+    )
+    parser.add_argument(
+        "--output-data-type",
+        type=str,
+        choices=["float32", "int8", "uint8"],
+        default="float32",
+        help="Tensor data type to expose for the generated model output.",
+    )
+    parser.add_argument(
         "--all-buffers-info",
         action="store_true",
         help=(
@@ -173,6 +187,8 @@ def _ensure_file(path: Path, description: str) -> None:
 
 def _to_windows_path(path: Path) -> str:
     """Convert a WSL path to a Windows path for Windows-hosted pack tools."""
+    if os.name == "nt":
+        return str(path.resolve())
     return subprocess.check_output(
         ["wslpath", "-w", str(path.resolve())], text=True
     ).strip()
@@ -309,9 +325,9 @@ def main() -> None:
         "--optimization",
         args.optimization,
         "--input-data-type",
-        "float32",
+        args.input_data_type,
         "--output-data-type",
-        "float32",
+        args.output_data_type,
         "--inputs-ch-position",
         "chlast",
         "--outputs-ch-position",

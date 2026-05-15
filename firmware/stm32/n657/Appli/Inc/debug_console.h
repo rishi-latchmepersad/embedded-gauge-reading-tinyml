@@ -11,6 +11,13 @@ extern "C" {
 
 #include "stm32n6xx_hal.h"
 
+#if defined(__GNUC__) || defined(__clang__)
+#define DEBUG_CONSOLE_PRINTF_LIKE(format_index, first_arg_index) \
+	__attribute__((format(printf, format_index, first_arg_index)))
+#else
+#define DEBUG_CONSOLE_PRINTF_LIKE(format_index, first_arg_index)
+#endif
+
 /* Optional lock callbacks for thread-safety (FreeRTOS mutex, critical section, etc.) */
 typedef void (*DebugConsole_LockCallback_t)(void);
 typedef void (*DebugConsole_UnlockCallback_t)(void);
@@ -35,10 +42,14 @@ bool DebugConsole_IsInitialized(void);
 bool DebugConsole_WriteBytes(const uint8_t *byte_array_pointer,
 		size_t byte_array_length);
 
-bool DebugConsole_Printf(const char *format_string_pointer, ...);
+bool DebugConsole_Printf(const char *format_string_pointer, ...)
+		DEBUG_CONSOLE_PRINTF_LIKE(1, 2);
 
 bool DebugConsole_VPrintf(const char *format_string_pointer,
-		void *va_list_pointer);
+		void *va_list_pointer) DEBUG_CONSOLE_PRINTF_LIKE(1, 0);
+int DebugConsole_Snprintf(char *destination_pointer, size_t destination_length,
+		const char *format_string_pointer, ...)
+		DEBUG_CONSOLE_PRINTF_LIKE(3, 4);
 
 /* Convenience: write a C string (no formatting) */
 bool DebugConsole_WriteString(const char *null_terminated_string_pointer);

@@ -112,7 +112,7 @@
    to tx_port.h for descriptions on each of these options.  */
 
 /*#define TX_MAX_PRIORITIES                32*/
-/*#define TX_TIMER_THREAD_STACK_SIZE                1024*/
+#define TX_TIMER_THREAD_STACK_SIZE                4096
 /*#define TX_TIMER_THREAD_PRIORITY                0*/
 
 /*#define TX_MINIMUM_STACK                200*/

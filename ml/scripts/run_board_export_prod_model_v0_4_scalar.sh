@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Export the prod-v0.4 scalar winner to board-ready TFLite artifacts.
+# Export the calibration-free prod-v0.4 scalar model to board-ready TFLite artifacts.
 # The winning model is staged into WSL-local storage so TensorFlow does not
 # stall on /mnt/d during export.
 REPO_ROOT="/mnt/d/Projects/embedded-gauge-reading-tinyml/ml"
 LOG_DIR="${REPO_ROOT}/artifacts/training_logs"
 LOG_FILE="${LOG_DIR}/prod_model_v0_4_scalar_board_export.log"
-MODEL_IN="${MODEL_IN:-artifacts/deployment/prod_model_v0.4_scalar_int8/model.keras}"
+MODEL_IN="${MODEL_IN:-artifacts/training/no_cal_hardpush_gpu5_recover/model.keras}"
 MANIFEST_IN="${MANIFEST_IN:-data/hard_cases_plus_board30.csv}"
 OUTPUT_DIR="${OUTPUT_DIR:-artifacts/deployment/prod_model_v0.4_scalar_int8}"
 WORK_ROOT="${WORK_ROOT:-${HOME}/prod_model_v0_4_scalar_board_export}"
 BASE_MODEL_LOCAL="${WORK_ROOT}/model.keras"
+REPACKED_MODEL_DIR="${WORK_ROOT}/repacked_clean"
+REPACKED_MODEL_LOCAL="${REPACKED_MODEL_DIR}/model.keras"
 
 POETRY_BIN="${POETRY_BIN:-${HOME}/.local/bin/poetry}"
 if [[ ! -x "${POETRY_BIN}" ]]; then
@@ -31,16 +33,23 @@ mkdir -p "${WORK_ROOT}"
 echo "[WRAPPER] Staging prod-v0.4 scalar clean model into ${WORK_ROOT}."
 cp "${REPO_ROOT}/${MODEL_IN}" "${BASE_MODEL_LOCAL}"
 
+echo "[WRAPPER] Repacking the source model into a CubeAI-friendly graph."
+mkdir -p "${REPACKED_MODEL_DIR}"
+CUDA_VISIBLE_DEVICES="-1" "${POETRY_BIN}" run python -u scripts/repack_scalar_model_for_stedgeai.py \
+  --model "${BASE_MODEL_LOCAL}" \
+  --output-dir "${REPACKED_MODEL_DIR}" \
+  2>&1 | tee -a "${LOG_FILE}"
+
 cd "${REPO_ROOT}"
 
 echo "[WRAPPER] Starting board export for prod_model_v0.4_scalar_int8."
-echo "[WRAPPER] Model: ${BASE_MODEL_LOCAL}"
+echo "[WRAPPER] Model: ${REPACKED_MODEL_LOCAL}"
 echo "[WRAPPER] Manifest: ${MANIFEST_IN}"
 echo "[WRAPPER] Output dir: ${OUTPUT_DIR}"
 echo "[WRAPPER] Log file: ${LOG_FILE}"
 
 CUDA_VISIBLE_DEVICES="-1" "${POETRY_BIN}" run python -u scripts/export_board_artifacts.py \
-  --model "${BASE_MODEL_LOCAL}" \
+  --model "${REPACKED_MODEL_LOCAL}" \
   --hard-case-manifest "${MANIFEST_IN}" \
   --output-dir "${OUTPUT_DIR}" \
   --representative-count 64 \

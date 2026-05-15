@@ -775,20 +775,20 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 				if (brightness_gate != APP_CAMERA_CAPTURE_BRIGHTNESS_OK) {
 					AppCameraCapture_LogBrightnessGateDecision(&brightness_stats,
 							brightness_gate);
-					/* Treat the gate as an exposure hint instead of a hard retry.
-					 * Retrying the same capture in-place was destabilizing the
-					 * camera thread on bright scenes, while the next scheduled
-					 * capture still sees the nudged sensor settings. */
+					/* Treat the gate as an exposure hint and retry the capture on the
+					 * next loop iteration. The current frame is still too bright for the
+					 * model, so we do not want to feed it downstream. */
 					if (!CameraPlatform_AdjustImx335ExposureGain(
 							brightness_gate
 									== APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_DARK)) {
 						DebugConsole_Printf(
-								"[CAMERA][CAPTURE] Brightness gate hint could not be applied; continuing with the current frame.\r\n");
+								"[CAMERA][CAPTURE] Brightness gate hint could not be applied; retrying capture anyway.\r\n");
 					} else {
 						DebugConsole_WriteString(
 								"[CAMERA][CAPTURE] Brightness gate adjustment queued for the next capture cycle.\r\n");
 					}
-					break;
+					capture_ok = false;
+					continue;
 				}
 				CameraPlatform_CacheAcceptedExposureGain();
 			}

@@ -12,6 +12,8 @@
 /* Private includes ----------------------------------------------------------*/
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
+#include <stdlib.h>
 #include "debug_console.h"
 #include "main.h"
 #include "tx_api.h"
@@ -38,6 +40,11 @@ static TX_THREAD g_ina219_thread;
 static TX_SEMAPHORE g_ina219_semaphore;
 static uint8_t g_ina219_thread_stack[INA219_THREAD_STACK_SIZE];
 static volatile bool g_thread_running = false;
+
+static long INA219_ToMilliUnits(float value)
+{
+    return (long)lroundf(value * 1000.0f);
+}
 
 /* Private function prototypes -----------------------------------------------*/
 static bool INA219_WriteRegister(uint8_t reg, uint16_t value);
@@ -229,11 +236,15 @@ static void INA219_ThreadEntry(ULONG thread_input)
         if (status == TX_SUCCESS) {
             /* Semaphore signaled - take a reading and log it */
             if (INA219_ReadMeasurement(&measurement)) {
-                DebugConsole_Printf("[INA219] Vbus=%.3fV Ishunt=%.3fmV I=%.3fmA P=%.3fmW\r\n",
-                    measurement.bus_voltage_v,
-                    measurement.shunt_voltage_mv,
-                    measurement.current_ma,
-                    measurement.power_mw);
+                const long vbus_milli = INA219_ToMilliUnits(measurement.bus_voltage_v);
+                const long vshunt_milli = INA219_ToMilliUnits(measurement.shunt_voltage_mv);
+                const long current_milli = INA219_ToMilliUnits(measurement.current_ma);
+                const long power_milli = INA219_ToMilliUnits(measurement.power_mw);
+                DebugConsole_Printf("[INA219] Vbus=%ld.%03ldV Ishunt=%ld.%03ldmV I=%ld.%03ldmA P=%ld.%03ldmW\r\n",
+                    vbus_milli / 1000L, labs(vbus_milli % 1000L),
+                    vshunt_milli / 1000L, labs(vshunt_milli % 1000L),
+                    current_milli / 1000L, labs(current_milli % 1000L),
+                    power_milli / 1000L, labs(power_milli % 1000L));
             }
         }
     }
@@ -301,11 +312,16 @@ bool INA219_LogReading(const char *label)
         return false;
     }
     
-    DebugConsole_Printf("[INA219][%s] Vbus=%.3fV I=%.3fmA P=%.3fmW\r\n",
-        label,
-        measurement.bus_voltage_v,
-        measurement.current_ma,
-        measurement.power_mw);
+    {
+        const long vbus_milli = INA219_ToMilliUnits(measurement.bus_voltage_v);
+        const long current_milli = INA219_ToMilliUnits(measurement.current_ma);
+        const long power_milli = INA219_ToMilliUnits(measurement.power_mw);
+        DebugConsole_Printf("[INA219][%s] Vbus=%ld.%03ldV I=%ld.%03ldmA P=%ld.%03ldmW\r\n",
+            label,
+            vbus_milli / 1000L, labs(vbus_milli % 1000L),
+            current_milli / 1000L, labs(current_milli % 1000L),
+            power_milli / 1000L, labs(power_milli % 1000L));
+    }
     
     /* Signal the monitoring thread to take a reading */
     tx_semaphore_put(&g_ina219_semaphore);

@@ -55,7 +55,7 @@ MEMORY
   EXTRAM_OBB (rw)       : ORIGIN = 0x70700000,   LENGTH = 4096K
   /* Non-secure alias A/B test — DCMIPP with MSEC=1 writes to 0x24xxxxxx.
    * Placed at top of AXISRAM1 non-secure alias, away from code/data. */
-  RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 128K
+  RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 384K
 }
 
 PHDRS

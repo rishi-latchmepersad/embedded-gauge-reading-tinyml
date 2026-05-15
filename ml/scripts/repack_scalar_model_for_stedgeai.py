@@ -121,12 +121,12 @@ def _build_clean_model(
     *,
     piecewise_knot_count: int,
 ) -> keras.Model:
-    """Build a serializable graph that mirrors the source piecewise calibrator.
+    """Build a serializable graph that mirrors the loaded scalar model.
 
-    The source winner carries a piecewise-linear calibration head. We rebuild the
-    same structure with standard Dense/ReLU/Concatenate layers so the trained
-    weights can be transferred verbatim, while still avoiding any legacy Lambda
-    or custom op usage in the export graph.
+    Older prod v0.4 exports carried a piecewise-linear calibration head, but the
+    current calibration-free prod model does not. We therefore keep the common
+    MobileNetV2 backbone and only add the calibration basis layers when the
+    source model actually contains them.
     """
     inputs = keras.Input(shape=(image_height, image_width, 3), name="image")
 
@@ -148,24 +148,24 @@ def _build_clean_model(
     base_output = keras.layers.Dense(1, name="gauge_value")(x)
 
     if piecewise_knot_count < 1:
-        raise ValueError("piecewise_knot_count must be at least 1.")
+        output = base_output
+    else:
+        basis_terms: list[keras.layers.Layer] = [base_output]
+        for knot_index in range(piecewise_knot_count):
+            shifted = keras.layers.Dense(
+                1,
+                use_bias=True,
+                kernel_initializer=keras.initializers.Constant([[1.0]]),
+                bias_initializer="zeros",
+                trainable=False,
+                name=f"value_calibration_shift_{knot_index}",
+            )(base_output)
+            basis_terms.append(
+                keras.layers.ReLU(name=f"value_calibration_relu_{knot_index}")(shifted)
+            )
 
-    basis_terms: list[keras.layers.Layer] = [base_output]
-    for knot_index in range(piecewise_knot_count):
-        shifted = keras.layers.Dense(
-            1,
-            use_bias=True,
-            kernel_initializer=keras.initializers.Constant([[1.0]]),
-            bias_initializer="zeros",
-            trainable=False,
-            name=f"value_calibration_shift_{knot_index}",
-        )(base_output)
-        basis_terms.append(
-            keras.layers.ReLU(name=f"value_calibration_relu_{knot_index}")(shifted)
-        )
-
-    features = keras.layers.Concatenate(name="value_calibration_features")(basis_terms)
-    output = keras.layers.Dense(1, name="value_calibration")(features)
+        features = keras.layers.Concatenate(name="value_calibration_features")(basis_terms)
+        output = keras.layers.Dense(1, name="value_calibration")(features)
 
     return keras.Model(
         inputs=inputs,

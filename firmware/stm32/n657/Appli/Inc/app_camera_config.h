@@ -117,11 +117,11 @@ extern "C" {
 #define IMX335_CAPTURE_FRAMERATE_FPS        10
 #define CAMERA_CAPTURE_FILE_NAME_LENGTH     64U
 #define CAMERA_STORAGE_READY_EVENT_FLAG     0x00000001U
-/* Seed IMX335 at ~2/3 of the exposure range (~22177 us at max=33266 us).
+/* Seed IMX335 at ~1/3 of the exposure range (~11088 us at max=33266 us).
  * The 1/5 seed (6659 us) required 10+ nudge steps to reach the crop-mean
- * threshold of 100 for dimmer evening/indoor scenes.  2/3 overshoots for
- * bright scenes but the brightness gate will descend quickly from there. */
-#define CAMERA_IMX335_SEED_EXPOSURE_FRACTION_NUMERATOR    2U
+ * threshold of 100 for dimmer evening/indoor scenes.  Starting a little
+ * darker reduces the chance that the scalar crop saturates to white. */
+#define CAMERA_IMX335_SEED_EXPOSURE_FRACTION_NUMERATOR    1U
 #define CAMERA_IMX335_SEED_EXPOSURE_FRACTION_DENOMINATOR  3U
 #define CAMERA_IMX335_SEED_GAIN_FRACTION_NUMERATOR        1U
 #define CAMERA_IMX335_SEED_GAIN_FRACTION_DENOMINATOR      2U

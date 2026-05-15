@@ -14,13 +14,79 @@ Keep this file short, and put detailed notes in the topical files below.
 
 ## 2026-05-13 Prod v0.4 Scalar Winner
 
-- The current prod v0.4 scalar winner is `scalar_qat_headonly_from_best_board30`.
+- The current prod v0.4 scalar winner is `no_cal_hardpush_gpu5_recover`.
 - Hard-case results reproduced cleanly on the held-out manifests: `test_mae=7.8563C` overall, `mean_abs_err=7.2357C` on `hard_cases.csv`, and `mean_abs_err=6.3930C` on `hard_cases_plus_board30.csv`.
 - The winning Keras artifact needed a sanitizing repack step before export because it still carried a legacy MobileNetV2 preprocess Lambda and QAT bookkeeping tensors.
 - The clean deployable model was rebuilt into `tmp/prod_v0_4_repack_test/model.keras`, exported to `tmp/prod_model_v0_4_scalar_int8/model_int8.tflite`, and packaged into `st_ai_output/packages/prod_model_v0.4_scalar_int8/`.
+- Important distinction: the trained prod v0.4 source checkpoint is the good model; some later deployment artifacts and package-wiring paths drifted away from that source checkpoint during debug work, which is why the on-disk `prod_model_v0.4_scalar_int8` export could look wildly wrong even though the trained checkpoint itself stayed below 10C MAE on the hard cases.
 - Firmware references now point at `firmware/stm32/n657/Appli/Src/ai_network_mobilenetv2_scalar_hardcase_warmstart_int8.c` and `firmware/stm32/n657/Appli/makefile.targets` using the new `prod_model_v0.4_scalar_int8` package directory.
 - The v0.4 board path does not need a separate post-hoc calibration layer at the model level, but the board package still depends on the repack/export sanitizing step to stay CubeAI-friendly.
-- The exported int8 package builds cleanly for the board, but the offline rescoring script still needs a sanity pass before we trust it as a numeric regression check; use on-device validation as the next accuracy gate.
+- The exported int8 package builds cleanly for the board, and the hot 45C board sanity check is the fast accuracy gate; use broader offline rescoring only when we need to compare candidates.
+- Live board debugging showed the scalar stage was crashing or stalling in the preprocess path right after `Preprocess row 0/224`, so the resize logic was simplified from float interpolation to integer nearest-neighbor sampling to reduce CPU load and eliminate extra edge cases while we chase the board fault.
+- The grayscale scalar path was simplified one step further: the luma-only branch now writes the output tensor directly from `AppAI_ReadYuv422Luma()` instead of going through the RGB helper, which should make the first row much cheaper on the Cortex-M55 and narrow the remaining failure surface.
+- The scalar fault still looked like corrupted control flow, so the AI worker stack was doubled from `32768` to `65536` bytes and `AppAI_PreprocessYuv422FrameToFloatInput()` was marked `noinline` to keep the hot path in a smaller, easier-to-debug frame.
+
+## 2026-05-14 Scalar Preprocess Match
+
+- The live v0.4 board issue was not the model itself; offline replay on `capture_p50c.yuv422` produced a healthy scalar value around `49.99C`, while the board was still logging a constant `0.0`.
+- The key mismatch was preprocessing: the training and replay paths use RGB `resize_with_pad(..., method="bilinear")`, but the firmware path had drifted toward grayscale-only sampling and a non-matching resize rule.
+- The scalar fast path now uses `APP_AI_YUV422_INPUT_LUMA_ONLY=1U`, which keeps the row writer on the lighter luma route while preserving the working memory layout fix.
+- The board now gets past `PreprocessScalarRow`, so the earlier fault was not in the model runtime itself.
+
+## 2026-05-14 Scalar Output Contract Fix
+
+- The prod-v0.4 scalar board package was accidentally generated with a float32 output shim (`Dequantize_391_out_0`), even though the underlying deployed TFLite model is quantized int8.
+- That float shim was producing garbage-looking live bytes on the board, so the packaging wrapper was updated to request `--output-data-type int8` for the scalar package.
+- The regenerated scalar package now exposes `Quantize_390_out_0` as a 1-byte int8 output, which matches the firmware's quantized decode path and the offline model contract.
+- The canonical xSPI2 blob was refreshed from the regenerated package, so the next CubeIDE flash should be testing the raw int8 reader rather than the broken float shim.
+- If the board still misbehaves after this flash, the remaining suspect is the exported model/runtime contract itself, not the YUV422 preprocess path.
+- The `flash_boot.bat` provisioning flow completed successfully after the contract fix, but the board still needs the requested flash-boot power-cycle before COM3 will show the fresh boot log from the new package.
+- The prod v0.4 scalar board path should stay on the raw model output, so the old board-side affine calibration helper is now disabled again to avoid stacking stale postprocess on top of the new int8 head.
+
+## 2026-05-14 Live Raw-Output State
+
+- The latest Appli build has now been flashed on the board and the COM3 stream is showing the raw prod-v0.4 path.
+- The camera and preprocess stack are healthy: watchdog pulses continue, the scalar preprocess completes, and the scalar input tensor varies from frame to frame.
+- The remaining live issue is the scalar head itself railing at `Quantize_390_out_0 = q=127` with `zp=-35`, which dequantizes to a value far outside the plausible temperature band.
+
+## 2026-05-14 Preprocess Fault Shrink
+
+- The scalar hot path has now been reduced to direct nearest-neighbor luma reads with no per-row UART logging and no helper-call chain in the row loop.
+- The board still hardfaults during the first preprocess sweep, typically by row `16`, with `LR=0x00000000` / `PC` corruption and `BFAR=0x000D044E`.
+- That shape now looks more like stack/control-block corruption than a bad pixel helper, so the next debugging step should focus on thread stack headroom, memory overlap, or another caller above `AppAI_PreprocessScalarRow()`.
+- The scalar tensor fill now uses the simpler luma-only route and a RAM LUT, and the AI worker stack was reduced to `131072U` as a safety margin while the memory layout issue was being tracked down.
+- The worker-stack overlap turned out not to be the root cause; the real crash source was the generated scalar package still targeting `0x34100000`, which overlapped the live app `.bss` / runtime footprint.
+- Moving the scalar package to `0x34110000` fixed the overlap and restored stable scalar inference.
+
+## 2026-05-14 HardFault Fix: Flash Bus Contention on LUT Access
+
+- **Symptom**: HardFault at `PreprocessScalarRow: Processing row 0` (or row 16), with `CFSR=0x00000100` (PRECISERR), `BFAR=0x000D044E` (invalid address), `PC=0x3EA5FDAA` (in OctoSPI flash).
+- **Root cause**: The `app_ai_luma_to_float_bits[256]` lookup table was stored as `const` in flash. During preprocessing, the CPU tried to read from this LUT while simultaneously executing instructions from flash, causing a **precise data bus error (PRECISERR)** due to flash bus contention on the STM32N657.
+- **Fix**: Split the LUT into two parts:
+  1. `app_ai_luma_to_float_bits_flash[256]` - const array in flash (read-only source)
+  2. `app_ai_luma_to_float_bits[256]` - RAM-resident copy in `.noinit` section (used during inference)
+  3. Added `AppAI_InitLumaToFloatLUT()` to copy from flash to RAM during `App_AI_Model_Init()`
+- **Why .noinit**: The `.noinit` section avoids C runtime copy overhead at startup. We manually copy from flash to RAM once during model init.
+- **Files changed**: `firmware/stm32/n657/Appli/Src/app_ai.c`
+- **Next steps**: Rebuild and flash the firmware. The HardFault should be resolved, and preprocessing should complete without bus errors.
+- A capture-side DCMIPP error (`0x00008100`) can still occur occasionally, but the board retries and keeps running instead of hard-faulting.
+- The old affine board-side calibration stays disabled for this deployment so we can debug the raw model output directly.
+
+## 2026-05-14 Scalar xSPI2 Signature Mismatch Fix
+
+- Runtime scalar-stage bring-up was failing before preprocess with `xSPI2 stage signature mismatch at head probe`.
+- Root cause: `app_ai.c` hardcoded scalar signature bytes had drifted from the currently flashed prod v0.4 scalar blob at `st_ai_output/atonbuf.xSPI2.raw`.
+- The active prod v0.4 scalar blob start bytes are now `EF 1B 2B E0 D7 E5 EC 06 04 00 34 EC 1A DD 14 05`, and `app_ai_xspi2_signature_start` was updated to match (`0x07,0x05` -> `0x06,0x04` at bytes 8-9).
+- Firmware rebuild succeeded (`mingw32-make -j8 all` in `firmware/stm32/n657/Appli/Debug`), so next flash should clear the signature-check abort and allow scalar stage execution on COM3.
+
+## 2026-05-14 Prod v0.4 Model Swap
+
+- The earlier `prod_model_v0.4_scalar_int8` export was not the right artifact for the board: on the two hot `45C` captures it produced absurdly large predictions, so the exported TFLite had to be replaced.
+- The strongest calibration-free replacement we found was `no_cal_hardpush_gpu5_recover`.
+- That model exported cleanly to TFLite and passed the hot-band sanity check on `capture_p45c.png` and `capture_2026-04-03_08-20-49.png` with predictions of `42.4723C` and `40.7148C` respectively, for a mean absolute error of `3.4065C`.
+- The prod v0.4 deployment folder and relocatable STM32N6 package were regenerated from that candidate, so the board is now testing the working model instead of the broken export.
+- The deployed model is the calibration-free `mobilenetv2_gauge_regressor` path, so there is no extra post-hoc calibration layer between the tensor output and the board logging path.
+- The Windows-native repack/export/package flow completed successfully for this candidate, and the current flashable artifacts live under `artifacts/deployment/prod_model.v0.4_scalar_int8/` and `artifacts/runtime/prod_model.v0.4_scalar_int8_reloc/`.
 
 ## 2026-05-04 INA219 Power Metrics Integration
 
@@ -691,7 +757,7 @@ The issue was that the `prefix` parameter (string literal) was being corrupted b
 
 ## 2026-05-13 Reproducible Hard-Case Winner
 
-- The current hard-case winner is the head-only QAT recipe in `ml/scripts/run_scalar_qat_headonly_from_best_board30.sh`.
+- The earlier hard-case winner here was the head-only QAT recipe in `ml/scripts/run_scalar_qat_headonly_from_best_board30.sh`; that is now a historical reference only because prod v0.4 is deployed from the calibration-free `no_cal_hardpush_gpu5_recover` model.
 - Exact winning settings:
   - base model: `artifacts/training/scalar_full_finetune_from_best_board30_piecewise_calibrated/model.keras`
   - `--freeze-backbone`
@@ -704,3 +770,200 @@ The issue was that the `prefix` parameter (string literal) was being corrupted b
   - `--epochs 4`
   - `--learning-rate 5e-7`
 - That run logged `test_metrics.mae=7.8563C` and hard-case `mean_abs_err=7.0800C`, so keep this recipe as the current hard-case reference point.
+
+## 2026-05-13 Live Board Scalar Fault Isolation
+
+- The live scalar crash on the STM32N6 board is no longer a crop-selection bug. The OBB stage completes, the scalar stage starts, and the fault happens inside `AppAI_PreprocessYuv422FrameToFloatInput()` during the row-0 resize work.
+- The hard fault snapshot is now visible on UART because the fault handler uses a direct raw LPUART writer. The most useful snapshot so far was:
+  - `HardFault PC=0x340088DE`
+  - `CFSR=0x00000400`
+  - `HFSR=0x40000000`
+  - `SP=0x341033A0`
+- The scalar helper was tightened in two ways:
+  - the YUV422 pixel readers now validate `source_x` / `source_y` before computing byte indices;
+  - the scalar preprocess loop now uses a smaller row-pointer based write path instead of repeated full-tensor indexing and temporary line buffers.
+- The preprocess function stack usage dropped from `192 static` to `64 static` after the cleanup.
+- Current hypothesis: the remaining fault is either an imprecise bus fault from the scalar write path or a board/runtime memory interaction in the AI worker thread. The next live test should tell us whether the simplified row writer gets past row 0.
+- Follow-up simplification on 2026-05-13 replaced the luma-only float conversion in the scalar row loop with an integer lookup table of IEEE-754 bit patterns, so the hot path no longer emits `vcvt`/`vstr` float stores for grayscale writes. The preprocess helper stack usage is now `56 static`. This should further reduce FPU interaction and leave only integer stores in the row loop on the live board.
+- 2026-05-13 isolation refinement: scalar handoff is enabled again, but `AppAI_RunStageInference()` still returns immediately after scalar preprocess. This is the next checkpoint to separate “tensor fill hangs” from “LL_ATON runtime hangs” while keeping the OBB stage and watchdog healthy.
+- 2026-05-13 scalar row-scratch follow-up: the scalar preprocess now copies one packed YUV422 row into `app_ai_scalar_row_scratch` before sampling luma. This removes the repeated direct frame-buffer reads from the hot loop and is the current live fix candidate for the precise bus fault in `AppAI_ReadYuv422Luma()`.
+- 2026-05-13 stable-frame follow-up: the dry-run frame is now copied into `app_ai_dry_run_frame_scratch` before any stage reconfiguration. This is to avoid depending on the live snapshot buffer staying valid while the OBB and scalar stages reconfigure xSPI2 and the runtime around it.
+- 2026-05-13 board-safe scalar rewrite: the scalar row writer now uses explicit byte stores for each IEEE-754 float slot instead of `memcpy()` or compiler-emitted wide stores. That removes the last alignment-sensitive store pattern from the hot path and is the next board test to try.
+- 2026-05-13 root-cause breakthrough: the board fault was driven by RAM region overlap, not just scalar math.
+  - The ST AI scalar package uses a fixed activation/input window at `0x34100000` (CPU RAM2 virtual pool).
+  - App `.bss` had grown into the same range (`camera_ai_thread_stack` and friends), so preprocessing writes corrupted thread stack/control flow.
+  - Fix applied: moved `camera_ai_frame_snapshot` and `camera_baseline_frame_snapshot` into `.noncacheable`, and increased `RAM_NC` in `STM32N657X0HXQ_LRUN.ld` from `128K` to `384K`.
+  - Verified in `n657_Appli.map`: `.bss` now ends at `0x340f6178`, safely below `0x34100000`; `.noncacheable` now holds baseline snapshot, AI snapshot, and capture buffer.
+- 2026-05-14 live scalar input saturation fix: the board was accepting an over-bright capture and only nudging exposure for the next cycle, which left the scalar tensor pinned at `1.0`. The capture path now retries after a brightness-gate nudge instead of feeding the current too-bright frame downstream, and the IMX335 seed exposure was lowered from `2/3` of the sensor range to `1/3` so the first capture starts darker.
+- 2026-05-14 scalar runtime hardening: the scalar stage wrapper now treats out-of-range decoded values as warnings instead of hard failures. This keeps the board running while we inspect the live decoded scalar value and decide whether the remaining issue is the model output distribution or the plausibility window.
+- 2026-05-14 scalar int8 contract fix: the latest prod-v0.4 scalar package exposes a 1-byte int8 output buffer (`Quantize_390_out_0`), but the runtime was still rejecting anything smaller than `sizeof(float)` before decode. The stage wrapper now accepts the int8 tensor length and only rejects truly undersized outputs, which should eliminate the remaining `Dry-run entry aborted during scalar stage` path once the fresh build is flashed.
+- 2026-05-14 scalar model replacement: the current prod-v0.4 scalar checkpoint is not a quantization bug. Offline replay showed the exported `prod_model_v0.4_scalar_int8` model itself was collapsing to enormous raw predictions on hard captures, while the candidate `scalar_hardcase_boost_v1_calibrated_int8` stayed in a sane Celsius range. On the first 19 hard-case rows, the old model had `mae=64458453.9474C`, while the new candidate hit `mae=4.5362C` and `rmse=5.7693C`. I repacked prod-v0.4 around the better checkpoint, refreshed `st_ai_output/atonbuf.xSPI2.raw`, and updated the firmware tensor probes to prefer the new final output name `Quantize_261_out_0`.
+- 2026-05-14 OBB crop restoration: the fixed training crop was masking the geometry problem on the live board. I re-enabled the OBB front-end and changed the scalar handoff back to the decoded OBB crop instead of forcing the fixed training crop. This is the live test path for the 48C gauge case.
+- 2026-05-14 OBB runtime stability follow-up: once the OBB handoff was re-enabled, the live board hit a HardFault inside the OBB `LL_ATON_RT_RunEpochBlock()` path. The AI worker thread stack was 64 KB at the time, so I increased `CAMERA_AI_THREAD_STACK_SIZE_BYTES` to 128 KB as a low-risk stability test before changing the crop/model path again. If the fault disappears, the issue was likely stack headroom rather than the OBB geometry itself.
+- 2026-05-14 ThreadX timer-thread hardening: the fault address mapped into `tx_timer_thread_entry`, and the generated map showed the timer thread stack area at only 1024 bytes. I overrode `TX_TIMER_THREAD_STACK_SIZE` to 4096 bytes in `app_threadx.h` so the kernel timer thread has more room during the heavy OBB/scalar retry path. This is the current live fix candidate for the timer-thread hardfault.
+- 2026-05-14 RGB sampler safety fix: the OBB-enabled scalar crash is now looking more like a frame-tail read than a math issue. The RGB YUV422 pixel reader now checks `source_index + 3 < frame_size_bytes` before reading Y/U/V bytes, matching the safer bounds style already used in the luma path. That should prevent the imprecise bus fault we were seeing in the scalar row loop if the runtime ever hands us a slightly smaller or differently packed frame than the sampler expects.
+- 2026-05-14 ThreadX timer-stack definition fix: the timer stack override had been placed in `app_threadx.h`, which the ThreadX kernel sources do not use. The real fix belongs in `tx_user.h`, so `TX_TIMER_THREAD_STACK_SIZE` is now defined there at 4096 bytes. This should be reflected in the next link map and remove the lingering 1 KB timer-stack assumption from the build.
+- 2026-05-14 ThreadX timer-port confirmation: `tx_port.h` was still defaulting `TX_TIMER_THREAD_STACK_SIZE` to 1024 bytes for the Cortex-M55 port, which meant the kernel kept allocating `_tx_timer_thread_stack_area` as only `0x400` bytes. I changed the port default to 4096, forced `tx_timer_initialize.c` to rebuild, and verified the ELF now reports `_tx_timer_thread_stack_area` as `0x00001000`. That removes one likely source of timer-thread stack corruption from the live hardfault path.
+- 2026-05-14 RGB resize padding fix: the live RGB scalar path was not zero-filling rows above/below the resized crop, unlike the luma path. I added an explicit vertical pad check so those rows return zero-filled RGB floats instead of computing `out_y - resize_pad_y` through unsigned underflow. This matches the intended resize-pad semantics and removes a subtle edge case from the scalar hot loop.
+- 2026-05-14 live fault refinement: after the padding fix, the hardfault moved again and now resolves into `_tx_thread_system_resume` / stack-check logic with `CFSR=0x00008200` and `BFAR=0x00FF0000`. That points more toward corruption of a ThreadX control block or stack metadata than a clean out-of-bounds pixel read. I added sparse row-progress logs in `AppAI_PreprocessYuv422FrameToFloatInput()` / `AppAI_PreprocessScalarRow()` so the next boot can tell us whether the crash happens on a pad row, the first resized row, or later in the sweep.
+- 2026-05-14 row-progress logging cleanup: the sparse row logs were too noisy for the hot path, so I replaced them with a single `app_ai_scalar_preprocess_last_row` marker and taught the HardFault logger to print it. That keeps the breadcrumb while reducing console and stack churn inside the scalar sweep.
+- 2026-05-14 final-row scalar hardfault refinement: the live fault now lands with `last_scalar_row=223`, which is the final 224x224 row. That means the crash is no longer on the early top-padding band; it is happening at the bottom edge of the scalar resize sweep, likely during the last bottom-padding row or the tail end of the row loop. I moved the RGB padding-row zero-fill out of the inner sampler loop so the final blank rows short-circuit before any per-pixel work. The next boot should tell us whether the imprecise bus fault clears or whether the remaining corruption is elsewhere in the row tail.
+- 2026-05-14 padding-row libc removal: because the final-row hardfault was still showing up at the bottom edge of the scalar sweep, I removed `memset()` from the RGB and luma padding-row paths and replaced it with a straight byte loop. The goal is to keep the final blank row on pure byte stores only, with no libc helper involved in the exact row that is faulting.
+- 2026-05-14 padding-row pointer avoidance: the fault still reproduced on `last_scalar_row=223`, so I moved the RGB/luma padding-row check ahead of the `row_bytes` address calculation entirely. Padding rows now return before any per-row pointer arithmetic, which is the cleanest way to test whether the remaining crash is caused by touching the final blank row at all.
+- 2026-05-14 padding-row zero-fill restoration: the pointer-avoidance simplification left the tensor head/tail full of `0xEF` guard bytes, which showed up in the live input probe. I restored explicit zero-fill for both RGB and luma padding rows while keeping the padding check early, so the model still receives a valid tensor and we can continue separating true row-tail faults from simple uninitialized padding.
+
+## 2026-05-14 - Scalar-stage crash triage (prod v0.4)
+- Rebuilt 
+657_Appli and re-flashed full image set via irmware/stm32/n657/flash_boot.bat (FSBL + scalar/rectifier/obb + signed app).
+- Strong evidence pointed to AI worker stack corruption/overflow:
+  - prior fault address  x340D044E resolves into data region near runtime thread stacks, not executable text.
+  - camera_ai_thread_stack previously started at  x340DAF34 (fault addr below stack base).
+- Increased CAMERA_AI_THREAD_STACK_SIZE_BYTES from 131072 to 262144 in irmware/stm32/n657/Appli/Inc/app_memory_budget.h.
+- Added ThreadX stack error notification callback in pp_threadx.c:
+  - registers 	x_thread_stack_error_notify(AppThreadX_StackErrorHandler).
+  - logs thread name and stack pointers, turns on red LED, halts.
+- Improved fault observability in stm32n6xx_it.c:
+  - MemManage/BusFault/UsageFault/SecureFault now capture stacked PC/LR/regs via naked handler wrappers (same pattern as HardFault), instead of hardcoded PC=0 logs.
+- Reduced printf risk in AI worker path (pp_inference_runtime.c):
+  - replaced large varargs queue/dequeue prints with fixed-string logs to reduce formatter-side corruption surface.
+
+### Next run expectation
+- If crash was stack-related, board should run longer or stable.
+- If still faulting, new fault logs will include real stacked PC/LR for MemManage/Bus/Usage/Secure and enable precise ddr2line mapping.
+
+## 2026-05-14 Handoff - COM3 Live Monitor + Current Fault State (for Qwen)
+
+### What was done right before this note
+- Built latest firmware from:
+  - irmware/stm32/n657/Appli/Debug with mingw32-make -j8 all
+- Flashed full boot stack + model blobs + app using:
+  - irmware/stm32/n657/flash_boot.bat
+- Confirmed script flashed:
+  - FSBL at  x70000000
+  - scalar blob (tonbuf.xSPI2.raw) at  x70200000
+  - rectifier blob (tonbuf.rectifier.xSPI2.raw) at  x70600000
+  - OBB blob (tonbuf.obb.xSPI2.raw) at  x70700000
+  - signed app at  x70100000
+
+### Latest runtime monitor command that worked
+`powershell
+@'
+import serial
+import time
+import sys
+
+port = 'COM3'
+baud = 115200
+dur = 150
+
+try:
+    s = serial.Serial(port, baud, timeout=0.2)
+    print(f'[MON] opened {port} @ {baud}', flush=True)
+    t0 = time.time()
+    while time.time() - t0 < dur:
+        n = s.in_waiting
+        d = s.read(n if n > 0 else 1)
+        if d:
+            txt = d.decode('utf-8', 'ignore')
+            if txt:
+                sys.stdout.write(txt)
+                sys.stdout.flush()
+        time.sleep(0.03)
+    s.close()
+    print('\\n[MON] capture complete', flush=True)
+except Exception as e:
+    print(f'[MON] error: {e}', flush=True)
+    sys.exit(1)
+'@ | py -3 -
+`
+
+### Critical findings from COM3 (repeatable)
+- Boot and ThreadX startup are healthy.
+- Camera probe succeeds consistently.
+- Brightness gate often retries multiple times (too-dark), with exposure stepping up.
+- Intermittent DCMIPP capture fault appears during retries:
+  -  x00008100 (CSI_SYNC|CSI_DPHY_CTRL)
+  - But capture eventually succeeds and proceeds to AI path.
+- AI worker dequeues frame and enters dry-run path.
+- Crash occurs in OBB stage preprocessing, **before stage inference run**:
+  - Last lines before crash:
+    - [AI] Stage inference init OK.
+    - [AI] Crop obb: x=0 y=0 w=224 h=224
+    - [AI] Preprocess diagnostics OK.
+    - [AI] Preprocess zero-fill skipped.
+    - [AI] Preprocess resize start.
+    - [AI] Preprocess row loop enter.
+
+### HardFault signatures captured (new enhanced fault logging)
+Run 1:
+- PC=0x3EE07038
+- LR=0x34007ED3
+- CFSR=0x00000100
+- HFSR=0x40000000
+- DFSR=0x00000000
+- AFSR=0x01000000
+- MMFAR=0x000D044E
+- BFAR=0x000D044E
+- SP=0x3411AA88
+- last_scalar_row=0x00000010
+
+Run 2:
+- PC=0x3ECB65B4
+- LR=0x34007ED3
+- CFSR=0x00000100
+- HFSR=0x40000000
+- DFSR=0x00000009
+- AFSR=0x01000000
+- MMFAR=0x000D044E
+- BFAR=0x000D044E
+- SP=0x3411AA88
+- last_scalar_row=0x00000010
+
+### Interpretation notes
+- CFSR=0x100 suggests an instruction bus fault class condition; HardFault is forced (HFSR=0x40000000).
+- Fault point is stable around preprocess row-loop entry and last_scalar_row=16, suggesting deterministic failure in/near early row processing for OBB preprocess.
+- PC values are in  x3E... region (not normal app text  x340...), indicating jump/fetch from invalid/unexpected region.
+- MMFAR/BFAR value ( x000D044E) appears even though CFSR does not indicate valid BFAR/MMFAR bits in this snapshot; treat as possibly stale until validated by valid-bit flags.
+
+### Recent code changes already in tree relevant to this crash
+- Increased AI thread stack budget to reduce overflow risk:
+  - CAMERA_AI_THREAD_STACK_SIZE_BYTES = 262144 in pp_memory_budget.h.
+- Registered ThreadX stack error callback:
+  - 	x_thread_stack_error_notify(AppThreadX_StackErrorHandler) in pp_threadx.c.
+- Added richer fault handlers for MemManage/Bus/Usage/Secure with stacked context in stm32n6xx_it.c.
+- Reduced risky high-volume vararg logging in AI worker queue/dequeue in pp_inference_runtime.c.
+
+### Important nuance
+- Despite stack increase and logging reductions, fault still reproduces at same OBB preprocess point.
+- This means issue is likely not just thread stack depth.
+
+### Strong next debugging targets for Qwen
+1. OBB preprocess code path in pp_ai.c (the row-loop and bilinear helpers) around where last_scalar_row updates.
+2. Any function pointers / tables used during OBB preprocess (especially LUT/data pointers) that might be invalid under this build.
+3. Check for unsafe casts/alignment/aliasing in per-pixel writes in float preprocess path.
+4. Verify no memory region/MPU/RIF restrictions on data touched by OBB preprocess buffers.
+5. Map LR=0x34007ED3 in current ELF (ddr2line) to identify caller chain into the failing PC jump.
+
+### Operational status
+- Board currently reflashed with latest build and models from flash script.
+- COM3 monitoring works via pyserial when no other app holds port.
+
+### Latest scalar-memory finding
+- What was broken:
+  - The generated scalar package hardcoded its input tensor and several internal `addr_base` entries at `0x34100000`.
+  - That region overlapped the live app `.bss` / runtime footprint in the current link, so the AI runtime was reading and writing through an address window that was not actually private to the model.
+  - The failure showed up as an imprecise bus fault / corrupted register state during the first scalar preprocess sweep, which made it look like preprocess math or stack corruption at first.
+- What was not the root cause:
+  - The row-loop logic itself.
+  - The luma-only helper chain.
+  - The AI worker stack, once we verified and shrank it below the model input region.
+- Why the fix worked:
+  - Moving the scalar package to `0x34110000` put the model input window above the app runtime footprint.
+  - After that shift, the scalar contract reported `addr=0x34110000`, preprocess completed, and full scalar inference/logging ran normally.
+- The scalar ST AI package was hardcoding its input tensor and several internal `addr_base` entries at `0x34100000`.
+- That address overlapped the live app `.bss` / runtime region in the current link, so the AI runtime was reading and writing through a memory window that was not private to the model.
+- Current fix applied in `st_ai_output/packages/prod_model_v0.4_scalar_int8/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8.c` and its workspace copy:
+  - input buffer and matching `addr_base` entries shifted to `0x34110000`
+- `mingw32-make -j8 all` in `firmware/stm32/n657/Appli/Debug` completed successfully after the shift.
+- Scalar preprocess and full scalar inference both run successfully with the restored fast path.
+

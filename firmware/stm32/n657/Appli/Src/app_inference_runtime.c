@@ -181,18 +181,8 @@ bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
 	}
 
 	(void) memcpy(camera_ai_frame_snapshot, frame_ptr, (size_t) frame_length);
-	DebugConsole_Printf(
-			"[AI] Dry-run snapshot copied: src=%p dst=%p len=%lu first8=[%02X %02X %02X %02X %02X %02X %02X %02X]\r\n",
-			(const void *) frame_ptr, (void *) camera_ai_frame_snapshot,
-			(unsigned long) frame_length, camera_ai_frame_snapshot[0],
-			camera_ai_frame_snapshot[1], camera_ai_frame_snapshot[2],
-			camera_ai_frame_snapshot[3], camera_ai_frame_snapshot[4],
-			camera_ai_frame_snapshot[5], camera_ai_frame_snapshot[6],
-			camera_ai_frame_snapshot[7]);
-
-	DebugConsole_Printf(
-			"[AI] Queueing dry-run request: ptr=%p length=%lu\r\n",
-			(void *) camera_ai_frame_snapshot, (unsigned long) frame_length);
+	(void) DebugConsole_WriteString("[AI] Dry-run snapshot copied.\r\n");
+	(void) DebugConsole_WriteString("[AI] Queueing dry-run request.\r\n");
 
 	camera_ai_request_frame_ptr = camera_ai_frame_snapshot;
 	camera_ai_request_frame_length = frame_length;
@@ -230,10 +220,7 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 		camera_ai_request_frame_ptr = NULL;
 		camera_ai_request_frame_length = 0U;
 
-		DebugConsole_Printf(
-				"[AI] Worker dequeued frame: ptr=%p length=%lu semaphore_status=%u\r\n",
-				(void *) frame_ptr, (unsigned long) frame_length,
-				(unsigned int) request_status);
+		(void) DebugConsole_WriteString("[AI] Worker dequeued frame.\r\n");
 
 		if ((frame_ptr == NULL) || (frame_length == 0U)) {
 			DebugConsole_Printf(
@@ -265,14 +252,14 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 						sizeof(inference_line), "[AI] Inference exact: ",
 						result);
 				(void) DebugConsole_WriteString(inference_line);
-				DebugConsole_Printf("[AI] Inference bits=0x%08lx\r\n",
-						(unsigned long) bits.u);
+				(void) bits;
 				if (inference_log_thread_created) {
 					(void) tx_queue_send(&inference_log_queue, &bits.u,
 							TX_NO_WAIT);
 				}
 			}
 		}
+
 	}
 }
 
@@ -342,7 +329,7 @@ static VOID InferenceLogThread_Entry(ULONG thread_input) {
 
 			if (strcmp(new_date, today_date) != 0) {
 				(void) memcpy(today_date, new_date, sizeof(today_date));
-				int written = snprintf(log_file_name, sizeof(log_file_name),
+				int written = DebugConsole_Snprintf(log_file_name, sizeof(log_file_name),
 						"%s/%s.csv", INFERENCE_LOG_DIRECTORY_NAME, today_date);
 				if ((written <= 0)
 						|| ((size_t) written >= sizeof(log_file_name))) {
@@ -434,7 +421,7 @@ static VOID InferenceLogThread_Entry(ULONG thread_input) {
 				break;
 			}
 
-			int written = snprintf(row, sizeof(row), "%s,",
+			int written = DebugConsole_Snprintf(row, sizeof(row), "%s,",
 					rtc_timestamp);
 			if ((written <= 0) || ((size_t) written >= sizeof(row))) {
 				DebugConsole_Printf(

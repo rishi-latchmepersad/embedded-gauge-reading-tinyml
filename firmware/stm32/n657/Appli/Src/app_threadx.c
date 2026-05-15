@@ -126,6 +126,7 @@ extern I2C_HandleTypeDef hi2c2;
 /* USER CODE BEGIN PFP */
 
 static VOID CameraHeartbeatThread_Entry(ULONG thread_input);
+static VOID AppThreadX_StackErrorHandler(TX_THREAD *thread_ptr);
 
 /**
  * @brief ThreadX entry point used to run camera bring-up diagnostics.
@@ -198,6 +199,16 @@ UINT App_ThreadX_Start(void) {
 		camera_capture_cmw_mutex_created = true;
 
 		camera_capture_sync_created = true;
+	}
+
+	{
+		const UINT stack_notify_status =
+				tx_thread_stack_error_notify(AppThreadX_StackErrorHandler);
+		if (stack_notify_status != TX_SUCCESS) {
+			DebugConsole_Printf(
+					"[CAMERA][THREAD] Failed to register stack error callback, status=%lu\r\n",
+					(unsigned long) stack_notify_status);
+		}
 	}
 
 	{
@@ -301,6 +312,29 @@ UINT App_ThreadX_Start(void) {
 	}
 
 	return TX_SUCCESS;
+}
+
+/**
+ * @brief ThreadX stack overflow/underflow callback.
+ * @param thread_ptr Thread that tripped stack checking.
+ */
+static VOID AppThreadX_StackErrorHandler(TX_THREAD *thread_ptr) {
+	const CHAR *thread_name = "unknown";
+
+	if ((thread_ptr != TX_NULL) && (thread_ptr->tx_thread_name != TX_NULL)) {
+		thread_name = thread_ptr->tx_thread_name;
+	}
+
+	DebugConsole_Printf(
+			"[FAULT] ThreadX stack error: thread=%s stack_start=%p stack_end=%p stack_ptr=%p\r\n",
+			thread_name,
+			(thread_ptr != TX_NULL) ? thread_ptr->tx_thread_stack_start : TX_NULL,
+			(thread_ptr != TX_NULL) ? thread_ptr->tx_thread_stack_end : TX_NULL,
+			(thread_ptr != TX_NULL) ? thread_ptr->tx_thread_stack_ptr : TX_NULL);
+	BSP_LED_On(LED_RED);
+	while (1) {
+		__NOP();
+	}
 }
 
 /**

@@ -12,7 +12,6 @@
  * This software is licensed under terms that can be found in the LICENSE file
  * in the root directory of this software component.
  * If no LICENSE file comes with this software, it is provided AS-IS.
- *
  ******************************************************************************
  */
 /* USER CODE END Header */
@@ -88,10 +87,39 @@ extern uint32_t __enoncacheable;
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-int __io_putchar(int ch)
-{
-  HAL_UART_Transmit(&hlpuart1, (uint8_t *)&ch, 1, 10);
-  return ch;
+int __io_putchar(int ch) {
+	HAL_UART_Transmit(&hlpuart1, (uint8_t*) &ch, 1, 10);
+	return ch;
+}
+
+/**
+ * @brief Log the MCU reset source flags before clearing them.
+ *
+ * This helps distinguish a hard fault, watchdog reset, brown-out, or pin reset
+ * when the board appears to reboot during scalar preprocessing.
+ */
+static void App_LogResetCause(void) {
+	char line[192] = { 0 };
+	const unsigned int pin =
+			(__HAL_RCC_GET_FLAG(RCC_FLAG_PINRST) != RESET) ? 1U : 0U;
+	const unsigned int por =
+			(__HAL_RCC_GET_FLAG(RCC_FLAG_PORRST) != RESET) ? 1U : 0U;
+	const unsigned int bor =
+			(__HAL_RCC_GET_FLAG(RCC_FLAG_BORRST) != RESET) ? 1U : 0U;
+	const unsigned int sft =
+			(__HAL_RCC_GET_FLAG(RCC_FLAG_SFTRST) != RESET) ? 1U : 0U;
+	const unsigned int iwdg =
+			(__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST) != RESET) ? 1U : 0U;
+	const unsigned int wwdg =
+			(__HAL_RCC_GET_FLAG(RCC_FLAG_WWDGRST) != RESET) ? 1U : 0U;
+	const unsigned int lck =
+			(__HAL_RCC_GET_FLAG(RCC_FLAG_LCKRST) != RESET) ? 1U : 0U;
+
+	(void) snprintf(line, sizeof(line),
+			"[BOOT] Reset cause flags: PIN=%u POR=%u BOR=%u SFT=%u IWDG=%u WWDG=%u LCK=%u\r\n",
+			pin, por, bor, sft, iwdg, wwdg, lck);
+	DebugConsole_WriteString(line);
+	__HAL_RCC_CLEAR_RESET_FLAGS();
 }
 
 /**
@@ -102,101 +130,94 @@ int __io_putchar(int ch)
  * The camera path needs the same PLL1/PLL4 setup used by the working FSBL
  * reference clock tree.
  */
-static void App_SystemClock_Config(void)
-{
-  RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
-  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+static void App_SystemClock_Config(void) {
+	RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = { 0 };
+	RCC_OscInitTypeDef RCC_OscInitStruct = { 0 };
+	RCC_ClkInitTypeDef RCC_ClkInitStruct = { 0 };
 
-  if (HAL_PWREx_ConfigSupply(PWR_EXTERNAL_SOURCE_SUPPLY) != HAL_OK)
-  {
-    Error_Handler();
-  }
+	if (HAL_PWREx_ConfigSupply(PWR_EXTERNAL_SOURCE_SUPPLY) != HAL_OK) {
+		Error_Handler();
+	}
 
-  if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK)
-  {
-    Error_Handler();
-  }
+	if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1)
+			!= HAL_OK) {
+		Error_Handler();
+	}
 
-  /* Keep HSI available while the PLL-backed system clock is reconfigured. */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSIDiv = RCC_HSI_DIV1;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL1.PLLState = RCC_PLL_NONE;
-  RCC_OscInitStruct.PLL2.PLLState = RCC_PLL_NONE;
-  RCC_OscInitStruct.PLL3.PLLState = RCC_PLL_NONE;
-  RCC_OscInitStruct.PLL4.PLLState = RCC_PLL_NONE;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
+	/* Keep HSI available while the PLL-backed system clock is reconfigured. */
+	RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+	RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+	RCC_OscInitStruct.HSIDiv = RCC_HSI_DIV1;
+	RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+	RCC_OscInitStruct.PLL1.PLLState = RCC_PLL_NONE;
+	RCC_OscInitStruct.PLL2.PLLState = RCC_PLL_NONE;
+	RCC_OscInitStruct.PLL3.PLLState = RCC_PLL_NONE;
+	RCC_OscInitStruct.PLL4.PLLState = RCC_PLL_NONE;
+	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
+		Error_Handler();
+	}
 
-  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_TIM;
-  PeriphClkInitStruct.TIMPresSelection = RCC_TIMPRES_DIV1;
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
+	PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_TIM;
+	PeriphClkInitStruct.TIMPresSelection = RCC_TIMPRES_DIV1;
+	if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK) {
+		Error_Handler();
+	}
 
-  HAL_RCC_GetClockConfig(&RCC_ClkInitStruct);
-  if ((RCC_ClkInitStruct.CPUCLKSource == RCC_CPUCLKSOURCE_IC1) ||
-      (RCC_ClkInitStruct.SYSCLKSource == RCC_SYSCLKSOURCE_IC2_IC6_IC11))
-  {
-    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_CPUCLK | RCC_CLOCKTYPE_SYSCLK;
-    RCC_ClkInitStruct.CPUCLKSource = RCC_CPUCLKSOURCE_HSI;
-    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
-    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct) != HAL_OK)
-    {
-      Error_Handler();
-    }
-  }
+	HAL_RCC_GetClockConfig(&RCC_ClkInitStruct);
+	if ((RCC_ClkInitStruct.CPUCLKSource == RCC_CPUCLKSOURCE_IC1)
+			|| (RCC_ClkInitStruct.SYSCLKSource == RCC_SYSCLKSOURCE_IC2_IC6_IC11)) {
+		RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_CPUCLK
+				| RCC_CLOCKTYPE_SYSCLK;
+		RCC_ClkInitStruct.CPUCLKSource = RCC_CPUCLKSOURCE_HSI;
+		RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+		if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct) != HAL_OK) {
+			Error_Handler();
+		}
+	}
 
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_NONE;
-  RCC_OscInitStruct.PLL1.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL1.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL1.PLLM = 4;
-  RCC_OscInitStruct.PLL1.PLLN = 75;
-  RCC_OscInitStruct.PLL1.PLLFractional = 0;
-  RCC_OscInitStruct.PLL1.PLLP1 = 1;
-  RCC_OscInitStruct.PLL1.PLLP2 = 1;
-  RCC_OscInitStruct.PLL2.PLLState = RCC_PLL_NONE;
-  RCC_OscInitStruct.PLL3.PLLState = RCC_PLL_NONE;
-  RCC_OscInitStruct.PLL4.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL4.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL4.PLLM = 1;
-  RCC_OscInitStruct.PLL4.PLLN = 25;
-  RCC_OscInitStruct.PLL4.PLLFractional = 0;
-  RCC_OscInitStruct.PLL4.PLLP1 = 1;
-  RCC_OscInitStruct.PLL4.PLLP2 = 1;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
+	RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_NONE;
+	RCC_OscInitStruct.PLL1.PLLState = RCC_PLL_ON;
+	RCC_OscInitStruct.PLL1.PLLSource = RCC_PLLSOURCE_HSI;
+	RCC_OscInitStruct.PLL1.PLLM = 4;
+	RCC_OscInitStruct.PLL1.PLLN = 75;
+	RCC_OscInitStruct.PLL1.PLLFractional = 0;
+	RCC_OscInitStruct.PLL1.PLLP1 = 1;
+	RCC_OscInitStruct.PLL1.PLLP2 = 1;
+	RCC_OscInitStruct.PLL2.PLLState = RCC_PLL_NONE;
+	RCC_OscInitStruct.PLL3.PLLState = RCC_PLL_NONE;
+	RCC_OscInitStruct.PLL4.PLLState = RCC_PLL_ON;
+	RCC_OscInitStruct.PLL4.PLLSource = RCC_PLLSOURCE_HSI;
+	RCC_OscInitStruct.PLL4.PLLM = 1;
+	RCC_OscInitStruct.PLL4.PLLN = 25;
+	RCC_OscInitStruct.PLL4.PLLFractional = 0;
+	RCC_OscInitStruct.PLL4.PLLP1 = 1;
+	RCC_OscInitStruct.PLL4.PLLP2 = 1;
+	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
+		Error_Handler();
+	}
 
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_CPUCLK | RCC_CLOCKTYPE_HCLK |
-                                RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 |
-                                RCC_CLOCKTYPE_PCLK2 | RCC_CLOCKTYPE_PCLK5 |
-                                RCC_CLOCKTYPE_PCLK4;
-  RCC_ClkInitStruct.CPUCLKSource = RCC_CPUCLKSOURCE_IC1;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_IC2_IC6_IC11;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_HCLK_DIV4;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_APB1_DIV1;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV1;
-  RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV1;
-  RCC_ClkInitStruct.APB5CLKDivider = RCC_APB5_DIV1;
-  RCC_ClkInitStruct.IC1Selection.ClockSelection = RCC_ICCLKSOURCE_PLL1;
-  RCC_ClkInitStruct.IC1Selection.ClockDivider = 2;
-  RCC_ClkInitStruct.IC2Selection.ClockSelection = RCC_ICCLKSOURCE_PLL1;
-  RCC_ClkInitStruct.IC2Selection.ClockDivider = 3;
-  RCC_ClkInitStruct.IC6Selection.ClockSelection = RCC_ICCLKSOURCE_PLL1;
-  RCC_ClkInitStruct.IC6Selection.ClockDivider = 4;
-  RCC_ClkInitStruct.IC11Selection.ClockSelection = RCC_ICCLKSOURCE_PLL1;
-  RCC_ClkInitStruct.IC11Selection.ClockDivider = 3;
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
+	RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_CPUCLK | RCC_CLOCKTYPE_HCLK |
+	RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 |
+	RCC_CLOCKTYPE_PCLK2 | RCC_CLOCKTYPE_PCLK5 |
+	RCC_CLOCKTYPE_PCLK4;
+	RCC_ClkInitStruct.CPUCLKSource = RCC_CPUCLKSOURCE_IC1;
+	RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_IC2_IC6_IC11;
+	RCC_ClkInitStruct.AHBCLKDivider = RCC_HCLK_DIV4;
+	RCC_ClkInitStruct.APB1CLKDivider = RCC_APB1_DIV1;
+	RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV1;
+	RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV1;
+	RCC_ClkInitStruct.APB5CLKDivider = RCC_APB5_DIV1;
+	RCC_ClkInitStruct.IC1Selection.ClockSelection = RCC_ICCLKSOURCE_PLL1;
+	RCC_ClkInitStruct.IC1Selection.ClockDivider = 2;
+	RCC_ClkInitStruct.IC2Selection.ClockSelection = RCC_ICCLKSOURCE_PLL1;
+	RCC_ClkInitStruct.IC2Selection.ClockDivider = 3;
+	RCC_ClkInitStruct.IC6Selection.ClockSelection = RCC_ICCLKSOURCE_PLL1;
+	RCC_ClkInitStruct.IC6Selection.ClockDivider = 4;
+	RCC_ClkInitStruct.IC11Selection.ClockSelection = RCC_ICCLKSOURCE_PLL1;
+	RCC_ClkInitStruct.IC11Selection.ClockDivider = 3;
+	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct) != HAL_OK) {
+		Error_Handler();
+	}
 }
 
 /**
@@ -206,22 +227,23 @@ static void App_SystemClock_Config(void)
  * match the working IMX335 capture path. Keeping the final override here in
  * application code makes it much less likely to be lost on regeneration.
  */
-static void App_CameraKernelClock_Config(void)
-{
-  RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
+static void App_CameraKernelClock_Config(void) {
+	RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = { 0 };
 
-  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_DCMIPP | RCC_PERIPHCLK_CSI;
-  PeriphClkInitStruct.DcmippClockSelection = RCC_DCMIPPCLKSOURCE_IC17;
-  PeriphClkInitStruct.ICSelection[RCC_IC17].ClockSelection = RCC_ICCLKSOURCE_PLL1;
-  PeriphClkInitStruct.ICSelection[RCC_IC17].ClockDivider = 4;
-  PeriphClkInitStruct.ICSelection[RCC_IC18].ClockSelection = RCC_ICCLKSOURCE_PLL1;
-  /* 1.2 GHz / 50 = 24 MHz, which matches the IMX335 input clock setting. */
-  PeriphClkInitStruct.ICSelection[RCC_IC18].ClockDivider = 50;
+	PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_DCMIPP
+			| RCC_PERIPHCLK_CSI;
+	PeriphClkInitStruct.DcmippClockSelection = RCC_DCMIPPCLKSOURCE_IC17;
+	PeriphClkInitStruct.ICSelection[RCC_IC17].ClockSelection =
+			RCC_ICCLKSOURCE_PLL1;
+	PeriphClkInitStruct.ICSelection[RCC_IC17].ClockDivider = 4;
+	PeriphClkInitStruct.ICSelection[RCC_IC18].ClockSelection =
+			RCC_ICCLKSOURCE_PLL1;
+	/* 1.2 GHz / 50 = 24 MHz, which matches the IMX335 input clock setting. */
+	PeriphClkInitStruct.ICSelection[RCC_IC18].ClockDivider = 50;
 
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
+	if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK) {
+		Error_Handler();
+	}
 }
 
 /**
@@ -231,32 +253,31 @@ static void App_CameraKernelClock_Config(void)
  * dedicated memory section and protects that section with the MPU so DCMIPP
  * writes are visible to the CPU without stale-cache effects.
  */
-static void Setup_Mpu(void)
-{
-  MPU_Attributes_InitTypeDef attr = {0};
-  MPU_Region_InitTypeDef region = {0};
-  size_t noncacheable_size = (size_t)((uint8_t *)&__enoncacheable -
-                                      (uint8_t *)&__snoncacheable);
+static void Setup_Mpu(void) {
+	MPU_Attributes_InitTypeDef attr = { 0 };
+	MPU_Region_InitTypeDef region = { 0 };
+	size_t noncacheable_size = (size_t) ((uint8_t*) &__enoncacheable
+			- (uint8_t*) &__snoncacheable);
 
-  attr.Number = MPU_ATTRIBUTES_NUMBER0;
-  attr.Attributes = MPU_NOT_CACHEABLE;
-  HAL_MPU_ConfigMemoryAttributes(&attr);
+	attr.Number = MPU_ATTRIBUTES_NUMBER0;
+	attr.Attributes = MPU_NOT_CACHEABLE;
+	HAL_MPU_ConfigMemoryAttributes(&attr);
 
-  region.Enable = MPU_REGION_ENABLE;
-  region.Number = MPU_REGION_NUMBER0;
-  region.BaseAddress = (uint32_t)&__snoncacheable;
-  region.LimitAddress = (uint32_t)&__enoncacheable - 1U;
-  region.AttributesIndex = MPU_ATTRIBUTES_NUMBER0;
-  region.AccessPermission = MPU_REGION_ALL_RW;
-  region.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE;
-  region.DisablePrivExec = MPU_PRIV_INSTRUCTION_ACCESS_ENABLE;
-  region.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
-  HAL_MPU_ConfigRegion(&region);
-  HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
-  /* NOTE: do NOT memset the noncacheable buffer here — it lives at the NS alias
-   * address (0x24xxxxxx) which RISAF1 may not yet be open at this point in the
-   * init sequence.  The capture code fills the buffer with 0xAA sentinel before
-   * each DMA, so zero-init here is not required. */
+	region.Enable = MPU_REGION_ENABLE;
+	region.Number = MPU_REGION_NUMBER0;
+	region.BaseAddress = (uint32_t) &__snoncacheable;
+	region.LimitAddress = (uint32_t) &__enoncacheable - 1U;
+	region.AttributesIndex = MPU_ATTRIBUTES_NUMBER0;
+	region.AccessPermission = MPU_REGION_ALL_RW;
+	region.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE;
+	region.DisablePrivExec = MPU_PRIV_INSTRUCTION_ACCESS_ENABLE;
+	region.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
+	HAL_MPU_ConfigRegion(&region);
+	HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+	/* NOTE: do NOT memset the noncacheable buffer here — it lives at the NS alias
+	 * address (0x24xxxxxx) which RISAF1 may not yet be open at this point in the
+	 * init sequence.  The capture code fills the buffer with 0xAA sentinel before
+	 * each DMA, so zero-init here is not required. */
 }
 
 /* USER CODE END 0 */
@@ -265,15 +286,14 @@ static void Setup_Mpu(void)
  * @brief  The application entry point.
  * @retval int
  */
-int main(void)
-{
+int main(void) {
 
-  /* USER CODE BEGIN 1 */
+	/* USER CODE BEGIN 1 */
 
-  /* USER CODE END 1 */
+	/* USER CODE END 1 */
 
-  /* MCU Configuration--------------------------------------------------------*/
-  HAL_Init();
+	/* MCU Configuration--------------------------------------------------------*/
+	HAL_Init();
 
 #if APP_LED_ONLY_SMOKE_TEST
   MX_GPIO_Init();
@@ -290,117 +310,116 @@ int main(void)
   }
   return 0;
 #else
-  /* USER CODE BEGIN Init */
-  App_SystemClock_Config();
-  Setup_Mpu();
+	/* USER CODE BEGIN Init */
+	App_SystemClock_Config();
+	Setup_Mpu();
 
-  /* USER CODE END Init */
+	/* USER CODE END Init */
 
-  /* USER CODE BEGIN SysInit */
+	/* USER CODE BEGIN SysInit */
 
-  /* USER CODE END SysInit */
+	/* USER CODE END SysInit */
 
-  /* Initialize all configured peripherals */
-  MX_GPIO_Init();
-  MX_LPUART1_UART_Init();
-  MX_SPI5_Init();
-  MX_DCMIPP_Init();
-  App_CameraKernelClock_Config();
-  /* The FSBL drives PWR_EN (PD10) LOW to initialise it as an output. If the
-   * DS3231 or its I2C pull-up resistors are on that power rail it will be
-   * unpowered when we arrive here from the FSBL boot path. Assert the pin HIGH
-   * and wait for the DS3231 to complete its power-on sequence (t_VCC_SDA ≤ 1ms
-   * per datasheet, 10ms to be safe) before initialising I2C1. */
-  {
-    GPIO_InitTypeDef pwr_gpio = {0};
-    pwr_gpio.Pin = GPIO_PIN_10;
-    pwr_gpio.Mode = GPIO_MODE_OUTPUT_PP;
-    pwr_gpio.Pull = GPIO_NOPULL;
-    pwr_gpio.Speed = GPIO_SPEED_FREQ_LOW;
-    __HAL_RCC_GPIOD_CLK_ENABLE();
-    HAL_GPIO_Init(GPIOD, &pwr_gpio);
-    HAL_GPIO_WritePin(GPIOD, GPIO_PIN_10, GPIO_PIN_SET);
-    HAL_Delay(10U);
-  }
+	/* Initialize all configured peripherals */
+	MX_GPIO_Init();
+	MX_LPUART1_UART_Init();
+	MX_SPI5_Init();
+	MX_DCMIPP_Init();
+	App_CameraKernelClock_Config();
+	/* The FSBL drives PWR_EN (PD10) LOW to initialise it as an output. If the
+	 * DS3231 or its I2C pull-up resistors are on that power rail it will be
+	 * unpowered when we arrive here from the FSBL boot path. Assert the pin HIGH
+	 * and wait for the DS3231 to complete its power-on sequence (t_VCC_SDA ≤ 1ms
+	 * per datasheet, 10ms to be safe) before initialising I2C1. */
+	{
+		GPIO_InitTypeDef pwr_gpio = { 0 };
+		pwr_gpio.Pin = GPIO_PIN_10;
+		pwr_gpio.Mode = GPIO_MODE_OUTPUT_PP;
+		pwr_gpio.Pull = GPIO_NOPULL;
+		pwr_gpio.Speed = GPIO_SPEED_FREQ_LOW;
+		__HAL_RCC_GPIOD_CLK_ENABLE();
+		HAL_GPIO_Init(GPIOD, &pwr_gpio);
+		HAL_GPIO_WritePin(GPIOD, GPIO_PIN_10, GPIO_PIN_SET);
+		HAL_Delay(10U);
+	}
 
-  MX_I2C1_Init();
-  MX_I2C2_Init();
+	MX_I2C1_Init();
+	MX_I2C2_Init();
 
-  /* Run I2C scanner to detect INA219 and other devices */
-  (void)I2CScanner_Run();
+	/* Run I2C scanner to detect INA219 and other devices */
+	(void) I2CScanner_Run();
 
-  /* Bring up the console before the isolation setup so we can see exactly
-   * which early boot step stops making progress. */
-  DebugConsole_Configuration_t debug_console_configuration = {0};
-  debug_console_configuration.uart_handle_pointer = &hlpuart1;
-  debug_console_configuration.uart_transmit_timeout_milliseconds = 100U;
-  debug_console_configuration.lock_callback = NULL;
-  debug_console_configuration.unlock_callback = NULL;
-  (void)DebugConsole_Init(&debug_console_configuration);
-  DebugConsole_Printf("[BOOT] UART console initialized.\r\n");
-  DS3231_LogI2c1LineState();
-  DS3231_ScanI2C1Bus();
+	/* Bring up the console before the isolation setup so we can see exactly
+	 * which early boot step stops making progress. */
+	DebugConsole_Configuration_t debug_console_configuration = { 0 };
+	debug_console_configuration.uart_handle_pointer = &hlpuart1;
+	debug_console_configuration.uart_transmit_timeout_milliseconds = 100U;
+	debug_console_configuration.lock_callback = NULL;
+	debug_console_configuration.unlock_callback = NULL;
+	(void) DebugConsole_Init(&debug_console_configuration);
+	DebugConsole_Printf("[BOOT] UART console initialized.\r\n");
+	App_LogResetCause();
+	DS3231_LogI2c1LineState();
+	DS3231_ScanI2C1Bus();
 
-  /* Initialize INA219 power monitor on I2C1 */
-  (void)INA219_Init(&hi2c1);
-  (void)INA219_StartMonitoringThread();
+	/* Initialize INA219 power monitor on I2C1 */
+	(void) INA219_Init(&hi2c1);
+	(void) INA219_StartMonitoringThread();
 
-  /* Initialize inference metrics tracking */
-  Metrics_Init();
+	/* Initialize inference metrics tracking */
+	Metrics_Init();
 
-  DebugConsole_Printf("[BOOT] Entering SystemIsolation_Config().\r\n");
-  SystemIsolation_Config();
-  /* USER CODE BEGIN 2 */
-  DebugConsole_Printf(
-      "Welcome to STM32 world!\r\nApplication project is running...\r\n");
-  // set up the debug leds
-  DebugLed_Configuration_t debug_led_configuration = {
-      .bsp_led_for_color_array = {LED_BLUE, LED_RED, LED_GREEN},
-      .delay_milliseconds_callback = DelayMilliseconds_ThreadX};
+	DebugConsole_Printf("[BOOT] Entering SystemIsolation_Config().\r\n");
+	SystemIsolation_Config();
+	/* USER CODE BEGIN 2 */
+	DebugConsole_Printf(
+			"Welcome to STM32 world!\r\nApplication project is running...\r\n");
+	// set up the debug leds
+	DebugLed_Configuration_t debug_led_configuration = {
+			.bsp_led_for_color_array = { LED_BLUE, LED_RED, LED_GREEN },
+			.delay_milliseconds_callback = DelayMilliseconds_ThreadX };
 
-  (void)DebugLed_Initialize(&debug_led_configuration);
+	(void) DebugLed_Initialize(&debug_led_configuration);
 
-  DS3231_LogBootTime();
-  /* USER CODE END 2 */
+	DS3231_LogBootTime();
+	/* USER CODE END 2 */
 
-  /* Initialize leds */
-  BSP_LED_Init(LED_BLUE);
-  BSP_LED_Init(LED_RED);
-  BSP_LED_Init(LED_GREEN);
+	/* Initialize leds */
+	BSP_LED_Init(LED_BLUE);
+	BSP_LED_Init(LED_RED);
+	BSP_LED_Init(LED_GREEN);
 
-  /* Initialize USER push-button, will be used to trigger an interrupt each time it's pressed.*/
-  BSP_PB_Init(BUTTON_USER, BUTTON_MODE_EXTI);
+	/* Initialize USER push-button, will be used to trigger an interrupt each time it's pressed.*/
+	BSP_PB_Init(BUTTON_USER, BUTTON_MODE_EXTI);
 
-  MX_ThreadX_Init();
+	MX_ThreadX_Init();
 
-  /* USER CODE BEGIN BSP */
+	/* USER CODE BEGIN BSP */
 
-  /* USER CODE END BSP */
+	/* USER CODE END BSP */
 
-  /* We should never get here as control is now taken by the scheduler */
+	/* We should never get here as control is now taken by the scheduler */
 
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+	/* Infinite loop */
+	/* USER CODE BEGIN WHILE */
+	while (1) {
 
-    /* -- Sample board code for User push-button in interrupt mode ---- */
-    if (BspButtonState == BUTTON_PRESSED)
-    {
-      /* Update button state */
-      BspButtonState = BUTTON_RELEASED;
-      /* -- Sample board code to toggle leds ---- */
-      BSP_LED_Toggle(LED_BLUE);
-      BSP_LED_Toggle(LED_RED);
-      BSP_LED_Toggle(LED_GREEN);
+		/* -- Sample board code for User push-button in interrupt mode ---- */
+		if (BspButtonState == BUTTON_PRESSED) {
+			/* Update button state */
+			BspButtonState = BUTTON_RELEASED;
+			/* -- Sample board code to toggle leds ---- */
+			BSP_LED_Toggle(LED_BLUE);
+			BSP_LED_Toggle(LED_RED);
+			BSP_LED_Toggle(LED_GREEN);
 
-      /* ..... Perform your action ..... */
-    }
-    /* USER CODE END WHILE */
+			/* ..... Perform your action ..... */
+		}
+		/* USER CODE END WHILE */
 
-    /* USER CODE BEGIN 3 */
-  }
-  /* USER CODE END 3 */
+		/* USER CODE BEGIN 3 */
+	}
+	/* USER CODE END 3 */
 #endif
 }
 
@@ -409,16 +428,14 @@ int main(void)
  * @param None
  * @retval None
  */
-static void MX_DCMIPP_Init(void)
-{
-  hdcmipp.Instance = DCMIPP;
-  if (HAL_DCMIPP_Init(&hdcmipp) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* Keep CubeMX from owning a second raw PIPE0 path here.
-   * The middleware configures the active camera pipe itself, and leaving this
-   * function as a bare peripheral init avoids fighting that setup. */
+static void MX_DCMIPP_Init(void) {
+	hdcmipp.Instance = DCMIPP;
+	if (HAL_DCMIPP_Init(&hdcmipp) != HAL_OK) {
+		Error_Handler();
+	}
+	/* Keep CubeMX from owning a second raw PIPE0 path here.
+	 * The middleware configures the active camera pipe itself, and leaving this
+	 * function as a bare peripheral init avoids fighting that setup. */
 }
 
 /**
@@ -426,44 +443,41 @@ static void MX_DCMIPP_Init(void)
  * @param None
  * @retval None
  */
-static void MX_I2C1_Init(void)
-{
+static void MX_I2C1_Init(void) {
 
-  /* USER CODE BEGIN I2C1_Init 0 */
+	/* USER CODE BEGIN I2C1_Init 0 */
 
-  /* USER CODE END I2C1_Init 0 */
+	/* USER CODE END I2C1_Init 0 */
 
-  /* USER CODE BEGIN I2C1_Init 1 */
+	/* USER CODE BEGIN I2C1_Init 1 */
 
-  /* USER CODE END I2C1_Init 1 */
-  hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x009034B6;
-  hi2c1.Init.OwnAddress1 = 0;
-  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c1.Init.OwnAddress2 = 0;
-  hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
-  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
-  {
-    Error_Handler();
-  }
+	/* USER CODE END I2C1_Init 1 */
+	hi2c1.Instance = I2C1;
+	hi2c1.Init.Timing = 0x009034B6;
+	hi2c1.Init.OwnAddress1 = 0;
+	hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+	hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+	hi2c1.Init.OwnAddress2 = 0;
+	hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+	hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+	hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+	if (HAL_I2C_Init(&hi2c1) != HAL_OK) {
+		Error_Handler();
+	}
 
-  /** Configure Analogue filter */
-  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
-  {
-    Error_Handler();
-  }
+	/** Configure Analogue filter */
+	if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE)
+			!= HAL_OK) {
+		Error_Handler();
+	}
 
-  /** Configure Digital filter */
-  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN I2C1_Init 2 */
+	/** Configure Digital filter */
+	if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK) {
+		Error_Handler();
+	}
+	/* USER CODE BEGIN I2C1_Init 2 */
 
-  /* USER CODE END I2C1_Init 2 */
+	/* USER CODE END I2C1_Init 2 */
 }
 
 /**
@@ -471,46 +485,43 @@ static void MX_I2C1_Init(void)
  * @param None
  * @retval None
  */
-static void MX_I2C2_Init(void)
-{
+static void MX_I2C2_Init(void) {
 
-  /* USER CODE BEGIN I2C2_Init 0 */
+	/* USER CODE BEGIN I2C2_Init 0 */
 
-  /* USER CODE END I2C2_Init 0 */
+	/* USER CODE END I2C2_Init 0 */
 
-  /* USER CODE BEGIN I2C2_Init 1 */
+	/* USER CODE BEGIN I2C2_Init 1 */
 
-  /* USER CODE END I2C2_Init 1 */
-  hi2c2.Instance = I2C2;
-  hi2c2.Init.Timing = 0x009034B6;
-  hi2c2.Init.OwnAddress1 = 0;
-  hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c2.Init.OwnAddress2 = 0;
-  hi2c2.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
-  hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
-  {
-    Error_Handler();
-  }
+	/* USER CODE END I2C2_Init 1 */
+	hi2c2.Instance = I2C2;
+	hi2c2.Init.Timing = 0x009034B6;
+	hi2c2.Init.OwnAddress1 = 0;
+	hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+	hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+	hi2c2.Init.OwnAddress2 = 0;
+	hi2c2.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+	hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+	hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+	if (HAL_I2C_Init(&hi2c2) != HAL_OK) {
+		Error_Handler();
+	}
 
-  /** Configure Analogue filter
-   */
-  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c2, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
-  {
-    Error_Handler();
-  }
+	/** Configure Analogue filter
+	 */
+	if (HAL_I2CEx_ConfigAnalogFilter(&hi2c2, I2C_ANALOGFILTER_ENABLE)
+			!= HAL_OK) {
+		Error_Handler();
+	}
 
-  /** Configure Digital filter
-   */
-  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c2, 0) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN I2C2_Init 2 */
+	/** Configure Digital filter
+	 */
+	if (HAL_I2CEx_ConfigDigitalFilter(&hi2c2, 0) != HAL_OK) {
+		Error_Handler();
+	}
+	/* USER CODE BEGIN I2C2_Init 2 */
 
-  /* USER CODE END I2C2_Init 2 */
+	/* USER CODE END I2C2_Init 2 */
 }
 
 /**
@@ -518,46 +529,43 @@ static void MX_I2C2_Init(void)
  * @param None
  * @retval None
  */
-static void MX_LPUART1_UART_Init(void)
-{
+static void MX_LPUART1_UART_Init(void) {
 
-  /* USER CODE BEGIN LPUART1_Init 0 */
+	/* USER CODE BEGIN LPUART1_Init 0 */
 
-  /* USER CODE END LPUART1_Init 0 */
+	/* USER CODE END LPUART1_Init 0 */
 
-  /* USER CODE BEGIN LPUART1_Init 1 */
+	/* USER CODE BEGIN LPUART1_Init 1 */
 
-  /* USER CODE END LPUART1_Init 1 */
-  hlpuart1.Instance = LPUART1;
-  hlpuart1.Init.BaudRate = 115200;
-  hlpuart1.Init.WordLength = UART_WORDLENGTH_8B;
-  hlpuart1.Init.StopBits = UART_STOPBITS_1;
-  hlpuart1.Init.Parity = UART_PARITY_NONE;
-  hlpuart1.Init.Mode = UART_MODE_TX_RX;
-  hlpuart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  hlpuart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  hlpuart1.Init.ClockPrescaler = UART_PRESCALER_DIV1;
-  hlpuart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  hlpuart1.FifoMode = UART_FIFOMODE_DISABLE;
-  if (HAL_UART_Init(&hlpuart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_UARTEx_SetTxFifoThreshold(&hlpuart1, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_UARTEx_SetRxFifoThreshold(&hlpuart1, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_UARTEx_DisableFifoMode(&hlpuart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN LPUART1_Init 2 */
+	/* USER CODE END LPUART1_Init 1 */
+	hlpuart1.Instance = LPUART1;
+	hlpuart1.Init.BaudRate = 115200;
+	hlpuart1.Init.WordLength = UART_WORDLENGTH_8B;
+	hlpuart1.Init.StopBits = UART_STOPBITS_1;
+	hlpuart1.Init.Parity = UART_PARITY_NONE;
+	hlpuart1.Init.Mode = UART_MODE_TX_RX;
+	hlpuart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+	hlpuart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+	hlpuart1.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+	hlpuart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+	hlpuart1.FifoMode = UART_FIFOMODE_DISABLE;
+	if (HAL_UART_Init(&hlpuart1) != HAL_OK) {
+		Error_Handler();
+	}
+	if (HAL_UARTEx_SetTxFifoThreshold(&hlpuart1, UART_TXFIFO_THRESHOLD_1_8)
+			!= HAL_OK) {
+		Error_Handler();
+	}
+	if (HAL_UARTEx_SetRxFifoThreshold(&hlpuart1, UART_RXFIFO_THRESHOLD_1_8)
+			!= HAL_OK) {
+		Error_Handler();
+	}
+	if (HAL_UARTEx_DisableFifoMode(&hlpuart1) != HAL_OK) {
+		Error_Handler();
+	}
+	/* USER CODE BEGIN LPUART1_Init 2 */
 
-  /* USER CODE END LPUART1_Init 2 */
+	/* USER CODE END LPUART1_Init 2 */
 }
 
 /**
@@ -565,135 +573,157 @@ static void MX_LPUART1_UART_Init(void)
  * @param None
  * @retval None
  */
-static void SystemIsolation_Config(void)
-{
+static void SystemIsolation_Config(void) {
 
-  /* USER CODE BEGIN RIF_Init 0 */
+	/* USER CODE BEGIN RIF_Init 0 */
 
-  /* USER CODE END RIF_Init 0 */
+	/* USER CODE END RIF_Init 0 */
 
-  /* set all required IPs as secure privileged */
-  __HAL_RCC_RIFSC_CLK_ENABLE();
-  /* RISAF (memory region access filter) needs its own AHB3 clock. Without
-   * this, writes to RISAF2_S->REG[0].CFGR are silently dropped. */
-  __HAL_RCC_RISAF_CLK_ENABLE();
+	/* set all required IPs as secure privileged */
+	__HAL_RCC_RIFSC_CLK_ENABLE();
+	/* RISAF (memory region access filter) needs its own AHB3 clock. Without
+	 * this, writes to RISAF2_S->REG[0].CFGR are silently dropped. */
+	__HAL_RCC_RISAF_CLK_ENABLE();
 
-  /*RIMC configuration*/
-  RIMC_MasterConfig_t dcmipp_master = {0};
-  RIMC_MasterConfig_t eth1_master = {0};
+	/*RIMC configuration*/
+	RIMC_MasterConfig_t dcmipp_master = { 0 };
+	RIMC_MasterConfig_t eth1_master = { 0 };
 
-  dcmipp_master.MasterCID = RIF_CID_1;
-  /* The ST forum fix for the N6 raw-dump/HPDMA symptom configures DCMIPP as
-   * secure and privileged on both the master and slave sides. We mirror that
-   * here so Pipe0 follows the same isolation model as the known-good setup. */
-  dcmipp_master.SecPriv = RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV;
-  HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_DCMIPP, &dcmipp_master);
-  HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_DCMIPP,
-                                        RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
+	dcmipp_master.MasterCID = RIF_CID_1;
+	/* The ST forum fix for the N6 raw-dump/HPDMA symptom configures DCMIPP as
+	 * secure and privileged on both the master and slave sides. We mirror that
+	 * here so Pipe0 follows the same isolation model as the known-good setup. */
+	dcmipp_master.SecPriv = RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV;
+	HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_DCMIPP,
+			&dcmipp_master);
+	HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_DCMIPP,
+	RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
 
-  eth1_master.MasterCID = RIF_CID_1;
-  eth1_master.SecPriv = RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_NPRIV;
-  HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_ETH1, &eth1_master);
+	eth1_master.MasterCID = RIF_CID_1;
+	eth1_master.SecPriv = RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_NPRIV;
+	HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_ETH1, &eth1_master);
 
-  /* RIF-Aware IPs Config */
+	/* RIF-Aware IPs Config */
 
-  /* set up GPIO configuration */
-  HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_0, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_3, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_5, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_7, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_10, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_11, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_0, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_3, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_6, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_7, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_10, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_11, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOD, GPIO_PIN_2, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOD, GPIO_PIN_10, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_3, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_5, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_6, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_15, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOG, GPIO_PIN_1, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOG, GPIO_PIN_2, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPION, GPIO_PIN_7, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
-  HAL_GPIO_ConfigPinAttributes(GPIOO, GPIO_PIN_5, GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	/* set up GPIO configuration */
+	HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_0,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_3,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_5,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_7,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_10,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_11,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_0,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_3,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_6,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_7,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_10,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOB, GPIO_PIN_11,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOD, GPIO_PIN_2,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOD, GPIO_PIN_10,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_3,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_5,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_6,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOE, GPIO_PIN_15,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOG, GPIO_PIN_1,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOG, GPIO_PIN_2,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPION, GPIO_PIN_7,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
+	HAL_GPIO_ConfigPinAttributes(GPIOO, GPIO_PIN_5,
+			GPIO_PIN_SEC | GPIO_PIN_NPRIV);
 
-  /* USER CODE BEGIN RIF_Init 1 */
+	/* USER CODE BEGIN RIF_Init 1 */
 
-  /* Disable all RIF security on AXISRAM1/2 so any master (including DCMIPP,
-   * whose AXI transactions arrive non-secure regardless of RIMC config) can
-   * read and write freely. RISC: non-secure, non-privileged. RISAF: BREN=0
-   * (filter disabled — all accesses pass through). */
-  HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RCC_PERIPH_INDEX_AXISRAM1,
-                                        RIF_ATTRIBUTE_NPRIV);
-  HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RCC_PERIPH_INDEX_AXISRAM2,
-                                        RIF_ATTRIBUTE_NPRIV);
+	/* Disable all RIF security on AXISRAM1/2 so any master (including DCMIPP,
+	 * whose AXI transactions arrive non-secure regardless of RIMC config) can
+	 * read and write freely. RISC: non-secure, non-privileged. RISAF: BREN=0
+	 * (filter disabled — all accesses pass through). */
+	HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RCC_PERIPH_INDEX_AXISRAM1,
+	RIF_ATTRIBUTE_NPRIV);
+	HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RCC_PERIPH_INDEX_AXISRAM2,
+	RIF_ATTRIBUTE_NPRIV);
 
-  {
-    volatile uint32_t r1_cfgr;
-    volatile uint32_t r2_cfgr;
-    volatile uint32_t r2_cidcfgr;
-    volatile uint32_t r2_startr;
-    volatile uint32_t r2_endr;
-    volatile uint32_t r3_cfgr;
-    volatile uint32_t r3_cidcfgr;
+	{
+		volatile uint32_t r1_cfgr;
+		volatile uint32_t r2_cfgr;
+		volatile uint32_t r2_cidcfgr;
+		volatile uint32_t r2_startr;
+		volatile uint32_t r2_endr;
+		volatile uint32_t r3_cfgr;
+		volatile uint32_t r3_cidcfgr;
 
-    /* RISAF1 guards SRAM1 NS alias — disable the filter (belt-and-suspenders). */
-    RISAF1_NS->REG[0].STARTR = 0x00000000U;
-    RISAF1_NS->REG[0].ENDR = 0x000FFFFFU;
-    RISAF1_NS->REG[0].CIDCFGR = 0x00000000U;
-    RISAF1_NS->REG[0].CFGR = 0x00000000U; /* BREN=0, SEC=0 — no filtering */
-    RISAF1_NS->IACR = 0xFFFFFFFFU;        /* clear any stale illegal-access flags */
+		/* RISAF1 guards SRAM1 NS alias — disable the filter (belt-and-suspenders). */
+		RISAF1_NS->REG[0].STARTR = 0x00000000U;
+		RISAF1_NS->REG[0].ENDR = 0x000FFFFFU;
+		RISAF1_NS->REG[0].CIDCFGR = 0x00000000U;
+		RISAF1_NS->REG[0].CFGR = 0x00000000U; /* BREN=0, SEC=0 — no filtering */
+		RISAF1_NS->IACR = 0xFFFFFFFFU; /* clear any stale illegal-access flags */
 
-    /* RISAF2 guards the AXISRAM1 secure alias — disable filters so DCMIPP
-     * (MSEC=1) can write to the capture buffer even when we move it to the
-     * non-secure alias for this A/B test. */
-    RISAF2_S->REG[0].STARTR = 0x00000000U;
-    RISAF2_S->REG[0].ENDR = 0x000FFFFFU;
-    RISAF2_S->REG[0].CIDCFGR = 0x00000000U;
-    RISAF2_S->REG[0].CFGR = 0x00000000U; /* BREN=0 — no filtering */
-    RISAF2_S->IACR = 0xFFFFFFFFU;
-    RISAF2_NS->REG[0].STARTR = 0x00000000U;
-    RISAF2_NS->REG[0].ENDR = 0x000FFFFFU;
-    RISAF2_NS->REG[0].CIDCFGR = 0x00000000U;
-    RISAF2_NS->REG[0].CFGR = 0x00000000U;
-    RISAF2_NS->IACR = 0xFFFFFFFFU;
+		/* RISAF2 guards the AXISRAM1 secure alias — disable filters so DCMIPP
+		 * (MSEC=1) can write to the capture buffer even when we move it to the
+		 * non-secure alias for this A/B test. */
+		RISAF2_S->REG[0].STARTR = 0x00000000U;
+		RISAF2_S->REG[0].ENDR = 0x000FFFFFU;
+		RISAF2_S->REG[0].CIDCFGR = 0x00000000U;
+		RISAF2_S->REG[0].CFGR = 0x00000000U; /* BREN=0 — no filtering */
+		RISAF2_S->IACR = 0xFFFFFFFFU;
+		RISAF2_NS->REG[0].STARTR = 0x00000000U;
+		RISAF2_NS->REG[0].ENDR = 0x000FFFFFU;
+		RISAF2_NS->REG[0].CIDCFGR = 0x00000000U;
+		RISAF2_NS->REG[0].CFGR = 0x00000000U;
+		RISAF2_NS->IACR = 0xFFFFFFFFU;
 
-    /* RISAF3 guards AXISRAM2 — disable the filter */
-    RISAF3_NS->REG[0].STARTR = 0x00000000U;
-    RISAF3_NS->REG[0].ENDR = 0x000FFFFFU;
-    RISAF3_NS->REG[0].CIDCFGR = 0x00000000U;
-    RISAF3_NS->REG[0].CFGR = 0x00000000U; /* BREN=0, SEC=0 — no filtering */
-    RISAF3_NS->IACR = 0xFFFFFFFFU;        /* clear any stale illegal-access flags */
+		/* RISAF3 guards AXISRAM2 — disable the filter */
+		RISAF3_NS->REG[0].STARTR = 0x00000000U;
+		RISAF3_NS->REG[0].ENDR = 0x000FFFFFU;
+		RISAF3_NS->REG[0].CIDCFGR = 0x00000000U;
+		RISAF3_NS->REG[0].CFGR = 0x00000000U; /* BREN=0, SEC=0 — no filtering */
+		RISAF3_NS->IACR = 0xFFFFFFFFU; /* clear any stale illegal-access flags */
 
-    /* Readback to confirm writes were accepted. */
-    r1_cfgr = RISAF1_NS->REG[0].CFGR;
-    r2_cfgr = RISAF2_NS->REG[0].CFGR;
-    r2_cidcfgr = RISAF2_NS->REG[0].CIDCFGR;
-    r2_startr = RISAF2_NS->REG[0].STARTR;
-    r2_endr = RISAF2_NS->REG[0].ENDR;
-    r3_cfgr = RISAF3_NS->REG[0].CFGR;
-    r3_cidcfgr = RISAF3_NS->REG[0].CIDCFGR;
-    DebugConsole_Printf(
-        "[RIF] RISAF1 REG0: CFGR=0x%08lX (NS alias 0x24xxxxxx)\r\n",
-        (unsigned long)r1_cfgr);
-    DebugConsole_Printf(
-        "[RIF] RISAF2 NS REG0: CFGR=0x%08lX CIDCFGR=0x%08lX STARTR=0x%08lX ENDR=0x%08lX | S CFGR=0x%08lX\r\n",
-        (unsigned long)r2_cfgr, (unsigned long)r2_cidcfgr,
-        (unsigned long)r2_startr, (unsigned long)r2_endr,
-        (unsigned long)RISAF2_S->REG[0].CFGR);
-    DebugConsole_Printf(
-        "[RIF] RISAF3 REG0: CFGR=0x%08lX CIDCFGR=0x%08lX\r\n",
-        (unsigned long)r3_cfgr, (unsigned long)r3_cidcfgr);
-  }
+		/* Readback to confirm writes were accepted. */
+		r1_cfgr = RISAF1_NS->REG[0].CFGR;
+		r2_cfgr = RISAF2_NS->REG[0].CFGR;
+		r2_cidcfgr = RISAF2_NS->REG[0].CIDCFGR;
+		r2_startr = RISAF2_NS->REG[0].STARTR;
+		r2_endr = RISAF2_NS->REG[0].ENDR;
+		r3_cfgr = RISAF3_NS->REG[0].CFGR;
+		r3_cidcfgr = RISAF3_NS->REG[0].CIDCFGR;
+		DebugConsole_Printf(
+				"[RIF] RISAF1 REG0: CFGR=0x%08lX (NS alias 0x24xxxxxx)\r\n",
+				(unsigned long) r1_cfgr);
+		DebugConsole_Printf(
+				"[RIF] RISAF2 NS REG0: CFGR=0x%08lX CIDCFGR=0x%08lX STARTR=0x%08lX ENDR=0x%08lX | S CFGR=0x%08lX\r\n",
+				(unsigned long) r2_cfgr, (unsigned long) r2_cidcfgr,
+				(unsigned long) r2_startr, (unsigned long) r2_endr,
+				(unsigned long) RISAF2_S->REG[0].CFGR);
+		DebugConsole_Printf(
+				"[RIF] RISAF3 REG0: CFGR=0x%08lX CIDCFGR=0x%08lX\r\n",
+				(unsigned long) r3_cfgr, (unsigned long) r3_cidcfgr);
+	}
 
-  /* USER CODE END RIF_Init 1 */
-  /* USER CODE BEGIN RIF_Init 2 */
+	/* USER CODE END RIF_Init 1 */
+	/* USER CODE BEGIN RIF_Init 2 */
 
-  /* USER CODE END RIF_Init 2 */
+	/* USER CODE END RIF_Init 2 */
 }
 
 /**
@@ -701,46 +731,44 @@ static void SystemIsolation_Config(void)
  * @param None
  * @retval None
  */
-static void MX_SPI5_Init(void)
-{
+static void MX_SPI5_Init(void) {
 
-  /* USER CODE BEGIN SPI5_Init 0 */
+	/* USER CODE BEGIN SPI5_Init 0 */
 
-  /* USER CODE END SPI5_Init 0 */
+	/* USER CODE END SPI5_Init 0 */
 
-  /* USER CODE BEGIN SPI5_Init 1 */
+	/* USER CODE BEGIN SPI5_Init 1 */
 
-  /* USER CODE END SPI5_Init 1 */
-  /* SPI5 parameter configuration*/
-  hspi5.Instance = SPI5;
-  hspi5.Init.Mode = SPI_MODE_MASTER;
-  hspi5.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi5.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi5.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi5.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi5.Init.NSS = SPI_NSS_SOFT;
-  hspi5.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_128;
-  hspi5.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi5.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi5.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi5.Init.CRCPolynomial = 0x7;
-  hspi5.Init.NSSPMode = SPI_NSS_PULSE_DISABLE;
-  hspi5.Init.NSSPolarity = SPI_NSS_POLARITY_LOW;
-  hspi5.Init.FifoThreshold = SPI_FIFO_THRESHOLD_01DATA;
-  hspi5.Init.MasterSSIdleness = SPI_MASTER_SS_IDLENESS_00CYCLE;
-  hspi5.Init.MasterInterDataIdleness = SPI_MASTER_INTERDATA_IDLENESS_00CYCLE;
-  hspi5.Init.MasterReceiverAutoSusp = SPI_MASTER_RX_AUTOSUSP_DISABLE;
-  hspi5.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_DISABLE;
-  hspi5.Init.IOSwap = SPI_IO_SWAP_DISABLE;
-  hspi5.Init.ReadyMasterManagement = SPI_RDY_MASTER_MANAGEMENT_INTERNALLY;
-  hspi5.Init.ReadyPolarity = SPI_RDY_POLARITY_HIGH;
-  if (HAL_SPI_Init(&hspi5) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN SPI5_Init 2 */
+	/* USER CODE END SPI5_Init 1 */
+	/* SPI5 parameter configuration*/
+	hspi5.Instance = SPI5;
+	hspi5.Init.Mode = SPI_MODE_MASTER;
+	hspi5.Init.Direction = SPI_DIRECTION_2LINES;
+	hspi5.Init.DataSize = SPI_DATASIZE_8BIT;
+	hspi5.Init.CLKPolarity = SPI_POLARITY_LOW;
+	hspi5.Init.CLKPhase = SPI_PHASE_1EDGE;
+	hspi5.Init.NSS = SPI_NSS_SOFT;
+	hspi5.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_128;
+	hspi5.Init.FirstBit = SPI_FIRSTBIT_MSB;
+	hspi5.Init.TIMode = SPI_TIMODE_DISABLE;
+	hspi5.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+	hspi5.Init.CRCPolynomial = 0x7;
+	hspi5.Init.NSSPMode = SPI_NSS_PULSE_DISABLE;
+	hspi5.Init.NSSPolarity = SPI_NSS_POLARITY_LOW;
+	hspi5.Init.FifoThreshold = SPI_FIFO_THRESHOLD_01DATA;
+	hspi5.Init.MasterSSIdleness = SPI_MASTER_SS_IDLENESS_00CYCLE;
+	hspi5.Init.MasterInterDataIdleness = SPI_MASTER_INTERDATA_IDLENESS_00CYCLE;
+	hspi5.Init.MasterReceiverAutoSusp = SPI_MASTER_RX_AUTOSUSP_DISABLE;
+	hspi5.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_DISABLE;
+	hspi5.Init.IOSwap = SPI_IO_SWAP_DISABLE;
+	hspi5.Init.ReadyMasterManagement = SPI_RDY_MASTER_MANAGEMENT_INTERNALLY;
+	hspi5.Init.ReadyPolarity = SPI_RDY_POLARITY_HIGH;
+	if (HAL_SPI_Init(&hspi5) != HAL_OK) {
+		Error_Handler();
+	}
+	/* USER CODE BEGIN SPI5_Init 2 */
 
-  /* USER CODE END SPI5_Init 2 */
+	/* USER CODE END SPI5_Init 2 */
 }
 
 /**
@@ -748,48 +776,47 @@ static void MX_SPI5_Init(void)
  * @param None
  * @retval None
  */
-static void MX_GPIO_Init(void)
-{
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
+static void MX_GPIO_Init(void) {
+	GPIO_InitTypeDef GPIO_InitStruct = { 0 };
+	/* USER CODE BEGIN MX_GPIO_Init_1 */
 
-  /* USER CODE END MX_GPIO_Init_1 */
+	/* USER CODE END MX_GPIO_Init_1 */
 
-  /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOE_CLK_ENABLE();
-  __HAL_RCC_GPIOO_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-  __HAL_RCC_GPIOG_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
+	/* GPIO Ports Clock Enable */
+	__HAL_RCC_GPIOE_CLK_ENABLE();
+	__HAL_RCC_GPIOO_CLK_ENABLE();
+	__HAL_RCC_GPIOB_CLK_ENABLE();
+	__HAL_RCC_GPIOG_CLK_ENABLE();
+	__HAL_RCC_GPIOA_CLK_ENABLE();
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(CAM_NRST_GPIO_Port, CAM_NRST_Pin, GPIO_PIN_SET);
+	/*Configure GPIO pin Output Level */
+	HAL_GPIO_WritePin(CAM_NRST_GPIO_Port, CAM_NRST_Pin, GPIO_PIN_SET);
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(SPI5_CS_GPIO_Port, SPI5_CS_Pin, GPIO_PIN_SET);
+	/*Configure GPIO pin Output Level */
+	HAL_GPIO_WritePin(SPI5_CS_GPIO_Port, SPI5_CS_Pin, GPIO_PIN_SET);
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(CAM1_GPIO_Port, CAM1_Pin, GPIO_PIN_RESET);
+	/*Configure GPIO pin Output Level */
+	HAL_GPIO_WritePin(CAM1_GPIO_Port, CAM1_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : CAM_NRST_Pin */
-  GPIO_InitStruct.Pin = CAM_NRST_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(CAM_NRST_GPIO_Port, &GPIO_InitStruct);
+	/*Configure GPIO pin : CAM_NRST_Pin */
+	GPIO_InitStruct.Pin = CAM_NRST_Pin;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(CAM_NRST_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : SPI5_CS_Pin CAM1_Pin */
-  GPIO_InitStruct.Pin = SPI5_CS_Pin | CAM1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+	/*Configure GPIO pins : SPI5_CS_Pin CAM1_Pin */
+	GPIO_InitStruct.Pin = SPI5_CS_Pin | CAM1_Pin;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
-  /* Keep camera module powered so the bring-up thread can probe it immediately. */
-  HAL_GPIO_WritePin(CAM1_GPIO_Port, CAM1_Pin, GPIO_PIN_SET);
+	/* USER CODE BEGIN MX_GPIO_Init_2 */
+	/* Keep camera module powered so the bring-up thread can probe it immediately. */
+	HAL_GPIO_WritePin(CAM1_GPIO_Port, CAM1_Pin, GPIO_PIN_SET);
 
-  /* USER CODE END MX_GPIO_Init_2 */
+	/* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
@@ -804,18 +831,16 @@ static void MX_GPIO_Init(void)
  * @param  htim : TIM handle
  * @retval None
  */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  /* USER CODE BEGIN Callback 0 */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+	/* USER CODE BEGIN Callback 0 */
 
-  /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM5)
-  {
-    HAL_IncTick();
-  }
-  /* USER CODE BEGIN Callback 1 */
+	/* USER CODE END Callback 0 */
+	if (htim->Instance == TIM5) {
+		HAL_IncTick();
+	}
+	/* USER CODE BEGIN Callback 1 */
 
-  /* USER CODE END Callback 1 */
+	/* USER CODE END Callback 1 */
 }
 
 /**
@@ -823,27 +848,23 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
  * @param Button Specifies the pressed button
  * @retval None
  */
-void BSP_PB_Callback(Button_TypeDef Button)
-{
-  if (Button == BUTTON_USER)
-  {
-    BspButtonState = BUTTON_PRESSED;
-  }
+void BSP_PB_Callback(Button_TypeDef Button) {
+	if (Button == BUTTON_USER) {
+		BspButtonState = BUTTON_PRESSED;
+	}
 }
 
 /**
  * @brief  This function is executed in case of error occurrence.
  * @retval None
  */
-void Error_Handler(void)
-{
-  /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
-  __disable_irq();
-  while (1)
-  {
-  }
-  /* USER CODE END Error_Handler_Debug */
+void Error_Handler(void) {
+	/* USER CODE BEGIN Error_Handler_Debug */
+	/* User can add his own implementation to report the HAL error return state */
+	__disable_irq();
+	while (1) {
+	}
+	/* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT
 /**

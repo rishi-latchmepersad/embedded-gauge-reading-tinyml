@@ -181,18 +181,41 @@ bool DebugConsole_WriteString(const char *null_terminated_string_pointer) {
  */
 bool DebugConsole_Printf(const char *format_string_pointer, ...) {
 	va_list variadic_argument_list;
-	bool result_value = false;
+	char formatted_output_buffer[DEBUG_CONSOLE_FORMAT_BUFFER_SIZE_BYTES];
+	int formatted_character_count = 0;
+	bool transmit_successful = false;
 
 	if (format_string_pointer == NULL) {
 		return false;
 	}
 
+	if (!DebugConsole_InternalLock()) {
+		return false;
+	}
+
+	formatted_output_buffer[0] = '\0';
+
 	va_start(variadic_argument_list, format_string_pointer);
-	result_value = DebugConsole_VPrintf(format_string_pointer,
-			(void*) &variadic_argument_list);
+	formatted_character_count = vsnprintf(formatted_output_buffer,
+			sizeof(formatted_output_buffer), format_string_pointer,
+			variadic_argument_list);
 	va_end(variadic_argument_list);
 
-	return result_value;
+	if (formatted_character_count < 0) {
+		DebugConsole_InternalUnlock();
+		return false;
+	}
+
+	if ((size_t) formatted_character_count >= sizeof(formatted_output_buffer)) {
+		formatted_output_buffer[sizeof(formatted_output_buffer) - 1U] = '\0';
+	}
+
+	transmit_successful = DebugConsole_InternalUartTransmitBlocking(
+			(const uint8_t*) formatted_output_buffer,
+			strlen(formatted_output_buffer));
+	DebugConsole_InternalUnlock();
+
+	return transmit_successful;
 }
 
 /**
@@ -212,6 +235,7 @@ bool DebugConsole_VPrintf(const char *format_string_pointer,
 		void *va_list_pointer) {
 	char formatted_output_buffer[DEBUG_CONSOLE_FORMAT_BUFFER_SIZE_BYTES];
 	int formatted_character_count = 0;
+	bool transmit_successful = false;
 
 	if (format_string_pointer == NULL) {
 		return false;
@@ -221,13 +245,23 @@ bool DebugConsole_VPrintf(const char *format_string_pointer,
 		return false;
 	}
 
+	if (!DebugConsole_InternalLock()) {
+		return false;
+	}
+
 	formatted_output_buffer[0] = '\0';
 
-	formatted_character_count = vsnprintf(formatted_output_buffer,
-			sizeof(formatted_output_buffer), format_string_pointer,
-			*(va_list*) va_list_pointer);
+	{
+		va_list ap_copy;
+		va_copy(ap_copy, *(va_list*) va_list_pointer);
+		formatted_character_count = vsnprintf(formatted_output_buffer,
+				sizeof(formatted_output_buffer), format_string_pointer,
+				ap_copy);
+		va_end(ap_copy);
+	}
 
 	if (formatted_character_count < 0) {
+		DebugConsole_InternalUnlock();
 		return false;
 	}
 
@@ -237,7 +271,38 @@ bool DebugConsole_VPrintf(const char *format_string_pointer,
 		formatted_output_buffer[sizeof(formatted_output_buffer) - 1U] = '\0';
 	}
 
-	return DebugConsole_WriteString(formatted_output_buffer);
+	transmit_successful = DebugConsole_InternalUartTransmitBlocking(
+			(const uint8_t*) formatted_output_buffer,
+			strlen(formatted_output_buffer));
+	DebugConsole_InternalUnlock();
+
+	return transmit_successful;
+}
+
+int DebugConsole_Snprintf(char *destination_pointer, size_t destination_length,
+		const char *format_string_pointer, ...) {
+	va_list variadic_argument_list;
+	int formatted_character_count = -1;
+
+	if ((destination_pointer == NULL) || (destination_length == 0U) ||
+			(format_string_pointer == NULL)) {
+		return -1;
+	}
+
+	if (!DebugConsole_InternalLock()) {
+		return -1;
+	}
+
+	va_start(variadic_argument_list, format_string_pointer);
+	formatted_character_count = vsnprintf(destination_pointer,
+			destination_length, format_string_pointer,
+			variadic_argument_list);
+	va_end(variadic_argument_list);
+
+	destination_pointer[destination_length - 1U] = '\0';
+	DebugConsole_InternalUnlock();
+
+	return formatted_character_count;
 }
 
 static volatile uint32_t g_uart_busy = 0U;

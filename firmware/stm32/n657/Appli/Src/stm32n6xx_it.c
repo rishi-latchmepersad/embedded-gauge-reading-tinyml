@@ -24,6 +24,10 @@
 /* USER CODE BEGIN Includes */
 #include "cmw_camera.h"
 #include "debug_console.h"
+#include "stm32n6xx_ll_lpuart.h"
+#include <stdio.h>
+#include <string.h>
+#include <stddef.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -33,6 +37,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+extern volatile size_t app_ai_scalar_preprocess_last_row;
 
 /* USER CODE END PD */
 
@@ -57,6 +63,40 @@ extern DCMIPP_HandleTypeDef hdcmipp;
 extern volatile uint32_t camera_capture_csi_irq_count;
 extern volatile uint32_t camera_capture_dcmipp_irq_count;
 extern void CDNN0_IRQHandler(void);
+extern UART_HandleTypeDef hlpuart1;
+
+static void IT_RawUartWrite(const char *line)
+{
+  if (line == NULL)
+  {
+    return;
+  }
+
+  while (*line != '\0')
+  {
+    while (!LL_LPUART_IsActiveFlag_TXE_TXFNF(LPUART1))
+    {
+      __NOP();
+    }
+
+    LL_LPUART_TransmitData8(LPUART1, (uint8_t)*line);
+    line++;
+  }
+}
+
+static void IT_RawUartWriteHex32(uint32_t value)
+{
+  static const char hex_digits[] = "0123456789ABCDEF";
+  char text[11] = {'0', 'x', '0', '0', '0', '0', '0', '0', '0', '0', '\0'};
+
+  for (size_t i = 0U; i < 8U; i++)
+  {
+    const size_t shift = (7U - i) * 4U;
+    text[2U + i] = hex_digits[(value >> shift) & 0xFU];
+  }
+
+  IT_RawUartWrite(text);
+}
 
 static void IT_EnterFaultLedState(void)
 {
@@ -91,19 +131,29 @@ static void IT_LogFaultSnapshot(const char *fault_name, uint32_t stacked_pc, uin
   fault_sfar = SCB->SFAR;
 #endif
 
-  DebugConsole_Printf(
-      "[FAULT] %s PC=0x%08lX LR=0x%08lX CFSR=0x%08lX HFSR=0x%08lX DFSR=0x%08lX AFSR=0x%08lX MMFAR=0x%08lX BFAR=0x%08lX SFSR=0x%08lX SFAR=0x%08lX\r\n",
-      fault_name,
-      (unsigned long)stacked_pc,
-      (unsigned long)stacked_lr,
-      (unsigned long)fault_cfsr,
-      (unsigned long)fault_hfsr,
-      (unsigned long)fault_dfsr,
-      (unsigned long)fault_afsr,
-      (unsigned long)fault_mmar,
-      (unsigned long)fault_bfar,
-      (unsigned long)fault_sfsr,
-      (unsigned long)fault_sfar);
+  IT_RawUartWrite("[FAULT] ");
+  IT_RawUartWrite(fault_name);
+  IT_RawUartWrite(" PC=");
+  IT_RawUartWriteHex32(stacked_pc);
+  IT_RawUartWrite(" LR=");
+  IT_RawUartWriteHex32(stacked_lr);
+  IT_RawUartWrite(" CFSR=");
+  IT_RawUartWriteHex32(fault_cfsr);
+  IT_RawUartWrite(" HFSR=");
+  IT_RawUartWriteHex32(fault_hfsr);
+  IT_RawUartWrite(" DFSR=");
+  IT_RawUartWriteHex32(fault_dfsr);
+  IT_RawUartWrite(" AFSR=");
+  IT_RawUartWriteHex32(fault_afsr);
+  IT_RawUartWrite(" MMFAR=");
+  IT_RawUartWriteHex32(fault_mmar);
+  IT_RawUartWrite(" BFAR=");
+  IT_RawUartWriteHex32(fault_bfar);
+  IT_RawUartWrite(" SFSR=");
+  IT_RawUartWriteHex32(fault_sfsr);
+  IT_RawUartWrite(" SFAR=");
+  IT_RawUartWriteHex32(fault_sfar);
+  IT_RawUartWrite("\r\n");
 }
 
 void HardFault_Handler_C(uint32_t *stacked_regs, uint32_t exc_lr)
@@ -117,30 +167,97 @@ void HardFault_Handler_C(uint32_t *stacked_regs, uint32_t exc_lr)
   const uint32_t stacked_pc = stacked_regs[6];
   const uint32_t stacked_psr = stacked_regs[7];
 
-  (void)stacked_r0;
-  (void)stacked_r1;
-  (void)stacked_r2;
-  (void)stacked_r3;
-  (void)stacked_r12;
-  (void)stacked_psr;
   (void)exc_lr;
 
   IT_EnterFaultLedState();
   IT_LogFaultSnapshot("HardFault", stacked_pc, stacked_lr);
-  DebugConsole_Printf(
-      "[FAULT] HardFault regs SP=0x%08lX R0=0x%08lX R1=0x%08lX R2=0x%08lX R3=0x%08lX R12=0x%08lX PSR=0x%08lX\r\n",
-      (unsigned long)stacked_regs,
-      (unsigned long)stacked_r0,
-      (unsigned long)stacked_r1,
-      (unsigned long)stacked_r2,
-      (unsigned long)stacked_r3,
-      (unsigned long)stacked_r12,
-      (unsigned long)stacked_psr);
-  __BKPT(0);
+  IT_RawUartWrite("[FAULT] HardFault regs SP=");
+  IT_RawUartWriteHex32((uint32_t)stacked_regs);
+  IT_RawUartWrite(" R0=");
+  IT_RawUartWriteHex32(stacked_r0);
+  IT_RawUartWrite(" R1=");
+  IT_RawUartWriteHex32(stacked_r1);
+  IT_RawUartWrite(" R2=");
+  IT_RawUartWriteHex32(stacked_r2);
+  IT_RawUartWrite(" R3=");
+  IT_RawUartWriteHex32(stacked_r3);
+  IT_RawUartWrite(" R12=");
+  IT_RawUartWriteHex32(stacked_r12);
+  IT_RawUartWrite(" PSR=");
+  IT_RawUartWriteHex32(stacked_psr);
+  IT_RawUartWrite(" last_scalar_row=");
+  IT_RawUartWriteHex32((uint32_t)app_ai_scalar_preprocess_last_row);
+  IT_RawUartWrite("\r\n");
+  IT_RawUartWrite("[FAULT] HardFault latched; staying in fault loop.\r\n");
   while (1)
   {
     __NOP();
   }
+}
+
+static void IT_LogContextFault(const char *fault_name, uint32_t *stacked_regs, uint32_t exc_lr)
+{
+  const uint32_t stacked_r0 = stacked_regs[0];
+  const uint32_t stacked_r1 = stacked_regs[1];
+  const uint32_t stacked_r2 = stacked_regs[2];
+  const uint32_t stacked_r3 = stacked_regs[3];
+  const uint32_t stacked_r12 = stacked_regs[4];
+  const uint32_t stacked_lr = stacked_regs[5];
+  const uint32_t stacked_pc = stacked_regs[6];
+  const uint32_t stacked_psr = stacked_regs[7];
+
+  (void)exc_lr;
+
+  IT_EnterFaultLedState();
+  IT_LogFaultSnapshot(fault_name, stacked_pc, stacked_lr);
+  IT_RawUartWrite("[FAULT] ");
+  IT_RawUartWrite(fault_name);
+  IT_RawUartWrite(" regs SP=");
+  IT_RawUartWriteHex32((uint32_t)stacked_regs);
+  IT_RawUartWrite(" R0=");
+  IT_RawUartWriteHex32(stacked_r0);
+  IT_RawUartWrite(" R1=");
+  IT_RawUartWriteHex32(stacked_r1);
+  IT_RawUartWrite(" R2=");
+  IT_RawUartWriteHex32(stacked_r2);
+  IT_RawUartWrite(" R3=");
+  IT_RawUartWriteHex32(stacked_r3);
+  IT_RawUartWrite(" R12=");
+  IT_RawUartWriteHex32(stacked_r12);
+  IT_RawUartWrite(" PSR=");
+  IT_RawUartWriteHex32(stacked_psr);
+  IT_RawUartWrite(" EXC_LR=");
+  IT_RawUartWriteHex32(exc_lr);
+  IT_RawUartWrite(" last_scalar_row=");
+  IT_RawUartWriteHex32((uint32_t)app_ai_scalar_preprocess_last_row);
+  IT_RawUartWrite("\r\n");
+  IT_RawUartWrite("[FAULT] ");
+  IT_RawUartWrite(fault_name);
+  IT_RawUartWrite(" latched; staying in fault loop.\r\n");
+  while (1)
+  {
+    __NOP();
+  }
+}
+
+void MemManage_Handler_C(uint32_t *stacked_regs, uint32_t exc_lr)
+{
+  IT_LogContextFault("MemManage", stacked_regs, exc_lr);
+}
+
+void BusFault_Handler_C(uint32_t *stacked_regs, uint32_t exc_lr)
+{
+  IT_LogContextFault("BusFault", stacked_regs, exc_lr);
+}
+
+void UsageFault_Handler_C(uint32_t *stacked_regs, uint32_t exc_lr)
+{
+  IT_LogContextFault("UsageFault", stacked_regs, exc_lr);
+}
+
+void SecureFault_Handler_C(uint32_t *stacked_regs, uint32_t exc_lr)
+{
+  IT_LogContextFault("SecureFault", stacked_regs, exc_lr);
 }
 
 /**
@@ -209,65 +326,61 @@ void HardFault_Handler(void)
 /**
   * @brief This function handles Memory management fault.
   */
+void MemManage_Handler(void) __attribute__((naked));
 void MemManage_Handler(void)
 {
-  /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-  IT_EnterFaultLedState();
-  IT_LogFaultSnapshot("MemManage", 0U, 0U);
-  /* USER CODE END MemoryManagement_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_MemoryManagement_IRQn 0 */
-    /* USER CODE END W1_MemoryManagement_IRQn 0 */
-  }
+  __asm volatile(
+      "tst lr, #4                        \n"
+      "ite eq                            \n"
+      "mrseq r0, msp                     \n"
+      "mrsne r0, psp                     \n"
+      "mov r1, lr                        \n"
+      "b MemManage_Handler_C             \n");
 }
 
 /**
   * @brief This function handles Prefetch fault, memory access fault.
   */
+void BusFault_Handler(void) __attribute__((naked));
 void BusFault_Handler(void)
 {
-  /* USER CODE BEGIN BusFault_IRQn 0 */
-  IT_EnterFaultLedState();
-  IT_LogFaultSnapshot("BusFault", 0U, 0U);
-  /* USER CODE END BusFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_BusFault_IRQn 0 */
-    /* USER CODE END W1_BusFault_IRQn 0 */
-  }
+  __asm volatile(
+      "tst lr, #4                        \n"
+      "ite eq                            \n"
+      "mrseq r0, msp                     \n"
+      "mrsne r0, psp                     \n"
+      "mov r1, lr                        \n"
+      "b BusFault_Handler_C              \n");
 }
 
 /**
   * @brief This function handles Undefined instruction or illegal state.
   */
+void UsageFault_Handler(void) __attribute__((naked));
 void UsageFault_Handler(void)
 {
-  /* USER CODE BEGIN UsageFault_IRQn 0 */
-  IT_EnterFaultLedState();
-  IT_LogFaultSnapshot("UsageFault", 0U, 0U);
-  /* USER CODE END UsageFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_UsageFault_IRQn 0 */
-    /* USER CODE END W1_UsageFault_IRQn 0 */
-  }
+  __asm volatile(
+      "tst lr, #4                        \n"
+      "ite eq                            \n"
+      "mrseq r0, msp                     \n"
+      "mrsne r0, psp                     \n"
+      "mov r1, lr                        \n"
+      "b UsageFault_Handler_C            \n");
 }
 
 /**
   * @brief This function handles Secure fault.
   */
+void SecureFault_Handler(void) __attribute__((naked));
 void SecureFault_Handler(void)
 {
-  /* USER CODE BEGIN SecureFault_IRQn 0 */
-  IT_EnterFaultLedState();
-  IT_LogFaultSnapshot("SecureFault", 0U, 0U);
-  /* USER CODE END SecureFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_SecureFault_IRQn 0 */
-    /* USER CODE END W1_SecureFault_IRQn 0 */
-  }
+  __asm volatile(
+      "tst lr, #4                        \n"
+      "ite eq                            \n"
+      "mrseq r0, msp                     \n"
+      "mrsne r0, psp                     \n"
+      "mov r1, lr                        \n"
+      "b SecureFault_Handler_C           \n");
 }
 
 /**

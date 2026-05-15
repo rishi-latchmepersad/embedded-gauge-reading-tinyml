@@ -19,17 +19,22 @@ set "PROG=%CUBE%\STM32_Programmer_CLI.exe"
 set "ELDR=%CUBE%\ExternalLoader\MX25UM51245G_STM32N6570-NUCLEO.stldr"
 
 set SCRIPT_DIR=%~dp0
+set "REPO_ROOT=%SCRIPT_DIR%..\..\..\"
 set "FSBL_BIN=%SCRIPT_DIR%FSBL\Debug\n657_FSBL.bin"
 set "FSBL_TRUSTED=%SCRIPT_DIR%FSBL\Debug\FSBL_trusted.bin"
-set "SCALAR_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.xSPI2.raw"
-set "RECTIFIER_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.rectifier.xSPI2.raw"
-set "OBB_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.obb.xSPI2.raw"
+set "SCALAR_RAW=%REPO_ROOT%st_ai_output\atonbuf.xSPI2.raw"
+set "RECTIFIER_RAW=%REPO_ROOT%st_ai_output\atonbuf.rectifier.xSPI2.raw"
+set "OBB_RAW=%REPO_ROOT%st_ai_output\atonbuf.obb.xSPI2.raw"
+if not exist "%RECTIFIER_RAW%" set "RECTIFIER_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.rectifier.xSPI2.raw"
+if not exist "%OBB_RAW%" set "OBB_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.obb.xSPI2.raw"
 REM CubeProgrammer v2.21 does not accept .raw extension with -w; stage as .bin
 set "SCALAR_BIN=%SCRIPT_DIR%Appli\Debug\scalar_model_stage.bin"
 set "RECTIFIER_BIN=%SCRIPT_DIR%Appli\Debug\rectifier_model_stage.bin"
 set "OBB_BIN=%SCRIPT_DIR%Appli\Debug\obb_model_stage.bin"
 set "APP_BIN=%SCRIPT_DIR%Appli\Debug\n657_Appli.bin"
 set "APP_SIGN=%SCRIPT_DIR%Appli\Debug\n657_Appli_sign_new.bin"
+set "APP_SIGN_TMP=%SCRIPT_DIR%Appli\Debug\n657_Appli_sign_tmp.bin"
+set "APP_SIGN_FALLBACK=%SCRIPT_DIR%Appli\Debug\n657_Appli_Signed.bin"
 set "FLASH_MODEL=1"
 set "FLASH_APP=1"
 
@@ -91,6 +96,8 @@ if errorlevel 1 (
 echo.
 if "%FLASH_MODEL%"=="1" (
     echo === Step 4a: Flash scalar model at 0x70200000 ===
+    echo Scalar source: "%SCALAR_RAW%"
+    for %%I in ("%SCALAR_RAW%") do echo Scalar source size: %%~zI bytes
     copy /y "%SCALAR_RAW%" "%SCALAR_BIN%" >nul
     if errorlevel 1 (
         echo ERROR: Could not stage scalar model as .bin.
@@ -104,6 +111,8 @@ if "%FLASH_MODEL%"=="1" (
     echo Scalar model flashed at 0x70200000.
 
     echo === Step 4b: Flash rectifier model at 0x70600000 ===
+    echo Rectifier source: "%RECTIFIER_RAW%"
+    for %%I in ("%RECTIFIER_RAW%") do echo Rectifier source size: %%~zI bytes
     copy /y "%RECTIFIER_RAW%" "%RECTIFIER_BIN%" >nul
     if errorlevel 1 (
         echo ERROR: Could not stage rectifier model as .bin.
@@ -117,6 +126,8 @@ if "%FLASH_MODEL%"=="1" (
     echo Rectifier model flashed at 0x70600000.
 
     echo === Step 4c: Flash OBB model at 0x70700000 ===
+    echo OBB source: "%OBB_RAW%"
+    for %%I in ("%OBB_RAW%") do echo OBB source size: %%~zI bytes
     copy /y "%OBB_RAW%" "%OBB_BIN%" >nul
     if errorlevel 1 (
         echo ERROR: Could not stage OBB model as .bin.
@@ -135,7 +146,7 @@ if "%FLASH_MODEL%"=="1" (
 if "%FLASH_APP%"=="1" (
     echo.
     echo === Step 5: Sign application binary ===
-    set "APP_SIGN_TMP=%SCRIPT_DIR%Appli\Debug\n657_Appli_sign_%RANDOM%.bin"
+    if exist "%APP_SIGN_TMP%" del /f /q "%APP_SIGN_TMP%"
     "%SIGN%" -bin "%APP_BIN%" -nk -of 0x80000000 -t ssbl -hv 2.3 -o "%APP_SIGN_TMP%" -align
     if errorlevel 1 (
         echo ERROR: Signing failed.
@@ -144,7 +155,18 @@ if "%FLASH_APP%"=="1" (
     if exist "%APP_SIGN%" (
         del /f /q "%APP_SIGN%"
     )
-    move /y "%APP_SIGN_TMP%" "%APP_SIGN%" >nul
+    if exist "%APP_SIGN_TMP%" (
+        move /y "%APP_SIGN_TMP%" "%APP_SIGN%" >nul
+    ) else if exist "%APP_SIGN_FALLBACK%" (
+        copy /y "%APP_SIGN_FALLBACK%" "%APP_SIGN%" >nul
+    )
+    if not exist "%APP_SIGN%" (
+        echo ERROR: Signed application artifact not found.
+        echo Tried:
+        echo   - %APP_SIGN_TMP%
+        echo   - %APP_SIGN_FALLBACK%
+        exit /b 1
+    )
     echo Signed binary: %APP_SIGN%
 
     echo.

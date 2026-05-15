@@ -24,7 +24,9 @@ extern "C" {
 #define CAMERA_INIT_THREAD_STACK_SIZE_BYTES     16384U
 #define CAMERA_ISP_THREAD_STACK_SIZE_BYTES      4096U
 #define CAMERA_HEARTBEAT_THREAD_STACK_SIZE_BYTES 1024U
-#define CAMERA_AI_THREAD_STACK_SIZE_BYTES       32768U
+/* Keep the AI worker stack large enough for the OBB->scalar cascade, but
+ * small enough to stay below the ATON input tensor base at 0x34110000. */
+#define CAMERA_AI_THREAD_STACK_SIZE_BYTES      131072U
 #define BASELINE_RUNTIME_THREAD_STACK_SIZE_BYTES 16384U
 #define IMAGE_CLEANUP_THREAD_STACK_SIZE_BYTES    4096U
 

@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
 #include "debug_console.h"
 #include "ina219_power.h"
 #include "ds3231_clock.h"
@@ -40,6 +41,8 @@ static struct
 
 /* Private function prototypes -----------------------------------------------*/
 static float Metrics_ReadPower(void);
+static long Metrics_ToCenti(float value);
+static long Metrics_ToMilli(float value);
 
 /* Private functions ---------------------------------------------------------*/
 
@@ -54,6 +57,16 @@ static float Metrics_ReadPower(void)
         return measurement.power_mw;
     }
     return 0.0f;
+}
+
+static long Metrics_ToCenti(float value)
+{
+    return (long)lroundf(value * 100.0f);
+}
+
+static long Metrics_ToMilli(float value)
+{
+    return (long)lroundf(value * 1000.0f);
 }
 
 /* Public functions ----------------------------------------------------------*/
@@ -173,16 +186,23 @@ void Metrics_EndInference(float temperature_c)
 
     /* Log immediately (latency in ms for readability) */
     float latency_ms = (float)latency_us / 1000.0f;
+    const long latency_ms_centi = Metrics_ToCenti(latency_ms);
+    const long power_pre_centi = Metrics_ToCenti(record->power_pre_mw);
+    const long power_mid_centi = Metrics_ToCenti(record->power_mid_mw);
+    const long power_post_centi = Metrics_ToCenti(record->power_post_mw);
+    const long power_delta_centi = Metrics_ToCenti(record->power_delta_mw);
+    const long temp_centi = Metrics_ToCenti(temperature_c);
+
     DebugConsole_Printf(
-        "[METRICS] %s: latency=%.2f ms, power_pre=%.2fmW, power_mid=%.2fmW, "
-        "power_post=%.2fmW, delta=%.2fmW, temp=%.2fC\r\n",
+        "[METRICS] %s: latency=%ld.%02ld ms, power_pre=%ld.%02ldmW, power_mid=%ld.%02ldmW, "
+        "power_post=%ld.%02ldmW, delta=%ld.%02ldmW, temp=%ld.%02ldC\r\n",
         record->label,
-        latency_ms,
-        record->power_pre_mw,
-        record->power_mid_mw,
-        record->power_post_mw,
-        record->power_delta_mw,
-        temperature_c);
+        latency_ms_centi / 100L, labs(latency_ms_centi % 100L),
+        power_pre_centi / 100L, labs(power_pre_centi % 100L),
+        power_mid_centi / 100L, labs(power_mid_centi % 100L),
+        power_post_centi / 100L, labs(power_post_centi % 100L),
+        power_delta_centi / 100L, labs(power_delta_centi % 100L),
+        temp_centi / 100L, labs(temp_centi % 100L));
 
     /* Log to SD card in CSV format with ISO 8601 timestamp */
     char datetime_str[32];
@@ -190,30 +210,30 @@ void Metrics_EndInference(float temperature_c)
     if (App_Clock_GetCurrentTimestamp(datetime_str, sizeof(datetime_str)))
     {
         /* Format: 2024-01-15 14:30:25 */
-        snprintf(csv_line, sizeof(csv_line),
-                 "%s,%s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\r\n",
+        DebugConsole_Snprintf(csv_line, sizeof(csv_line),
+                 "%s,%s,%ld.%02ld,%ld.%02ld,%ld.%02ld,%ld.%02ld,%ld.%02ld,%ld.%02ld\r\n",
                  datetime_str,
                  record->label,
-                 latency_ms,
-                 record->power_pre_mw,
-                 record->power_mid_mw,
-                 record->power_post_mw,
-                 record->power_delta_mw,
-                 temperature_c);
+                 latency_ms_centi / 100L, labs(latency_ms_centi % 100L),
+                 power_pre_centi / 100L, labs(power_pre_centi % 100L),
+                 power_mid_centi / 100L, labs(power_mid_centi % 100L),
+                 power_post_centi / 100L, labs(power_post_centi % 100L),
+                 power_delta_centi / 100L, labs(power_delta_centi % 100L),
+                 temp_centi / 100L, labs(temp_centi % 100L));
     }
     else
     {
         /* Fallback to tick timestamp if RTC unavailable */
-        snprintf(csv_line, sizeof(csv_line),
-                 "%lu,%s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\r\n",
+        DebugConsole_Snprintf(csv_line, sizeof(csv_line),
+                 "%lu,%s,%ld.%02ld,%ld.%02ld,%ld.%02ld,%ld.%02ld,%ld.%02ld,%ld.%02ld\r\n",
                  (unsigned long)record->timestamp_ms,
                  record->label,
-                 latency_ms,
-                 record->power_pre_mw,
-                 record->power_mid_mw,
-                 record->power_post_mw,
-                 record->power_delta_mw,
-                 temperature_c);
+                 latency_ms_centi / 100L, labs(latency_ms_centi % 100L),
+                 power_pre_centi / 100L, labs(power_pre_centi % 100L),
+                 power_mid_centi / 100L, labs(power_mid_centi % 100L),
+                 power_post_centi / 100L, labs(power_post_centi % 100L),
+                 power_delta_centi / 100L, labs(power_delta_centi % 100L),
+                 temp_centi / 100L, labs(temp_centi % 100L));
     }
     SdDebugLogService_EnqueueLine(csv_line);
 
@@ -304,16 +324,22 @@ void Metrics_LogAll(void)
         if (!r->valid)
             continue;
 
+        const long latency_ms_centi = Metrics_ToCenti((float)r->latency_us / 1000.0f);
+        const long power_pre_milli = Metrics_ToMilli(r->power_pre_mw);
+        const long power_mid_milli = Metrics_ToMilli(r->power_mid_mw);
+        const long power_post_milli = Metrics_ToMilli(r->power_post_mw);
+        const long power_delta_milli = Metrics_ToMilli(r->power_delta_mw);
+        const long temp_milli = Metrics_ToMilli(r->temperature_c);
         DebugConsole_Printf(
-            "%lu,%s,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f\r\n",
+            "%lu,%s,%ld.%02ld,%ld.%03ld,%ld.%03ld,%ld.%03ld,%ld.%03ld,%ld.%03ld\r\n",
             (unsigned long)r->timestamp_ms,
             r->label,
-            (float)r->latency_us / 1000.0f,
-            r->power_pre_mw,
-            r->power_mid_mw,
-            r->power_post_mw,
-            r->power_delta_mw,
-            r->temperature_c);
+            latency_ms_centi / 100L, labs(latency_ms_centi % 100L),
+            power_pre_milli / 1000L, labs(power_pre_milli % 1000L),
+            power_mid_milli / 1000L, labs(power_mid_milli % 1000L),
+            power_post_milli / 1000L, labs(power_post_milli % 1000L),
+            power_delta_milli / 1000L, labs(power_delta_milli % 1000L),
+            temp_milli / 1000L, labs(temp_milli % 1000L));
     }
 
     /* Log summary */
@@ -321,11 +347,24 @@ void Metrics_LogAll(void)
     if (Metrics_GetSummary(&summary))
     {
         DebugConsole_Printf("\r\n[METRICS] Summary (%lu samples):\r\n", (unsigned long)summary.count);
-        DebugConsole_Printf("  Latency: avg=%.2f ms, min=%.2f ms, max=%.2f ms\r\n",
-                            summary.latency_avg_ms, summary.latency_min_ms, summary.latency_max_ms);
-        DebugConsole_Printf("  Power Delta: avg=%.2f mW, min=%.2f mW, max=%.2f mW\r\n",
-                            summary.power_delta_avg_mw, summary.power_delta_min_mw, summary.power_delta_max_mw);
-        DebugConsole_Printf("  Energy per inference: %.2f uJ\r\n", summary.energy_avg_uj);
+        const long latency_avg_centi = Metrics_ToCenti(summary.latency_avg_ms);
+        const long latency_min_centi = Metrics_ToCenti(summary.latency_min_ms);
+        const long latency_max_centi = Metrics_ToCenti(summary.latency_max_ms);
+        const long delta_avg_centi = Metrics_ToCenti(summary.power_delta_avg_mw);
+        const long delta_min_centi = Metrics_ToCenti(summary.power_delta_min_mw);
+        const long delta_max_centi = Metrics_ToCenti(summary.power_delta_max_mw);
+        const long energy_avg_centi = Metrics_ToCenti(summary.energy_avg_uj);
+
+        DebugConsole_Printf("  Latency: avg=%ld.%02ld ms, min=%ld.%02ld ms, max=%ld.%02ld ms\r\n",
+                            latency_avg_centi / 100L, labs(latency_avg_centi % 100L),
+                            latency_min_centi / 100L, labs(latency_min_centi % 100L),
+                            latency_max_centi / 100L, labs(latency_max_centi % 100L));
+        DebugConsole_Printf("  Power Delta: avg=%ld.%02ld mW, min=%ld.%02ld mW, max=%ld.%02ld mW\r\n",
+                            delta_avg_centi / 100L, labs(delta_avg_centi % 100L),
+                            delta_min_centi / 100L, labs(delta_min_centi % 100L),
+                            delta_max_centi / 100L, labs(delta_max_centi % 100L));
+        DebugConsole_Printf("  Energy per inference: %ld.%02ld uJ\r\n",
+                            energy_avg_centi / 100L, labs(energy_avg_centi % 100L));
     }
 
     DebugConsole_Printf("\r\n");

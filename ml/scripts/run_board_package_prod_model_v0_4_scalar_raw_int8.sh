@@ -52,6 +52,8 @@ CUDA_VISIBLE_DEVICES="-1" "${POETRY_BIN}" run python -u scripts/package_scalar_m
   --canonical-raw-path "${CANONICAL_RAW_PATH}" \
   --compression high \
   --optimization balanced \
+  --input-data-type float32 \
+  --output-data-type int8 \
   2>&1 | tee "${LOG_FILE}"
 
 echo "[WRAPPER] Re-scoring prod-v0.4 scalar int8 model on the original hard-case set." | tee -a "${LOG_FILE}"

@@ -20,9 +20,10 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #ifndef APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION
-/* Re-enabled 2026-05-02 as an incremental board-side correction while we
- * continue long-term model retraining for full-range performance. */
-#define APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION 1
+/* prod v0.4 now carries the model-level output contract we want on the board,
+ * so keep the legacy affine correction disabled unless we are explicitly
+ * comparing against an older deployment. */
+#define APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION 0
 #endif
 
 /* Temperature range for calibration. The affine fit was trained on warmer

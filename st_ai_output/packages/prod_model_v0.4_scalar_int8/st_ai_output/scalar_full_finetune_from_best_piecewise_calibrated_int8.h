@@ -2,7 +2,7 @@
   ******************************************************************************
   * @file    scalar_full_finetune_from_best_piecewise_calibrated_int8.h
   * @author  STEdgeAI
-  * @date    2026-05-13 09:37:17
+  * @date    2026-05-14 20:22:41
   * @brief   Minimal description of the generated c-implemention of the network
   ******************************************************************************
   * @attention
@@ -28,14 +28,14 @@
 
 /************************** INPUTS ********************************************/
 #define LL_ATON_SCALAR_FULL_FINETUNE_FROM_BEST_PIECEWISE_CALIBRATED_INT8_IN_NUM        (1)    // Total number of input buffers
-// Input buffer 1 -- Input_28_out_0
+// Input buffer 1 -- Input_3_out_0
 #define LL_ATON_SCALAR_FULL_FINETUNE_FROM_BEST_PIECEWISE_CALIBRATED_INT8_IN_1_ALIGNMENT   (32)
 #define LL_ATON_SCALAR_FULL_FINETUNE_FROM_BEST_PIECEWISE_CALIBRATED_INT8_IN_1_SIZE_BYTES  (602112)
 
 /************************** OUTPUTS *******************************************/
 #define LL_ATON_SCALAR_FULL_FINETUNE_FROM_BEST_PIECEWISE_CALIBRATED_INT8_OUT_NUM        (1)    // Total number of output buffers
-// Output buffer 1 -- Dequantize_391_out_0
+// Output buffer 1 -- Quantize_260_out_0
 #define LL_ATON_SCALAR_FULL_FINETUNE_FROM_BEST_PIECEWISE_CALIBRATED_INT8_OUT_1_ALIGNMENT   (32)
-#define LL_ATON_SCALAR_FULL_FINETUNE_FROM_BEST_PIECEWISE_CALIBRATED_INT8_OUT_1_SIZE_BYTES  (4)
+#define LL_ATON_SCALAR_FULL_FINETUNE_FROM_BEST_PIECEWISE_CALIBRATED_INT8_OUT_1_SIZE_BYTES  (1)
 
 #endif /* LL_ATON_SCALAR_FULL_FINETUNE_FROM_BEST_PIECEWISE_CALIBRATED_INT8_H */

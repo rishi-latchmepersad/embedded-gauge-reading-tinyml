@@ -121,8 +121,8 @@ bool I2CScanner_ProbeINA219(I2C_HandleTypeDef *hi2c)
     
     if (status == HAL_OK)
     {
-        DEBUG_PRINTF("[I2C SCAN] INA219 found at 0x%02X\r\n", 
-                     INA219_I2C_ADDRESS_7BIT);
+        DebugConsole_Printf("[I2C SCAN] INA219 found at 0x%02X\r\n",
+                            INA219_I2C_ADDRESS_7BIT);
         return true;
     }
     
@@ -135,22 +135,22 @@ bool I2CScanner_ProbeINA219(I2C_HandleTypeDef *hi2c)
  */
 I2C_HandleTypeDef* I2CScanner_FindINA219(void)
 {
-    DEBUG_PRINTF("[I2C SCAN] Probing for INA219...\r\n");
+    DebugConsole_Printf("[I2C SCAN] Probing for INA219...\r\n");
     
     /* Try I2C1 first */
     if (I2CScanner_ProbeINA219(&hi2c1))
     {
-        DEBUG_PRINTF("[I2C SCAN] INA219 is on I2C1\r\n");
+        DebugConsole_Printf("[I2C SCAN] INA219 is on I2C1\r\n");
         return &hi2c1;
     }
     
     /* Try I2C2 */
     if (I2CScanner_ProbeINA219(&hi2c2))
     {
-        DEBUG_PRINTF("[I2C SCAN] INA219 is on I2C2\r\n");
+        DebugConsole_Printf("[I2C SCAN] INA219 is on I2C2\r\n");
         return &hi2c2;
     }
     
-    DEBUG_PRINTF("[I2C SCAN] ERROR: INA219 not found on either bus!\r\n");
+    DebugConsole_Printf("[I2C SCAN] ERROR: INA219 not found on either bus!\r\n");
     return NULL;
 }

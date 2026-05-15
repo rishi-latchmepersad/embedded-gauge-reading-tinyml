@@ -41,11 +41,14 @@
 #ifndef APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 #define APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS 0
 #endif
+#ifndef APP_AI_ENABLE_RUNTIME_METRICS
+#define APP_AI_ENABLE_RUNTIME_METRICS 0U
+#endif
 /* Keep rectifier diagnostics available even when the rest of the verbose
  * console logging stays off. This is a temporary bring-up aid for crop
  * debugging and can be flipped back to 0 once the rectifier is stable. */
 #ifndef APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
-#define APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS 1U
+#define APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS 0U
 #endif
 /* The rectifier fallback has been the source of live hangs on this board, so
  * keep it available for offline experimentation but route the live cascade to
@@ -65,11 +68,16 @@
 #ifndef APP_AI_RESET_NETWORK_EACH_INFERENCE
 #define APP_AI_RESET_NETWORK_EACH_INFERENCE 0
 #endif
-/* The OBB stage currently faults on some boards when reading the xSPI2 OBB
- * blob. Keep it behind a switch so we can run scalar inference reliably while
- * we root-cause the OBB runtime issue. */
+/* The OBB stage is now the preferred front-end for the live crop path.
+ * Keep it behind a switch so we can still isolate it quickly if a future board
+ * build needs a scalar-only fallback. */
 #ifndef APP_AI_ENABLE_OBB_STAGE
 #define APP_AI_ENABLE_OBB_STAGE 1U
+#endif
+/* Production path: model images are provisioned via xSPI flash script.
+ * Keep SD-based scalar reprovision disabled in live runtime. */
+#ifndef APP_AI_ENABLE_SCALAR_SD_REPROVISION
+#define APP_AI_ENABLE_SCALAR_SD_REPROVISION 0U
 #endif
 /* USER CODE END Includes */
 
@@ -112,14 +120,17 @@
  * adaptive rectifier and miss the needle on low temperatures. Use the stable
  * training crop on-device until we retrain on the closer framing. */
 #define APP_AI_USE_ADAPTIVE_GAUGE_CROP 0U
-/* Feed the model a stable grayscale tensor from Y luma only.
- * The RGB reconstruction path was collapsing to a green-only tensor on board,
- * which is a worse mismatch than replicated luminance for this gauge task. */
+/* Use luma-only sampling on the scalar fast path to keep the preprocess loop
+ * lightweight and avoid the heavier RGB reconstruction work. */
 #define APP_AI_YUV422_INPUT_LUMA_ONLY 1U
 /* Use a full affine crop->tensor mapping instead of aspect-preserving
  * letterbox padding. The padded resize was introducing large zero bands on
  * non-square crops and hurting hot-end needle coverage near the edges. */
 #define APP_AI_ENABLE_AFFINE_FILL_RESIZE 1U
+/* Debug switch: set to 1 to stop the scalar stage after tensor fill. */
+#define APP_AI_BYPASS_SCALAR_INFERENCE 0U
+/* Debug switch: set to 1 to stop before scalar handoff. */
+#define APP_AI_BYPASS_SCALAR_STAGE_BEFORE_PREPROCESS 0U
 #define APP_AI_MODEL_INPUT_FLOAT_BYTES \
 	(APP_AI_MODEL_INPUT_FLOAT_COUNT * sizeof(float))
 #define APP_AI_MODEL_OUTPUT_FLOAT_BYTES sizeof(float)
@@ -186,6 +197,10 @@
 /* If the scene jumps by a lot, drop the burst history and re-lock quickly to
  * the new setpoint instead of blending two different gauge positions. */
 #define APP_AI_INFERENCE_BURST_RESET_DELTA_C 12.0f
+/* Reject scalar outputs that are finite but physically impossible for this
+ * gauge. This avoids propagating corrupted tensor reads into logs/control. */
+#define APP_AI_INFERENCE_VALUE_MIN_C (-80.0f)
+#define APP_AI_INFERENCE_VALUE_MAX_C (180.0f)
 /* xSPI2 window base address (chip address 0). */
 #define APP_AI_XSPI2_CHIP_BASE_ADDR 0x70000000UL
 /* Scalar model: immediately after FSBL (0x70000000) + App (0x70100000, 1 MB
@@ -254,6 +269,19 @@ uint8_t _mem_pool_xSPI2_mobilenetv2_obb_longterm[32U] = {
 	0U,
 };
 static uint8_t app_ai_xspi2_program_buffer[APP_AI_XSPI2_PROGRAM_CHUNK_BYTES];
+__attribute__((aligned(APP_AI_CACHE_LINE_BYTES)))
+static uint8_t app_ai_scalar_row_scratch[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL];
+__attribute__((aligned(APP_AI_CACHE_LINE_BYTES)))
+static uint8_t app_ai_scalar_output_row_scratch[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * 3U * sizeof(float)];
+__attribute__((aligned(APP_AI_CACHE_LINE_BYTES)))
+static uint8_t app_ai_dry_run_frame_scratch[APP_AI_CAPTURE_FRAME_BYTES];
+volatile size_t app_ai_scalar_preprocess_last_row = (size_t)SIZE_MAX;
+/* Trace the scalar resize loop only every so often so we can tell whether it
+ * is progressing without flooding UART in the hot path. */
+#define APP_AI_SCALAR_PREPROCESS_ROW_TRACE_INTERVAL_ROWS 32U
+/* Keep each preprocessing pass small enough that we can reshape the scalar
+ * path without one huge monolithic row loop. */
+#define APP_AI_SCALAR_PREPROCESS_ROWS_PER_CHUNK 8U
 /* Start/tail signatures for the current atonbuf.xSPI2.raw.
  * Update these when a new model is exported by running:
  *   python3 -c "
@@ -262,19 +290,19 @@ static uint8_t app_ai_xspi2_program_buffer[APP_AI_XSPI2_PROGRAM_CHUNK_BYTES];
  *     print('tail: ', bytes(d[-16:]).hex())" */
 static const uint8_t app_ai_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
 	0xEFU,
-	0x1BU,
+	0x1AU,
 	0x2BU,
 	0xE0U,
 	0xD7U,
 	0xE5U,
 	0xECU,
-	0x07U,
-	0x04U,
+	0x06U,
+	0x05U,
 	0x00U,
 	0x34U,
 	0xECU,
 	0x1AU,
-	0xDDU,
+	0xDEU,
 	0x14U,
 	0x05U,
 };
@@ -294,7 +322,7 @@ static const uint8_t app_ai_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U,
 	0x00U,
 	0x00U,
-	0xDCU,
+	0xC0U,
 };
 /* Rectifier v3 xSPI2 signatures used when the board boots with the rectifier
  * blob already flashed at 0x70200000. */
@@ -534,6 +562,9 @@ static void AppAI_LogBufferInfoAndSignature(const char *label,
 											const LL_Buffer_InfoTypeDef *buffer_info);
 static void AppAI_LogBufferPreview(const char *label,
 								   const LL_Buffer_InfoTypeDef *buffer_info);
+static void AppAI_LogScalarInternalOutputProbe(
+	const AppAI_ModelStageSpec *stage,
+	const LL_Buffer_InfoTypeDef *stage_output_info);
 #if APP_AI_USE_ADAPTIVE_GAUGE_CROP
 static bool AppAI_EstimateGaugeCropBoxFromYuv422(const uint8_t *frame_bytes,
 												 size_t frame_size, size_t frame_width_pixels, size_t frame_height_pixels,
@@ -541,6 +572,9 @@ static bool AppAI_EstimateGaugeCropBoxFromYuv422(const uint8_t *frame_bytes,
 												 size_t *crop_height);
 #endif
 static bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr);
+static bool AppAI_ReadXspi2ModelSourceProbes(FX_FILE *model_file_ptr,
+											 ULONG file_size, uint8_t *source_prefix, uint8_t *source_tail,
+											 bool *has_tail_out);
 static void AppAI_LogXspi2FlashPrefix(void);
 static void AppAI_LogXspi2MappedScaleBytes(void);
 static void AppAI_LogXspi2IndirectAndMappedPrefix(void);
@@ -550,6 +584,7 @@ static float AppAI_TraceAndApplyInferenceCalibration(float raw_value);
 static void AppAI_ResetInferenceBurstHistory(void);
 #endif
 static bool AppAI_IsFiniteFloat(float value);
+static bool AppAI_IsPlausibleInferenceValue(float value);
 #if APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
 static float AppAI_FilterInferenceValue(float value);
 #endif
@@ -563,6 +598,14 @@ static void AppAI_LogObbResult(
 	const AppAI_ObbBox *obb_box);
 static int AppAI_ApplyCacheRange(uint32_t start_addr, uint32_t end_addr,
 								 bool clean, bool invalidate);
+
+static bool __attribute__((noinline)) AppAI_PreprocessScalarRow(
+	const uint8_t *frame_bytes, size_t frame_size, size_t source_width,
+	size_t source_height, size_t crop_x_min, size_t crop_y_min,
+	size_t crop_width, size_t crop_height, size_t output_width,
+	size_t output_height, float resize_scale, size_t resized_width,
+	size_t resized_height, size_t resize_pad_x, size_t resize_pad_y,
+	size_t out_y, float *input_ptr, size_t input_len_bytes);
 static void AppAI_EnableNpuMemoryAndCaches(void);
 static void AppAI_ConfigureNpuAccessControl(void);
 static void AppAI_ConfigureNpuRisafDefaults(void);
@@ -571,19 +614,30 @@ static bool AppAI_EnsureXspi2ModelImageReadyForStage(
 	const AppAI_ModelStageSpec *stage);
 static bool AppAI_WaitForFileXMediaReady(uint32_t timeout_ms);
 static bool AppAI_RuntimeInitStepwise(void);
-static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
-													size_t frame_size, float *input_buffer, size_t input_float_count);
+static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
+	const uint8_t *frame_bytes, size_t frame_size, float *input_buffer,
+	size_t input_float_count, size_t input_len_bytes);
 static float AppAI_ClampNormalizedFloat(float value);
 static uint8_t AppAI_ReadYuv422Luma(const uint8_t *frame_bytes,
+									size_t frame_size_bytes,
 									size_t frame_width_pixels, size_t source_x, size_t source_y);
 static void AppAI_ReadYuv422Quartet(const uint8_t *frame_bytes,
+									size_t frame_size_bytes,
 									size_t frame_width_pixels, size_t source_x, size_t source_y,
 									uint8_t *quad_out);
 static float AppAI_ReadNormalizedGrayFromYuv422Pixel(const uint8_t *frame_bytes,
+													 size_t frame_size_bytes,
 													 size_t frame_width_pixels, size_t source_x, size_t source_y);
 static void AppAI_ReadRgbFromYuv422Pixel(const uint8_t *frame_bytes,
+										 size_t frame_size_bytes,
 										 size_t frame_width_pixels, size_t source_x, size_t source_y,
 										 float *r_out, float *g_out, float *b_out);
+static void AppAI_ReadRgbFromYuv422Bilinear(const uint8_t *frame_bytes,
+											size_t frame_size_bytes,
+											size_t frame_width_pixels,
+											size_t frame_height_pixels,
+											float source_x, float source_y,
+											float *r_out, float *g_out, float *b_out);
 static void AppAI_SetForcedCrop(const char *label, size_t x_min,
 								size_t y_min, size_t width, size_t height);
 static void AppAI_ClearForcedCrop(void);
@@ -673,7 +727,7 @@ static bool AppAI_EnsureXspi2MemoryReady(void)
 	{
 #if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 		char msg[96];
-		(void)snprintf(msg, sizeof(msg),
+		(void)DebugConsole_Snprintf(msg, sizeof(msg),
 					   "[AI] BSP_XSPI_NOR_Init for provisioning failed: %ld\r\n",
 					   (long)bsp_status);
 		(void)DebugConsole_WriteString(msg);
@@ -733,7 +787,7 @@ static bool AppAI_ReconfigureXspi2ForRuntime(void)
 	if (bsp_status != BSP_ERROR_NONE)
 	{
 		char msg[96];
-		(void)snprintf(msg, sizeof(msg),
+		(void)DebugConsole_Snprintf(msg, sizeof(msg),
 					   "[AI] xSPI2 runtime reconfigure: init failed: %ld\r\n",
 					   (long)bsp_status);
 		DebugConsole_WriteString(msg);
@@ -797,6 +851,32 @@ static bool AppAI_Xspi2ReadMappedProbe(const uint32_t flash_offset,
 									 (uint32_t)flash_ptr + (uint32_t)expected_length);
 
 	return (memcmp(flash_ptr, expected_bytes, expected_length) == 0);
+}
+
+static bool AppAI_Xspi2ReadStageProbe(const AppAI_ModelStageSpec *stage,
+									  const uint32_t flash_offset,
+									  const uint8_t *expected_bytes,
+									  const size_t expected_length)
+{
+	if ((stage == NULL) || (expected_bytes == NULL) || (expected_length == 0U) ||
+		(expected_length > APP_AI_XSPI2_PROBE_BYTES))
+	{
+		return false;
+	}
+
+	/* After stage provisioning we can already be back in memory-mapped mode.
+	 * In that state, compare directly through the mapped stage window. */
+	if (app_ai_xspi2_mm_enabled)
+	{
+		const uint8_t *const flash_ptr =
+			(const uint8_t *)(stage->xspi2_base_addr + flash_offset);
+		(void)mcu_cache_invalidate_range((uint32_t)(uintptr_t)flash_ptr,
+										 (uint32_t)((uintptr_t)flash_ptr + (uint32_t)expected_length));
+		return (memcmp(flash_ptr, expected_bytes, expected_length) == 0);
+	}
+
+	return AppAI_Xspi2ReadFlashProbe(stage->xspi2_chip_offset, flash_offset,
+									 expected_bytes, expected_length);
 }
 
 #if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
@@ -1147,7 +1227,7 @@ static void AppAI_LogInputProbeSummary(const float *input_buffer,
 
 	{
 		char line[224];
-		(void)snprintf(line, sizeof(line),
+		(void)DebugConsole_Snprintf(line, sizeof(line),
 					   "[AI] Input probe: floats=%lu bytes=%lu hash=0x%08lX first8=[%02X %02X %02X %02X %02X %02X %02X %02X] first4=[0x%08lX 0x%08lX 0x%08lX 0x%08lX]\r\n",
 					   (unsigned long)input_float_count,
 					   (unsigned long)byte_count, (unsigned long)hash,
@@ -1169,7 +1249,7 @@ static void AppAI_LogInputProbeSummary(const float *input_buffer,
 			(unsigned long)((max_value * 1000.0f) + 0.5f);
 		char line[192];
 
-		(void)snprintf(line, sizeof(line),
+		(void)DebugConsole_Snprintf(line, sizeof(line),
 					   "[AI] Input probe stats: active=%lu/%lu mean_milli=%lu min_milli=%lu max_milli=%lu\r\n",
 					   (unsigned long)active_count, (unsigned long)input_float_count,
 					   mean_milli, min_milli, max_milli);
@@ -1205,7 +1285,7 @@ static void AppAI_LogInputProbeSummary(const float *input_buffer,
 		(void)g_bits;
 		(void)b_bits;
 
-		(void)snprintf(line, sizeof(line),
+		(void)DebugConsole_Snprintf(line, sizeof(line),
 					   "[AI] Input probe %s: x=%lu y=%lu rgb_milli=[%lu %lu %lu] rgb_bits=[0x%08lX 0x%08lX 0x%08lX]\r\n",
 					   sample_labels[index], (unsigned long)sample_x,
 					   (unsigned long)sample_y, r_milli, g_milli, b_milli,
@@ -1304,7 +1384,7 @@ static void AppAI_LogSourcePatch(const char *label, const uint8_t *frame_bytes,
 		DebugConsole_Printf("[AI] %s y=%lu:", label, (unsigned long)y);
 		for (size_t x = x_min; x <= x_max; ++x)
 		{
-			const uint8_t luma = AppAI_ReadYuv422Luma(frame_bytes,
+			const uint8_t luma = AppAI_ReadYuv422Luma(frame_bytes, frame_size,
 													  frame_width_pixels, x, y);
 			const unsigned long luma_milli =
 				(unsigned long)((luma * 1000U) / 255U);
@@ -1412,7 +1492,7 @@ static void AppAI_LogSourceCropWindow(const uint8_t *frame_bytes,
 	{
 		for (size_t x = x_min; x < x_max; ++x)
 		{
-			const uint8_t luma = AppAI_ReadYuv422Luma(frame_bytes,
+			const uint8_t luma = AppAI_ReadYuv422Luma(frame_bytes, frame_size,
 													  frame_width_pixels, x, y);
 
 			if (luma < min_luma)
@@ -1428,7 +1508,7 @@ static void AppAI_LogSourceCropWindow(const uint8_t *frame_bytes,
 		}
 	}
 
-	center_luma = AppAI_ReadYuv422Luma(frame_bytes, frame_width_pixels,
+	center_luma = AppAI_ReadYuv422Luma(frame_bytes, frame_size,
 									   center_x, center_y);
 
 	if (sample_count == 0U)
@@ -1470,7 +1550,7 @@ static void AppAI_LogSourceCropWindow(const uint8_t *frame_bytes,
 		DebugConsole_Printf("[AI] %s y=%lu:", label, (unsigned long)row_y);
 		for (size_t sample_index = 0U; sample_index < 5U; ++sample_index)
 		{
-			const uint8_t luma = AppAI_ReadYuv422Luma(frame_bytes,
+			const uint8_t luma = AppAI_ReadYuv422Luma(frame_bytes, frame_size,
 													  frame_width_pixels, sample_xs[sample_index], row_y);
 			const unsigned long luma_milli =
 				(unsigned long)((luma * 1000U) / 255U);
@@ -2084,48 +2164,48 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 		programmed_size = app_ai_scalar_programmed_size;
 	}
 
-	if (!AppAI_Xspi2ReadFlashProbe(stage->xspi2_chip_offset, 0U,
+	if (!AppAI_Xspi2ReadStageProbe(stage, 0U,
 								   sig_start, APP_AI_XSPI2_PROBE_BYTES))
 	{
 		/* Log the actual flash bytes so stale hardcoded signatures can be updated. */
 		{
 			uint8_t actual[APP_AI_XSPI2_PROBE_BYTES] = {0U};
-			char vlog[160];
 			int32_t read_status = BSP_XSPI_NOR_Read(0U, actual,
 													stage->xspi2_chip_offset, APP_AI_XSPI2_PROBE_BYTES);
-			(void)snprintf(vlog, sizeof(vlog),
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
+			char vlog[160];
+			(void)DebugConsole_Snprintf(vlog, sizeof(vlog),
 						   "[AI] %s mismatch rc=%ld bytes=[%02X%02X%02X%02X%02X%02X%02X%02X]\r\n",
 						   stage->stage_label, (long)read_status,
 						   actual[0], actual[1], actual[2], actual[3],
 						   actual[4], actual[5], actual[6], actual[7]);
 			DebugConsole_WriteString(vlog);
+#else
+			(void)read_status;
+#endif
 		}
-		if (!is_obb)
-		{
-			(void)DebugConsole_WriteString(
-				"[AI] scalar signature mismatch; continuing with flashed image.\r\n");
-			return true;
-		}
+		(void)DebugConsole_WriteString(
+			"[AI] xSPI2 stage signature mismatch at head probe.\r\n");
 		return false;
 	}
 
-	if (sig_valid && (programmed_size >= APP_AI_XSPI2_PROBE_BYTES) && !AppAI_Xspi2ReadFlashProbe(stage->xspi2_chip_offset, programmed_size - APP_AI_XSPI2_PROBE_BYTES, sig_tail, APP_AI_XSPI2_PROBE_BYTES))
+	if (sig_valid && (programmed_size >= APP_AI_XSPI2_PROBE_BYTES) &&
+		!AppAI_Xspi2ReadStageProbe(stage,
+								   programmed_size - APP_AI_XSPI2_PROBE_BYTES,
+								   sig_tail,
+								   APP_AI_XSPI2_PROBE_BYTES))
 	{
 		{
-			char vlog[64];
 #if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
-			(void)snprintf(vlog, sizeof(vlog),
+			char vlog[64];
+			(void)DebugConsole_Snprintf(vlog, sizeof(vlog),
 						   "[AI] %s flash verify: tail mismatch.\r\n",
 						   stage->stage_label);
 			(void)DebugConsole_WriteString(vlog);
 #endif
 		}
-		if (!is_obb)
-		{
-			(void)DebugConsole_WriteString(
-				"[AI] scalar tail mismatch; continuing with flashed image.\r\n");
-			return true;
-		}
+		(void)DebugConsole_WriteString(
+			"[AI] xSPI2 stage signature mismatch at tail probe.\r\n");
 		return false;
 	}
 
@@ -2143,6 +2223,9 @@ static bool AppAI_ProgramXspi2ModelImageFromSd(void)
 	UINT fx_status = FX_SUCCESS;
 	UINT tx_status = TX_SUCCESS;
 	int32_t bsp_status = BSP_ERROR_NONE;
+	uint8_t source_prefix[APP_AI_XSPI2_PROBE_BYTES] = {0U};
+	uint8_t source_tail[APP_AI_XSPI2_PROBE_BYTES] = {0U};
+	bool has_tail_probe = false;
 
 	if (!AppAI_WaitForFileXMediaReady(APP_AI_FILEX_MEDIA_READY_TIMEOUT_MS))
 	{
@@ -2207,12 +2290,13 @@ static bool AppAI_ProgramXspi2ModelImageFromSd(void)
 		return false;
 	}
 
-	if (!AppAI_LogXspi2ModelFilePrefix(&model_file))
+	if (!AppAI_ReadXspi2ModelSourceProbes(&model_file, file_size,
+										  source_prefix, source_tail, &has_tail_probe))
 	{
 		(void)fx_file_close(&model_file);
 		(void)fx_directory_default_set(media_ptr, FX_NULL);
 		AppFileX_ReleaseMediaLock();
-		AppAI_LogXspi2LoadFailure("source prefix", FX_SUCCESS,
+		AppAI_LogXspi2LoadFailure("source probes", FX_SUCCESS,
 								  BSP_ERROR_COMPONENT_FAILURE);
 		return false;
 	}
@@ -2294,6 +2378,19 @@ static bool AppAI_ProgramXspi2ModelImageFromSd(void)
 	AppFileX_ReleaseMediaLock();
 
 	app_ai_xspi2_programmed_size = file_size;
+	app_ai_scalar_programmed_size = file_size;
+	(void)memcpy(app_ai_scalar_sig_start, source_prefix,
+				 APP_AI_XSPI2_PROBE_BYTES);
+	if (has_tail_probe)
+	{
+		(void)memcpy(app_ai_scalar_sig_tail, source_tail,
+					 APP_AI_XSPI2_PROBE_BYTES);
+	}
+	else
+	{
+		(void)memset(app_ai_scalar_sig_tail, 0, APP_AI_XSPI2_PROBE_BYTES);
+	}
+	app_ai_scalar_sig_valid = has_tail_probe;
 	AppAI_LogXspi2FlashStatus("legacy stage write complete");
 
 	if (!AppAI_ReconfigureXspi2ForRuntime())
@@ -2608,7 +2705,7 @@ static bool AppAI_ProgramXspi2ModelImageFromSdForStage(
 		(void) BSP_XSPI_NOR_Read(0U, post_write,
 				stage->xspi2_chip_offset, APP_AI_XSPI2_PROBE_BYTES);
 #if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
-		(void) snprintf(pwlog, sizeof(pwlog),
+		(void) DebugConsole_Snprintf(pwlog, sizeof(pwlog),
 				"[AI] %s post-write probe: [%02X%02X%02X%02X%02X%02X%02X%02X"
 				"%02X%02X%02X%02X%02X%02X%02X%02X] "
 				"src=[%02X%02X%02X%02X%02X%02X%02X%02X"
@@ -2714,17 +2811,58 @@ static bool AppAI_EnsureXspi2ModelImageReadyForStage(
 
 	if (!AppAI_Xspi2ModelImageMatchesMappedFlashForStage(stage))
 	{
-		/* Signature mismatch means this fallback stage is not trustworthy, so
-		 * fail fast instead of marching into a potentially wedged runtime. */
-		DebugConsole_Printf(
-			"[AI] xSPI2 stage '%s' signature mismatch; aborting stage load.\r\n",
-			stage->stage_label);
-		return false;
+		/* The scalar stage can recover by provisioning from SD when the flashed
+		 * blob does not match the compiled metadata. */
+		if (stage == &app_ai_scalar_stage)
+		{
+			DebugConsole_WriteString(
+				"[AI] xSPI2 scalar signature mismatch detected.\r\n");
+#if APP_AI_ENABLE_SCALAR_SD_REPROVISION
+			DebugConsole_WriteString(
+				"[AI] xSPI2 scalar signature mismatch; attempting SD reprovision.\r\n");
+			/* Do not block the AI worker for minutes waiting on FileX. If media
+			 * is not ready yet, fail fast and let the next inference cycle retry. */
+			if (!AppFileX_IsMediaReady())
+			{
+				DebugConsole_WriteString(
+					"[AI] xSPI2 scalar reprovision skipped: FileX media not ready.\r\n");
+				return false;
+			}
+			if (!AppAI_ProgramXspi2ModelImageFromSd())
+			{
+				DebugConsole_WriteString(
+					"[AI] xSPI2 scalar SD reprovision failed.\r\n");
+				return false;
+			}
+			app_ai_loaded_xspi2_stage = NULL;
+			if (!AppAI_Xspi2ModelImageMatchesMappedFlashForStage(stage))
+			{
+				DebugConsole_WriteString(
+					"[AI] xSPI2 scalar signature mismatch persists after reprovision.\r\n");
+				return false;
+			}
+#else
+			DebugConsole_WriteString(
+				"[AI] scalar SD reprovision disabled; reflash scalar blob via flash script.\r\n");
+			return false;
+#endif
+		}
+		else
+		{
+			/* Non-scalar stages still fail fast on signature mismatch. */
+			DebugConsole_Printf(
+				"[AI] xSPI2 stage '%s' signature mismatch; aborting stage load.\r\n",
+				stage->stage_label);
+			return false;
+		}
 	}
 
 	DebugConsole_WriteString("[AI] xSPI2 stage image already present.\r\n");
 
-	if (!AppAI_Xspi2EnableMemoryMappedMode())
+	/* Reprovision can already leave xSPI2 in memory-mapped mode for this
+	 * stage. Avoid a second enable call in that case, which has been
+	 * intermittently failing on board. */
+	if (!app_ai_xspi2_mm_enabled && !AppAI_Xspi2EnableMemoryMappedMode())
 	{
 		AppAI_LogXspi2LoadFailure("enable MM after verify", FX_SUCCESS,
 								  BSP_ERROR_COMPONENT_FAILURE);
@@ -2823,7 +2961,7 @@ static bool AppAI_DecodeRectifierCropBox(
 		r2.f = output_ptr[2];
 		r3.f = output_ptr[3];
 #if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
-		(void)snprintf(rect_log, sizeof(rect_log),
+		(void)DebugConsole_Snprintf(rect_log, sizeof(rect_log),
 					   "[AI] Rectifier raw: cx=%ld cy=%ld w=%ld h=%ld "
 					   "bits=[%08lX %08lX %08lX %08lX]\r\n",
 					   (long)(output_ptr[0] * 1000.0f),
@@ -2864,7 +3002,7 @@ static bool AppAI_DecodeRectifierCropBox(
 		{
 			char fb_log[96];
 #if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
-			(void)snprintf(fb_log, sizeof(fb_log),
+			(void)DebugConsole_Snprintf(fb_log, sizeof(fb_log),
 						   "[AI] Rect fallback (centre out of range): cx=%ld cy=%ld lim=[%ld..%ld]\r\n",
 						   (long)(center_x * 1000.0f), (long)(center_y * 1000.0f),
 						   (long)(APP_AI_RECTIFIER_CENTER_MIN_RATIO * 1000.0f),
@@ -2880,7 +3018,7 @@ static bool AppAI_DecodeRectifierCropBox(
 		{
 			char fb_log[96];
 #if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
-			(void)snprintf(fb_log, sizeof(fb_log),
+			(void)DebugConsole_Snprintf(fb_log, sizeof(fb_log),
 						   "[AI] Rect fallback: cx=%ld cy=%ld w=%ld h=%ld lim=[%ld..%ld]\r\n",
 						   (long)(center_x * 1000.0f), (long)(center_y * 1000.0f),
 						   (long)(box_w * 1000.0f), (long)(box_h * 1000.0f),
@@ -2915,7 +3053,7 @@ static bool AppAI_DecodeRectifierCropBox(
 		{
 			char fb_log[128];
 
-			(void)snprintf(fb_log, sizeof(fb_log),
+			(void)DebugConsole_Snprintf(fb_log, sizeof(fb_log),
 						   "[AI] Rectifier fallback -> fixed training crop: x=%lu y=%lu w=%lu h=%lu\r\n",
 						   (unsigned long)crop_out->x_min,
 						   (unsigned long)crop_out->y_min,
@@ -3539,10 +3677,11 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 {
 	const LL_Buffer_InfoTypeDef *input_info = NULL;
 	const LL_Buffer_InfoTypeDef *output_info = NULL;
+	uint8_t *input_bytes_ptr = NULL;
 	float *input_ptr = NULL;
 	size_t input_len_bytes = 0U;
 	size_t input_float_count = 0U;
-	const float *output_ptr = NULL;
+	const uint8_t *output_ptr = NULL;
 	size_t output_len_bytes = 0U;
 	float output_value = 0.0f;
 
@@ -3567,13 +3706,25 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		return false;
 	}
 
-	input_ptr = (float *)LL_Buffer_addr_start(input_info);
+	input_bytes_ptr = (uint8_t *)LL_Buffer_addr_start(input_info);
+	input_ptr = (float *)input_bytes_ptr;
 	input_len_bytes = (size_t)LL_Buffer_len(input_info);
 	input_float_count = input_len_bytes / sizeof(float);
-	if (input_ptr == NULL)
+	if (input_bytes_ptr == NULL)
 	{
 		AppAI_ClearForcedCrop();
 		return false;
+	}
+	if (stage == &app_ai_scalar_stage)
+	{
+		DebugConsole_Printf(
+			"[AI] Scalar input contract: name=%s addr=%p len=%lu nbits=%lu qu=%lu Qm=%lu Qn=%lu\r\n",
+			(input_info->name != NULL) ? input_info->name : "(unnamed)",
+			(void *)input_bytes_ptr, (unsigned long)input_len_bytes,
+			(unsigned long)input_info->nbits,
+			(unsigned long)input_info->Qunsigned,
+			(unsigned long)input_info->Qm,
+			(unsigned long)input_info->Qn);
 	}
 
 	if (forced_crop != NULL)
@@ -3599,16 +3750,57 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 			(unsigned long)LL_Buffer_len(output_info));
 	}
 
+#if APP_AI_YUV422_INPUT_LUMA_ONLY
 	if (!AppAI_PreprocessYuv422FrameToFloatInput(frame_bytes, frame_size,
-												 input_ptr, input_float_count))
+												 input_ptr, input_float_count,
+												 input_len_bytes))
 	{
 		AppAI_ClearForcedCrop();
 		return false;
 	}
+#else
+	if (input_info->nbits <= 8U)
+	{
+		if (!AppAI_PreprocessYuv422FrameToInt8Input(frame_bytes, frame_size,
+													input_bytes_ptr, input_len_bytes,
+													input_info))
+		{
+			AppAI_ClearForcedCrop();
+			return false;
+		}
+	}
+	else if (!AppAI_PreprocessYuv422FrameToFloatInput(frame_bytes, frame_size,
+													  input_ptr, input_float_count,
+													  input_len_bytes))
+	{
+		AppAI_ClearForcedCrop();
+		return false;
+	}
+#endif
 
 	(void)DebugConsole_WriteString("[AI] Stage preprocess OK.\r\n");
 
-	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS)
+#if APP_AI_BYPASS_SCALAR_INFERENCE
+	if (stage == &app_ai_scalar_stage)
+	{
+		/* Keep the tensor fill path intact, but stop before model execution so
+		 * we can isolate whether the stall is in preprocessing or in LL_ATON. */
+		(void)DebugConsole_WriteString(
+			"[AI] Scalar inference bypass active; returning after tensor fill.\r\n");
+		if (output_info_out != NULL)
+		{
+			*output_info_out = output_info;
+		}
+		if (output_value_out != NULL)
+		{
+			*output_value_out = 0.0f;
+		}
+		AppAI_ClearForcedCrop();
+		return true;
+	}
+#endif
+
+	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS && (input_info->nbits > 8U))
 	{
 		DebugConsole_Printf(
 			"[AI] %s preprocess complete; logging tensor signatures.\r\n",
@@ -3630,12 +3822,10 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 								(uint32_t)((uintptr_t)input_ptr + input_len_bytes));
 	(void)DebugConsole_WriteString("[AI] Stage input cache clean OK.\r\n");
 
-	/* The OBB and scalar stages can return stale outputs when one-shot runtime
-	 * state is reused across stage switches, so reset both before epochs. */
-	const bool force_reset_stage =
-		(APP_AI_RESET_NETWORK_EACH_INFERENCE != 0) ||
-		(stage == &app_ai_obb_stage) ||
-		(stage == &app_ai_scalar_stage);
+	/* Keep network reset opt-in. For this scalar package, forcing reset before
+	 * every run can leave the output tensor in a constant invalid state even
+	 * though the epoch loop reports DONE. */
+	const bool force_reset_stage = (APP_AI_RESET_NETWORK_EACH_INFERENCE != 0);
 	if (force_reset_stage)
 	{
 		(void)DebugConsole_WriteString("[AI] Stage network reset start.\r\n");
@@ -3648,8 +3838,26 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 			"[AI] Stage network reset skipped (one-shot runtime).\r\n");
 	}
 
+#if APP_AI_ENABLE_RUNTIME_METRICS
 	/* Start metrics tracking for this inference */
 	Metrics_StartInference("CNN");
+#endif
+
+	if ((stage == &app_ai_scalar_stage) && (LL_Buffer_addr_start(output_info) != NULL) &&
+		(LL_Buffer_len(output_info) >= sizeof(uint32_t)))
+	{
+		uint32_t pre_output_bits = 0U;
+		(void)memcpy(&pre_output_bits, LL_Buffer_addr_start(output_info),
+					 sizeof(pre_output_bits));
+		DebugConsole_Printf(
+			"[AI] Scalar output pre-run bits=0x%08lX nbits=%lu Qm=%lu Qn=%lu Qu=%lu len=%lu\r\n",
+			(unsigned long)pre_output_bits,
+			(unsigned long)output_info->nbits,
+			(unsigned long)output_info->Qm,
+			(unsigned long)output_info->Qn,
+			(unsigned long)output_info->Qunsigned,
+			(unsigned long)LL_Buffer_len(output_info));
+	}
 
 	(void)DebugConsole_WriteString("[AI] Stage inference run start.\r\n");
 	bool mid_logged = false;
@@ -3658,8 +3866,10 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		/* Log mid-inference power after a few epochs (NPU active) */
 		if (!mid_logged && epoch_step == 5U)
 		{
+#if APP_AI_ENABLE_RUNTIME_METRICS
 			(void)INA219_LogReading("MID");
 			Metrics_Checkpoint("MID");
+#endif
 			mid_logged = true;
 		}
 
@@ -3682,14 +3892,25 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	}
 	(void)DebugConsole_WriteString("[AI] Stage inference run OK.\r\n");
 
+#if APP_AI_ENABLE_RUNTIME_METRICS
 	/* Log post-inference power (peak during NPU activity) */
 	(void)INA219_LogReading("POST");
 	Metrics_Checkpoint("POST");
+#endif
 
-	output_ptr = (const float *)LL_Buffer_addr_start(output_info);
+	output_ptr = (const uint8_t *)LL_Buffer_addr_start(output_info);
 	output_len_bytes = (size_t)LL_Buffer_len(output_info);
-	if ((output_ptr == NULL) || (output_len_bytes < sizeof(float)))
+	if (output_ptr == NULL)
 	{
+		AppAI_ClearForcedCrop();
+		return false;
+	}
+	if ((output_info->nbits <= 8U) ? (output_len_bytes < 1U) : (output_len_bytes < sizeof(float)))
+	{
+		DebugConsole_Printf(
+			"[AI] Stage output buffer too small: nbits=%lu len=%lu\r\n",
+			(unsigned long)output_info->nbits,
+			(unsigned long)output_len_bytes);
 		AppAI_ClearForcedCrop();
 		return false;
 	}
@@ -3698,15 +3919,16 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 									 (uint32_t)((uintptr_t)output_ptr + output_len_bytes));
 
 	AppAI_LogBufferPreview("Stage output", output_info);
+	AppAI_LogScalarInternalOutputProbe(stage, output_info);
 
 	/* Log raw output bytes immediately after cache invalidate so we can tell
 	 * whether the inference engine populated the buffer at all. */
 	{
-		const uint8_t *ob = (const uint8_t *)output_ptr;
+		const uint8_t *ob = output_ptr;
 		const size_t on = (output_len_bytes < 16U) ? output_len_bytes : 16U;
 		char olog[128];
 #if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
-		(void)snprintf(olog, sizeof(olog),
+		(void)DebugConsole_Snprintf(olog, sizeof(olog),
 					   "[AI] %s out addr=%p len=%lu bytes=[%02X%02X%02X%02X%02X%02X%02X%02X"
 					   "%02X%02X%02X%02X%02X%02X%02X%02X]\r\n",
 					   stage->stage_label, (const void *)output_ptr,
@@ -3724,8 +3946,46 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	}
 
 	/* Cache the output value before xSPI2 reconfiguration, because the
-	 * internal buffer info pointers will become stale after reconfigure. */
-	output_value = *(const float *)LL_Buffer_addr_start(output_info);
+	 * internal buffer info pointers will become stale after reconfigure.
+	 * Some scalar exports expose an int8/uint8 head output, so decode using
+	 * quant params when the buffer is <= 8 bits. */
+	if (output_info->nbits <= 8U)
+	{
+		float scale_value = 1.0f;
+		int16_t zero_point = 0;
+		int32_t q_value = 0;
+		char decode_line[96] = {0};
+
+		if (output_info->scale != NULL)
+		{
+			(void)memcpy(&scale_value, output_info->scale, sizeof(scale_value));
+		}
+		if (output_info->offset != NULL)
+		{
+			(void)memcpy(&zero_point, output_info->offset, sizeof(zero_point));
+		}
+
+		if (output_info->Qunsigned != 0U)
+		{
+			q_value = (int32_t)(*output_ptr);
+		}
+		else
+		{
+			q_value = (int32_t)(*(const int8_t *)output_ptr);
+		}
+
+		output_value = ((float)q_value - (float)zero_point) * scale_value;
+		(void)DebugConsole_Snprintf(decode_line, sizeof(decode_line),
+					   "[AI] Stage output quantized decode: q=%ld zp=%ld nbits=%lu qu=%lu\r\n",
+					   (long)q_value, (long)zero_point,
+					   (unsigned long)output_info->nbits,
+					   (unsigned long)output_info->Qunsigned);
+		(void)DebugConsole_WriteString(decode_line);
+	}
+	else
+	{
+		(void)memcpy(&output_value, output_ptr, sizeof(output_value));
+	}
 
 	if (output_info_out != NULL)
 	{
@@ -3734,6 +3994,26 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	if (output_value_out != NULL)
 	{
 		*output_value_out = output_value;
+	}
+	/* Guard scalar runtime handoff against corrupted tensor outputs. */
+	if (stage == &app_ai_scalar_stage)
+	{
+		if (!AppAI_IsFiniteFloat(output_value))
+		{
+			(void)DebugConsole_WriteString(
+				"[AI] Scalar output invalid: non-finite value.\r\n");
+			AppAI_ClearForcedCrop();
+			return false;
+		}
+		if (!AppAI_IsPlausibleInferenceValue(output_value))
+		{
+			char scalar_warn_line[96];
+			AppInferenceLog_FormatFloatMicros(
+				scalar_warn_line, sizeof(scalar_warn_line),
+				"[AI] Scalar output outside plausible range; continuing anyway: ",
+				output_value);
+			DebugConsole_WriteString(scalar_warn_line);
+		}
 	}
 
 	AppAI_ClearForcedCrop();
@@ -3810,6 +4090,30 @@ static bool AppAI_EnsureXspi2ModelImageReady(void) {
 }
 #endif /* 0 */
 
+#if APP_AI_YUV422_INPUT_LUMA_ONLY
+/* Place the LUT in RAM to avoid flash bus contention during inference.
+ * The table is read frequently during preprocessing while code executes from flash,
+ * which causes a precise data bus error (PRECISERR) on the STM32N657.
+ * The LUT is copied from flash to RAM at startup by AppAI_InitLumaToFloatLUT(). */
+static uint32_t app_ai_luma_to_float_bits[256] __attribute__((section(".noinit")));
+
+/* Flash-resident source for LUT initialization (read-only, no bus contention). */
+static const uint32_t app_ai_luma_to_float_bits_flash[256] = {
+#include "app_ai_luma_bits.inc"
+};
+
+/* Initialize the RAM-resident LUT from flash at startup.
+ * This avoids bus contention during inference when reading the LUT
+ * while executing code from flash. */
+static void AppAI_InitLumaToFloatLUT(void)
+{
+	/* Copy from flash to RAM .noinit section */
+	(void)memcpy(app_ai_luma_to_float_bits,
+				 app_ai_luma_to_float_bits_flash,
+				 sizeof(app_ai_luma_to_float_bits));
+}
+#endif
+
 bool App_AI_Model_Init(void)
 {
 	if (app_ai_runtime_initialized)
@@ -3823,6 +4127,11 @@ bool App_AI_Model_Init(void)
 		AppAI_LogInitFailure("NPU hardware");
 		return false;
 	}
+
+#if APP_AI_YUV422_INPUT_LUMA_ONLY
+	/* Initialize the LUT in RAM before runtime init to avoid bus contention. */
+	AppAI_InitLumaToFloatLUT();
+#endif
 
 	if (!AppAI_RuntimeInitStepwise())
 	{
@@ -3885,7 +4194,7 @@ static void AppAI_LogXspi2FlashStatus(const char *label)
 																&status_reg);
 	char msg[192];
 
-	(void)snprintf(
+	(void)DebugConsole_Snprintf(
 		msg,
 		sizeof(msg),
 		"[AI] %s flash status=%ld sec=%ld sec_reg=0x%02X sr=%ld sr_reg=0x%02X mode=%u rate=%u.\r\n",
@@ -4343,6 +4652,7 @@ static void AppAI_ConfigureNpuRisafDefaults(void)
 bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 									  size_t frame_size)
 {
+	const uint8_t *safe_frame_bytes = frame_bytes;
 	const LL_Buffer_InfoTypeDef *obb_output_info = NULL;
 	const LL_Buffer_InfoTypeDef *scalar_output_info = NULL;
 	AppAI_ObbBox obb_box = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
@@ -4364,6 +4674,15 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	float scalar_output_value = 0.0f;
 
 	(void)DebugConsole_WriteString("[AI] Dry-run entry.\r\n");
+	if ((frame_bytes == NULL) || (frame_size < (size_t)APP_AI_CAPTURE_FRAME_BYTES))
+	{
+		(void)DebugConsole_WriteString("[AI] Dry-run entry aborted: invalid frame buffer.\r\n");
+		return false;
+	}
+
+	memcpy(app_ai_dry_run_frame_scratch, frame_bytes, (size_t)APP_AI_CAPTURE_FRAME_BYTES);
+	safe_frame_bytes = app_ai_dry_run_frame_scratch;
+
 	if (!App_AI_Model_Init())
 	{
 		(void)DebugConsole_WriteString("[AI] Dry-run entry aborted during model init.\r\n");
@@ -4374,7 +4693,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	{
 		(void)DebugConsole_WriteString("[AI] Dry-run model init OK; launching OBB stage.\r\n");
 
-		if (AppAI_RunStageInference(&app_ai_obb_stage, frame_bytes, frame_size,
+		if (AppAI_RunStageInference(&app_ai_obb_stage, safe_frame_bytes, frame_size,
 									&full_frame_crop, &obb_output_info, &obb_output_value) &&
 			AppAI_DecodeObbCropBox(obb_output_info, &scalar_crop, &obb_box))
 		{
@@ -4385,15 +4704,36 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 				(unsigned long)scalar_crop.y_min,
 				(unsigned long)scalar_crop.width,
 				(unsigned long)scalar_crop.height);
+			DebugConsole_WriteString(
+				"[AI] Scalar stage using OBB crop handoff.\r\n");
 
-			if (AppAI_RunStageInference(&app_ai_scalar_stage, frame_bytes, frame_size,
+#if APP_AI_BYPASS_SCALAR_STAGE_BEFORE_PREPROCESS
+			(void)DebugConsole_WriteString(
+				"[AI] Scalar stage bypass active; skipping scalar handoff.\r\n");
+			app_ai_last_inference_valid = false;
+			app_ai_last_inference_value = 0.0f;
+			return true;
+#else
+#if APP_AI_BYPASS_SCALAR_INFERENCE
+			(void)DebugConsole_WriteString(
+				"[AI] Scalar handoff active; preprocess-only mode enabled.\r\n");
+#else
+			(void)DebugConsole_WriteString(
+				"[AI] Scalar handoff active; full scalar inference enabled.\r\n");
+#endif
+			if (AppAI_RunStageInference(&app_ai_scalar_stage, safe_frame_bytes, frame_size,
 										&scalar_crop, &scalar_output_info, &scalar_output_value))
 			{
 				/* Log the inference result immediately after inference, before xSPI2
 				 * reconfiguration for the next stage. This avoids stale pointer issues
 				 * when the internal buffer info pointers become invalid after reconfigure. */
-				DebugConsole_Printf(
-					"[AI] Model output (cached): %.6f\r\n", scalar_output_value);
+				{
+					char cached_output_line[96];
+					AppInferenceLog_FormatFloatMicros(
+						cached_output_line, sizeof(cached_output_line),
+						"[AI] Model output (cached): ", scalar_output_value);
+					DebugConsole_WriteString(cached_output_line);
+				}
 				app_ai_last_inference_value =
 					AppAI_TraceAndApplyInferenceCalibration(scalar_output_value);
 				app_ai_last_inference_valid = true;
@@ -4402,6 +4742,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 
 			(void)DebugConsole_WriteString(
 				"[AI] OBB scalar stage failed; falling back to fixed training crop.\r\n");
+#endif
 		}
 		else
 		{
@@ -4426,7 +4767,21 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		(unsigned long)scalar_crop.width,
 		(unsigned long)scalar_crop.height);
 
-	if (!AppAI_RunStageInference(&app_ai_scalar_stage, frame_bytes, frame_size,
+#if APP_AI_BYPASS_SCALAR_STAGE_BEFORE_PREPROCESS
+	(void)DebugConsole_WriteString(
+		"[AI] Scalar stage bypass active; skipping fixed-crop handoff.\r\n");
+	app_ai_last_inference_valid = false;
+	app_ai_last_inference_value = 0.0f;
+	return true;
+#else
+#if APP_AI_BYPASS_SCALAR_INFERENCE
+	(void)DebugConsole_WriteString(
+		"[AI] Scalar handoff active; preprocess-only mode enabled.\r\n");
+#else
+	(void)DebugConsole_WriteString(
+		"[AI] Scalar handoff active; full scalar inference enabled.\r\n");
+#endif
+	if (!AppAI_RunStageInference(&app_ai_scalar_stage, safe_frame_bytes, frame_size,
 								 &scalar_crop, &scalar_output_info, &scalar_output_value))
 	{
 		(void)DebugConsole_WriteString("[AI] Dry-run entry aborted during scalar stage.\r\n");
@@ -4435,13 +4790,19 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 
 	/* Log the inference result immediately after inference, before xSPI2
 	 * reconfiguration for the next stage. */
-	DebugConsole_Printf(
-		"[AI] Model output (cached): %.6f\r\n", scalar_output_value);
+	{
+		char cached_output_line[96];
+		AppInferenceLog_FormatFloatMicros(
+			cached_output_line, sizeof(cached_output_line),
+			"[AI] Model output (cached): ", scalar_output_value);
+		DebugConsole_WriteString(cached_output_line);
+	}
 	app_ai_last_inference_value =
 		AppAI_TraceAndApplyInferenceCalibration(scalar_output_value);
 	app_ai_last_inference_valid = true;
 
 	return true;
+#endif
 }
 
 /* USER CODE END 0 */
@@ -4519,6 +4880,99 @@ static const LL_Buffer_InfoTypeDef *AppAI_FindFirstBufferInfoByNames(
 	return NULL;
 }
 
+static void AppAI_LogScalarInternalOutputProbe(
+	const AppAI_ModelStageSpec *stage,
+	const LL_Buffer_InfoTypeDef *stage_output_info)
+{
+	static const char *const raw_head_names[] = {
+		"Quantize_261_out_0",
+		"Quantize_390_out_0",
+		"Input_28_out_0",
+		"Gemm_271_out_0",
+		"Gemm_out_0",
+		"Identity_out_0",
+	};
+	const LL_Buffer_InfoTypeDef *internal_buffers = NULL;
+	const LL_Buffer_InfoTypeDef *raw_head_info = NULL;
+	static bool internal_name_dump_done = false;
+
+	/* Keep this probe specific to the scalar model so we can confirm whether
+	 * the runtime is updating the raw head tensor when final output is stale. */
+	if ((stage == NULL) || (stage != &app_ai_scalar_stage))
+	{
+		return;
+	}
+
+	internal_buffers =
+		LL_ATON_Internal_Buffers_Info_scalar_full_finetune_from_best_piecewise_calibrated_int8();
+	if ((internal_buffers != NULL) && !internal_name_dump_done)
+	{
+		size_t entry_index = 0U;
+		for (const LL_Buffer_InfoTypeDef *entry = internal_buffers;
+			 (entry->name != NULL) && (entry_index < 48U);
+			 ++entry, ++entry_index)
+		{
+			DebugConsole_Printf(
+				"[AI] Scalar internal[%lu]: name=%s len=%lu nbits=%lu\r\n",
+				(unsigned long)entry_index,
+				entry->name,
+				(unsigned long)LL_Buffer_len(entry),
+				(unsigned long)entry->nbits);
+		}
+		internal_name_dump_done = true;
+	}
+
+	raw_head_info = AppAI_FindFirstBufferInfoByNames(
+		internal_buffers,
+		raw_head_names,
+		sizeof(raw_head_names) / sizeof(raw_head_names[0]));
+
+	if ((raw_head_info != NULL) && (LL_Buffer_addr_start(raw_head_info) != NULL) &&
+		(LL_Buffer_len(raw_head_info) > 0U))
+	{
+		const uint8_t *raw_head_ptr =
+			(const uint8_t *)LL_Buffer_addr_start(raw_head_info);
+		const size_t raw_head_len = (size_t)LL_Buffer_len(raw_head_info);
+		const size_t raw_dump_len = (raw_head_len < 8U) ? raw_head_len : 8U;
+
+		(void)mcu_cache_invalidate_range((uint32_t)(uintptr_t)raw_head_ptr,
+										 (uint32_t)((uintptr_t)raw_head_ptr + raw_head_len));
+		DebugConsole_Printf(
+			"[AI] Scalar raw-head: name=%s len=%lu q0=%d bytes=[%02X %02X %02X %02X %02X %02X %02X %02X]\r\n",
+			(raw_head_info->name != NULL) ? raw_head_info->name : "(unnamed)",
+			(unsigned long)raw_head_len,
+			(int)(*(const int8_t *)raw_head_ptr),
+			(raw_dump_len > 0U) ? raw_head_ptr[0] : 0U,
+			(raw_dump_len > 1U) ? raw_head_ptr[1] : 0U,
+			(raw_dump_len > 2U) ? raw_head_ptr[2] : 0U,
+			(raw_dump_len > 3U) ? raw_head_ptr[3] : 0U,
+			(raw_dump_len > 4U) ? raw_head_ptr[4] : 0U,
+			(raw_dump_len > 5U) ? raw_head_ptr[5] : 0U,
+			(raw_dump_len > 6U) ? raw_head_ptr[6] : 0U,
+			(raw_dump_len > 7U) ? raw_head_ptr[7] : 0U);
+	}
+	else
+	{
+		(void)DebugConsole_WriteString(
+			"[AI] Scalar raw-head probe unavailable.\r\n");
+	}
+
+	if ((stage_output_info != NULL) &&
+		(LL_Buffer_addr_start(stage_output_info) != NULL) &&
+		(LL_Buffer_len(stage_output_info) >= 4U))
+	{
+		const uint8_t *out_ptr =
+			(const uint8_t *)LL_Buffer_addr_start(stage_output_info);
+		const size_t out_len = (size_t)LL_Buffer_len(stage_output_info);
+
+		DebugConsole_Printf(
+			"[AI] Scalar final-out: name=%s len=%lu bytes=[%02X %02X %02X %02X]\r\n",
+			(stage_output_info->name != NULL) ? stage_output_info->name : "(unnamed)",
+			(unsigned long)out_len,
+			out_ptr[0], out_ptr[1], out_ptr[2], out_ptr[3]);
+	}
+}
+
 #if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 static void AppAI_LogInferenceResult(
 	const LL_Buffer_InfoTypeDef *output_buffer_info)
@@ -4557,6 +5011,8 @@ static void AppAI_LogInferenceResult(
 		"Conv2D_46_zero_off_out_70",
 	};
 	static const char *const raw_output_names[] = {
+		"Quantize_261_out_0",
+		"Quantize_390_out_0",
 		"Gemm_271_out_0",
 	};
 	static const char *const scale_names[] = {
@@ -4655,7 +5111,7 @@ static void AppAI_LogInferenceResult(
 	{
 		char raw_output_line[64] = {0};
 
-		(void)snprintf(raw_output_line, sizeof(raw_output_line),
+		(void)DebugConsole_Snprintf(raw_output_line, sizeof(raw_output_line),
 					   "[AI] Raw output int8: %d\r\n", (int)raw_output_value);
 		DebugConsole_WriteString(raw_output_line);
 	}
@@ -4701,6 +5157,14 @@ static void AppAI_LogInferenceResult(
 		AppAI_LogFloatApprox("[AI] Inference output value: ", output_value);
 		DebugConsole_WriteString(
 			"[AI] Inference result is non-finite; skipping smoothing and last-result update.\r\n");
+		app_ai_last_inference_valid = false;
+		return;
+	}
+	if (!AppAI_IsPlausibleInferenceValue(output_value))
+	{
+		AppAI_LogFloatApprox("[AI] Inference output value: ", output_value);
+		DebugConsole_WriteString(
+			"[AI] Inference result out of plausible range; skipping publish/update.\r\n");
 		app_ai_last_inference_valid = false;
 		return;
 	}
@@ -4757,6 +5221,16 @@ static void AppAI_LogInferenceResult(
 		app_ai_last_inference_valid = false;
 		return;
 	}
+	if (!AppAI_IsPlausibleInferenceValue(output_value))
+	{
+		AppInferenceLog_FormatFloatMicros(line, sizeof(line),
+										  "[AI] Inference value: ", output_value);
+		DebugConsole_WriteString(line);
+		DebugConsole_WriteString(
+			"[AI] Inference result out of plausible range; skipping smoothing and last-result update.\r\n");
+		app_ai_last_inference_valid = false;
+		return;
+	}
 #if APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
 	output_value = AppAI_FilterInferenceValue(output_value);
 #endif
@@ -4768,9 +5242,11 @@ static void AppAI_LogInferenceResult(
 	app_ai_last_inference_value = output_value;
 	app_ai_last_inference_valid = true;
 
+#if APP_AI_ENABLE_RUNTIME_METRICS
 	/* Log final power consumption and end metrics tracking */
 	(void)INA219_LogReading("CNN-DONE");
 	Metrics_EndInference(output_value);
+#endif
 }
 #endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
 
@@ -4886,6 +5362,29 @@ static bool AppAI_IsFiniteFloat(float value)
 	return ((bits.u & 0x7F800000U) != 0x7F800000U);
 }
 
+/**
+ * @brief Bound-check the calibrated scalar inference before publish/log.
+ */
+static bool AppAI_IsPlausibleInferenceValue(float value)
+{
+	if (!AppAI_IsFiniteFloat(value))
+	{
+		return false;
+	}
+
+	if (value < APP_AI_INFERENCE_VALUE_MIN_C)
+	{
+		return false;
+	}
+
+	if (value > APP_AI_INFERENCE_VALUE_MAX_C)
+	{
+		return false;
+	}
+
+	return true;
+}
+
 static int AppAI_ApplyCacheRange(uint32_t start_addr, uint32_t end_addr,
 								 bool clean, bool invalidate)
 {
@@ -4914,14 +5413,404 @@ static int AppAI_ApplyCacheRange(uint32_t start_addr, uint32_t end_addr,
 									 (int32_t)(end - start));
 	}
 
-	return 0;
+return 0;
 }
 
-static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
-													size_t frame_size, float *input_ptr, size_t input_float_count)
+static uint8_t AppAI_ReadYuv422Luma(const uint8_t *frame_bytes,
+									size_t frame_size_bytes,
+									size_t frame_width_pixels, size_t source_x, size_t source_y);
+
+static float AppAI_ReadNormalizedGrayFromYuv422Bilinear(
+	const uint8_t *frame_bytes, size_t frame_size_bytes,
+	size_t frame_width_pixels, size_t frame_height_pixels,
+	float source_x, float source_y)
 {
+	/* Add additional bounds checking */
+	if ((frame_bytes == NULL) || (frame_size_bytes < 4U) ||
+		(frame_width_pixels == 0U) || (frame_height_pixels == 0U))
+	{
+		DebugConsole_Printf("[AI] ReadNormalizedGrayFromYuv422Bilinear: Invalid parameters\r\n");
+		return 0.0f;
+	}
+
+	/* Add bounds checking for source coordinates */
+	if (source_x < 0.0f || source_y < 0.0f)
+	{
+		DebugConsole_Printf("[AI] ReadNormalizedGrayFromYuv422Bilinear: Negative coordinates: x=%f, y=%f\r\n", 
+						   (double)source_x, (double)source_y);
+		source_x = (source_x < 0.0f) ? 0.0f : source_x;
+		source_y = (source_y < 0.0f) ? 0.0f : source_y;
+	}
+
+	const float max_x = (frame_width_pixels > 0U) ? (float)(frame_width_pixels - 1U)
+												 : 0.0f;
+	const float max_y = (frame_height_pixels > 0U) ? (float)(frame_height_pixels - 1U)
+												  : 0.0f;
+
+	/* Add additional bounds checking for max values */
+	if (max_x < 0.0f || max_y < 0.0f)
+	{
+		DebugConsole_Printf("[AI] ReadNormalizedGrayFromYuv422Bilinear: Invalid max values: max_x=%f, max_y=%f\r\n", 
+						   (double)max_x, (double)max_y);
+		return 0.0f;
+	}
+
+	float clamped_x = source_x;
+	float clamped_y = source_y;
+
+	if (clamped_x > max_x)
+	{
+		clamped_x = max_x;
+	}
+
+	if (clamped_y > max_y)
+	{
+		clamped_y = max_y;
+	}
+
+	/* Add additional validation for clamped coordinates */
+	if (clamped_x < 0.0f || clamped_y < 0.0f)
+	{
+		DebugConsole_Printf("[AI] ReadNormalizedGrayFromYuv422Bilinear: Clamped coordinates negative: x=%f, y=%f\r\n", 
+						   (double)clamped_x, (double)clamped_y);
+		return 0.0f;
+	}
+
+	const size_t x0 = (size_t)floorf(clamped_x);
+	const size_t y0 = (size_t)floorf(clamped_y);
+	
+	/* Add bounds checking for x0 and y0 */
+	if (x0 >= frame_width_pixels || y0 >= frame_height_pixels)
+	{
+		DebugConsole_Printf("[AI] ReadNormalizedGrayFromYuv422Bilinear: x0/y0 out of bounds: x0=%lu, y0=%lu, width=%lu, height=%lu\r\n", 
+						   (unsigned long)x0, (unsigned long)y0, 
+						   (unsigned long)frame_width_pixels, (unsigned long)frame_height_pixels);
+		return 0.0f;
+	}
+
+	const size_t x1 = (x0 + 1U < frame_width_pixels) ? (x0 + 1U) : x0;
+	const size_t y1 = (y0 + 1U < frame_height_pixels) ? (y0 + 1U) : y0;
+	const float fx = clamped_x - (float)x0;
+	const float fy = clamped_y - (float)y0;
+	
+	/* Add bounds checking for fx and fy */
+	if (fx < 0.0f || fx > 1.0f || fy < 0.0f || fy > 1.0f)
+	{
+		DebugConsole_Printf("[AI] ReadNormalizedGrayFromYuv422Bilinear: Invalid fx/fy: fx=%f, fy=%f\r\n", 
+						   (double)fx, (double)fy);
+	}
+
+	/* Add bounds checking for AppAI_ReadYuv422Luma calls */
+	const uint8_t luma00 = AppAI_ReadYuv422Luma(frame_bytes, frame_size_bytes,
+												frame_width_pixels, x0, y0);
+	const uint8_t luma10 = AppAI_ReadYuv422Luma(frame_bytes, frame_size_bytes,
+												frame_width_pixels, x1, y0);
+	const uint8_t luma01 = AppAI_ReadYuv422Luma(frame_bytes, frame_size_bytes,
+												frame_width_pixels, x0, y1);
+	const uint8_t luma11 = AppAI_ReadYuv422Luma(frame_bytes, frame_size_bytes,
+												frame_width_pixels, x1, y1);
+	const float l00 = (float)luma00 / 255.0f;
+	const float l10 = (float)luma10 / 255.0f;
+	const float l01 = (float)luma01 / 255.0f;
+	const float l11 = (float)luma11 / 255.0f;
+	const float top = l00 + (fx * (l10 - l00));
+	const float bottom = l01 + (fx * (l11 - l01));
+	const float gray = top + (fy * (bottom - top));
+
+	/* Add bounds checking for final gray value */
+	if (gray < 0.0f)
+	{
+		return 0.0f;
+	}
+
+	if (gray > 1.0f)
+	{
+		return 1.0f;
+	}
+
+	return gray;
+}
+
+static bool __attribute__((noinline)) AppAI_PreprocessScalarRow(
+	const uint8_t *frame_bytes, size_t frame_size, size_t source_width,
+	size_t source_height, size_t crop_x_min, size_t crop_y_min,
+	size_t crop_width, size_t crop_height, size_t output_width,
+	size_t output_height, float resize_scale, size_t resized_width,
+	size_t resized_height, size_t resize_pad_x, size_t resize_pad_y,
+	size_t out_y, float *input_ptr, size_t input_len_bytes)
+{
+	/* Add bounds checking for parameters */
+	if ((frame_bytes == NULL) || (input_ptr == NULL) || (source_width == 0) || (source_height == 0))
+	{
+		DebugConsole_Printf("[AI] PreprocessScalarRow: Invalid parameters\r\n");
+		return false;
+	}
+
+#if APP_AI_YUV422_INPUT_LUMA_ONLY
+	if ((out_y < resize_pad_y) || (out_y >= (resize_pad_y + resized_height)))
+	{
+		return true;
+	}
+#endif
+
+	const size_t row_len = output_width * 3U * sizeof(float);
+	const size_t row_offset = (out_y * output_width) * 3U * sizeof(float);
+	
+	/* Add additional bounds checking for row_offset */
+	if (row_offset >= input_len_bytes)
+	{
+		DebugConsole_Printf("[AI] PreprocessScalarRow: row_offset out of bounds: %lu >= %lu\r\n", 
+						   (unsigned long)row_offset, (unsigned long)input_len_bytes);
+		return false;
+	}
+	
+	/* Add additional bounds checking for row_len */
+	if ((row_offset + row_len) > input_len_bytes)
+	{
+		DebugConsole_Printf("[AI] PreprocessScalarRow: row_len out of bounds: %lu + %lu > %lu\r\n", 
+						   (unsigned long)row_offset, (unsigned long)row_len, (unsigned long)input_len_bytes);
+		return false;
+	}
+	
+	uint8_t *const row_bytes = (uint8_t *)input_ptr + row_offset;
+
+	if ((row_bytes == NULL) || (frame_bytes == NULL))
+	{
+		DebugConsole_Printf("[AI] PreprocessScalarRow: NULL pointer detected\r\n");
+		return false;
+	}
+	if ((row_offset + row_len) > input_len_bytes)
+	{
+		DebugConsole_Printf("[AI] PreprocessScalarRow: Buffer overflow detected\r\n");
+		return false;
+	}
+
+	for (size_t out_x = 0U; out_x < output_width; out_x++)
+	{
+		/* Add bounds checking for out_x */
+		if (out_x >= output_width)
+		{
+			DebugConsole_Printf("[AI] PreprocessScalarRow: out_x out of bounds: %lu >= %lu\r\n", 
+							   (unsigned long)out_x, (unsigned long)output_width);
+			return false;
+		}
+		
+#if APP_AI_YUV422_INPUT_LUMA_ONLY
+		const size_t pixel_base = out_x * 3U * sizeof(float);
+		
+		/* Add bounds checking for pixel_base */
+		if ((pixel_base + 11U) >= (output_width * 3U * sizeof(float)))
+		{
+			DebugConsole_Printf("[AI] PreprocessScalarRow: pixel_base out of bounds: %lu >= %lu\r\n", 
+							   (unsigned long)(pixel_base + 11U), (unsigned long)(output_width * 3U * sizeof(float)));
+			return false;
+		}
+		
+		uint32_t gray_bits = 0U;
+
+		if ((out_x >= resize_pad_x) &&
+			(out_x < (resize_pad_x + resized_width)))
+		{
+			const size_t resized_x = out_x - resize_pad_x;
+			const size_t resized_y = out_y - resize_pad_y;
+			size_t sample_x = crop_x_min + ((resized_x * crop_width) / resized_width);
+			size_t sample_y = crop_y_min + ((resized_y * crop_height) / resized_height);
+
+			/* Clamp the nearest-neighbor sample point to the crop bounds. */
+			if (sample_x >= (crop_x_min + crop_width))
+			{
+				sample_x = crop_x_min + crop_width - 1U;
+			}
+			if (sample_y >= (crop_y_min + crop_height))
+			{
+				sample_y = crop_y_min + crop_height - 1U;
+			}
+
+			/* Read the luma sample directly so the hot row loop stays in the
+			 * lightweight nearest-neighbor path. */
+			const size_t source_index =
+				(((sample_y * source_width) + (sample_x & ~1U)) * 2U) +
+				((sample_x & 1U) ? 2U : 0U);
+			const uint8_t gray = frame_bytes[source_index];
+
+			{
+				union
+				{
+					float f;
+					uint32_t u;
+				} gray_value = {
+					.f = ((float)gray) / 255.0f};
+				gray_bits = gray_value.u;
+			}
+		}
+		{
+			const uint8_t *const gray_bytes = (const uint8_t *)&gray_bits;
+
+			/* Write the float bytes one at a time so the compiler cannot turn the
+			 * store into an alignment-sensitive wide access on this board. */
+			row_bytes[pixel_base + 0U] = gray_bytes[0];
+			row_bytes[pixel_base + 1U] = gray_bytes[1];
+			row_bytes[pixel_base + 2U] = gray_bytes[2];
+			row_bytes[pixel_base + 3U] = gray_bytes[3];
+
+			row_bytes[pixel_base + 4U] = gray_bytes[0];
+			row_bytes[pixel_base + 5U] = gray_bytes[1];
+			row_bytes[pixel_base + 6U] = gray_bytes[2];
+			row_bytes[pixel_base + 7U] = gray_bytes[3];
+
+			row_bytes[pixel_base + 8U] = gray_bytes[0];
+			row_bytes[pixel_base + 9U] = gray_bytes[1];
+			row_bytes[pixel_base + 10U] = gray_bytes[2];
+			row_bytes[pixel_base + 11U] = gray_bytes[3];
+		}
+#else
+	if ((out_y < resize_pad_y) || (out_y >= (resize_pad_y + resized_height)))
+	{
+		/* Add bounds checking for memset */
+		const size_t memset_len = output_width * 3U * sizeof(float);
+		if ((row_offset + memset_len) <= input_len_bytes)
+		{
+			(void)memset(row_bytes, 0, memset_len);
+		}
+		else
+		{
+			DebugConsole_Printf("[AI] PreprocessScalarRow: memset would overflow buffer\r\n");
+		}
+		return true;
+	}
+
+	const size_t pixel_base = out_x * 3U * sizeof(float);
+	
+	/* Add bounds checking for pixel_base */
+	if ((pixel_base + 11U) >= (output_width * 3U * sizeof(float)))
+	{
+		DebugConsole_Printf("[AI] PreprocessScalarRow: pixel_base out of bounds: %lu >= %lu\r\n", 
+						   (unsigned long)(pixel_base + 11U), (unsigned long)(output_width * 3U * sizeof(float)));
+		return false;
+	}
+	
+	float out_r_bits = 0.0f;
+	float out_g_bits = 0.0f;
+	float out_b_bits = 0.0f;
+
+		if ((out_x >= resize_pad_x) &&
+			(out_x < (resize_pad_x + resized_width)))
+		{
+			const float resized_x = (float)(out_x - resize_pad_x);
+			const float resized_y = (float)(out_y - resize_pad_y);
+			float crop_x = ((resized_x + 0.5f) / resize_scale) - 0.5f;
+			float crop_y = ((resized_y + 0.5f) / resize_scale) - 0.5f;
+
+			/* Add bounds checking for crop coordinates */
+			if (crop_x < 0.0f)
+			{
+				crop_x = 0.0f;
+			}
+			else if (crop_x > (float)(crop_width - 1U))
+			{
+				crop_x = (float)(crop_width - 1U);
+			}
+
+			if (crop_y < 0.0f)
+			{
+				crop_y = 0.0f;
+			}
+			else if (crop_y > (float)(crop_height - 1U))
+			{
+				crop_y = (float)(crop_height - 1U);
+			}
+
+			/* Add bounds checking for crop_x_min and crop_y_min */
+			const float total_crop_x = (float)crop_x_min + crop_x;
+			const float total_crop_y = (float)crop_y_min + crop_y;
+			
+			if (total_crop_x >= 0.0f && total_crop_x < (float)source_width &&
+				total_crop_y >= 0.0f && total_crop_y < (float)source_height)
+			{
+				AppAI_ReadRgbFromYuv422Bilinear(
+					frame_bytes, frame_size, source_width, source_height,
+					total_crop_x, total_crop_y,
+					&out_r_bits, &out_g_bits, &out_b_bits);
+			}
+			else
+			{
+				DebugConsole_Printf("[AI] PreprocessScalarRow: Crop coordinates out of bounds: x=%f, y=%f\r\n", 
+								   (double)total_crop_x, (double)total_crop_y);
+				out_r_bits = 0.0f;
+				out_g_bits = 0.0f;
+				out_b_bits = 0.0f;
+			}
+		}
+
+		out_r_bits = AppAI_ClampNormalizedFloat(out_r_bits);
+		out_g_bits = AppAI_ClampNormalizedFloat(out_g_bits);
+		out_b_bits = AppAI_ClampNormalizedFloat(out_b_bits);
+		{
+			const uint8_t *const r_bytes = (const uint8_t *)&out_r_bits;
+			const uint8_t *const g_bytes = (const uint8_t *)&out_g_bits;
+			const uint8_t *const b_bytes = (const uint8_t *)&out_b_bits;
+
+			row_bytes[pixel_base + 0U] = r_bytes[0];
+			row_bytes[pixel_base + 1U] = r_bytes[1];
+			row_bytes[pixel_base + 2U] = r_bytes[2];
+			row_bytes[pixel_base + 3U] = r_bytes[3];
+
+			row_bytes[pixel_base + 4U] = g_bytes[0];
+			row_bytes[pixel_base + 5U] = g_bytes[1];
+			row_bytes[pixel_base + 6U] = g_bytes[2];
+			row_bytes[pixel_base + 7U] = g_bytes[3];
+
+			row_bytes[pixel_base + 8U] = b_bytes[0];
+			row_bytes[pixel_base + 9U] = b_bytes[1];
+			row_bytes[pixel_base + 10U] = b_bytes[2];
+			row_bytes[pixel_base + 11U] = b_bytes[3];
+		}
+#endif
+	}
+
+	return true;
+}
+
+static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
+	const uint8_t *frame_bytes, size_t frame_size, float *input_ptr,
+	size_t input_float_count, size_t input_len_bytes)
+{
+	/* Add additional bounds checking and validation */
+	if ((frame_bytes == NULL) || (input_ptr == NULL))
+	{
+		DebugConsole_Printf("[AI] PreprocessYuv422FrameToFloatInput: NULL pointers\r\n");
+		return false;
+	}
+
 	const size_t source_width = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
 	const size_t source_height = (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+
+	/* Add additional validation for source dimensions */
+	if (source_width == 0U || source_height == 0U)
+	{
+		DebugConsole_Printf("[AI] PreprocessYuv422FrameToFloatInput: Invalid source dimensions: width=%lu, height=%lu\r\n", 
+						   (unsigned long)source_width, (unsigned long)source_height);
+		return false;
+	}
+
+	if ((frame_size < (size_t)APP_AI_CAPTURE_FRAME_BYTES) ||
+		(input_float_count < (size_t)APP_AI_MODEL_INPUT_FLOAT_COUNT) ||
+		(input_len_bytes < (size_t)APP_AI_MODEL_INPUT_FLOAT_BYTES))
+	{
+		DebugConsole_Printf("[AI] PreprocessYuv422FrameToFloatInput: Buffer size mismatch: frame_size=%lu, input_float_count=%lu, input_len_bytes=%lu\r\n", 
+						   (unsigned long)frame_size, (unsigned long)input_float_count, (unsigned long)input_len_bytes);
+		return false;
+	}
+
+	/* Add additional validation for expected frame size */
+	const size_t expected_frame_size = source_width * source_height * APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL;
+	if (frame_size != expected_frame_size)
+	{
+		DebugConsole_Printf("[AI] PreprocessYuv422FrameToFloatInput: Frame size mismatch: expected=%lu, actual=%lu\r\n", 
+						   (unsigned long)expected_frame_size, (unsigned long)frame_size);
+		/* Continue processing but log the mismatch */
+	}
+
 	size_t crop_x_min = 0U;
 	size_t crop_y_min = 0U;
 	size_t crop_width = source_width;
@@ -4929,22 +5818,540 @@ static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
 	bool crop_found = false;
 	const char *crop_label = "fixed";
 
-	if ((frame_bytes == NULL) || (input_ptr == NULL))
-	{
-
-		return false;
-	}
-
-	if ((frame_size < (size_t)APP_AI_CAPTURE_FRAME_BYTES) || (input_float_count < (size_t)APP_AI_MODEL_INPUT_FLOAT_COUNT))
-	{
-
-		return false;
-	}
-
 	/* DCMIPP_PIXEL_PACKER_FORMAT_YUV422_1 emits packed YUYV samples:
 	 *   byte 0 = Y0, byte 1 = U, byte 2 = Y1, byte 3 = V, ...
 	 * We estimate the gauge position from the bright dial face, crop around
 	 * that box, and then map the crop into the model input tensor. */
+	if (app_ai_forced_crop_active)
+	{
+		crop_found = true;
+		crop_label = (app_ai_forced_crop_label != NULL)
+						 ? app_ai_forced_crop_label
+						 : "forced";
+		crop_x_min = app_ai_forced_crop_x_min;
+		crop_y_min = app_ai_forced_crop_y_min;
+		crop_width = app_ai_forced_crop_width;
+		crop_height = app_ai_forced_crop_height;
+		
+		/* Add bounds checking for forced crop */
+		if (crop_x_min >= source_width || crop_y_min >= source_height)
+		{
+			DebugConsole_Printf("[AI] PreprocessYuv422FrameToFloatInput: Forced crop origin out of bounds: x=%lu, y=%lu, width=%lu, height=%lu\r\n", 
+							   (unsigned long)crop_x_min, (unsigned long)crop_y_min, 
+							   (unsigned long)source_width, (unsigned long)source_height);
+			crop_x_min = 0U;
+			crop_y_min = 0U;
+			crop_width = source_width;
+			crop_height = source_height;
+		}
+		
+		if ((crop_x_min + crop_width) > source_width)
+		{
+			crop_width = source_width - crop_x_min;
+		}
+		
+		if ((crop_y_min + crop_height) > source_height)
+		{
+			crop_height = source_height - crop_y_min;
+		}
+	}
+	else
+	{
+#if APP_AI_USE_ADAPTIVE_GAUGE_CROP
+		crop_found = AppAI_EstimateGaugeCropBoxFromYuv422(frame_bytes, frame_size,
+														  source_width, source_height, &crop_x_min, &crop_y_min,
+														  &crop_width, &crop_height);
+		
+		/* Add bounds checking for adaptive crop */
+		if (crop_found)
+		{
+			if (crop_x_min >= source_width || crop_y_min >= source_height)
+			{
+				DebugConsole_Printf("[AI] PreprocessYuv422FrameToFloatInput: Adaptive crop origin out of bounds: x=%lu, y=%lu, width=%lu, height=%lu\r\n", 
+								   (unsigned long)crop_x_min, (unsigned long)crop_y_min, 
+								   (unsigned long)source_width, (unsigned long)source_height);
+				crop_found = false;
+			}
+			else
+			{
+				if ((crop_x_min + crop_width) > source_width)
+				{
+					crop_width = source_width - crop_x_min;
+				}
+				
+				if ((crop_y_min + crop_height) > source_height)
+				{
+					crop_height = source_height - crop_y_min;
+				}
+				
+				if (crop_width == 0U || crop_height == 0U)
+				{
+					crop_found = false;
+				}
+			}
+		}
+#endif
+		if (crop_found)
+		{
+			crop_label = "adaptive";
+		}
+	}
+	
+	if (!crop_found)
+	{
+		crop_x_min = (size_t)((float)source_width * APP_AI_TRAINING_CROP_X_MIN_RATIO);
+		crop_y_min = (size_t)((float)source_height * APP_AI_TRAINING_CROP_Y_MIN_RATIO);
+		crop_width = (size_t)((float)source_width * (APP_AI_TRAINING_CROP_X_MAX_RATIO - APP_AI_TRAINING_CROP_X_MIN_RATIO));
+		crop_height = (size_t)((float)source_height * (APP_AI_TRAINING_CROP_Y_MAX_RATIO - APP_AI_TRAINING_CROP_Y_MIN_RATIO));
+		if (crop_width == 0U)
+		{
+			crop_width = 1U;
+		}
+		if (crop_height == 0U)
+		{
+			crop_height = 1U;
+		}
+		
+		/* Add bounds checking for default crop */
+		if (crop_x_min >= source_width)
+		{
+			crop_x_min = source_width - 1U;
+		}
+		if (crop_y_min >= source_height)
+		{
+			crop_y_min = source_height - 1U;
+		}
+		if ((crop_x_min + crop_width) > source_width)
+		{
+			crop_width = source_width - crop_x_min;
+		}
+		if ((crop_y_min + crop_height) > source_height)
+		{
+			crop_height = source_height - crop_y_min;
+		}
+	}
+
+	/* Clamp the crop before we hand it to the resize path.
+	 * The scalar reader expects a crop that stays inside the captured frame,
+	 * and clamping here makes the preprocessing path resilient even if a future
+	 * crop heuristic overshoots by a pixel. */
+	if (crop_x_min >= source_width)
+	{
+		crop_x_min = source_width - 1U;
+		crop_width = 1U;
+	}
+	if (crop_y_min >= source_height)
+	{
+		crop_y_min = source_height - 1U;
+		crop_height = 1U;
+	}
+	if ((crop_x_min + crop_width) > source_width)
+	{
+		crop_width = source_width - crop_x_min;
+	}
+	if ((crop_y_min + crop_height) > source_height)
+	{
+		crop_height = source_height - crop_y_min;
+	}
+
+	/* Add additional validation for final crop dimensions */
+	if (crop_width == 0U || crop_height == 0U)
+	{
+		DebugConsole_Printf("[AI] PreprocessYuv422FrameToFloatInput: Invalid crop dimensions: width=%lu, height=%lu\r\n", 
+						   (unsigned long)crop_width, (unsigned long)crop_height);
+		return false;
+	}
+
+	DebugConsole_Printf("[AI] Crop %s: x=%lu y=%lu w=%lu h=%lu\r\n",
+					   crop_label,
+					   (unsigned long)crop_x_min, (unsigned long)crop_y_min,
+					   (unsigned long)crop_width, (unsigned long)crop_height);
+
+	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS)
+	{
+		AppAI_LogSourceCropWindow(frame_bytes, frame_size, source_width,
+								  source_height, crop_x_min, crop_y_min, crop_width, crop_height);
+	}
+
+	(void)DebugConsole_WriteString("[AI] Preprocess diagnostics OK.\r\n");
+	/* The affine-fill resize path overwrites the full tensor, so clearing the
+	 * entire 224x224x3 float buffer first just burns time on the CPU. */
+	(void)DebugConsole_WriteString("[AI] Preprocess zero-fill skipped.\r\n");
+	(void)DebugConsole_WriteString("[AI] Preprocess resize start.\r\n");
+
+#if APP_AI_YUV422_INPUT_LUMA_ONLY
+	{
+		const size_t output_width = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+		const size_t output_height = (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+		const size_t output_float_count = output_width * output_height * 3U;
+		const size_t output_row_bytes = output_width * 3U * sizeof(float);
+		const size_t output_total_bytes = output_float_count * sizeof(float);
+		size_t resized_width = output_width;
+		size_t resized_height = output_height;
+		size_t resize_pad_x = 0U;
+		size_t resize_pad_y = 0U;
+
+		if ((output_width == 0U) || (output_height == 0U))
+		{
+			DebugConsole_Printf("[AI] PreprocessYuv422FrameToFloatInput: Invalid output dimensions: width=%lu, height=%lu\r\n",
+							   (unsigned long)output_width, (unsigned long)output_height);
+			return false;
+		}
+
+		if (output_total_bytes > input_len_bytes)
+		{
+			DebugConsole_Printf("[AI] PreprocessYuv422FrameToFloatInput: Output buffer too small: required=%lu, available=%lu\r\n",
+							   (unsigned long)output_total_bytes,
+							   (unsigned long)input_len_bytes);
+			return false;
+		}
+
+		/* Keep the original aspect ratio using integer math only. */
+		app_ai_scalar_preprocess_last_row = (size_t)SIZE_MAX;
+
+		/* Fast path: when the crop already spans the output tensor, fill it
+		 * directly without extra resize math or padding checks. */
+		if ((crop_x_min == 0U) && (crop_y_min == 0U) &&
+			(crop_width == output_width) && (crop_height == output_height))
+		{
+			resized_width = output_width;
+			resized_height = output_height;
+			resize_pad_x = 0U;
+			resize_pad_y = 0U;
+
+			for (size_t out_y = 0U; out_y < output_height; ++out_y)
+			{
+				uint8_t *const row_bytes =
+					(uint8_t *)input_ptr + (out_y * output_row_bytes);
+
+				app_ai_scalar_preprocess_last_row = out_y;
+
+				for (size_t out_x = 0U; out_x < output_width; ++out_x)
+				{
+					const size_t pixel_base = out_x * 3U * sizeof(float);
+					const size_t read_index = ((out_y * source_width) + out_x) * 2U;
+					const uint8_t gray = frame_bytes[read_index];
+					const uint32_t gray_bits = app_ai_luma_to_float_bits[gray];
+
+					{
+						const uint8_t *const gray_bytes =
+							(const uint8_t *)&gray_bits;
+
+						row_bytes[pixel_base + 0U] = gray_bytes[0];
+						row_bytes[pixel_base + 1U] = gray_bytes[1];
+						row_bytes[pixel_base + 2U] = gray_bytes[2];
+						row_bytes[pixel_base + 3U] = gray_bytes[3];
+
+						row_bytes[pixel_base + 4U] = gray_bytes[0];
+						row_bytes[pixel_base + 5U] = gray_bytes[1];
+						row_bytes[pixel_base + 6U] = gray_bytes[2];
+						row_bytes[pixel_base + 7U] = gray_bytes[3];
+
+						row_bytes[pixel_base + 8U] = gray_bytes[0];
+						row_bytes[pixel_base + 9U] = gray_bytes[1];
+						row_bytes[pixel_base + 10U] = gray_bytes[2];
+						row_bytes[pixel_base + 11U] = gray_bytes[3];
+					}
+				}
+			}
+		}
+		else
+		{
+			if ((output_width * crop_height) <= (output_height * crop_width))
+			{
+				resized_width = output_width;
+				resized_height = (size_t)(((crop_height * output_width) + (crop_width / 2U)) / crop_width);
+			}
+			else
+			{
+				resized_height = output_height;
+				resized_width = (size_t)(((crop_width * output_height) + (crop_height / 2U)) / crop_height);
+			}
+
+			if (resized_width == 0U)
+			{
+				resized_width = 1U;
+			}
+			if (resized_height == 0U)
+			{
+				resized_height = 1U;
+			}
+			if (resized_width > output_width)
+			{
+				resized_width = output_width;
+			}
+			if (resized_height > output_height)
+			{
+				resized_height = output_height;
+			}
+
+			resize_pad_x = (output_width - resized_width) / 2U;
+			resize_pad_y = (output_height - resized_height) / 2U;
+
+			for (size_t out_y = 0U; out_y < output_height; ++out_y)
+			{
+				uint8_t *const row_bytes =
+					(uint8_t *)input_ptr + (out_y * output_row_bytes);
+
+				app_ai_scalar_preprocess_last_row = out_y;
+
+				if ((out_y < resize_pad_y) ||
+					(out_y >= (resize_pad_y + resized_height)))
+				{
+					(void)memset(row_bytes, 0, output_row_bytes);
+					continue;
+				}
+
+				for (size_t out_x = 0U; out_x < output_width; ++out_x)
+				{
+					const size_t pixel_base = out_x * 3U * sizeof(float);
+					uint32_t gray_bits = 0U;
+
+					if ((out_x >= resize_pad_x) &&
+						(out_x < (resize_pad_x + resized_width)))
+					{
+						const size_t resized_x = out_x - resize_pad_x;
+						const size_t resized_y = out_y - resize_pad_y;
+						size_t sample_x =
+							crop_x_min + ((resized_x * crop_width) / resized_width);
+						size_t sample_y =
+							crop_y_min + ((resized_y * crop_height) / resized_height);
+
+						if (sample_x >= source_width)
+						{
+							sample_x = source_width - 1U;
+						}
+						if (sample_y >= source_height)
+						{
+							sample_y = source_height - 1U;
+						}
+
+						if ((sample_x < source_width) && (sample_y < source_height))
+						{
+							const size_t pair_x = sample_x & ~1U;
+							const size_t source_index =
+								((sample_y * source_width) + pair_x) * 2U;
+							const size_t read_index =
+								source_index + ((sample_x & 1U) ? 2U : 0U);
+
+							if (read_index < frame_size)
+							{
+								const uint8_t gray = frame_bytes[read_index];
+								gray_bits = app_ai_luma_to_float_bits[gray];
+							}
+						}
+					}
+
+					{
+						const uint8_t *const gray_bytes =
+							(const uint8_t *)&gray_bits;
+
+						row_bytes[pixel_base + 0U] = gray_bytes[0];
+						row_bytes[pixel_base + 1U] = gray_bytes[1];
+						row_bytes[pixel_base + 2U] = gray_bytes[2];
+						row_bytes[pixel_base + 3U] = gray_bytes[3];
+
+						row_bytes[pixel_base + 4U] = gray_bytes[0];
+						row_bytes[pixel_base + 5U] = gray_bytes[1];
+						row_bytes[pixel_base + 6U] = gray_bytes[2];
+						row_bytes[pixel_base + 7U] = gray_bytes[3];
+
+						row_bytes[pixel_base + 8U] = gray_bytes[0];
+						row_bytes[pixel_base + 9U] = gray_bytes[1];
+						row_bytes[pixel_base + 10U] = gray_bytes[2];
+						row_bytes[pixel_base + 11U] = gray_bytes[3];
+					}
+				}
+			}
+		}
+	}
+#else
+	{
+		const size_t output_width = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+		const size_t output_height = (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+		const size_t output_float_count = output_width * output_height * 3U;
+		
+		/* Add bounds checking for output dimensions */
+		if (output_width == 0U || output_height == 0U)
+		{
+			DebugConsole_Printf("[AI] PreprocessYuv422FrameToFloatInput: Invalid output dimensions: width=%lu, height=%lu\r\n", 
+							   (unsigned long)output_width, (unsigned long)output_height);
+			return false;
+		}
+		
+		const float resize_scale =
+			fminf((float)output_width / (float)crop_width,
+				  (float)output_height / (float)crop_height);
+		
+		/* Add bounds checking for resize_scale */
+		if (resize_scale <= 0.0f || !isfinite(resize_scale))
+		{
+			DebugConsole_Printf("[AI] PreprocessYuv422FrameToFloatInput: Invalid resize_scale: %f\r\n", (double)resize_scale);
+			return false;
+		}
+		
+		size_t resized_width = (size_t)(((float)crop_width * resize_scale) + 0.5f);
+		size_t resized_height = (size_t)(((float)crop_height * resize_scale) + 0.5f);
+		size_t resize_pad_x = 0U;
+		size_t resize_pad_y = 0U;
+		
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
+		DebugConsole_Printf(
+			"[AI] Resize plan: mode=bilinear-pad output=%lux%lu crop=%lux%lu resized=%lux%lu scale=%.6f\r\n",
+			(unsigned long)output_width, (unsigned long)output_height,
+			(unsigned long)crop_width, (unsigned long)crop_height,
+			(unsigned long)resized_width, (unsigned long)resized_height,
+			(double)resize_scale);
+#endif
+
+		if ((output_width == 0U) || (output_height == 0U))
+		{
+			return false;
+		}
+
+		if (resized_width == 0U)
+		{
+			resized_width = 1U;
+		}
+		if (resized_height == 0U)
+		{
+			resized_height = 1U;
+		}
+		if (resized_width > output_width)
+		{
+			resized_width = output_width;
+		}
+		if (resized_height > output_height)
+		{
+			resized_height = output_height;
+		}
+
+		resize_pad_x = (output_width - resized_width) / 2U;
+		resize_pad_y = (output_height - resized_height) / 2U;
+
+		app_ai_scalar_preprocess_last_row = (size_t)SIZE_MAX;
+
+		/* Row writer handles both active pixels and padded areas, so we do not
+		 * bulk-clear the full tensor up-front. */
+		if ((output_float_count * sizeof(float)) > input_len_bytes)
+		{
+			DebugConsole_Printf("[AI] PreprocessYuv422FrameToFloatInput: Output buffer too small: required=%lu, available=%lu\r\n", 
+							   (unsigned long)(output_float_count * sizeof(float)), (unsigned long)input_len_bytes);
+			return false;
+		}
+
+		(void)DebugConsole_WriteString("[AI] Preprocess row loop enter.\r\n");
+
+		for (size_t chunk_start = 0U; chunk_start < output_height;
+			 chunk_start += APP_AI_SCALAR_PREPROCESS_ROWS_PER_CHUNK)
+		{
+			const size_t chunk_end =
+				((chunk_start + APP_AI_SCALAR_PREPROCESS_ROWS_PER_CHUNK) < output_height)
+					? (chunk_start + APP_AI_SCALAR_PREPROCESS_ROWS_PER_CHUNK)
+					: output_height;
+
+			/* Add bounds checking for chunk_end */
+			if (chunk_end > output_height)
+			{
+				DebugConsole_Printf("[AI] PreprocessYuv422FrameToFloatInput: chunk_end out of bounds: %lu > %lu\r\n", 
+								   (unsigned long)chunk_end, (unsigned long)output_height);
+				return false;
+			}
+
+			for (size_t out_y = chunk_start; out_y < chunk_end; out_y++)
+			{
+				/* Add bounds checking for out_y */
+				if (out_y >= output_height)
+				{
+					DebugConsole_Printf("[AI] PreprocessYuv422FrameToFloatInput: out_y out of bounds: %lu >= %lu\r\n", 
+									   (unsigned long)out_y, (unsigned long)output_height);
+					return false;
+				}
+				
+				app_ai_scalar_preprocess_last_row = out_y;
+
+				if (!AppAI_PreprocessScalarRow(frame_bytes, frame_size, source_width,
+											 source_height, crop_x_min, crop_y_min,
+												crop_width, crop_height, output_width,
+													 output_height, resize_scale, resized_width,
+													 resized_height, resize_pad_x, resize_pad_y,
+													 out_y, input_ptr, input_len_bytes))
+				{
+					DebugConsole_Printf("[AI] PreprocessYuv422FrameToFloatInput: AppAI_PreprocessScalarRow failed at row %lu\r\n", 
+									   (unsigned long)out_y);
+					return false;
+				}
+			}
+		}
+
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
+		DebugConsole_WriteString("[AI] Preprocess write summary skipped.\r\n");
+#endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
+	}
+
+	(void)DebugConsole_WriteString("[AI] Preprocess resize OK.\r\n");
+
+	return true;
+}
+
+static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToInt8Input(
+	const uint8_t *frame_bytes, size_t frame_size, uint8_t *input_ptr,
+	size_t input_len_bytes, const LL_Buffer_InfoTypeDef *input_info)
+{
+	const size_t source_width = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+	const size_t source_height = (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+	const size_t output_width = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+	const size_t output_height = (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+	const size_t required_bytes = output_width * output_height * 3U;
+	size_t crop_x_min = 0U;
+	size_t crop_y_min = 0U;
+	size_t crop_width = source_width;
+	size_t crop_height = source_height;
+	bool crop_found = false;
+	const char *crop_label = "fixed";
+	float scale_value = 1.0f / 255.0f;
+	int16_t zero_point = 0;
+	int32_t q_min = -128;
+	int32_t q_max = 127;
+	int32_t q_zero = 0;
+
+	if ((frame_bytes == NULL) || (input_ptr == NULL) || (input_info == NULL))
+	{
+		return false;
+	}
+	if ((frame_size < (size_t)APP_AI_CAPTURE_FRAME_BYTES) ||
+		(input_len_bytes < required_bytes))
+	{
+		return false;
+	}
+
+	if (input_info->scale != NULL)
+	{
+		(void)memcpy(&scale_value, input_info->scale, sizeof(scale_value));
+	}
+	if (input_info->offset != NULL)
+	{
+		(void)memcpy(&zero_point, input_info->offset, sizeof(zero_point));
+	}
+	if (scale_value <= 0.0f)
+	{
+		scale_value = 1.0f / 255.0f;
+	}
+	if (input_info->Qunsigned != 0U)
+	{
+		q_min = 0;
+		q_max = 255;
+	}
+	q_zero = (int32_t)zero_point;
+	if (q_zero < q_min)
+	{
+		q_zero = q_min;
+	}
+	if (q_zero > q_max)
+	{
+		q_zero = q_max;
+	}
+
 	if (app_ai_forced_crop_active)
 	{
 		crop_found = true;
@@ -4984,207 +6391,172 @@ static bool AppAI_PreprocessYuv422FrameToFloatInput(const uint8_t *frame_bytes,
 		}
 	}
 
+	if (crop_x_min >= source_width)
 	{
-		char crop_line[128] = {0};
+		crop_x_min = source_width - 1U;
+		crop_width = 1U;
+	}
+	if (crop_y_min >= source_height)
+	{
+		crop_y_min = source_height - 1U;
+		crop_height = 1U;
+	}
+	if ((crop_x_min + crop_width) > source_width)
+	{
+		crop_width = source_width - crop_x_min;
+	}
+	if ((crop_y_min + crop_height) > source_height)
+	{
+		crop_height = source_height - crop_y_min;
+	}
 
-		(void)snprintf(crop_line, sizeof(crop_line),
-					   "[AI] Crop %s: x=%lu y=%lu w=%lu h=%lu\r\n",
+	DebugConsole_Printf("[AI] Crop %s: x=%lu y=%lu w=%lu h=%lu\r\n",
 					   crop_label,
 					   (unsigned long)crop_x_min, (unsigned long)crop_y_min,
 					   (unsigned long)crop_width, (unsigned long)crop_height);
-		DebugConsole_WriteString(crop_line);
-	}
-
-	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS)
-	{
-		AppAI_LogSourceCropWindow(frame_bytes, frame_size, source_width,
-								  source_height, crop_x_min, crop_y_min, crop_width, crop_height);
-	}
-
-	(void)memset(input_ptr, 0, input_float_count * sizeof(float));
+	(void)DebugConsole_WriteString("[AI] Preprocess diagnostics OK.\r\n");
+	(void)DebugConsole_WriteString("[AI] Preprocess zero-fill skipped.\r\n");
+	(void)DebugConsole_WriteString("[AI] Preprocess resize start.\r\n");
 
 	{
-		const size_t output_width = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
-		const size_t output_height = (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
-		const size_t crop_x_max_index = (crop_width > 0U) ? (crop_width - 1U) : 0U;
-		const size_t crop_y_max_index = (crop_height > 0U) ? (crop_height - 1U) : 0U;
-#if APP_AI_ENABLE_AFFINE_FILL_RESIZE
-		const float scale_x = (output_width > 1U)
-								  ? ((float)crop_x_max_index / (float)(output_width - 1U))
-								  : 0.0f;
-		const float scale_y = (output_height > 1U)
-								  ? ((float)crop_y_max_index / (float)(output_height - 1U))
-								  : 0.0f;
-#else
-		const float width_scale = (float)output_width / (float)crop_width;
-		const float height_scale = (float)output_height / (float)crop_height;
-		const float scale = (width_scale < height_scale) ? width_scale
-														 : height_scale;
-		const size_t scaled_width = (size_t)((float)crop_width * scale + 0.5f);
-		const size_t scaled_height = (size_t)((float)crop_height * scale + 0.5f);
-		const size_t pad_x = (output_width > scaled_width) ? ((output_width - scaled_width) / 2U) : 0U;
-		const size_t pad_y = (output_height > scaled_height) ? ((output_height - scaled_height) / 2U) : 0U;
-		const size_t probe_top_y = (pad_y + (scaled_height / 4U) < output_height) ? (pad_y + (scaled_height / 4U)) : (output_height - 1U);
-		const size_t probe_mid_y = (pad_y + (scaled_height / 2U) < output_height) ? (pad_y + (scaled_height / 2U)) : (output_height - 1U);
-		const size_t probe_bottom_y = (pad_y + ((scaled_height * 3U) / 4U) <
-									   output_height)
-										  ? (pad_y + ((scaled_height * 3U) / 4U))
-										  : (output_height - 1U);
-#endif
-		size_t nonzero_write_count = 0U;
+		const float resize_scale =
+			fminf((float)output_width / (float)crop_width,
+				  (float)output_height / (float)crop_height);
+		size_t resized_width = (size_t)(((float)crop_width * resize_scale) + 0.5f);
+		size_t resized_height = (size_t)(((float)crop_height * resize_scale) + 0.5f);
+		size_t resize_pad_x = 0U;
+		size_t resize_pad_y = 0U;
 
-#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
-#if APP_AI_ENABLE_AFFINE_FILL_RESIZE
-		DebugConsole_Printf(
-			"[AI] Resize plan: mode=affine-fill output=%lux%lu scale=(%lu.%03lu,%lu.%03lu) crop_max=(%lu,%lu)\r\n",
-			(unsigned long)output_width, (unsigned long)output_height,
-			(unsigned long)(scale_x),
-			(unsigned long)((scale_x - (float)((unsigned long)scale_x)) * 1000.0f),
-			(unsigned long)(scale_y),
-			(unsigned long)((scale_y - (float)((unsigned long)scale_y)) * 1000.0f),
-			(unsigned long)crop_x_max_index, (unsigned long)crop_y_max_index);
-#else
-		DebugConsole_Printf(
-			"[AI] Resize plan: output=%lux%lu scale=%lu.%03lu scaled=%lux%lu pad=(%lu,%lu) crop_max=(%lu,%lu) probes=(%lu,%lu,%lu)\r\n",
-			(unsigned long)output_width, (unsigned long)output_height,
-			(unsigned long)(scale),
-			(unsigned long)((scale - (float)((unsigned long)scale)) * 1000.0f),
-			(unsigned long)scaled_width, (unsigned long)scaled_height,
-			(unsigned long)pad_x, (unsigned long)pad_y,
-			(unsigned long)crop_x_max_index, (unsigned long)crop_y_max_index,
-			(unsigned long)probe_top_y, (unsigned long)probe_mid_y,
-			(unsigned long)probe_bottom_y);
-#endif
-#endif
-
-		for (size_t out_y = 0U; out_y < output_height; out_y++)
+		if (resized_width == 0U)
 		{
-#if !APP_AI_ENABLE_AFFINE_FILL_RESIZE
-			if ((out_y < pad_y) || (out_y >= (pad_y + scaled_height)))
+			resized_width = 1U;
+		}
+		if (resized_height == 0U)
+		{
+			resized_height = 1U;
+		}
+		if (resized_width > output_width)
+		{
+			resized_width = output_width;
+		}
+		if (resized_height > output_height)
+		{
+			resized_height = output_height;
+		}
+		resize_pad_x = (output_width - resized_width) / 2U;
+		resize_pad_y = (output_height - resized_height) / 2U;
+		app_ai_scalar_preprocess_last_row = (size_t)SIZE_MAX;
+
+		if (input_info->Qunsigned != 0U)
+		{
+			(void)memset(input_ptr, (uint8_t)q_zero, required_bytes);
+		}
+		else
+		{
+			const int8_t q_zero_s8 = (int8_t)q_zero;
+			for (size_t i = 0U; i < required_bytes; ++i)
 			{
-				continue;
-			}
-#endif
-
-#if APP_AI_ENABLE_AFFINE_FILL_RESIZE
-			const float crop_y_f = ((float)out_y) * scale_y;
-#else
-			const float crop_y_f = ((float)(out_y - pad_y)) / scale;
-#endif
-			size_t crop_y0 = (size_t)crop_y_f;
-			size_t crop_y1 = (crop_y0 < crop_y_max_index) ? (crop_y0 + 1U)
-														  : crop_y_max_index;
-			float crop_y_frac = crop_y_f - (float)crop_y0;
-
-			if (crop_y0 >= crop_y_max_index)
-			{
-				crop_y0 = crop_y_max_index;
-				crop_y1 = crop_y_max_index;
-				crop_y_frac = 0.0f;
-			}
-
-			for (size_t out_x = 0U; out_x < output_width; out_x++)
-			{
-				const size_t dest_pixel_index = (out_y * output_width) + out_x;
-				float crop_x_frac = 0.0f;
-				float crop_x_f = 0.0f;
-				size_t crop_x0 = 0U;
-				size_t crop_x1 = 0U;
-				float r00 = 0.0f;
-				float g00 = 0.0f;
-				float b00 = 0.0f;
-				float r10 = 0.0f;
-				float g10 = 0.0f;
-				float b10 = 0.0f;
-				float r01 = 0.0f;
-				float g01 = 0.0f;
-				float b01 = 0.0f;
-				float r11 = 0.0f;
-				float g11 = 0.0f;
-				float b11 = 0.0f;
-				float top_r = 0.0f;
-				float top_g = 0.0f;
-				float top_b = 0.0f;
-				float bottom_r = 0.0f;
-				float bottom_g = 0.0f;
-				float bottom_b = 0.0f;
-				float out_r = 0.0f;
-				float out_g = 0.0f;
-				float out_b = 0.0f;
-
-#if !APP_AI_ENABLE_AFFINE_FILL_RESIZE
-				if ((out_x < pad_x) || (out_x >= (pad_x + scaled_width)))
-				{
-					continue;
-				}
-#endif
-
-#if APP_AI_ENABLE_AFFINE_FILL_RESIZE
-				crop_x_f = ((float)out_x) * scale_x;
-#else
-				crop_x_f = ((float)(out_x - pad_x)) / scale;
-#endif
-				crop_x0 = (size_t)crop_x_f;
-				crop_x1 = (crop_x0 < crop_x_max_index) ? (crop_x0 + 1U)
-													   : crop_x_max_index;
-				crop_x_frac = crop_x_f - (float)crop_x0;
-
-				if (crop_x0 >= crop_x_max_index)
-				{
-					crop_x0 = crop_x_max_index;
-					crop_x1 = crop_x_max_index;
-					crop_x_frac = 0.0f;
-				}
-
-				AppAI_ReadRgbFromYuv422Pixel(frame_bytes, source_width,
-											 crop_x_min + crop_x0, crop_y_min + crop_y0, &r00, &g00,
-											 &b00);
-				AppAI_ReadRgbFromYuv422Pixel(frame_bytes, source_width,
-											 crop_x_min + crop_x1, crop_y_min + crop_y0, &r10, &g10,
-											 &b10);
-				AppAI_ReadRgbFromYuv422Pixel(frame_bytes, source_width,
-											 crop_x_min + crop_x0, crop_y_min + crop_y1, &r01, &g01,
-											 &b01);
-				AppAI_ReadRgbFromYuv422Pixel(frame_bytes, source_width,
-											 crop_x_min + crop_x1, crop_y_min + crop_y1, &r11, &g11,
-											 &b11);
-
-				top_r = r00 + ((r10 - r00) * crop_x_frac);
-				top_g = g00 + ((g10 - g00) * crop_x_frac);
-				top_b = b00 + ((b10 - b00) * crop_x_frac);
-				bottom_r = r01 + ((r11 - r01) * crop_x_frac);
-				bottom_g = g01 + ((g11 - g01) * crop_x_frac);
-				bottom_b = b01 + ((b11 - b01) * crop_x_frac);
-				out_r = top_r + ((bottom_r - top_r) * crop_y_frac);
-				out_g = top_g + ((bottom_g - top_g) * crop_y_frac);
-				out_b = top_b + ((bottom_b - top_b) * crop_y_frac);
-
-				input_ptr[dest_pixel_index * 3U + 0U] =
-					AppAI_ClampNormalizedFloat(out_r);
-				input_ptr[dest_pixel_index * 3U + 1U] =
-					AppAI_ClampNormalizedFloat(out_g);
-				input_ptr[dest_pixel_index * 3U + 2U] =
-					AppAI_ClampNormalizedFloat(out_b);
-
-				if ((out_r > 0.0f) || (out_g > 0.0f) || (out_b > 0.0f))
-				{
-					nonzero_write_count++;
-				}
+				((int8_t *)input_ptr)[i] = q_zero_s8;
 			}
 		}
 
-#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
-		DebugConsole_Printf(
-			"[AI] Preprocess write summary: nonzero_pixels=%lu\r\n",
-			(unsigned long)nonzero_write_count);
-#endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
-	}
+		(void)DebugConsole_WriteString("[AI] Preprocess row loop enter.\r\n");
 
+		for (size_t out_y = 0U; out_y < output_height; ++out_y)
+		{
+			app_ai_scalar_preprocess_last_row = out_y;
+			if ((out_y < resize_pad_y) || (out_y >= (resize_pad_y + resized_height)))
+			{
+				continue;
+			}
+
+			for (size_t out_x = 0U; out_x < output_width; ++out_x)
+			{
+				float out_r = 0.0f;
+				float out_g = 0.0f;
+				float out_b = 0.0f;
+				const size_t base = ((out_y * output_width) + out_x) * 3U;
+				if ((out_x < resize_pad_x) || (out_x >= (resize_pad_x + resized_width)))
+				{
+					continue;
+				}
+				{
+					const float resized_x = (float)(out_x - resize_pad_x);
+					const float resized_y = (float)(out_y - resize_pad_y);
+					float crop_x = ((resized_x + 0.5f) / resize_scale) - 0.5f;
+					float crop_y = ((resized_y + 0.5f) / resize_scale) - 0.5f;
+
+					if (crop_x < 0.0f)
+					{
+						crop_x = 0.0f;
+					}
+					else if (crop_x > (float)(crop_width - 1U))
+					{
+						crop_x = (float)(crop_width - 1U);
+					}
+
+					if (crop_y < 0.0f)
+					{
+						crop_y = 0.0f;
+					}
+					else if (crop_y > (float)(crop_height - 1U))
+					{
+						crop_y = (float)(crop_height - 1U);
+					}
+
+					AppAI_ReadRgbFromYuv422Bilinear(
+						frame_bytes, frame_size, source_width, source_height,
+						(float)crop_x_min + crop_x, (float)crop_y_min + crop_y,
+						&out_r, &out_g, &out_b);
+				}
+				{
+					int32_t q_r = (int32_t)lroundf(out_r / scale_value) + (int32_t)zero_point;
+					int32_t q_g = (int32_t)lroundf(out_g / scale_value) + (int32_t)zero_point;
+					int32_t q_b = (int32_t)lroundf(out_b / scale_value) + (int32_t)zero_point;
+					if (q_r < q_min)
+						q_r = q_min;
+					if (q_r > q_max)
+						q_r = q_max;
+					if (q_g < q_min)
+						q_g = q_min;
+					if (q_g > q_max)
+						q_g = q_max;
+					if (q_b < q_min)
+						q_b = q_min;
+					if (q_b > q_max)
+						q_b = q_max;
+
+					if (input_info->Qunsigned != 0U)
+					{
+						input_ptr[base + 0U] = (uint8_t)q_r;
+						input_ptr[base + 1U] = (uint8_t)q_g;
+						input_ptr[base + 2U] = (uint8_t)q_b;
+					}
+					else
+					{
+						((int8_t *)input_ptr)[base + 0U] = (int8_t)q_r;
+						((int8_t *)input_ptr)[base + 1U] = (int8_t)q_g;
+						((int8_t *)input_ptr)[base + 2U] = (int8_t)q_b;
+					}
+				}
+			}
+		}
+	}
+#endif
+
+	(void)DebugConsole_WriteString("[AI] Preprocess resize OK.\r\n");
 	return true;
 }
 
 static float AppAI_ClampNormalizedFloat(float value)
 {
+	/* Add additional validation for NaN and infinity */
+	if (!isfinite(value))
+	{
+		DebugConsole_Printf("[AI] ClampNormalizedFloat: Invalid value: %f\r\n", (double)value);
+		return 0.0f;
+	}
+
 	if (value < 0.0f)
 	{
 		return 0.0f;
@@ -5198,29 +6570,68 @@ static float AppAI_ClampNormalizedFloat(float value)
 	return value;
 }
 
-static uint8_t AppAI_ReadYuv422Luma(const uint8_t *frame_bytes,
-									size_t frame_width_pixels, size_t source_x, size_t source_y)
+static uint8_t __attribute__((noinline)) AppAI_ReadYuv422Luma(
+	const uint8_t *frame_bytes, size_t frame_size_bytes,
+	size_t frame_width_pixels, size_t source_x, size_t source_y)
 {
-	const size_t pair_x = source_x & ~1U;
-	const size_t source_index = ((source_y * frame_width_pixels) + pair_x) * 2U;
-	const bool is_second_pixel = ((source_x & 1U) != 0U);
-
 	if (frame_bytes == NULL)
 	{
 		return 0U;
 	}
 
-	return frame_bytes[source_index + (is_second_pixel ? 2U : 0U)];
+	if (frame_size_bytes < 4U)
+	{
+		return 0U;
+	}
+
+	if (frame_width_pixels == 0U)
+	{
+		return 0U;
+	}
+
+	if (source_x >= frame_width_pixels)
+	{
+		return 0U;
+	}
+
+	if (source_y >= (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS)
+	{
+		return 0U;
+	}
+
+	const size_t pair_x = source_x & ~1U;
+	const size_t source_index = ((source_y * frame_width_pixels) + pair_x) * 2U;
+	if (source_index >= frame_size_bytes)
+	{
+		return 0U;
+	}
+
+	const bool is_second_pixel = ((source_x & 1U) != 0U);
+	const size_t read_index = source_index + (is_second_pixel ? 2U : 0U);
+	if (read_index >= frame_size_bytes)
+	{
+		return 0U;
+	}
+
+	return frame_bytes[read_index];
 }
 
 static void AppAI_ReadYuv422Quartet(const uint8_t *frame_bytes,
+									size_t frame_size_bytes,
 									size_t frame_width_pixels, size_t source_x, size_t source_y,
 									uint8_t *quad_out)
 {
+	if ((frame_bytes == NULL) || (quad_out == NULL) ||
+		(frame_size_bytes < 4U) ||
+		(source_x >= frame_width_pixels) ||
+		(source_y >= (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS))
+	{
+		return;
+	}
+
 	const size_t pair_x = source_x & ~1U;
 	const size_t source_index = ((source_y * frame_width_pixels) + pair_x) * 2U;
-
-	if ((frame_bytes == NULL) || (quad_out == NULL))
+	if ((source_index + 3U) >= frame_size_bytes)
 	{
 		return;
 	}
@@ -5232,9 +6643,19 @@ static void AppAI_ReadYuv422Quartet(const uint8_t *frame_bytes,
 }
 
 static float AppAI_ReadNormalizedGrayFromYuv422Pixel(const uint8_t *frame_bytes,
+													 size_t frame_size_bytes,
 													 size_t frame_width_pixels, size_t source_x, size_t source_y)
 {
-	const uint8_t luma = AppAI_ReadYuv422Luma(frame_bytes, frame_width_pixels,
+	/* Add additional bounds checking and validation */
+	if ((frame_bytes == NULL) || (frame_size_bytes < 4U) ||
+		(frame_width_pixels == 0U) || (source_x >= frame_width_pixels) ||
+		(source_y >= (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS))
+	{
+		DebugConsole_Printf("[AI] ReadNormalizedGrayFromYuv422Pixel: Invalid parameters or out of bounds\r\n");
+		return 0.0f;
+	}
+
+	const uint8_t luma = AppAI_ReadYuv422Luma(frame_bytes, frame_size_bytes, frame_width_pixels,
 											  source_x, source_y);
 	const float normalized = ((float)luma) / 255.0f;
 
@@ -5242,11 +6663,114 @@ static float AppAI_ReadNormalizedGrayFromYuv422Pixel(const uint8_t *frame_bytes,
 }
 
 static void AppAI_ReadRgbFromYuv422Pixel(const uint8_t *frame_bytes,
+										 size_t frame_size_bytes,
 										 size_t frame_width_pixels, size_t source_x, size_t source_y,
 										 float *r_out, float *g_out, float *b_out)
 {
+	/* Add additional bounds checking and validation */
+	if (frame_bytes == NULL)
+	{
+		DebugConsole_Printf("[AI] ReadRgbFromYuv422Pixel: NULL frame_bytes pointer\r\n");
+		if (r_out != NULL)
+		{
+			*r_out = 0.0f;
+		}
+		if (g_out != NULL)
+		{
+			*g_out = 0.0f;
+		}
+		if (b_out != NULL)
+		{
+			*b_out = 0.0f;
+		}
+		return;
+	}
+
+	if (frame_size_bytes < 4U)
+	{
+		DebugConsole_Printf("[AI] ReadRgbFromYuv422Pixel: frame_size_bytes too small: %lu\r\n", (unsigned long)frame_size_bytes);
+		if (r_out != NULL)
+		{
+			*r_out = 0.0f;
+		}
+		if (g_out != NULL)
+		{
+			*g_out = 0.0f;
+		}
+		if (b_out != NULL)
+		{
+			*b_out = 0.0f;
+		}
+		return;
+	}
+
+	if (frame_width_pixels == 0U)
+	{
+		DebugConsole_Printf("[AI] ReadRgbFromYuv422Pixel: frame_width_pixels is zero\r\n");
+		if (r_out != NULL)
+		{
+			*r_out = 0.0f;
+		}
+		if (g_out != NULL)
+		{
+			*g_out = 0.0f;
+		}
+		if (b_out != NULL)
+		{
+			*b_out = 0.0f;
+		}
+		return;
+	}
+
+	if (source_x >= frame_width_pixels)
+	{
+		DebugConsole_Printf("[AI] ReadRgbFromYuv422Pixel: source_x out of bounds: %lu >= %lu\r\n", 
+						   (unsigned long)source_x, (unsigned long)frame_width_pixels);
+		if (r_out != NULL)
+		{
+			*r_out = 0.0f;
+		}
+		if (g_out != NULL)
+		{
+			*g_out = 0.0f;
+		}
+		if (b_out != NULL)
+		{
+			*b_out = 0.0f;
+		}
+		return;
+	}
+
+	if (source_y >= (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS)
+	{
+		DebugConsole_Printf("[AI] ReadRgbFromYuv422Pixel: source_y out of bounds: %lu >= %lu\r\n", 
+						   (unsigned long)source_y, (unsigned long)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS);
+		if (r_out != NULL)
+		{
+			*r_out = 0.0f;
+		}
+		if (g_out != NULL)
+		{
+			*g_out = 0.0f;
+		}
+		if (b_out != NULL)
+		{
+			*b_out = 0.0f;
+		}
+		return;
+	}
+
+	/* Add additional validation for frame dimensions */
+	if (frame_width_pixels != (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS)
+	{
+		DebugConsole_Printf("[AI] ReadRgbFromYuv422Pixel: frame_width_pixels mismatch: %lu != %lu\r\n", 
+						   (unsigned long)frame_width_pixels, (unsigned long)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS);
+		/* Continue processing but log the mismatch */
+	}
+
 #if APP_AI_YUV422_INPUT_LUMA_ONLY
 	const float gray = AppAI_ReadNormalizedGrayFromYuv422Pixel(frame_bytes,
+															   frame_size_bytes,
 															   frame_width_pixels, source_x, source_y);
 	const float r = gray;
 	const float g = gray;
@@ -5254,10 +6778,78 @@ static void AppAI_ReadRgbFromYuv422Pixel(const uint8_t *frame_bytes,
 #else
 	const size_t pair_x = source_x & ~1U;
 	const size_t source_index = ((source_y * frame_width_pixels) + pair_x) * 2U;
+	
+	/* Add bounds checking for source_index calculation */
+	if (source_index >= frame_size_bytes)
+	{
+		DebugConsole_Printf("[AI] ReadRgbFromYuv422Pixel: source_index out of bounds: %lu >= %lu\r\n", 
+						   (unsigned long)source_index, (unsigned long)frame_size_bytes);
+		if (r_out != NULL)
+		{
+			*r_out = 0.0f;
+		}
+		if (g_out != NULL)
+		{
+			*g_out = 0.0f;
+		}
+		if (b_out != NULL)
+		{
+			*b_out = 0.0f;
+		}
+		return;
+	}
+
 	const bool is_second_pixel = ((source_x & 1U) != 0U);
-	const float y = ((float)frame_bytes[source_index + (is_second_pixel ? 2U : 0U)] - 16.0f) * 1.1643836f;
-	const float u = (float)frame_bytes[source_index + 1U] - 128.0f;
-	const float v = (float)frame_bytes[source_index + 3U] - 128.0f;
+
+	/* The RGB path touches three adjacent bytes per pixel, so make the read
+	 * bounds explicit before we let the compiler emit the loads. */
+	if ((source_index + 3U) >= frame_size_bytes)
+	{
+		DebugConsole_Printf("[AI] ReadRgbFromYuv422Pixel: source_index+3 out of bounds: %lu >= %lu\r\n", 
+						   (unsigned long)(source_index + 3U), (unsigned long)frame_size_bytes);
+		if (r_out != NULL)
+		{
+			*r_out = 0.0f;
+		}
+		if (g_out != NULL)
+		{
+			*g_out = 0.0f;
+		}
+		if (b_out != NULL)
+		{
+			*b_out = 0.0f;
+		}
+		return;
+	}
+
+	/* Add additional validation that we're not reading beyond the end of the buffer */
+	const size_t y_index = source_index + (is_second_pixel ? 2U : 0U);
+	const size_t u_index = source_index + 1U;
+	const size_t v_index = source_index + 3U;
+	
+	if (y_index >= frame_size_bytes || u_index >= frame_size_bytes || v_index >= frame_size_bytes)
+	{
+		DebugConsole_Printf("[AI] ReadRgbFromYuv422Pixel: Individual indices out of bounds: y=%lu, u=%lu, v=%lu, frame_size=%lu\r\n", 
+						   (unsigned long)y_index, (unsigned long)u_index, (unsigned long)v_index, 
+						   (unsigned long)frame_size_bytes);
+		if (r_out != NULL)
+		{
+			*r_out = 0.0f;
+		}
+		if (g_out != NULL)
+		{
+			*g_out = 0.0f;
+		}
+		if (b_out != NULL)
+		{
+			*b_out = 0.0f;
+		}
+		return;
+	}
+
+	const float y = ((float)frame_bytes[y_index] - 16.0f) * 1.1643836f;
+	const float u = (float)frame_bytes[u_index] - 128.0f;
+	const float v = (float)frame_bytes[v_index] - 128.0f;
 	const float r = (y + (1.5960268f * v)) / 255.0f;
 	const float g = (y - (0.3917623f * u) - (0.8129677f * v)) / 255.0f;
 	const float b = (y + (2.0172322f * u)) / 255.0f;
@@ -5277,6 +6869,180 @@ static void AppAI_ReadRgbFromYuv422Pixel(const uint8_t *frame_bytes,
 	}
 }
 
+static void AppAI_ReadRgbFromYuv422Bilinear(const uint8_t *frame_bytes,
+											size_t frame_size_bytes,
+											size_t frame_width_pixels,
+											size_t frame_height_pixels,
+											float source_x, float source_y,
+											float *r_out, float *g_out, float *b_out)
+{
+	/* Add additional bounds checking and validation */
+	if ((frame_bytes == NULL) || (frame_size_bytes < 4U) ||
+		(frame_width_pixels == 0U) || (frame_height_pixels == 0U))
+	{
+		DebugConsole_Printf("[AI] ReadRgbFromYuv422Bilinear: Invalid parameters\r\n");
+		if (r_out != NULL)
+		{
+			*r_out = 0.0f;
+		}
+		if (g_out != NULL)
+		{
+			*g_out = 0.0f;
+		}
+		if (b_out != NULL)
+		{
+			*b_out = 0.0f;
+		}
+		return;
+	}
+
+	/* Add bounds checking for source coordinates */
+	if (source_x < 0.0f || source_y < 0.0f)
+	{
+		DebugConsole_Printf("[AI] ReadRgbFromYuv422Bilinear: Negative coordinates: x=%f, y=%f\r\n", 
+						   (double)source_x, (double)source_y);
+		source_x = (source_x < 0.0f) ? 0.0f : source_x;
+		source_y = (source_y < 0.0f) ? 0.0f : source_y;
+	}
+
+	const float max_x = (frame_width_pixels > 0U) ? (float)(frame_width_pixels - 1U)
+												 : 0.0f;
+	const float max_y = (frame_height_pixels > 0U) ? (float)(frame_height_pixels - 1U)
+												  : 0.0f;
+
+	/* Add additional validation for max values */
+	if (max_x < 0.0f || max_y < 0.0f)
+	{
+		DebugConsole_Printf("[AI] ReadRgbFromYuv422Bilinear: Invalid max values: max_x=%f, max_y=%f\r\n", 
+						   (double)max_x, (double)max_y);
+		if (r_out != NULL)
+		{
+			*r_out = 0.0f;
+		}
+		if (g_out != NULL)
+		{
+			*g_out = 0.0f;
+		}
+		if (b_out != NULL)
+		{
+			*b_out = 0.0f;
+		}
+		return;
+	}
+
+	float clamped_x = source_x;
+	float clamped_y = source_y;
+	float r00 = 0.0f;
+	float g00 = 0.0f;
+	float b00 = 0.0f;
+	float r10 = 0.0f;
+	float g10 = 0.0f;
+	float b10 = 0.0f;
+	float r01 = 0.0f;
+	float g01 = 0.0f;
+	float b01 = 0.0f;
+	float r11 = 0.0f;
+	float g11 = 0.0f;
+	float b11 = 0.0f;
+
+	if (clamped_x > max_x)
+	{
+		clamped_x = max_x;
+	}
+
+	if (clamped_y > max_y)
+	{
+		clamped_y = max_y;
+	}
+
+	/* Add additional validation for clamped coordinates */
+	if (clamped_x < 0.0f || clamped_y < 0.0f)
+	{
+		DebugConsole_Printf("[AI] ReadRgbFromYuv422Bilinear: Clamped coordinates negative: x=%f, y=%f\r\n", 
+						   (double)clamped_x, (double)clamped_y);
+		if (r_out != NULL)
+		{
+			*r_out = 0.0f;
+		}
+		if (g_out != NULL)
+		{
+			*g_out = 0.0f;
+		}
+		if (b_out != NULL)
+		{
+			*b_out = 0.0f;
+		}
+		return;
+	}
+
+	const size_t x0 = (size_t)floorf(clamped_x);
+	const size_t y0 = (size_t)floorf(clamped_y);
+	
+	/* Add bounds checking for x0 and y0 */
+	if (x0 >= frame_width_pixels || y0 >= frame_height_pixels)
+	{
+		DebugConsole_Printf("[AI] ReadRgbFromYuv422Bilinear: x0/y0 out of bounds: x0=%lu, y0=%lu, width=%lu, height=%lu\r\n", 
+						   (unsigned long)x0, (unsigned long)y0, 
+						   (unsigned long)frame_width_pixels, (unsigned long)frame_height_pixels);
+		if (r_out != NULL)
+		{
+			*r_out = 0.0f;
+		}
+		if (g_out != NULL)
+		{
+			*g_out = 0.0f;
+		}
+		if (b_out != NULL)
+		{
+			*b_out = 0.0f;
+		}
+		return;
+	}
+
+	const size_t x1 = (x0 + 1U < frame_width_pixels) ? (x0 + 1U) : x0;
+	const size_t y1 = (y0 + 1U < frame_height_pixels) ? (y0 + 1U) : y0;
+	const float fx = clamped_x - (float)x0;
+	const float fy = clamped_y - (float)y0;
+	
+	/* Add bounds checking for fx and fy */
+	if (fx < 0.0f || fx > 1.0f || fy < 0.0f || fy > 1.0f)
+	{
+		DebugConsole_Printf("[AI] ReadRgbFromYuv422Bilinear: Invalid fx/fy: fx=%f, fy=%f\r\n", 
+						   (double)fx, (double)fy);
+	}
+
+	/* Add bounds checking for AppAI_ReadRgbFromYuv422Pixel calls */
+	AppAI_ReadRgbFromYuv422Pixel(frame_bytes, frame_size_bytes, frame_width_pixels,
+								 x0, y0, &r00, &g00, &b00);
+	AppAI_ReadRgbFromYuv422Pixel(frame_bytes, frame_size_bytes, frame_width_pixels,
+								 x1, y0, &r10, &g10, &b10);
+	AppAI_ReadRgbFromYuv422Pixel(frame_bytes, frame_size_bytes, frame_width_pixels,
+								 x0, y1, &r01, &g01, &b01);
+	AppAI_ReadRgbFromYuv422Pixel(frame_bytes, frame_size_bytes, frame_width_pixels,
+								 x1, y1, &r11, &g11, &b11);
+
+	if (r_out != NULL)
+	{
+		const float top_r = r00 + (fx * (r10 - r00));
+		const float bottom_r = r01 + (fx * (r11 - r01));
+		*r_out = AppAI_ClampNormalizedFloat(top_r + (fy * (bottom_r - top_r)));
+	}
+
+	if (g_out != NULL)
+	{
+		const float top_g = g00 + (fx * (g10 - g00));
+		const float bottom_g = g01 + (fx * (g11 - g01));
+		*g_out = AppAI_ClampNormalizedFloat(top_g + (fy * (bottom_g - top_g)));
+	}
+
+	if (b_out != NULL)
+	{
+		const float top_b = b00 + (fx * (b10 - b00));
+		const float bottom_b = b01 + (fx * (b11 - b01));
+		*b_out = AppAI_ClampNormalizedFloat(top_b + (fy * (bottom_b - top_b)));
+	}
+}
+
 bool App_AI_GetLastInferenceResult(float *value_out)
 {
 	if (value_out == NULL)
@@ -5288,6 +7054,10 @@ bool App_AI_GetLastInferenceResult(float *value_out)
 		return false;
 	}
 	if (!AppAI_IsFiniteFloat(app_ai_last_inference_value))
+	{
+		return false;
+	}
+	if (!AppAI_IsPlausibleInferenceValue(app_ai_last_inference_value))
 	{
 		return false;
 	}
