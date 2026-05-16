@@ -199,6 +199,7 @@ static bool app_baseline_runtime_initialized = false;
 static volatile bool camera_baseline_last_result_valid = false;
 static volatile float camera_baseline_last_temperature_c = 0.0f;
 static volatile float camera_baseline_last_angle_rad = 0.0f;
+static volatile float camera_baseline_last_confidence = 0.0f;
 static AppBaselineRuntime_Estimate_t camera_baseline_estimate_history
 	[APP_BASELINE_ESTIMATE_HISTORY_SIZE] = {0};
 static size_t camera_baseline_estimate_history_count = 0U;
@@ -485,6 +486,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 			camera_baseline_last_result_valid = true;
 			camera_baseline_last_temperature_c = held_estimate.temperature_c;
 			camera_baseline_last_angle_rad = held_estimate.angle_rad;
+			camera_baseline_last_confidence = held_estimate.confidence;
 			DebugConsole_Printf(
 				"[BASELINE] Holding last stable estimate after an invalid frame.\r\n");
 			AppBaselineRuntime_LogEstimate(&held_estimate);
@@ -530,6 +532,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 		camera_baseline_last_result_valid = true;
 		camera_baseline_last_temperature_c = estimate.temperature_c;
 		camera_baseline_last_angle_rad = estimate.angle_rad;
+		camera_baseline_last_confidence = estimate.confidence;
 		AppBaselineRuntime_LogEstimate(&estimate);
 	}
 }
@@ -3722,6 +3725,32 @@ static float AppBaselineRuntime_RunnerUpPeakAfterSuppression(
 	}
 
 	return runner_up;
+}
+
+
+/**
+ * @brief Retrieve the last classical baseline estimate and confidence.
+ *
+ * @param temp_out Pointer to store the temperature in Celsius.
+ * @param confidence_out Pointer to store the confidence score.
+ * @retval true if a valid estimate exists.
+ * @retval false if no estimate has been produced yet.
+ */
+bool AppBaselineRuntime_GetLastEstimate(float *temp_out, float *confidence_out)
+{
+    if (!camera_baseline_last_result_valid)
+    {
+        return false;
+    }
+    if (temp_out != NULL)
+    {
+        *temp_out = camera_baseline_last_temperature_c;
+    }
+    if (confidence_out != NULL)
+    {
+        *confidence_out = camera_baseline_last_confidence;
+    }
+    return true;
 }
 
 /* USER CODE END 0 */

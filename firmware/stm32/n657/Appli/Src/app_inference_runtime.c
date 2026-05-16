@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "app_ai.h"
+#include "app_baseline_runtime.h"
 #include "app_camera_buffers.h"
 #include "app_camera_platform.h"
 #include "app_filex.h"
@@ -235,22 +236,43 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 		} else {
 			float result = 0.0f;
 			if (App_AI_GetLastInferenceResult(&result)) {
+				float baseline_temp = 0.0f;
+				float baseline_conf = 0.0f;
+				bool use_baseline = false;
+				float final_value = result;
+
+				if (AppBaselineRuntime_GetLastEstimate(&baseline_temp, &baseline_conf)) {
+					if (baseline_conf >= 20.0f) {
+						final_value = baseline_temp;
+						use_baseline = true;
+					}
+				}
+
 				union {
 					float f;
 					ULONG u;
-				} bits = { .f = result };
+				} bits = { .f = final_value };
 				char inference_line[64] = { 0 };
 
-				/* Keep the existing compact line for the CSV-friendly view, and
-				 * add a precise line so we can tell whether the value is truly
-				 * fixed or only looks fixed after rounding to tenths. */
+				if (use_baseline) {
+					DebugConsole_Printf(
+						"[HYBRID] Classical selected: conf=%ld.%03ld temp=" ,
+						(long)(baseline_conf), (long)((baseline_conf - (long)baseline_conf) * 1000.0f));
+					AppInferenceLog_FormatFloatTenths(inference_line,
+							sizeof(inference_line), "", final_value);
+					(void) DebugConsole_WriteString(inference_line);
+					(void) DebugConsole_WriteString("\r\n");
+				} else {
+					AppInferenceLog_FormatFloatTenths(inference_line,
+							sizeof(inference_line), "[HYBRID] CNN selected: ", final_value);
+					(void) DebugConsole_WriteString(inference_line);
+				}
+
 				AppInferenceLog_FormatFloatTenths(inference_line,
-						sizeof(inference_line), "[AI] Inference value: ",
-						result);
+						sizeof(inference_line), "[AI] Inference value: ", final_value);
 				(void) DebugConsole_WriteString(inference_line);
 				AppInferenceLog_FormatFloatMicros(inference_line,
-						sizeof(inference_line), "[AI] Inference exact: ",
-						result);
+						sizeof(inference_line), "[AI] Inference exact: ", final_value);
 				(void) DebugConsole_WriteString(inference_line);
 				(void) bits;
 				if (inference_log_thread_created) {

@@ -54,4 +54,6 @@ bool AppBaselineRuntime_RequestEstimate(const uint8_t *frame_ptr,
 }
 #endif
 
+bool AppBaselineRuntime_GetLastEstimate(float *temp_out,
+													 float *confidence_out);
 #endif /* __APP_BASELINE_RUNTIME_H */

@@ -967,3 +967,17 @@ Run 2:
 - `mingw32-make -j8 all` in `firmware/stm32/n657/Appli/Debug` completed successfully after the shift.
 - Scalar preprocess and full scalar inference both run successfully with the restored fast path.
 
+
+
+## 2026-05-16 Prod v0.5 Hybrid Firmware
+
+- Packaged hybrid CNN + classical baseline as prod_model_v0.5_scalar_int8.
+- Firmware now implements hybrid selection in CameraAIThread_Entry:
+  - Runs classical baseline and CNN in parallel (existing behavior).
+  - After CNN inference, checks AppBaselineRuntime_GetLastEstimate().
+  - If classical confidence >= 20.0, logs classical temperature.
+  - Otherwise logs CNN temperature.
+  - Console prints [HYBRID] Classical selected or [HYBRID] CNN selected.
+- Model artifact: same no_cal_hardpush_gpu5_recover model as v0.4.
+- Flashed successfully to NUCLEO-N657X0-Q.
+- Board needs BOOT0=0, BOOT1=0 and power-cycle to run from flash.

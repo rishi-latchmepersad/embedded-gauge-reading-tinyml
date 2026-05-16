@@ -77,9 +77,9 @@ extern unsigned char _mem_pool_xSPI2_scalar_full_finetune_from_best_piecewise_ca
 /* global pool 0 is ? */
 /* index=0 file postfix=AXISRAM6 name=npuRAM6 offset=0x34350000  absolute_mode size=458744 READ_WRITE THROUGHPUT=HIGH LATENCY=LOW byte width=8 freq ratio=1.25 burst max length=MAXINT burst penalty=0 pipelined=ON cacheable=OFF read_power=18.531 write_power=16.201 use4initializers=NO score=94  */
 /* global pool 11 is 2.31 MB */
-/* index=11 file postfix=AXISRAM2_AXISRAM3_AXISRAM4_AXISRAM5_AXISRAM6 name=cpuRAM2_npuRAM3_npuRAM4_npuRAM5_npuRAM6 offset=0x34100000  absolute_mode size=2883576 vpool READ_WRITE THROUGHPUT=MID LATENCY=MID byte width=8 freq ratio=2.5 burst max length=MAXINT burst penalty=0 pipelined=ON cacheable=OFF read_power=18.531 write_power=16.201 use4initializers=NO score=85  */
+/* index=11 file postfix=AXISRAM2_AXISRAM3_AXISRAM4_AXISRAM5_AXISRAM6 name=cpuRAM2_npuRAM3_npuRAM4_npuRAM5_npuRAM6 offset=0x34110000  absolute_mode size=2883576 vpool READ_WRITE THROUGHPUT=MID LATENCY=MID byte width=8 freq ratio=2.5 burst max length=MAXINT burst penalty=0 pipelined=ON cacheable=OFF read_power=18.531 write_power=16.201 use4initializers=NO score=85  */
 /* global pool 4 is 1.00 MB */
-/* index=4 file postfix=AXISRAM2 name=cpuRAM2 offset=0x34100000  absolute_mode size=1048576 READ_WRITE THROUGHPUT=MID LATENCY=MID byte width=8 freq ratio=2.5 burst max length=MAXINT burst penalty=0 pipelined=ON cacheable=OFF read_power=17.324 write_power=15.321 use4initializers=NO score=84  */
+/* index=4 file postfix=AXISRAM2 name=cpuRAM2 offset=0x34110000  absolute_mode size=1048576 READ_WRITE THROUGHPUT=MID LATENCY=MID byte width=8 freq ratio=2.5 burst max length=MAXINT burst penalty=0 pipelined=ON cacheable=OFF read_power=17.324 write_power=15.321 use4initializers=NO score=84  */
 /* global pool 5 is ? */
 /* index=5 file postfix=AXISRAM1 name=cpuRAM1 offset=0x34064000  absolute_mode size=0 READ_WRITE THROUGHPUT=MID LATENCY=MID byte width=8 freq ratio=2.5 burst max length=MAXINT burst penalty=0 pipelined=ON cacheable=OFF read_power=16.616 write_power=14.522 use4initializers=NO score=84  */
 /* global pool 6 is ? */
@@ -147,7 +147,7 @@ static void LL_ATON_End_EpochBlock_2(const void *epoch_block)
     .general.input.stride.h = 2688,
     .general.input.stride.w = 12,
     .general.input.stride.c = 4,
-    .general.input.mem.start_offset = ((unsigned char *)(ATON_LIB_PHYSICAL_TO_VIRTUAL_ADDR(0x34100000UL + 0))) /* Equivalent hex address = 0x34100000UL */,
+    .general.input.mem.start_offset = ((unsigned char *)(ATON_LIB_PHYSICAL_TO_VIRTUAL_ADDR(0x34110000UL + 0))) /* Equivalent hex address = 0x34110000UL */,
     .general.input.format.is_signed = 0,
     /* "os" tensor-related info: */
     .os.mem.start_offset = ((unsigned char *)((((uintptr_t)(_mem_pool_xSPI2_scalar_full_finetune_from_best_piecewise_calibrated_int8)) + 3218144))) /* Equivalent hex offset = 0x311ae0 */,
@@ -2462,7 +2462,7 @@ static void LL_ATON_Start_EpochBlock_10(const void *epoch_block)
     .noblk = 0,
     .align_right = 0,
     .nbits_unsigned = 1,
-    .addr_base = {(unsigned char *)(0x34100000UL) /* Equivalent hex address = 0x34100000UL */}, /* Conv2D_31_zero_off_out_49 */
+    .addr_base = {(unsigned char *)(0x34110000UL) /* Equivalent hex address = 0x34110000UL */}, /* Conv2D_31_zero_off_out_49 */
     .offset_start = 0,
     .offset_limit = 1204288,
     .frame_count = 0,
@@ -2757,7 +2757,7 @@ static void LL_ATON_Start_EpochBlock_11(const void *epoch_block)
     .noblk = 0,
     .align_right = 0,
     .nbits_unsigned = 1,
-    .addr_base = {(unsigned char *)(0x34100000UL) /* Equivalent hex address = 0x34100000UL */}, /* Conv2D_31_zero_off_out_49 */
+    .addr_base = {(unsigned char *)(0x34110000UL) /* Equivalent hex address = 0x34110000UL */}, /* Conv2D_31_zero_off_out_49 */
     .offset_start = 0,
     .offset_limit = 1204288,
     .frame_count = 0,
@@ -30000,7 +30000,7 @@ const LL_Buffer_InfoTypeDef *LL_ATON_Input_Buffers_Info_scalar_full_finetune_fro
   static const LL_Buffer_InfoTypeDef buff_info[] = {
     {
       .name = "Input_3_out_0",
-      .addr_base = {(unsigned char *)(0x34100000UL) /* Equivalent hex address = 0x34100000UL */},
+      .addr_base = {(unsigned char *)(0x34110000UL) /* Equivalent hex address = 0x34110000UL */},
       .offset_start = 0,
       .offset_end = 602112,
       .offset_limit = 602176,
