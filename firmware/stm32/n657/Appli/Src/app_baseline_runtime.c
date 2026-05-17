@@ -200,6 +200,8 @@ static volatile bool camera_baseline_last_result_valid = false;
 static volatile float camera_baseline_last_temperature_c = 0.0f;
 static volatile float camera_baseline_last_angle_rad = 0.0f;
 static volatile float camera_baseline_last_confidence = 0.0f;
+static volatile ULONG camera_baseline_last_result_generation = 0U;
+static volatile ULONG camera_baseline_request_generation = 0U;
 static AppBaselineRuntime_Estimate_t camera_baseline_estimate_history
 	[APP_BASELINE_ESTIMATE_HISTORY_SIZE] = {0};
 static size_t camera_baseline_estimate_history_count = 0U;
@@ -286,6 +288,8 @@ static bool AppBaselineRuntime_AngleToSweepFractionWithMargin(float angle_rad,
 															  float margin_rad, float *fraction_out);
 static void AppBaselineRuntime_UpdateFrameBrightnessProfile(
 	const uint8_t *frame_bytes, size_t frame_size);
+static void AppBaselineRuntime_StoreLastEstimate(
+	const AppBaselineRuntime_Estimate_t *estimate);
 static float AppBaselineRuntime_NormalizeAngleDegrees(float angle_deg);
 static bool AppBaselineRuntime_IsAngleInCelsiusSweep(float angle_deg);
 static bool AppBaselineRuntime_IsAngleInSubdialBand(float angle_deg);
@@ -314,6 +318,24 @@ static void AppBaselineRuntime_LogEstimate(
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
+
+/**
+ * @brief Store the most recent accepted baseline estimate and bump its version.
+ */
+static void AppBaselineRuntime_StoreLastEstimate(
+	const AppBaselineRuntime_Estimate_t *estimate)
+{
+	if ((estimate == NULL) || !estimate->valid)
+	{
+		return;
+	}
+
+	camera_baseline_last_result_valid = true;
+	camera_baseline_last_temperature_c = estimate->temperature_c;
+	camera_baseline_last_angle_rad = estimate->angle_rad;
+	camera_baseline_last_confidence = estimate->confidence;
+	camera_baseline_last_result_generation++;
+}
 
 /**
  * @brief Create the synchronization objects used by the baseline worker.
@@ -420,6 +442,7 @@ bool AppBaselineRuntime_RequestEstimate(const uint8_t *frame_ptr,
 
 	camera_baseline_request_frame_ptr = camera_baseline_frame_snapshot;
 	camera_baseline_request_frame_length = frame_length;
+	camera_baseline_request_generation++;
 
 	if (tx_semaphore_put(&camera_baseline_request_semaphore) != TX_SUCCESS)
 	{
@@ -483,10 +506,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 			}
 
 			held_estimate.source_label = "baseline-polar-held";
-			camera_baseline_last_result_valid = true;
-			camera_baseline_last_temperature_c = held_estimate.temperature_c;
-			camera_baseline_last_angle_rad = held_estimate.angle_rad;
-			camera_baseline_last_confidence = held_estimate.confidence;
+			AppBaselineRuntime_StoreLastEstimate(&held_estimate);
 			DebugConsole_Printf(
 				"[BASELINE] Holding last stable estimate after an invalid frame.\r\n");
 			AppBaselineRuntime_LogEstimate(&held_estimate);
@@ -503,9 +523,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 			}
 
 			held_estimate.source_label = "baseline-polar-held";
-			camera_baseline_last_result_valid = true;
-			camera_baseline_last_temperature_c = held_estimate.temperature_c;
-			camera_baseline_last_angle_rad = held_estimate.angle_rad;
+			AppBaselineRuntime_StoreLastEstimate(&held_estimate);
 			DebugConsole_WriteString(
 				"[BASELINE] Holding last stable estimate after an unstable frame.\r\n");
 			AppBaselineRuntime_LogEstimate(&held_estimate);
@@ -529,10 +547,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 			continue;
 		}
 
-		camera_baseline_last_result_valid = true;
-		camera_baseline_last_temperature_c = estimate.temperature_c;
-		camera_baseline_last_angle_rad = estimate.angle_rad;
-		camera_baseline_last_confidence = estimate.confidence;
+		AppBaselineRuntime_StoreLastEstimate(&estimate);
 		AppBaselineRuntime_LogEstimate(&estimate);
 	}
 }
@@ -3751,6 +3766,22 @@ bool AppBaselineRuntime_GetLastEstimate(float *temp_out, float *confidence_out)
         *confidence_out = camera_baseline_last_confidence;
     }
     return true;
+}
+
+/**
+ * @brief Retrieve the version of the most recent accepted baseline estimate.
+ */
+ULONG AppBaselineRuntime_GetLastEstimateGeneration(void)
+{
+	return camera_baseline_last_result_generation;
+}
+
+/**
+ * @brief Retrieve the version of the most recent queued baseline request.
+ */
+ULONG AppBaselineRuntime_GetRequestGeneration(void)
+{
+	return camera_baseline_request_generation;
 }
 
 /* USER CODE END 0 */

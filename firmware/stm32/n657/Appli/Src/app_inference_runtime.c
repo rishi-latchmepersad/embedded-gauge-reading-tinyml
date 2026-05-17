@@ -44,6 +44,11 @@ typedef enum {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+/* Wait a little while for the baseline worker to finish before we fall back
+ * to the CNN. The classical path is often slower, but when it is fresh it has
+ * been more accurate on the live 44C+ frames. */
+#define APP_HYBRID_BASELINE_WAIT_MS 3000U
+#define APP_HYBRID_BASELINE_POLL_MS 10U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -77,10 +82,43 @@ static bool app_inference_runtime_initialized = false;
 
 static VOID CameraAIThread_Entry(ULONG thread_input);
 static VOID InferenceLogThread_Entry(ULONG thread_input);
+static bool AppInferenceRuntime_GetFreshBaselineEstimate(
+	ULONG baseline_request_generation, float *temp_out,
+	float *confidence_out);
 
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
+
+/**
+ * @brief Wait for a fresh baseline estimate and return it if it arrives.
+ */
+static bool AppInferenceRuntime_GetFreshBaselineEstimate(
+	ULONG baseline_request_generation, float *temp_out,
+	float *confidence_out) {
+	const ULONG wait_ticks =
+		ThreadxUtils_MillisecondsToTicks(APP_HYBRID_BASELINE_WAIT_MS);
+	const ULONG start_tick = tx_time_get();
+
+	if (AppBaselineRuntime_GetLastEstimateGeneration() >=
+			baseline_request_generation) {
+		return AppBaselineRuntime_GetLastEstimate(temp_out, confidence_out);
+	}
+
+	(void) DebugConsole_WriteString(
+		"[HYBRID] Waiting for fresh baseline result...\r\n");
+
+	while ((ULONG) (tx_time_get() - start_tick) < wait_ticks) {
+		if (AppBaselineRuntime_GetLastEstimateGeneration() >=
+				baseline_request_generation) {
+			return AppBaselineRuntime_GetLastEstimate(temp_out,
+					confidence_out);
+		}
+		DelayMilliseconds_ThreadX(APP_HYBRID_BASELINE_POLL_MS);
+	}
+
+	return false;
+}
 
 /**
  * @brief Create the runtime synchronization objects used by the AI workers.
@@ -229,6 +267,8 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 			continue;
 		}
 
+		const ULONG baseline_request_generation =
+			AppBaselineRuntime_GetRequestGeneration();
 		if (!App_AI_RunDryInferenceFromYuv422(frame_ptr,
 				(size_t) frame_length)) {
 			DebugConsole_Printf(
@@ -241,7 +281,9 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 				bool use_baseline = false;
 				float final_value = result;
 
-				if (AppBaselineRuntime_GetLastEstimate(&baseline_temp, &baseline_conf)) {
+				if (AppInferenceRuntime_GetFreshBaselineEstimate(
+						baseline_request_generation, &baseline_temp,
+						&baseline_conf)) {
 					if (baseline_conf >= 2.0f) {
 						final_value = baseline_temp;
 						use_baseline = true;

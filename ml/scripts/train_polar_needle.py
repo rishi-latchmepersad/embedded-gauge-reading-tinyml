@@ -40,7 +40,13 @@ from embedded_gauge_reading_tinyml.polar_model import (
 )
 from embedded_gauge_reading_tinyml.polar_projection import (
     augment_polar_image,
+    needle_mask_from_polar,
     polar_project_image_path,
+)
+from embedded_gauge_reading_tinyml.gauge.processing import (
+    fraction_to_angle_rad,
+    load_gauge_specs,
+    value_to_fraction,
 )
 from embedded_gauge_reading_tinyml.board_crop_compare import load_rgb_image
 
@@ -120,12 +126,18 @@ def merge_all_manifests(repo_root: Path) -> pd.DataFrame:
     if polar_mask_path.exists():
         df_polar = pd.read_csv(polar_mask_path)
         if len(df_polar) > 0:
-            # Resolve paths relative to repo root (paths in manifest already include ml/artifacts prefix).
+            # Normalize the stored paths before resolving them.
+            df_polar["image_path"] = df_polar["image_path"].apply(
+                lambda p: normalize_path(str(p), REPO_ROOT)
+            )
+            df_polar["mask_path"] = df_polar["mask_path"].apply(
+                lambda p: normalize_path(str(p), REPO_ROOT)
+            )
             df_polar["image_path_resolved"] = df_polar["image_path"].apply(
-                lambda p: str(REPO_ROOT / p)
+                lambda p: str(resolve_full_path(p, REPO_ROOT))
             )
             df_polar["mask_path_resolved"] = df_polar["mask_path"].apply(
-                lambda p: str(REPO_ROOT / p)
+                lambda p: str(resolve_full_path(p, REPO_ROOT))
             )
             df_polar["value"] = pd.to_numeric(df_polar["value"], errors="coerce")
             df_polar = df_polar.dropna(subset=["value"])
@@ -225,6 +237,11 @@ def create_polar_dataset(
     use_weights: bool = False,
     augment: bool = False,
     has_masks: bool = False,
+    weak_pseudo_labels: bool = False,
+    weak_label_weight: float = 0.35,
+    weak_mask_sigma_multiplier: float = 1.5,
+    mask_sigma: float = 3.0,
+    gauge_spec: Any | None = None,
     polar_size: int = 224,
 ) -> tf.data.Dataset:
     """Create a TensorFlow dataset for polar needle training.
@@ -235,6 +252,10 @@ def create_polar_dataset(
     polar_images = []
     values = []
     masks = [] if has_masks else None
+    row_weights = [] if use_weights else None
+
+    if weak_pseudo_labels and gauge_spec is None:
+        raise ValueError("gauge_spec is required when weak_pseudo_labels is enabled.")
 
     for idx, row in df.iterrows():
         try:
@@ -255,16 +276,38 @@ def create_polar_dataset(
                         if len(mask.shape) == 2:
                             mask = mask[..., np.newaxis]
                         masks.append(mask)
+                        if row_weights is not None:
+                            row_weights.append(1.0)
                     else:
                         masks.append(
                             np.zeros((polar_size, polar_size, 1), dtype=np.float32)
                         )
+                        if row_weights is not None:
+                            row_weights.append(0.0)
                 else:
                     masks.append(
                         np.zeros((polar_size, polar_size, 1), dtype=np.float32)
                     )
+                    if row_weights is not None:
+                        row_weights.append(0.0)
+            elif has_masks and weak_pseudo_labels:
+                value = float(row["value"])
+                fraction = value_to_fraction(value, gauge_spec)
+                angle_rad = fraction_to_angle_rad(fraction, gauge_spec)
+                angle_deg = math.degrees(angle_rad) % 360.0
+                weak_sigma = float(mask_sigma) * float(weak_mask_sigma_multiplier)
+                weak_mask = needle_mask_from_polar(
+                    polar_img,
+                    needle_angle_deg=angle_deg,
+                    mask_sigma=weak_sigma,
+                )
+                masks.append(weak_mask)
+                if row_weights is not None:
+                    row_weights.append(float(weak_label_weight))
             elif has_masks:
                 masks.append(np.zeros((polar_size, polar_size, 1), dtype=np.float32))
+                if row_weights is not None:
+                    row_weights.append(0.0)
         except Exception as e:
             logger.warning(f"Failed to load {row['image_path_resolved']}: {e}")
             continue
@@ -277,6 +320,8 @@ def create_polar_dataset(
         masks_arr = np.array(masks, dtype=np.float32)
         if use_weights and "sample_weight" in df.columns:
             weights = df["sample_weight"].values[: len(polar_images)].astype(np.float32)
+            if row_weights is not None:
+                weights = weights * np.asarray(row_weights, dtype=np.float32)
             dataset = tf.data.Dataset.from_tensor_slices(
                 (polar_images, values, masks_arr, weights)
             )
@@ -355,6 +400,11 @@ def train_polar_model(
     batch_size: int = 8,
     learning_rate: float = 1e-3,
     mask_loss_weight: float = 0.5,
+    value_loss_weight: float = 1.0,
+    weak_pseudo_labels: bool = False,
+    weak_label_weight: float = 0.35,
+    weak_mask_sigma_multiplier: float = 1.5,
+    init_model_path: Path | None = None,
     seed: int = 42,
     tiny: bool = False,
 ) -> dict[str, Any]:
@@ -418,6 +468,8 @@ def train_polar_model(
         logger.info("No masks available, training with temperature supervision only")
 
     # Create datasets.
+    specs = load_gauge_specs()
+    spec = next(iter(specs.values()))
     train_ds = create_polar_dataset(
         train_df,
         batch_size,
@@ -425,6 +477,10 @@ def train_polar_model(
         use_weights=True,
         augment=True,
         has_masks=has_masks,
+        weak_pseudo_labels=weak_pseudo_labels,
+        weak_label_weight=weak_label_weight,
+        weak_mask_sigma_multiplier=weak_mask_sigma_multiplier,
+        gauge_spec=spec,
         polar_size=IMAGE_SIZE,
     )
     val_ds = create_polar_dataset(
@@ -434,6 +490,10 @@ def train_polar_model(
         use_weights=False,
         augment=False,
         has_masks=has_masks,
+        weak_pseudo_labels=weak_pseudo_labels,
+        weak_label_weight=weak_label_weight,
+        weak_mask_sigma_multiplier=weak_mask_sigma_multiplier,
+        gauge_spec=spec,
         polar_size=IMAGE_SIZE,
     )
     test_ds = create_polar_dataset(
@@ -443,11 +503,22 @@ def train_polar_model(
         use_weights=False,
         augment=False,
         has_masks=has_masks,
+        weak_pseudo_labels=weak_pseudo_labels,
+        weak_label_weight=weak_label_weight,
+        weak_mask_sigma_multiplier=weak_mask_sigma_multiplier,
+        gauge_spec=spec,
         polar_size=IMAGE_SIZE,
     )
 
     # Build model.
-    if tiny:
+    if init_model_path is not None:
+        logger.info(f"Warm-starting from init model: {init_model_path}")
+        model = keras.models.load_model(
+            init_model_path,
+            custom_objects={"PolarAngleToTemperature": PolarAngleToTemperature},
+            compile=False,
+        )
+    elif tiny:
         logger.info("Building polar TINY model (base_filters=16, depth=3)...")
         model = build_polar_tiny_model(
             polar_size=IMAGE_SIZE,
@@ -471,14 +542,28 @@ def train_polar_model(
 
     # Compile with combined loss.
     if mask_loss_weight > 0.0:
+        def mask_bce_dice(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+            """Combine BCE with Dice loss so thin needle masks do not collapse."""
+            y_true_f = tf.cast(y_true, tf.float32)
+            y_pred_f = tf.cast(y_pred, tf.float32)
+            bce = tf.reduce_mean(
+                tf.keras.losses.binary_crossentropy(y_true_f, y_pred_f)
+            )
+            intersection = tf.reduce_sum(y_true_f * y_pred_f, axis=[1, 2, 3])
+            denom = tf.reduce_sum(y_true_f + y_pred_f, axis=[1, 2, 3])
+            dice = 1.0 - tf.reduce_mean(
+                (2.0 * intersection + 1.0) / (denom + 1.0)
+            )
+            return 0.5 * bce + 0.5 * dice
+
         model.compile(
             optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
             loss={
                 "gauge_value": keras.losses.MeanSquaredError(),
-                "needle_mask": keras.losses.BinaryCrossentropy(),
+                "needle_mask": mask_bce_dice,
             },
             loss_weights={
-                "gauge_value": 1.0,
+                "gauge_value": value_loss_weight,
                 "needle_mask": mask_loss_weight,
             },
             metrics={
@@ -640,6 +725,35 @@ def parse_args() -> argparse.Namespace:
         help="Weight for mask loss (0 = temperature only).",
     )
     parser.add_argument(
+        "--value-loss-weight",
+        type=float,
+        default=1.0,
+        help="Weight for gauge value loss when mask supervision is enabled.",
+    )
+    parser.add_argument(
+        "--weak-pseudo-labels",
+        action="store_true",
+        help="Generate weak pseudo needle masks for manifest rows that do not have explicit masks.",
+    )
+    parser.add_argument(
+        "--weak-label-weight",
+        type=float,
+        default=0.35,
+        help="Relative weight for weak pseudo labels vs exact masks.",
+    )
+    parser.add_argument(
+        "--weak-mask-sigma-multiplier",
+        type=float,
+        default=1.5,
+        help="Multiplier applied to mask sigma for weak pseudo labels.",
+    )
+    parser.add_argument(
+        "--init-model",
+        type=Path,
+        default=None,
+        help="Optional .keras warm-start checkpoint.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -672,6 +786,11 @@ def main() -> None:
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         mask_loss_weight=args.mask_loss_weight,
+        value_loss_weight=args.value_loss_weight,
+        weak_pseudo_labels=args.weak_pseudo_labels,
+        weak_label_weight=args.weak_label_weight,
+        weak_mask_sigma_multiplier=args.weak_mask_sigma_multiplier,
+        init_model_path=args.init_model,
         seed=args.seed,
         tiny=args.tiny,
     )

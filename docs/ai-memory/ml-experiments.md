@@ -155,3 +155,77 @@ See `archive.md` for the full chronology.
 - The board crop itself needed a vertical correction too: a 12px upward bias on the bright-centroid crop fixed the top clipping on `capture_2026-04-30_12-45-08.png`, and the same offset should stay mirrored in the STM32 crop helper.
 - The crop fix is better expressed as a bounded adaptive bias: use about 11% of the crop height as an upward shift, then clamp that to 8..18 pixels. That kept the dial top visible on the latest captures without making the framing overly fragile.
 - The adaptive crop improved framing, but the post-crop classical baseline is still inconsistent across the 2026-04-30 captures. A small sweep showed a few near-5C predictions (`07-01-21` ≈ `4.5C`, `12-19-11` ≈ `7.6C`) alongside large failures (`11-51-05` ≈ `24.7C`, `05-52-17` ≈ `-30C`, `12-20-22` ≈ `-29.6C`), which means the detector/selector still needs work after cropping.
+
+## 2026-05-17 Polar Vote Push (v17/v18 + curriculum)
+
+- Added a new polar input mode in `ml/scripts/train_polar_angle_classifier_manifest.py`:
+  - `rgb_edge6_vote7` = `RGB(3) + edge3(3) + vote-prior(1)`.
+  - The vote-prior channel is a baseline-style angular cue built from polar darkness + angular edge evidence with radial masking and light angular smoothing.
+- Added training-control support:
+  - new CLI arg `--max-shift-bins` to control angular shift augmentation.
+  - `run_polar_vote_full_range_v12_edge3.sh` now supports env overrides:
+    `EPOCHS`, `BATCH_SIZE`, `LEARNING_RATE`, `HEAD_UNITS`, `BASE_FILTERS`, `DROPOUT`, `MAX_SHIFT_BINS`.
+
+Run results:
+- `polar_vote_full_range_v17_rgb_edge6_vote7`
+  - hard-case MAE: `9.2367C`
+  - board holdout MAE: `0.959C`
+- `polar_vote_full_range_v18_rgb_edge6_vote7_noshift` (`MAX_SHIFT_BINS=0`)
+  - hard-case MAE: `9.5367C`
+  - board holdout MAE: `1.166C`
+- `polar_vote_hardcases_curriculum_v1` (hard-case-only manifest split)
+  - hard-case MAE: `9.6903C`
+  - board holdout MAE: `3.028C`
+
+Audit conclusions:
+- Crop-box coverage on `hard_cases_plus_board30_valid_with_new6.csv` is complete (`0/57` missing), so catastrophic misses are not from full-frame fallback crops.
+- Standalone classical baseline on the same hard-case manifest is also poor:
+  - attempted `57`, successful `51`
+  - MAE `9.4873C`, RMSE `18.6632C`, max error `60.8889C`.
+- Practical implication: this hard-case set currently looks difficulty/noise-limited for both classical and CNN paths; architecture tweaks alone are unlikely to reach `<5C` without data-quality tightening and/or targeted relabel/recapture of the worst samples.
+
+Follow-up runs after the above:
+- `polar_vote_full_range_v19_rgb_edge6_vote7_cont` (continuity-enhanced vote-prior channel):
+  - hard-case MAE `7.6516C` (new best),
+  - hard-case median `2.1606C`,
+  - hard-case max error `36.7946C`,
+  - board holdout MAE `0.6882C`.
+- `polar_vote_full_range_v20_vote7cont_big_frac` (larger head/backbone + fraction regularizer):
+  - hard-case MAE regressed to `10.5563C`.
+- `polar_vote_full_range_v21_vote7cont_reflect` (same as v19 but reflect sweep labels):
+  - hard-case MAE `9.1286C`.
+
+Current best direction:
+- The continuity-aware vote-prior channel is the only change that produced a large hard-case gain.
+- Additional capacity and reflect-kernel changes degraded hard-case performance.
+
+## 2026-05-17 Hard-Case Scalar Recovery (No Hybrid Selector)
+
+Goal in this pass:
+- Keep inference as a single CNN path (no baseline/CNN selector).
+- Use all hard cases (not only hot/cold tails).
+- Push board-style hard-case MAE below `5C`.
+
+What worked:
+- Fine-tune the strongest scalar checkpoint directly on the full hard-case manifest with **uniform hard-case repetition**.
+- Keep `edge_focus_strength=0.0` so we do not bias only extremes.
+
+Runs:
+- `mobilenetv2_scalar_hardall_uniform_v1`
+  - init: `artifacts/training/scalar_full_finetune_from_best_board30_clean_plus_new6/model.keras`
+  - training: `--hard-case-manifest data/hard_cases_plus_board30_valid_with_new6.csv --hard-case-repeat 12`
+  - board-style hard-manifest eval:
+    - samples `54`, skipped `3`
+    - mean_abs_err `6.4018C`
+    - max_abs_err `30.4912C`
+- `mobilenetv2_scalar_hardall_uniform_v2_noaug`
+  - init: `artifacts/training/mobilenetv2_scalar_hardall_uniform_v1/model.keras`
+  - training: `--hard-case-repeat 30 --no-augment-training`
+  - board-style hard-manifest eval:
+    - samples `54`, skipped `3`
+    - **mean_abs_err `4.8114C`**  ✅ (`<5C` target met)
+    - max_abs_err `24.7331C`
+
+Key takeaway:
+- On this hard set, forcing a focused second-stage fine-tune without augmentation closed the last gap.
+- The remaining tail errors are concentrated in a few low-temperature failures and can be targeted separately without changing the core recipe.

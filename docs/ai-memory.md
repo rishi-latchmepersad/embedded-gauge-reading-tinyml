@@ -1063,3 +1063,41 @@ to free up the first 64 KB of SRAM2 and make the offset unnecessary.
 - The board replay crop scale now stays at `OBB_CROP_SCALE=1.20`, which matches the calibration fit better than the older 1.30 default.
 - The calibration payload at `artifacts/calibration/prodv0_3_obb_scalar_calibration.json` was refit on the exact v41 int8 model with board-focused manifests.
 - On the hot captures, the replay moved from roughly `40C-42C` raw to about `46.8C` and `49.8C` after calibration, and the burst-smoothed output landed around `48.3C` on the later hot frame.
+
+### Full-range CNN retrain (2026-05-17)
+
+- The best CNN data mix is not hot cases only; it needs the full temperature range, including cold, midrange, and hot board captures.
+- The strongest full-range retrain so far warm-started from `artifacts/training/mobilenetv2_bluraware_reader_v41/model.keras` and used:
+  - `hard_case_manifest=data/unified_training_manifest_v1.csv`
+  - `hard_case_repeat=1`
+  - `range_aware_sampling=True`
+  - `cold_tail_fraction=0.20`
+  - `hot_tail_fraction=0.20`
+  - `oversampling_factor=2.0`
+  - `precomputed_crop_boxes=data/rectified_crop_boxes_v5_all.csv`
+  - `linear_output=True`
+- That run finished with `test_mae=7.4099C` on `board_rectified_probe_20260422.csv`, which is better than the naive mean predictor but still not enough to beat the classical baseline everywhere.
+- On `hard_cases_plus_board30_valid_with_new6.csv`, the same model reached `mean_abs_err=15.3643C`, versus `16.8655C` for the previous `mobilenetv2_bluraware_reader_v41` evaluation on the same manifest.
+- The remaining failures are not a hot-only problem; some midrange board captures still collapse badly, so the next improvement should be a better target or architecture, not more hot-tail oversampling.
+
+## 2026-05-17 - Fraction-first and geometry-first hard-case experiments
+- I retrained the fraction-first CNN on the full-range mix and then on the actual hard-case pool.
+- Important lesson: pinned hard-case validation/test manifests can silently filter most hard-case rows out of training, so a random split is needed if we want the hard-case manifest to actually affect the model.
+- The corrected fraction-first hard-case run did not reach the target; it still regressed toward the middle on cold/hot extremes.
+- I also tried a compact geometry-first run with the real hard-case pool.
+- That model was the strongest of the new experiments on the held-out test split, but it still missed the hard-case target and overfit the board probe.
+- Current takeaway: the present labeled/live-board data is not yet enough for a <5C hard-case MAE with the current small CNNs, even when we make the task angle/fraction-first.
+- Next likely directions are more live hard-case labels at the cold/hot ends, or a richer distributional/ordinal head instead of a single fraction scalar.
+
+## 2026-05-17 - Polar voting branch
+- The classical polar voting intuition was worth chasing: a learned vote head on the polar image is the first CNN branch that starts looking good on the live-board split.
+- The best vote-head recipe so far is the polar 2D CNN with explicit angular axis retention, mean+max radial pooling, label_smoothing=0.0, and sharpened angular soft targets.
+- polar_vote_full_range_v5 was the most promising balanced run:
+  - board-probe holdout: mae=4.0996C
+  - hard-case manifest: mae=9.7356C
+  - worst hard-case failures were still the cold tail, especially capture_m25c.jpg, capture_m19c.png, and capture_m10c.jpg
+- polar_vote_full_range_v6 tried stronger inverse-frequency temperature balancing and a sharper target (sigma_bins=1.0), but it did not beat v5:
+  - board-probe holdout worsened to mae=5.2408C
+  - hard-case manifest worsened to mae=11.3299C
+  - the cold tail still dominated the worst errors, so range balancing alone is not enough
+- Current takeaway: the polar-voting formulation is still the right direction, but the remaining cold-tail collapse likely needs either a richer geometry target than a single angle distribution, or more explicit live cold-case supervision from the board captures, especially for negative-temperature examples.

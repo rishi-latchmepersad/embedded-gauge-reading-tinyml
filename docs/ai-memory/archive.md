@@ -158,6 +158,16 @@ Already split out:
 
 ### `ds3231_clock.*`
 
+## 2026-05-17 Model Version Drift Lesson
+
+- When we switch to a new exported model, always verify the firmware wrapper includes the matching generated package, symbol names, and xSPI2 input base.
+- A stale wrapper can silently keep us on an older package even after the new blobs are flashed, which is how we ended up with the repeated `0x34100000` hard fault while the "fixed" `v0.4` package was already present on disk.
+- For scalar model updates, check all three together before flashing:
+  - the firmware include path in `ai_network_mobilenetv2_scalar_hardcase_warmstart_int8.c`
+  - the generated symbol prefix in `app_ai.c`
+  - the package's `.general.input.mem.start_offset` in the generated ST Edge AI source
+- If those three disagree, the board can boot successfully but still run the wrong model contract and fail in preprocess or ThreadX after the first frame.
+
 - RTC read/write, timestamp formatting, and RTC status behavior.
 
 ### `app_inference_log_utils.*`
@@ -208,6 +218,12 @@ Already split out:
 - The classical CV strategy sweep now compares `hough_only`, `center_only`, and `hough_then_center` thresholds across both hard-case manifests using a coverage-first ranking. A pure Hough strategy can look good on MAE for the cases it solves, but the current generalizable winner is `hough_then_center_t4` because it keeps full coverage on the hard-case set while staying much better than `center_only`.
 - The latest sweep artifacts live under `ml/artifacts/baseline/classical_cv_sweep_20260419_093001/`, and the key takeaway is that coverage matters first for these hard cases; do not promote a strategy that drops images just because its MAE on successful detections is lower.
 - The board30 source model is still the reference source model, but the board-ready deployment path is now the raw int8 export plus the weighted piecewise calibration in `app_inference_calibration.c`. That path has been repackaged and retested, and it keeps the hard-case manifests under 5C.
+
+## 2026-05-17 Calibration Path Re-enabled
+
+- The board-side scalar calibration helper in `app_inference_calibration.c` is active again.
+- The firmware log now reflects a real before/after calibration step instead of a pass-through raw value.
+- If the CNN and classical baseline disagree again, check both the calibration delta and the hybrid selection timing before blaming the model itself.
 - The first Keras-native QAT experiments on that board30 source model did not solve the deployment gap. The full-network run regressed badly, and the more conservative head-only run still left too many hard cases above 5C, so QAT needs a different recipe if we revisit it.
 - The export pipeline itself is working when run directly through Poetry in WSL: the board30 staged model loads in about 5 seconds, representative-example building completes, and TFLite conversion finishes. The current blocker is accuracy loss in the exported int8 artifact, not a model-loading hang.
 - The most recent direct board30 int8 export still lands around MAE 8.05C on the original hard cases and 8.45C on the expanded board30 set, with max error around 32.48C, so we still need a better quantization/export strategy or a new training recipe.
@@ -222,6 +238,9 @@ Already split out:
 - The current recapture shortlist lives in `ml/data/recapture_targets.csv` and is centered on the six remaining >5C cases: `capture_p20c_preview.png`, `capture_p35c_preview.png`, `capture_m10c_preview.png`, `capture_0075.png`, `capture_m30c_preview.png`, and `capture_p10c_preview.png`.
 - The newest labelled images added under `ml/data/captured_images/` are mostly useful. The clean-plus-new fine-tune held at about `4.0923C` MAE on the original hard cases and `3.7714C` on the valid board30 set. `capture_p15c.jpg`, `capture_m10c.jpg`, `capture_m25c.jpg`, `capture_p20.jpg`, `capture_p25c.jpg`, `capture_p35c.jpg`, and `capture_p42c.jpg` are useful additions on the current checkpoint. The newer `clean_plus_new4` pass, which adds the replacement `capture_p30c.jpg` shot, reaches about `4.1435C` MAE on the original hard cases, `3.7701C` on the valid board30 set, and `3.6113C` on the combined clean+new manifest. `capture_p30c.jpg` is a clean training sample, but it still lands around `7.0737C` error on that checkpoint, so it is a model weakness rather than a data-quality issue. A focused fine-tune on only the remaining hard misses (`hard_cases_remaining_focus.csv`) did not materially improve the original hard-case set: it landed at about `4.1283C` MAE and still left the same six original cases above `5C`.
 - The new `capture_p31c.jpg` shot is also clean, but the current checkpoint misses it badly (`25.8813C` error). That suggests we need more nearby 31C/32C captures if we want to close the midrange gap; another blind pass on the current set is unlikely to help much.
+- The polar-vote experiments on the merged all-hard pool showed that stronger tail sample weighting, balanced-softmax correction, and a broad auxiliary vote head all failed to beat the simpler sweep-aligned v8 model. The best live-board number is still the v8 sweep model at about `3.34C` MAE on the board-probe holdout; the all-hard holdout stayed around `11.9C` MAE, so the remaining issue is not just class imbalance but the supervision shape itself.
+- The next experiment to try should be a more structured label formulation on the same polar features, such as ordinal bins or a coarse-to-fine vote head, rather than more weighting on the current single distribution head.
+- The v11 broad-auxiliary-head run was especially bad on the hard cases and the board probe, which reinforces that the broad-head idea is not the right default without a much smaller auxiliary weight or a different target construction.
 - The hybrid MobileNetV2 interval-head experiment did not improve the situation. The run finished with about `18.7C` validation MAE on the scalar output, `interval_logits_acc` stayed around `0.02`, and the 31C region still did not behave like a smoothly interpolating thermometer. Treat that coarse-bin/residual idea as a failed ablation unless the supervision or head design changes materially.
 - The direct scalar interpolation-loss, MixUp, monotonic-pair, and mid-band-emphasis experiments also failed to solve the 31C hole. The next geometry-first experiment should use the direction model so the network predicts needle angle/direction and the sweep calibration converts that to temperature deterministically.
 - The geometry-first MobileNetV2 direction run also failed to generalize well: the direction loss improved somewhat, but the converted temperature stayed around `20.9C` MAE on test data and the validation angle MAE stayed around `63deg`. That means the plain unit-vector head is not enough by itself; if we revisit geometry-first learning, an explicit sweep-fraction head or a classical/ML hybrid is a better next step.
@@ -1227,3 +1246,20 @@ The split matches the geometry long-term run:
 The base checkpoint is the existing direction model from `ml/artifacts/training/mobilenetv2_direction_224_full/model.keras`, warm-started through `--init-model`.
 
 This is the cleanest next comparison because it removes the weak heatmap-to-coordinate decode entirely and lets us see whether a direct direction head can outperform the geometry branch on the same board holdout.
+
+### Polar structured supervision sweep (2026-05-17)
+
+I ran the three structured supervision variants on the same merged polar-vote pool to see whether a more explicit label shape would beat the best sweep-aligned vote model (`v8`).
+
+Results:
+
+- Ordinal thresholds: board-probe holdout `mae=10.9707C`, hard-case holdout `mae=17.3975C`
+- Coarse-to-fine heads: board-probe holdout `mae=14.5113C`, hard-case holdout `mae=19.8450C`
+- Two-stage coarse/fine head: board-probe holdout `mae=14.3111C`, hard-case holdout `mae=19.7010C`
+
+Takeaway:
+
+- None of the structured heads beat the existing `v8` polar-vote model.
+- Ordinal was the best of the three, but it still fell well short of the `v8` board-probe hard-case performance.
+- Coarse-to-fine and two-stage were both worse, even though the coarse head learned quickly.
+- The current best polar-vote baseline remains `v8`; if we revisit supervision shape again, it should probably be a new geometry formulation rather than just another classification head on the same polar features.

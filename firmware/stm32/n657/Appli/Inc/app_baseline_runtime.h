@@ -56,4 +56,17 @@ bool AppBaselineRuntime_RequestEstimate(const uint8_t *frame_ptr,
 
 bool AppBaselineRuntime_GetLastEstimate(float *temp_out,
 													 float *confidence_out);
+
+/**
+ * @brief Retrieve the version counter for the last accepted baseline result.
+ *
+ * The counter increments each time the baseline worker stores a fresh value.
+ * Callers can use it to distinguish a new estimate from a stale carry-over.
+ */
+ULONG AppBaselineRuntime_GetLastEstimateGeneration(void);
+
+/**
+ * @brief Retrieve the version of the most recently queued baseline request.
+ */
+ULONG AppBaselineRuntime_GetRequestGeneration(void);
 #endif /* __APP_BASELINE_RUNTIME_H */

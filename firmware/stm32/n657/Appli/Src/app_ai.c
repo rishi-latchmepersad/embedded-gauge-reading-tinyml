@@ -120,9 +120,10 @@
  * adaptive rectifier and miss the needle on low temperatures. Use the stable
  * training crop on-device until we retrain on the closer framing. */
 #define APP_AI_USE_ADAPTIVE_GAUGE_CROP 0U
-/* Use luma-only sampling on the scalar fast path to keep the preprocess loop
- * lightweight and avoid the heavier RGB reconstruction work. */
-#define APP_AI_YUV422_INPUT_LUMA_ONLY 1U
+/* Match the training/replay preprocessing again by keeping the scalar path on
+ * the RGB bilinear resize branch. The earlier hard fault was a memory-layout
+ * issue, not a problem with this branch itself. */
+#define APP_AI_YUV422_INPUT_LUMA_ONLY 0U
 /* Use a full affine crop->tensor mapping instead of aspect-preserving
  * letterbox padding. The padded resize was introducing large zero bands on
  * non-square crops and hurting hot-end needle coverage near the edges. */
@@ -250,7 +251,7 @@ static size_t app_ai_forced_crop_width = 0U;
 static size_t app_ai_forced_crop_height = 0U;
 static const char *app_ai_forced_crop_label = NULL;
 __attribute__((section(".xspi2_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
-uint8_t _mem_pool_xSPI2_prod_model_v0_6_scalar_int8[32U] = {
+uint8_t _mem_pool_xSPI2_scalar_full_finetune_from_best_piecewise_calibrated_int8[32U] = {
 	0U,
 };
 /* Rectifier pool placed in its own section so the linker script can map it to
@@ -426,7 +427,7 @@ static bool app_ai_obb_sig_valid = false;
 /* Declare the generated NN instance locally so the dry-run helper can run the
  * AtoNN runtime on the exact network produced by Cube.AI. */
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
-	prod_model_v0_6_scalar_int8);
+	scalar_full_finetune_from_best_piecewise_calibrated_int8);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 	mobilenetv2_rectifier_hardcase_finetune);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
@@ -476,11 +477,11 @@ typedef struct
 static const AppAI_ModelStageSpec app_ai_scalar_stage = {
 	.stage_label = "scalar",
 	.model_image_path = APP_AI_SCALAR_XSPI2_MODEL_IMAGE_PATH,
-	.nn_instance = &NN_Instance_prod_model_v0_6_scalar_int8,
+	.nn_instance = &NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8,
 	.network_init_fn =
-		LL_ATON_EC_Network_Init_prod_model_v0_6_scalar_int8,
+		LL_ATON_EC_Network_Init_scalar_full_finetune_from_best_piecewise_calibrated_int8,
 	.inference_init_fn =
-		LL_ATON_EC_Inference_Init_prod_model_v0_6_scalar_int8,
+		LL_ATON_EC_Inference_Init_scalar_full_finetune_from_best_piecewise_calibrated_int8,
 	.uses_rectifier_box = false,
 	.xspi2_chip_offset = APP_AI_XSPI2_SCALAR_CHIP_OFFSET,
 	.xspi2_base_addr = APP_AI_XSPI2_SCALAR_BASE_ADDR,
@@ -598,6 +599,7 @@ static void AppAI_LogObbResult(
 	const AppAI_ObbBox *obb_box);
 static int AppAI_ApplyCacheRange(uint32_t start_addr, uint32_t end_addr,
 								 bool clean, bool invalidate);
+static uint32_t AppAI_GrayToFloatBits(uint8_t gray);
 
 static bool __attribute__((noinline)) AppAI_PreprocessScalarRow(
 	const uint8_t *frame_bytes, size_t frame_size, size_t source_width,
@@ -617,7 +619,22 @@ static bool AppAI_RuntimeInitStepwise(void);
 static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 	const uint8_t *frame_bytes, size_t frame_size, float *input_buffer,
 	size_t input_float_count, size_t input_len_bytes);
+static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToInt8Input(
+	const uint8_t *frame_bytes, size_t frame_size, uint8_t *input_ptr,
+	size_t input_len_bytes, const LL_Buffer_InfoTypeDef *input_info);
 static float AppAI_ClampNormalizedFloat(float value);
+static uint32_t AppAI_GrayToFloatBits(uint8_t gray)
+{
+	/* Convert luma to a normalized float32 payload without reserving extra RAM. */
+	union
+	{
+		float f;
+		uint32_t u;
+	} gray_value = {
+		.f = ((float)gray) * (1.0f / 255.0f)};
+
+	return gray_value.u;
+}
 static uint8_t AppAI_ReadYuv422Luma(const uint8_t *frame_bytes,
 									size_t frame_size_bytes,
 									size_t frame_width_pixels, size_t source_x, size_t source_y);
@@ -4090,30 +4107,6 @@ static bool AppAI_EnsureXspi2ModelImageReady(void) {
 }
 #endif /* 0 */
 
-#if APP_AI_YUV422_INPUT_LUMA_ONLY
-/* Place the LUT in RAM to avoid flash bus contention during inference.
- * The table is read frequently during preprocessing while code executes from flash,
- * which causes a precise data bus error (PRECISERR) on the STM32N657.
- * The LUT is copied from flash to RAM at startup by AppAI_InitLumaToFloatLUT(). */
-static uint32_t app_ai_luma_to_float_bits[256] __attribute__((section(".noinit")));
-
-/* Flash-resident source for LUT initialization (read-only, no bus contention). */
-static const uint32_t app_ai_luma_to_float_bits_flash[256] = {
-#include "app_ai_luma_bits.inc"
-};
-
-/* Initialize the RAM-resident LUT from flash at startup.
- * This avoids bus contention during inference when reading the LUT
- * while executing code from flash. */
-static void AppAI_InitLumaToFloatLUT(void)
-{
-	/* Copy from flash to RAM .noinit section */
-	(void)memcpy(app_ai_luma_to_float_bits,
-				 app_ai_luma_to_float_bits_flash,
-				 sizeof(app_ai_luma_to_float_bits));
-}
-#endif
-
 bool App_AI_Model_Init(void)
 {
 	if (app_ai_runtime_initialized)
@@ -4127,11 +4120,6 @@ bool App_AI_Model_Init(void)
 		AppAI_LogInitFailure("NPU hardware");
 		return false;
 	}
-
-#if APP_AI_YUV422_INPUT_LUMA_ONLY
-	/* Initialize the LUT in RAM before runtime init to avoid bus contention. */
-	AppAI_InitLumaToFloatLUT();
-#endif
 
 	if (!AppAI_RuntimeInitStepwise())
 	{
@@ -4812,7 +4800,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 static const LL_Buffer_InfoTypeDef *AppAI_GetInputBufferInfo(void)
 {
 	const LL_Buffer_InfoTypeDef *input_info =
-		NN_Instance_prod_model_v0_6_scalar_int8.network
+		NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8.network
 			->input_buffers_info();
 
 	if ((input_info == NULL) || (input_info->name == NULL))
@@ -4826,7 +4814,7 @@ static const LL_Buffer_InfoTypeDef *AppAI_GetInputBufferInfo(void)
 static const LL_Buffer_InfoTypeDef *AppAI_GetOutputBufferInfo(void)
 {
 	const LL_Buffer_InfoTypeDef *output_info =
-		NN_Instance_prod_model_v0_6_scalar_int8.network
+		NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8.network
 			->output_buffers_info();
 
 	if ((output_info == NULL) || (output_info->name == NULL))
@@ -4904,7 +4892,7 @@ static void AppAI_LogScalarInternalOutputProbe(
 	}
 
 	internal_buffers =
-		LL_ATON_Internal_Buffers_Info_prod_model_v0_6_scalar_int8();
+		LL_ATON_Internal_Buffers_Info_scalar_full_finetune_from_best_piecewise_calibrated_int8();
 	if ((internal_buffers != NULL) && !internal_name_dump_done)
 	{
 		size_t entry_index = 0U;
@@ -5040,7 +5028,7 @@ static void AppAI_LogInferenceResult(
 
 	internal_buffers =
 		LL_ATON_Internal_Buffers_Info(
-			&NN_Instance_prod_model_v0_6_scalar_int8);
+			&NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8);
 	quantize_output_info = AppAI_FindFirstBufferInfoByNames(internal_buffers,
 															quantize_output_names, sizeof(quantize_output_names) / sizeof(quantize_output_names[0]));
 	sub_output_info = AppAI_FindFirstBufferInfoByNames(internal_buffers,
@@ -6011,6 +5999,7 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 
 		/* Fast path: when the crop already spans the output tensor, fill it
 		 * directly without extra resize math or padding checks. */
+		(void)DebugConsole_WriteString("[AI] Preprocess row loop enter (luma).\r\n");
 		if ((crop_x_min == 0U) && (crop_y_min == 0U) &&
 			(crop_width == output_width) && (crop_height == output_height))
 		{
@@ -6025,13 +6014,19 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 					(uint8_t *)input_ptr + (out_y * output_row_bytes);
 
 				app_ai_scalar_preprocess_last_row = out_y;
+				if ((out_y == 0U) || ((out_y & 0x3FU) == 0U))
+				{
+					DebugConsole_Printf(
+						"[AI] Preprocess luma row %lu/223\r\n",
+						(unsigned long)out_y);
+				}
 
 				for (size_t out_x = 0U; out_x < output_width; ++out_x)
 				{
 					const size_t pixel_base = out_x * 3U * sizeof(float);
 					const size_t read_index = ((out_y * source_width) + out_x) * 2U;
 					const uint8_t gray = frame_bytes[read_index];
-					const uint32_t gray_bits = app_ai_luma_to_float_bits[gray];
+					const uint32_t gray_bits = AppAI_GrayToFloatBits(gray);
 
 					{
 						const uint8_t *const gray_bytes =
@@ -6094,6 +6089,12 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 					(uint8_t *)input_ptr + (out_y * output_row_bytes);
 
 				app_ai_scalar_preprocess_last_row = out_y;
+				if ((out_y == 0U) || ((out_y & 0x3FU) == 0U))
+				{
+					DebugConsole_Printf(
+						"[AI] Preprocess luma row %lu/223\r\n",
+						(unsigned long)out_y);
+				}
 
 				if ((out_y < resize_pad_y) ||
 					(out_y >= (resize_pad_y + resized_height)))
@@ -6137,7 +6138,7 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 							if (read_index < frame_size)
 							{
 								const uint8_t gray = frame_bytes[read_index];
-								gray_bits = app_ai_luma_to_float_bits[gray];
+								gray_bits = AppAI_GrayToFloatBits(gray);
 							}
 						}
 					}

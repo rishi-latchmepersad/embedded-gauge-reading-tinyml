@@ -147,7 +147,7 @@ static void LL_ATON_End_EpochBlock_2(const void *epoch_block)
     .general.input.stride.h = 2688,
     .general.input.stride.w = 12,
     .general.input.stride.c = 4,
-    .general.input.mem.start_offset = ((unsigned char *)(ATON_LIB_PHYSICAL_TO_VIRTUAL_ADDR(0x34100000UL + 0))) /* Equivalent hex address = 0x34100000UL */,
+    .general.input.mem.start_offset = ((unsigned char *)(ATON_LIB_PHYSICAL_TO_VIRTUAL_ADDR(0x34110000UL + 0))) /* Equivalent hex address = 0x34110000UL */,
     .general.input.format.is_signed = 0,
     /* "os" tensor-related info: */
     .os.mem.start_offset = ((unsigned char *)((((uintptr_t)(_mem_pool_xSPI2_scalar_full_finetune_from_best_piecewise_calibrated_int8)) + 3218144))) /* Equivalent hex offset = 0x311ae0 */,
@@ -2462,7 +2462,7 @@ static void LL_ATON_Start_EpochBlock_10(const void *epoch_block)
     .noblk = 0,
     .align_right = 0,
     .nbits_unsigned = 1,
-    .addr_base = {(unsigned char *)(0x34100000UL) /* Equivalent hex address = 0x34100000UL */}, /* Conv2D_31_zero_off_out_49 */
+    .addr_base = {(unsigned char *)(0x34110000UL) /* Equivalent hex address = 0x34110000UL */}, /* Conv2D_31_zero_off_out_49 */
     .offset_start = 0,
     .offset_limit = 1204288,
     .frame_count = 0,
@@ -2757,7 +2757,7 @@ static void LL_ATON_Start_EpochBlock_11(const void *epoch_block)
     .noblk = 0,
     .align_right = 0,
     .nbits_unsigned = 1,
-    .addr_base = {(unsigned char *)(0x34100000UL) /* Equivalent hex address = 0x34100000UL */}, /* Conv2D_31_zero_off_out_49 */
+    .addr_base = {(unsigned char *)(0x34110000UL) /* Equivalent hex address = 0x34110000UL */}, /* Conv2D_31_zero_off_out_49 */
     .offset_start = 0,
     .offset_limit = 1204288,
     .frame_count = 0,
@@ -29980,7 +29980,7 @@ const LL_Buffer_InfoTypeDef *LL_ATON_Input_Buffers_Info_scalar_full_finetune_fro
   static const LL_Buffer_InfoTypeDef buff_info[] = {
     {
       .name = "Input_3_out_0",
-      .addr_base = {(unsigned char *)(0x34100000UL) /* Equivalent hex address = 0x34100000UL */},
+      .addr_base = {(unsigned char *)(0x34110000UL) /* Equivalent hex address = 0x34110000UL */},
       .offset_start = 0,
       .offset_end = 602112,
       .offset_limit = 602176,
@@ -34670,4 +34670,3 @@ const LL_Buffer_InfoTypeDef *LL_ATON_Internal_Buffers_Info_scalar_full_finetune_
 {
   return NULL;
 }
-

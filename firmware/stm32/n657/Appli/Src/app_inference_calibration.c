@@ -20,10 +20,10 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #ifndef APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION
-/* prod v0.4 now carries the model-level output contract we want on the board,
- * so keep the legacy affine correction disabled unless we are explicitly
- * comparing against an older deployment. */
-#define APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION 0
+/* Re-enable the board-side affine correction while we compare it against the
+ * raw CNN output on live 44C+ frames. Keep the helper in one place so we can
+ * toggle it cleanly if the correction regresses another capture band. */
+#define APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION 1
 #endif
 
 /* Temperature range for calibration. The affine fit was trained on warmer

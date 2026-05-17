@@ -5531,31 +5531,34 @@ def train(config: TrainConfig) -> TrainingResult:
         "val_mae"
         if config.model_family == "mobilenet_v2_rectifier"
         else (
-            "val_gauge_value_mae"
-            if config.model_family
-            in {
-                "mobilenet_v2_interval",
-                "mobilenet_v2_dualres_interval",
-                "compact_interval",
-                "compact_geometry",
-                "mobilenet_v2_geometry_uncertainty",
-                "mobilenet_v2_ordinal",
-                "mobilenet_v2_fraction",
-                "mobilenet_v2_keypoint",
-                "mobilenet_v2_detector",
-                "mobilenet_v2_geometry",
-                "mobilenet_v2_direction_geometry",
-                "mobilenet_v2_obb_geometry",
-                "mobilenet_v2_obb_mask_geometry",
-                "mobilenet_v2_obb_sequence_geometry",
-                "mobilenet_v2_obb_relation_geometry",
-                "mobilenet_v2_bluraware_obb_geometry",
-                "mobilenet_v2_bluraware_obb_relation_geometry",
-            }
+            "val_sweep_fraction_mae"
+            if config.model_family == "mobilenet_v2_fraction"
             else (
-                "val_obb_params_mae"
-                if config.model_family == "mobilenet_v2_obb"
-                else "val_mae"
+                "val_gauge_value_mae"
+                if config.model_family
+                in {
+                    "mobilenet_v2_interval",
+                    "mobilenet_v2_dualres_interval",
+                    "compact_interval",
+                    "compact_geometry",
+                    "mobilenet_v2_geometry_uncertainty",
+                    "mobilenet_v2_ordinal",
+                    "mobilenet_v2_keypoint",
+                    "mobilenet_v2_detector",
+                    "mobilenet_v2_geometry",
+                    "mobilenet_v2_direction_geometry",
+                    "mobilenet_v2_obb_geometry",
+                    "mobilenet_v2_obb_mask_geometry",
+                    "mobilenet_v2_obb_sequence_geometry",
+                    "mobilenet_v2_obb_relation_geometry",
+                    "mobilenet_v2_bluraware_obb_geometry",
+                    "mobilenet_v2_bluraware_obb_relation_geometry",
+                }
+                else (
+                    "val_obb_params_mae"
+                    if config.model_family == "mobilenet_v2_obb"
+                    else "val_mae"
+                )
             )
         )
     )

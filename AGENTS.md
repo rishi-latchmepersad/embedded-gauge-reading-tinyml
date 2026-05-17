@@ -19,6 +19,14 @@
 - Favor `src/` layout conventions and Poetry tooling.
 - Write any important details for yourself in /docs/ai-memory.md
 
+## Intended Folder Layout
+- Keep Python and ML code under `ml/`, using `ml/src/` for importable code, `ml/scripts/` for runnable jobs, and `ml/tests/` for pytest coverage.
+- Keep firmware and board integration under `firmware/`, with STM32CubeIDE project files staying inside the matching board/app subdirectory.
+- Keep project docs, notes, and design writeups under `docs/`.
+- Keep generated or scratch files under `d:/Projects/embedded-gauge-reading-tinyml/tmp/` only.
+- Do not place temporary scripts, exports, or experiment outputs in the repo root, `docs/`, or `firmware/` unless they are meant to be checked in there permanently.
+- If a new file does not clearly belong in `ml/`, `firmware/`, `docs/`, or `tmp/`, stop and choose the smallest existing home rather than inventing a new top-level folder.
+
 ## Commands
 - Use `poetry` for env management and scripts.
 - Prefer `pytest` for tests.
