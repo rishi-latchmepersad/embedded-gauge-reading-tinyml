@@ -23,7 +23,7 @@ DEFAULT_MODEL: Path = (
     / "ml"
     / "artifacts"
     / "deployment"
-    / "scalar_full_finetune_from_best_piecewise_calibrated_int8"
+    / "mobilenetv2_bluraware_reader_v41_int8"
     / "model_int8.tflite"
 )
 DEFAULT_OUTPUT_DIR: Path = (

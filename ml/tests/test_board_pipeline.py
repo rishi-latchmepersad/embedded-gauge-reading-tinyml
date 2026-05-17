@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from embedded_gauge_reading_tinyml.board_pipeline import (
+    BoardCalibration,
     InferenceBurstHistory,
+    _apply_board_calibration,
+    _load_board_calibration,
     decode_obb_crop_box,
     decode_rectifier_crop_box,
     load_capture_image,
@@ -106,3 +111,48 @@ def test_burst_history_matches_firmware_median_and_reset() -> None:
     assert value == 30.0
     assert reset is True
     assert count == 1
+
+
+def test_affine_board_calibration_applies_expected_transform(tmp_path: Path) -> None:
+    """Affine calibration should scale and shift the raw scalar prediction."""
+    calibration_path = tmp_path / "calibration.json"
+    calibration_path.write_text(
+        json.dumps(
+            {
+                "selected_mode": "affine",
+                "affine": {"scale": 1.25, "bias": -2.5},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    calibration = _load_board_calibration(str(calibration_path))
+    assert calibration == BoardCalibration(mode="affine", scale=1.25, bias=-2.5)
+    assert _apply_board_calibration(10.0, calibration) == pytest.approx(10.0)
+
+
+def test_piecewise_board_calibration_applies_expected_transform(tmp_path: Path) -> None:
+    """Piecewise calibration should match the stored hinge basis parameters."""
+    calibration_path = tmp_path / "calibration.json"
+    calibration_path.write_text(
+        json.dumps(
+            {
+                "selected_mode": "piecewise",
+                "piecewise": {
+                    "bias": 1.0,
+                    "weights": [2.0, 0.5, -0.25],
+                    "knots": [4.0, 8.0],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    calibration = _load_board_calibration(str(calibration_path))
+    assert calibration.mode == "piecewise"
+    assert calibration.bias == pytest.approx(1.0)
+    assert calibration.weights == (2.0, 0.5, -0.25)
+    assert calibration.knots == (4.0, 8.0)
+
+    # 1.0 + 2.0 * 10 + 0.5 * (10 - 4) - 0.25 * (10 - 8) = 23.5
+    assert _apply_board_calibration(10.0, calibration) == pytest.approx(23.5)

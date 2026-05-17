@@ -1006,6 +1006,60 @@ class GaugeValueFromRelationKeypoints(keras.layers.Layer):
 
 
 @keras.saving.register_keras_serializable(package="embedded_gauge_reading_tinyml")
+class GaugeValueFromNeedleDirection(keras.layers.Layer):
+    """Convert a predicted unit needle direction into a calibrated value.
+
+    The layer keeps the learning problem geometric: the network predicts a
+    direction vector, we derive an angle with `atan2`, and then map that angle
+    back to the gauge's calibrated value range.
+    """
+
+    def __init__(
+        self,
+        *,
+        value_min: float,
+        value_max: float,
+        min_angle_rad: float,
+        sweep_rad: float,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        if value_max <= value_min:
+            raise ValueError("value_max must be > value_min.")
+        if sweep_rad <= 0.0:
+            raise ValueError("sweep_rad must be > 0.")
+        self.value_min = float(value_min)
+        self.value_max = float(value_max)
+        self.min_angle_rad = float(min_angle_rad)
+        self.sweep_rad = float(sweep_rad)
+        self._two_pi = float(2.0 * math.pi)
+        self._scale = float(self.value_max - self.value_min)
+
+    def call(self, inputs: tf.Tensor) -> tf.Tensor:
+        """Map a unit direction vector into the calibrated gauge value."""
+        needle_xy = tf.cast(inputs, tf.float32)
+        needle_xy = tf.math.l2_normalize(needle_xy, axis=-1)
+        angle = tf.atan2(needle_xy[:, 1], needle_xy[:, 0])
+        shifted = tf.math.floormod(angle - self.min_angle_rad, self._two_pi)
+        fraction = tf.clip_by_value(shifted / self.sweep_rad, 0.0, 1.0)
+        value = self.value_min + fraction * self._scale
+        return tf.expand_dims(value, axis=-1)
+
+    def get_config(self) -> dict[str, object]:
+        """Serialize the layer config for saved models."""
+        config = super().get_config()
+        config.update(
+            {
+                "value_min": self.value_min,
+                "value_max": self.value_max,
+                "min_angle_rad": self.min_angle_rad,
+                "sweep_rad": self.sweep_rad,
+            }
+        )
+        return config
+
+
+@keras.saving.register_keras_serializable(package="embedded_gauge_reading_tinyml")
 class GaugeValueFromSweepDistribution(keras.layers.Layer):
     """Convert a sweep-distribution logit vector into a calibrated gauge value.
 
@@ -1204,7 +1258,7 @@ def build_mobilenetv2_regression_model(
         value_max: Maximum gauge value for output scaling.
     """
     if linear_output:
-        raise ValueError("linear_output=True is no longer supported")
+        pass  # linear output enabled for range-compression-free regression
     inputs, x, base_model = _build_mobilenetv2_backbone(
         image_height,
         image_width,
@@ -1299,6 +1353,63 @@ def build_mobilenetv2_direction_model(
         outputs=output,
         name=_mobilenetv2_model_name(
             regression_kind="needle_direction",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_direction_geometry_model(
+    image_height: int,
+    image_width: int,
+    *,
+    value_min: float,
+    value_max: float,
+    min_angle_rad: float,
+    sweep_rad: float,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a MobileNetV2 model that predicts needle direction then value.
+
+    The backbone learns a compact needle direction embedding, the unit-vector
+    head keeps the geometry explicit, and the final scalar value is computed
+    from that direction using the calibrated sweep mapping.
+    """
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    x = keras.layers.GlobalAveragePooling2D()(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+    x = keras.layers.Dense(head_units, activation="swish")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+    x = keras.layers.Dense(2, name="needle_xy_raw")(x)
+    needle_xy = keras.layers.UnitNormalization(axis=-1, name="needle_xy")(x)
+    gauge_value = GaugeValueFromNeedleDirection(
+        value_min=value_min,
+        value_max=value_max,
+        min_angle_rad=min_angle_rad,
+        sweep_rad=sweep_rad,
+        name="gauge_value",
+    )(needle_xy)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "gauge_value": gauge_value,
+            "needle_xy": needle_xy,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="needle_geometry",
             alpha=alpha,
             head_units=head_units,
         ),

@@ -58,3 +58,6 @@ DEFAULT_CLI_DEVICE: Literal["auto", "cpu", "gpu"] = "gpu"
 DEFAULT_GPU_MEMORY_GROWTH: bool = True
 DEFAULT_MIXED_PRECISION: bool = False
 DEFAULT_EDGE_FOCUS_STRENGTH: float = 0.75
+
+# Probability of applying board-style (luma + nearest-neighbor) preprocess augmentation during training.
+DEFAULT_BOARD_STYLE_AUGMENT_PROB: float = 0.4

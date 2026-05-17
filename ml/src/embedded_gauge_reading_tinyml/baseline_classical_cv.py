@@ -30,6 +30,14 @@ class NeedleDetection:
     peak_margin: float
 
 
+
+
+def needle_detection_quality(detection: NeedleDetection) -> float:
+    """Return a scalar quality score for a needle detection."""
+    if detection is None:
+        return -1.0
+    return float(detection.confidence * detection.peak_ratio)
+
 @dataclass(frozen=True)
 class ClassicalPrediction:
     """Predicted gauge value and metadata for one sample."""
@@ -95,8 +103,8 @@ class CenterHypothesis:
 def _bright_centroid_hypothesis(image_bgr: np.ndarray) -> CenterHypothesis | None:
     """Find the bright centroid of the dial face (matches C baseline).
 
-    Scans the fixed gauge crop for pixels with 150 ≤ luma ≤ 220,
-    computes the centroid, and requires ≥ 1024 qualifying pixels.
+    Scans the fixed gauge crop for pixels with 150 â‰¤ luma â‰¤ 220,
+    computes the centroid, and requires â‰¥ 1024 qualifying pixels.
     """
     gray: np.ndarray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     h_img, w_img = gray.shape[:2]
@@ -171,8 +179,10 @@ def _center_hypotheses(
     hypotheses.append(_image_center_hypothesis(image_bgr))
 
     return hypotheses
-    pivot and a smaller effective radius than the full crop.
-    """
+
+
+def board_prior_geometry_candidate(image_bgr: np.ndarray) -> GeometryCandidate:
+    """Build a small classical neighborhood around the observed board prior."""
     height, width = image_bgr.shape[:2]
     min_dim: float = float(min(height, width))
     return GeometryCandidate(
@@ -262,7 +272,7 @@ def _detect_needle_unit_vector_polar(
     """Detect the needle via polar edge voting (matches embedded C baseline).
 
     This is a simplified implementation that mirrors the embedded C code:
-    - 360 angle bins (1° resolution)
+    - 360 angle bins (1Â° resolution)
     - Grayscale only (no HSV saturation weighting)
     - Simple annulus mask (no middle-shaft Gaussian)
     - Basic contrast + edge strength voting
@@ -324,7 +334,7 @@ def _detect_needle_unit_vector_polar(
         0.0,
     )
 
-    # Accumulate into 360 angle bins (1° resolution)
+    # Accumulate into 360 angle bins (1Â° resolution)
     spoke_angle: np.ndarray = np.arctan2(dy, dx)
     num_bins: int = 360
     angle_bins: np.ndarray = (
@@ -1022,7 +1032,7 @@ def _detect_needle_unit_vector_line_segment(
             continue
 
         # Composite score: length * darkness * radiality.
-        # Length matters most — the needle is the longest dark feature.
+        # Length matters most â€” the needle is the longest dark feature.
         score: float = seg_len * darkness * (0.3 + 0.7 * radiality)
 
         if score > best_score:
@@ -1072,7 +1082,7 @@ def _detect_needle_unit_vector_combined(
     """
     candidates: list[NeedleDetection] = []
 
-    # Primary: line segment detector — no inversion ambiguity.
+    # Primary: line segment detector â€” no inversion ambiguity.
     # Favor the middle-shaft detectors first because they are the most stable
     # on the bright, clean gauge photos we use as the thesis baseline.
     spoke_detection: NeedleDetection | None = _detect_needle_unit_vector_spoke_improved(
@@ -1100,6 +1110,22 @@ def _detect_needle_unit_vector_combined(
 
     return max(candidates, key=needle_detection_quality)
 
+
+
+def _detect_needle_unit_vector_shaft_scan(
+    image_bgr: np.ndarray,
+    *,
+    center_xy: tuple[float, float],
+    dial_radius_px: float,
+    gauge_spec: GaugeSpec | None = None,
+) -> NeedleDetection | None:
+    """Alias for combined radial detection (backward compatibility)."""
+    return _detect_needle_unit_vector_combined(
+        image_bgr,
+        center_xy=center_xy,
+        dial_radius_px=dial_radius_px,
+        gauge_spec=gauge_spec,
+    )
 
 def _select_best_detection(
     image_bgr: np.ndarray,

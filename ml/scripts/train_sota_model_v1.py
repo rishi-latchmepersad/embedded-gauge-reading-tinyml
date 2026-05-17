@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Train a state-of-the-art CNN model that beats prod v0.3.
 
@@ -66,7 +66,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ─── Constants ───────────────────────────────────────────────────────────────
+# â”€â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 TRAINING_CROP_X_MIN = 0.1027
 TRAINING_CROP_Y_MIN = 0.2573
@@ -85,7 +85,7 @@ RAW_DIR: Path = DATA_DIR / "raw"
 ARTIFACTS_DIR: Path = ML_ROOT / "artifacts" / "training"
 LOGS_DIR: Path = ML_ROOT / "artifacts" / "training_logs"
 
-# ─── Data Loading ────────────────────────────────────────────────────────────
+# â”€â”€â”€ Data Loading â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def load_manifest(path: Path) -> list[dict[str, str]]:
@@ -317,25 +317,25 @@ def _augment_image(img: np.ndarray) -> np.ndarray:
     # Convert to PIL for augmentation
     pil_img = Image.fromarray((img * 255).astype(np.uint8))
 
-    # Random brightness (±15%)
+    # Random brightness (Â±15%)
     if np.random.rand() > 0.5:
         factor = np.random.uniform(0.85, 1.15)
         enhancer = ImageEnhance.Brightness(pil_img)
         pil_img = enhancer.enhance(factor)
 
-    # Random contrast (±15%)
+    # Random contrast (Â±15%)
     if np.random.rand() > 0.5:
         factor = np.random.uniform(0.85, 1.15)
         enhancer = ImageEnhance.Contrast(pil_img)
         pil_img = enhancer.enhance(factor)
 
-    # Random sharpness (±20%) - helps with needle edge detection
+    # Random sharpness (Â±20%) - helps with needle edge detection
     if np.random.rand() > 0.5:
         factor = np.random.uniform(0.8, 1.2)
         enhancer = ImageEnhance.Sharpness(pil_img)
         pil_img = enhancer.enhance(factor)
 
-    # Small random rotation (±5 degrees)
+    # Small random rotation (Â±5 degrees)
     if np.random.rand() > 0.5:
         angle = np.random.uniform(-5, 5)
         pil_img = pil_img.rotate(angle, resample=Image.BILINEAR)
@@ -345,7 +345,7 @@ def _augment_image(img: np.ndarray) -> np.ndarray:
     return img
 
 
-# ─── Model Builders ─────────────────────────────────────────────────────────
+# â”€â”€â”€ Model Builders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def build_sota_model(
@@ -380,7 +380,7 @@ def build_sota_model(
         raise ValueError(f"Unknown variant: {variant}")
 
 
-# ─── Training Functions ─────────────────────────────────────────────────────
+# â”€â”€â”€ Training Functions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def create_callbacks(
@@ -593,7 +593,7 @@ def train_model(
     }
 
 
-# ─── CLI ────────────────────────────────────────────────────────────────────
+# â”€â”€â”€ CLI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def main():
@@ -737,3 +737,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

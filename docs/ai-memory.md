@@ -981,3 +981,85 @@ Run 2:
 - Model artifact: same no_cal_hardpush_gpu5_recover model as v0.4.
 - Flashed successfully to NUCLEO-N657X0-Q.
 - Board needs BOOT0=0, BOOT1=0 and power-cycle to run from flash.
+
+---
+## 2026-05-16 — Scalar HardFault diagnosis and fix
+
+### Problem
+Scalar inference stage was crashing with a HardFault during preprocess resize.
+Fault log showed:
+`
+[FAULT] HardFault PC=0x3402128E CFSR=0x00008200 MMFAR=0x096E0800
+[FAULT] SP=0x341FFDA0 R0=0x34106A98 R1=0x4D045200 last_scalar_row=0xDF
+`
+The fault was a precise data bus error: the CPU tried to read from  x096E0800, which is not a valid memory address.
+
+### Root cause
+The Cube.AI-generated scalar model placed its input tensor at  x34100000 (AXISRAM2 base).
+The application .bss section ends at  x34106d58, meaning ThreadX globals live inside  x34100000–0x34106d58.
+Map-file evidence:
+- _tx_thread_execute_ptr =  x34105a30
+- _tx_thread_current_ptr =  x34105a34
+
+Scalar preprocess writes a 224×224×3 float32 tensor (602112 bytes) row-by-row.
+Each row = 224 * 3 * 4 = 2688 bytes.
+Row 8 starts at  x34100000 + 8 * 2688 = 0x34105400 and ends at  x34105e80,
+which completely covers _tx_thread_execute_ptr at  x34105a30.
+When the resize loop wrote row 8, it stomped on _tx_thread_execute_ptr with garbage.
+The very next SysTick/PendSV tried to read from that garbage address ? HardFault.
+
+OBB stage worked because Cube.AI placed its input at  x34110000, 64 KB past all app data.
+
+### Fix applied
+Shifted the scalar model input buffer (and its one aliased intermediate tensor)
+from  x34100000 to  x34110000.
+
+Files changed:
+1. irmware/stm32/n657/st_ai_output/packages/prod_model_v0_6_scalar_int8/st_ai_output/prod_model_v0_6_scalar_int8.c
+   - 6 occurrences of  x34100000 ?  x34110000 (lines 80, 82, 150, 2465, 2760, 29983)
+2. irmware/stm32/n657/st_ai_output/packages/prod_model_v0_6_scalar_int8/st_ai_ws/neural_art__prod_model_v0_6_scalar_int8/prod_model_v0_6_scalar_int8.c
+   - Same 6 replacements (identical copy used by the workspace)
+3. ml/artifacts/runtime/prod_model_v0.6_scalar_int8_reloc/mpools/stm32n6_reloc.mpool
+   - AXISRAM2 offset:  x34100000 ?  x34110000
+   - AXISRAM2 size: 1024 KB ? 960 KB
+   - This ensures future Cube.AI regenerations will not regress the fix.
+
+Safety check after the shift:
+- App data (.bss + heap + stacks) ends at  x3410d158
+- New buffer base  x34110000 is 4.5 KB past the end of app data
+- No overlap possible.
+
+### Build / flash
+- Clean rebuilt Appli in irmware/stm32/n657/Appli/Debug
+- Ran lash_boot.bat successfully (FSBL + models + signed app)
+- Board was power-cycled for flash-boot mode.
+
+### Long-term recommendation
+When regenerating the scalar model from Cube.AI, use the patched mpool JSON
+so the allocator naturally skips the first 64 KB of AXISRAM2.
+Alternatively, move the largest .bss arrays (e.g., pp_ai_dry_run_frame_scratch
+at 0x34080260, 98 KB) into RAM_NC ( x24160000, 384 KB) or external hyperRAM
+to free up the first 64 KB of SRAM2 and make the offset unnecessary.
+
+---
+
+## 2026-05-16 Live 49C Sanity Check
+
+- The current live board path is the `prod_model_v0_6_scalar_int8` package plus the classical baseline hybrid gate.
+- The hybrid selector in `app_inference_runtime.c` uses `baseline_conf >= 2.0f`, so the live `conf=3.760` frame does intentionally select the classical baseline.
+- On the 49C gauge snapshot, the CNN path reported `38.196808C` and the classical baseline reported `39.420158C`; both are still under-reading by roughly 10C, with the classical path slightly closer.
+- The earlier memory note that mentioned a `20.0` hybrid-confidence threshold is stale and should not be treated as the current decision rule.
+
+---
+## 2026-05-16 Blur-Aware CNN Winner
+
+- The strongest CNN reader so far is `mobilenetv2_bluraware_reader_v41`: `linear_output=True`, `mobilenet_alpha=0.35`, `batch_size=4`, `epochs=18`, `learning_rate=5e-6`, `mobilenet_warmup_epochs=4`, `mobilenet_unfreeze_last_n=12`, `mobilenet_head_units=64`, `mobilenet_head_dropout=0.15`, `hard_case_repeat=4`, and `edge_focus_strength=1.0`.
+- That blur-aware reader reached `test_mae=1.7144C` on its held-out test split, so future CNN baselines should start from that recipe instead of the older sigmoid/bounded head.
+
+## 2026-05-16 Board Replay Hot-End Fix
+
+- The hot-end miss was mainly a replay crop and calibration problem, not an int8 quantization problem.
+- The board replay now defaults to the exact v41 int8 export at `artifacts/deployment/mobilenetv2_bluraware_reader_v41_int8/model_int8.tflite`.
+- The board replay crop scale now stays at `OBB_CROP_SCALE=1.20`, which matches the calibration fit better than the older 1.30 default.
+- The calibration payload at `artifacts/calibration/prodv0_3_obb_scalar_calibration.json` was refit on the exact v41 int8 model with board-focused manifests.
+- On the hot captures, the replay moved from roughly `40C-42C` raw to about `46.8C` and `49.8C` after calibration, and the burst-smoothed output landed around `48.3C` on the later hot frame.

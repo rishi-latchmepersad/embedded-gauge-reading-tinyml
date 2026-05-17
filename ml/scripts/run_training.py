@@ -75,6 +75,7 @@ def parse_args() -> argparse.Namespace:
             "mobilenet_v2_tiny",
             "mobilenet_v2_dualres_interval",
             "mobilenet_v2_direction",
+            "mobilenet_v2_direction_geometry",
             "mobilenet_v2_fraction",
             "mobilenet_v2_detector",
             "mobilenet_v2_geometry",

@@ -82,7 +82,7 @@ def _parse_args() -> argparse.Namespace:
         default=PROJECT_ROOT
         / "artifacts"
         / "deployment"
-        / "scalar_full_finetune_from_best_piecewise_calibrated_int8"
+        / "mobilenetv2_bluraware_reader_v41_int8"
         / "model_int8.tflite",
         help="Path to the quantized scalar reader.",
     )

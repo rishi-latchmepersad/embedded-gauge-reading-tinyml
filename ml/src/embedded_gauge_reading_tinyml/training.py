@@ -1,4 +1,4 @@
-﻿"""Training pipeline for gauge-value regression with dial ROI cropping."""
+"""Training pipeline for gauge-value regression with dial ROI cropping."""
 
 from __future__ import annotations
 
@@ -63,11 +63,13 @@ from embedded_gauge_reading_tinyml.presets import (
     DEFAULT_SEED,
     DEFAULT_STRICT_LABELS,
     DEFAULT_EDGE_FOCUS_STRENGTH,
+    DEFAULT_BOARD_STYLE_AUGMENT_PROB,
     DEFAULT_TEST_FRACTION,
     DEFAULT_VAL_FRACTION,
 )
 from embedded_gauge_reading_tinyml.models import (
     GaugeValueFromKeypoints,
+    GaugeValueFromNeedleDirection,
     SpatialSoftArgmax2D,
     build_compact_interval_model,
     build_compact_geometry_model,
@@ -91,6 +93,7 @@ from embedded_gauge_reading_tinyml.models import (
     build_mobilenetv2_interval_model,
     build_mobilenetv2_ordinal_model,
     build_needle_direction_model,
+    build_mobilenetv2_direction_geometry_model,
     build_regression_model,
 )
 
@@ -122,6 +125,7 @@ class TrainConfig:
     strict_labels: bool = DEFAULT_STRICT_LABELS
     crop_pad_ratio: float = DEFAULT_CROP_PAD_RATIO
     augment_training: bool = DEFAULT_AUGMENT_TRAINING
+    board_style_augment_prob: float = DEFAULT_BOARD_STYLE_AUGMENT_PROB
     device: Literal["auto", "cpu", "gpu"] = DEFAULT_LIBRARY_DEVICE
     gpu_memory_growth: bool = DEFAULT_GPU_MEMORY_GROWTH
     mixed_precision: bool = DEFAULT_MIXED_PRECISION
@@ -138,6 +142,7 @@ class TrainConfig:
         "mobilenet_v2_tiny",
         "mobilenet_v2_dualres_interval",
         "mobilenet_v2_direction",
+        "mobilenet_v2_direction_geometry",
         "mobilenet_v2_fraction",
         "mobilenet_v2_detector",
         "mobilenet_v2_geometry",
@@ -291,8 +296,6 @@ def _validate_split_config(config: TrainConfig) -> None:
         raise ValueError(
             "geometry_uncertainty_low_quantile must be < geometry_uncertainty_high_quantile."
         )
-    if config.linear_output:
-        raise ValueError("linear_output=True is not supported in no-calibration mode.")
     if config.hard_case_eval_manifest is not None and config.hard_case_manifest is not None:
         raise ValueError(
             "Use either hard_case_eval_manifest or hard_case_manifest, not both."
@@ -426,6 +429,8 @@ def _hard_case_target_kind_for_model_family(model_family: str) -> str:
     """Return the target schema used by the hard-case manifest loader."""
     if model_family in {"mobilenet_v2_direction", "compact_direction"}:
         return "needle_unit_xy"
+    if model_family == "mobilenet_v2_direction_geometry":
+        return "needle_geometry"
     if model_family == "mobilenet_v2_fraction":
         return "sweep_fraction"
     if model_family in {"mobilenet_v2_keypoint", "mobilenet_v2_detector"}:
@@ -825,6 +830,7 @@ def _load_hard_case_examples(
     target_kind: Literal[
         "value",
         "needle_unit_xy",
+        "needle_geometry",
         "ordinal_thresholds",
         "geometry",
         "geometry_uncertainty",
@@ -839,8 +845,10 @@ def _load_hard_case_examples(
     if not manifest_path.exists():
         raise FileNotFoundError(f"Hard-case manifest not found: {manifest_path}")
 
-    if target_kind == "needle_unit_xy" and spec is None:
-        raise ValueError("spec is required when target_kind='needle_unit_xy'.")
+    if target_kind in {"needle_unit_xy", "needle_geometry"} and spec is None:
+        raise ValueError(
+            "spec is required when target_kind='needle_unit_xy' or 'needle_geometry'."
+        )
     examples: list[TrainingExample] = []
     with manifest_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -861,7 +869,7 @@ def _load_hard_case_examples(
             value_norm = 0.0
             if span > 0:
                 value_norm = min(max((value - min_value) / span, 0.0), 1.0)
-            if target_kind == "needle_unit_xy":
+            if target_kind in {"needle_unit_xy", "needle_geometry"}:
                 assert spec is not None
                 needle_unit_xy = needle_unit_xy_from_value(value, spec)
             else:
@@ -1057,6 +1065,7 @@ def _load_init_model(init_model_path: Path) -> keras.Model:
             "preprocess_input": keras.applications.mobilenet_v2.preprocess_input,
             "SpatialSoftArgmax2D": SpatialSoftArgmax2D,
             "GaugeValueFromKeypoints": GaugeValueFromKeypoints,
+            "GaugeValueFromNeedleDirection": GaugeValueFromNeedleDirection,
         },
     )
     model.trainable = True
@@ -1167,7 +1176,7 @@ def _is_board_capture(image_path: str) -> bool:
     Board captures are PNG files with 4-digit names (capture_NNNN.png),
     ISO-timestamp names (capture_2026-*.png), or from today_converted/.
     Phone photos are .jpg files or PXL_* raw files and should NOT have
-    rectifier boxes applied â€” the rectifier was trained on board framing.
+    rectifier boxes applied — the rectifier was trained on board framing.
     """
     p = Path(image_path)
     if p.suffix.lower() != ".png":
@@ -1216,9 +1225,9 @@ def _apply_precomputed_crop_boxes(
             boxes[str(abs_path)] = box
             boxes[Path(rel).name] = box  # filename-only fallback
 
-    # RECTIFY_ALL=1 â†’ apply rectifier boxes to every example with a CSV match
+    # RECTIFY_ALL=1 → apply rectifier boxes to every example with a CSV match
     # (true 2-stage training: scalar always sees rectifier-crop framing).
-    # Default (RECTIFY_ALL unset) â†’ board captures only (preserves phone-photo fixed crop).
+    # Default (RECTIFY_ALL unset) → board captures only (preserves phone-photo fixed crop).
     rectify_all: bool = os.environ.get("RECTIFY_ALL", "0") == "1"
 
     out: list[TrainingExample] = []
@@ -1554,6 +1563,72 @@ def _load_crop_and_preprocess_image(
     return image, target
 
 
+def _preprocess_board_style(
+    cropped_image: tf.Tensor,
+    image_height: int,
+    image_width: int,
+) -> tf.Tensor:
+    """Simulate the firmware preprocess: luma extraction, nearest-neighbor resize, zero pad.
+
+    The board firmware extracts Y-channel luma from YUV422, resizes with
+    nearest-neighbour to preserve the dial geometry, and zero-pads to 224x224.
+    Replicating that path during training removes the bilinear-RGB domain shift.
+    """
+    # Convert RGB uint8 crop to luma using ITU-R BT.601 coefficients.
+    image = tf.cast(cropped_image, tf.float32)
+    luma = 0.299 * image[..., 0] + 0.587 * image[..., 1] + 0.114 * image[..., 2]
+    luma = tf.clip_by_value(luma, 0.0, 255.0)
+    luma = tf.cast(tf.round(luma), tf.uint8)
+
+    # Compute scale exactly like firmware: scale = min(224/crop_h, 224/crop_w)
+    crop_h = tf.shape(luma)[0]
+    crop_w = tf.shape(luma)[1]
+    scale = tf.minimum(
+        tf.cast(image_height, tf.float32) / tf.cast(crop_h, tf.float32),
+        tf.cast(image_width, tf.float32) / tf.cast(crop_w, tf.float32),
+    )
+    scaled_h = tf.cast(tf.cast(crop_h, tf.float32) * scale, tf.int32)
+    scaled_w = tf.cast(tf.cast(crop_w, tf.float32) * scale, tf.int32)
+    scaled_h = tf.maximum(scaled_h, 1)
+    scaled_w = tf.maximum(scaled_w, 1)
+
+    # Nearest-neighbor resize (firmware does integer nearest-neighbour sampling).
+    luma = tf.expand_dims(luma, axis=-1)  # [H, W, 1]
+    resized = tf.image.resize(luma, [scaled_h, scaled_w], method='nearest')
+    resized = tf.cast(tf.round(resized), tf.uint8)
+
+    # Zero-pad to target size using integer truncation division (same as firmware).
+    pad_y = (image_height - scaled_h) // 2
+    pad_x = (image_width - scaled_w) // 2
+    pad_bottom = image_height - scaled_h - pad_y
+    pad_right = image_width - scaled_w - pad_x
+    padded = tf.pad(resized, [[pad_y, pad_bottom], [pad_x, pad_right], [0, 0]])
+    padded = tf.ensure_shape(padded, [image_height, image_width, 1])
+
+    # Replicate luma to 3 channels because the model expects 3-channel input.
+    rgb = tf.tile(padded, [1, 1, 3])
+
+    # Normalize to [0, 1] float.
+    return tf.cast(rgb, tf.float32) / 255.0
+
+
+def _load_crop_and_preprocess_image_board_style(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+) -> tuple[tf.Tensor, tf.Tensor]:
+    """Read image, crop dial ROI, and apply board-style luma+nearest-neighbor preprocess."""
+    image_bytes = tf.io.read_file(image_path)
+    image = tf.io.decode_image(image_bytes, channels=3, expand_animations=False)
+    image = tf.ensure_shape(image, [None, None, 3])
+    image = _crop_image_with_xyxy(image, crop_box_xyxy)
+    image = _preprocess_board_style(image, image_height, image_width)
+    target = tf.cast(value, tf.float32)
+    return image, target
+
+
 def _load_rectifier_and_preprocess_image(
     image_path: tf.Tensor,
     crop_box_xyxy: tf.Tensor,
@@ -1635,6 +1710,34 @@ def _load_crop_with_weight(
     """Load/crop one image and attach the requested sample weight."""
     image, target = _load_crop_and_preprocess_image(
         image_path, value, crop_box_xyxy, image_height, image_width
+    )
+    return image, target, weight
+
+
+def _load_crop_with_weight_maybe_board_style(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+    weight: tf.Tensor,
+    board_style_prob: float,
+) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Load/crop one image, randomly choosing board-style or standard preprocess.
+
+    With probability oard_style_prob we apply the exact firmware luma +
+    nearest-neighbour resize + zero-pad path so the model sees the same
+    domain it encounters on-device.
+    """
+    use_board = tf.random.uniform([]) < board_style_prob
+    image, target = tf.cond(
+        use_board,
+        lambda: _load_crop_and_preprocess_image_board_style(
+            image_path, value, crop_box_xyxy, image_height, image_width
+        ),
+        lambda: _load_crop_and_preprocess_image(
+            image_path, value, crop_box_xyxy, image_height, image_width
+        ),
     )
     return image, target, weight
 
@@ -1951,6 +2054,52 @@ def _load_crop_with_geometry_weight(
     return image, targets, sample_weights
 
 
+def _load_crop_with_direction_geometry_target(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    needle_unit_xy: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
+    """Load/crop one image and attach needle-direction and value targets."""
+    image, value_target = _load_crop_and_preprocess_image(
+        image_path, value, crop_box_xyxy, image_height, image_width
+    )
+    direction_target = tf.cast(needle_unit_xy, tf.float32)
+    targets = {
+        "gauge_value": value_target,
+        "needle_xy": direction_target,
+    }
+    return image, targets
+
+
+def _load_crop_with_direction_geometry_weight(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    needle_unit_xy: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+    weight: tf.Tensor,
+    direction_weight: tf.Tensor,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
+    """Load/crop one image and attach needle-direction targets plus weights."""
+    image, targets = _load_crop_with_direction_geometry_target(
+        image_path,
+        value,
+        needle_unit_xy,
+        crop_box_xyxy,
+        image_height,
+        image_width,
+    )
+    sample_weights = {
+        "gauge_value": weight,
+        "needle_xy": direction_weight,
+    }
+    return image, targets, sample_weights
+
+
 def _load_crop_with_obb_geometry_target(
     image_path: tf.Tensor,
     value: tf.Tensor,
@@ -2107,8 +2256,8 @@ def _load_crop_with_geometry_uncertainty_weight(
 
 
 def _augment_glare_blobs(image: tf.Tensor) -> tf.Tensor:
-    """Stamp 1â€“3 bright glare blobs via resized gaussian noise. Simulates specular reflections on gauge glass."""
-    # Generate blobs at a fixed small resolution then resize up â€” avoids dynamic meshgrid entirely.
+    """Stamp 1–3 bright glare blobs via resized gaussian noise. Simulates specular reflections on gauge glass."""
+    # Generate blobs at a fixed small resolution then resize up — avoids dynamic meshgrid entirely.
     BLOB_RES = 32
     mask = tf.zeros([BLOB_RES, BLOB_RES, 1], dtype=tf.float32)
     for _ in range(3):
@@ -2182,7 +2331,7 @@ def _augment_image(image: tf.Tensor) -> tf.Tensor:
             image_padded, max_offset + offset_y, max_offset + offset_x, image_h, image_w
         )
 
-    # AUG_HEAVY=1 â†’ stronger photometric augmentation for board-domain robustness.
+    # AUG_HEAVY=1 → stronger photometric augmentation for board-domain robustness.
     aug_heavy: bool = os.environ.get("AUG_HEAVY", "0") == "1"
 
     # --- Brightness/exposure augmentation (matches board camera reality) ---
@@ -2270,7 +2419,7 @@ def _augment_rectifier_image_and_box(
     """Geometric + photometric augmentation for the rectifier training path.
 
     Randomly zooms into a sub-region of the 224x224 padded canvas so the model
-    sees dial sizes ranging from ~30% to 100% of the frame â€” covering both the
+    sees dial sizes ranging from ~30% to 100% of the frame — covering both the
     far-away phone-photo distribution and close-up board-camera framing.
 
     The target box (cx, cy, w, h) in [0,1] canvas coords is recomputed to stay
@@ -2281,7 +2430,7 @@ def _augment_rectifier_image_and_box(
     canvas: tf.Tensor = tf.cast(image_shape[0], tf.float32)  # square 224
 
     # --- random zoom window in canvas pixels ---
-    # zoom_scale in [0.40, 1.0]: 0.40 â†’ 2.5x zoom-in (close-up), 1.0 â†’ full frame
+    # zoom_scale in [0.40, 1.0]: 0.40 → 2.5x zoom-in (close-up), 1.0 → full frame
     zoom_scale: tf.Tensor = tf.random.uniform([], minval=0.40, maxval=1.0)
     win_size: tf.Tensor = canvas * zoom_scale
 
@@ -2311,7 +2460,7 @@ def _augment_rectifier_image_and_box(
     x_max = cx + bw * 0.5
     y_max = cy + bh * 0.5
 
-    # map original canvas coords â†’ zoomed canvas coords
+    # map original canvas coords → zoomed canvas coords
     x_min_z = (x_min - off_x) / win_size * canvas
     y_min_z = (y_min - off_y) / win_size * canvas
     x_max_z = (x_max - off_x) / win_size * canvas
@@ -2349,6 +2498,7 @@ def _build_tf_dataset(
     target_kind: Literal[
         "value",
         "needle_unit_xy",
+        "needle_geometry",
         "sweep_fraction",
         "interval_value",
         "ordinal_thresholds",
@@ -2381,6 +2531,8 @@ def _build_tf_dataset(
         targets: np.ndarray = np.array([e.value for e in examples], dtype=np.float32)
     elif target_kind == "needle_unit_xy":
         targets = np.array([e.needle_unit_xy for e in examples], dtype=np.float32)
+    elif target_kind == "needle_geometry":
+        targets = np.array([e.value for e in examples], dtype=np.float32)
     elif target_kind == "sweep_fraction":
         targets = np.array([e.value for e in examples], dtype=np.float32)
     elif target_kind == "interval_value":
@@ -2467,13 +2619,14 @@ def _build_tf_dataset(
             reshuffle_each_iteration=True,
         )
         dataset = dataset.map(
-            lambda p, y, b, w: _load_crop_with_weight(
+            lambda p, y, b, w: _load_crop_with_weight_maybe_board_style(
                 p,
                 y,
                 b,
                 config.image_height,
                 config.image_width,
                 w,
+                config.board_style_augment_prob,
             ),
             num_parallel_calls=tf.data.AUTOTUNE,
         )
@@ -2486,6 +2639,87 @@ def _build_tf_dataset(
             dataset = dataset.batch(config.batch_size, drop_remainder=False)
             dataset = dataset.map(
                 lambda img, y, w: _mixup_value_batch(img, y, w, config.mixup_alpha),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+    elif training and target_kind == "needle_unit_xy":
+        # Direction models: use edge weights for sampling, supervise with unit vectors.
+        weights = _compute_edge_weights(examples, config.edge_focus_strength)
+        dataset = tf.data.Dataset.from_tensor_slices(
+            (paths, targets, boxes, weights)
+        )
+        dataset = dataset.shuffle(
+            buffer_size=max(len(examples), 1),
+            seed=config.seed,
+            reshuffle_each_iteration=True,
+        )
+        dataset = dataset.map(
+            lambda p, y, b, w: _load_crop_with_weight_maybe_board_style(
+                p,
+                y,
+                b,
+                config.image_height,
+                config.image_width,
+                w,
+                config.board_style_augment_prob,
+            ),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+        if config.augment_training:
+            dataset = dataset.map(
+                lambda img, y, w: (_augment_image(img), y, w),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+    elif training and target_kind == "needle_geometry":
+        if config.mixup_alpha > 0.0:
+            raise ValueError(
+                "MixUp is not supported for needle-geometry targets yet."
+            )
+
+        if config.range_aware_sampling:
+            if value_range is not None:
+                value_min, value_max = value_range
+            else:
+                value_min = min(example.value for example in examples)
+                value_max = max(example.value for example in examples)
+            weights = _compute_range_aware_weights(
+                examples,
+                value_min=value_min,
+                value_max=value_max,
+                cold_tail_fraction=config.cold_tail_fraction,
+                hot_tail_fraction=config.hot_tail_fraction,
+                oversampling_factor=config.oversampling_factor,
+            )
+        else:
+            weights = _compute_edge_weights(examples, config.edge_focus_strength)
+
+        directions = np.array(
+            [example.needle_unit_xy for example in examples], dtype=np.float32
+        )
+        direction_weights = np.array(weights, dtype=np.float32)
+        dataset = tf.data.Dataset.from_tensor_slices(
+            (paths, targets, directions, boxes, weights, direction_weights)
+        )
+        dataset = dataset.shuffle(
+            buffer_size=max(len(examples), 1),
+            seed=config.seed,
+            reshuffle_each_iteration=True,
+        )
+        dataset = dataset.map(
+            lambda p, y, d, b, w, dw: _load_crop_with_direction_geometry_weight(
+                p,
+                y,
+                d,
+                b,
+                config.image_height,
+                config.image_width,
+                w,
+                dw,
+            ),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+        if config.augment_training:
+            dataset = dataset.map(
+                lambda img, y, w: (_augment_image(img), y, w),
                 num_parallel_calls=tf.data.AUTOTUNE,
             )
     elif training and target_kind == "interval_value":
@@ -3230,7 +3464,25 @@ def _build_tf_dataset(
                 num_parallel_calls=tf.data.AUTOTUNE,
             )
     else:
-        if target_kind == "interval_value":
+        if target_kind == "needle_geometry":
+            directions = np.array(
+                [example.needle_unit_xy for example in examples], dtype=np.float32
+            )
+            dataset = tf.data.Dataset.from_tensor_slices(
+                (paths, targets, directions, boxes)
+            )
+            dataset = dataset.map(
+                lambda p, y, d, b: _load_crop_with_direction_geometry_target(
+                    p,
+                    y,
+                    d,
+                    b,
+                    config.image_height,
+                    config.image_width,
+                ),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+        elif target_kind == "interval_value":
             if value_range is None:
                 min_value = min(example.value for example in examples)
                 max_value = max(example.value for example in examples)
@@ -4299,6 +4551,41 @@ def _compile_direction_model(
     )
 
 
+def _compile_direction_geometry_model(
+    model: keras.Model,
+    *,
+    learning_rate: float,
+    spec: GaugeSpec,
+) -> None:
+    """Compile a geometry-bottleneck direction model with scalar supervision."""
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
+        learning_rate=learning_rate,
+        weight_decay=1e-4,
+        clipnorm=1.0,
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss={
+            "gauge_value": keras.losses.MeanSquaredError(),
+            "needle_xy": _direction_cosine_loss,
+        },
+        loss_weights={
+            "gauge_value": 1.0,
+            "needle_xy": 1.0,
+        },
+        metrics={
+            "gauge_value": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+                keras.metrics.RootMeanSquaredError(name="rmse"),
+            ],
+            "needle_xy": [
+                _make_angle_mae_metric(),
+            ],
+        },
+    )
+
+
 def _make_training_callbacks(
     *, monitor: str = "val_mae"
 ) -> list[keras.callbacks.Callback]:
@@ -4502,7 +4789,9 @@ def train(config: TrainConfig) -> TrainingResult:
             image_width=config.image_width,
             value_range=(spec.min_value, spec.max_value),
             target_kind=hard_case_eval_target_kind,
-            spec=spec if hard_case_eval_target_kind == "needle_unit_xy" else None,
+            spec=spec
+            if hard_case_eval_target_kind in {"needle_unit_xy", "needle_geometry"}
+            else None,
             example_lookup=example_lookup,
         )
         if len(hard_case_eval_examples) < 2:
@@ -4577,7 +4866,9 @@ def train(config: TrainConfig) -> TrainingResult:
             image_width=config.image_width,
             value_range=(spec.min_value, spec.max_value),
             target_kind=hard_case_target_kind,
-            spec=spec if hard_case_target_kind == "needle_unit_xy" else None,
+            spec=spec
+            if hard_case_target_kind in {"needle_unit_xy", "needle_geometry"}
+            else None,
             example_lookup=example_lookup,
         )
         filtered_hard_case_examples: list[TrainingExample] = [
@@ -4706,6 +4997,7 @@ def train(config: TrainConfig) -> TrainingResult:
             "mobilenet_v2_keypoint",
             "mobilenet_v2_detector",
             "mobilenet_v2_geometry",
+            "mobilenet_v2_direction_geometry",
             "mobilenet_v2_obb",
             "mobilenet_v2_obb_mask_geometry",
             "mobilenet_v2_obb_sequence_geometry",
@@ -4715,6 +5007,12 @@ def train(config: TrainConfig) -> TrainingResult:
             init_model = _load_init_model(init_model_path)
         else:
             model = _load_init_model(init_model_path)
+
+            if not config.mobilenet_backbone_trainable:
+                backbone = getattr(model, "_mobilenet_backbone", None)
+                if backbone is not None:
+                    backbone.trainable = False
+                    print("[TRAIN] Backbone frozen after loading warm-start model.", flush=True)
     if model is None:
         print("[TRAIN] step: build-model", flush=True)
         if config.model_family == "compact":
@@ -4792,6 +5090,21 @@ def train(config: TrainConfig) -> TrainingResult:
             model = build_mobilenetv2_direction_model(
                 config.image_height,
                 config.image_width,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
+            )
+        elif config.model_family == "mobilenet_v2_direction_geometry":
+            print("[TRAIN] Building MobileNetV2 direction-geometry model...")
+            model = build_mobilenetv2_direction_geometry_model(
+                config.image_height,
+                config.image_width,
+                value_min=spec.min_value,
+                value_max=spec.max_value,
+                min_angle_rad=spec.min_angle_rad,
+                sweep_rad=spec.sweep_rad,
                 pretrained=config.mobilenet_pretrained,
                 backbone_trainable=config.mobilenet_backbone_trainable,
                 alpha=config.mobilenet_alpha,
@@ -5053,6 +5366,11 @@ def train(config: TrainConfig) -> TrainingResult:
         print("[TRAIN] step: transfer-init-weights", flush=True)
         _transfer_matching_weights(init_model, model)
         model.trainable = True
+        if not config.mobilenet_backbone_trainable:
+            backbone = getattr(model, "_mobilenet_backbone", None)
+            if backbone is not None:
+                backbone.trainable = False
+                print("[TRAIN] Backbone kept frozen after warm-start weight transfer.", flush=True)
     target_kind: Literal[
         "value",
         "needle_unit_xy",
@@ -5148,6 +5466,7 @@ def train(config: TrainConfig) -> TrainingResult:
                 "geometry_uncertainty",
                 "rectifier_box",
                 "obb",
+                "needle_geometry",
                 "obb_geometry",
                 "obb_mask_geometry",
             }
@@ -5171,6 +5490,7 @@ def train(config: TrainConfig) -> TrainingResult:
                 "geometry_uncertainty",
                 "rectifier_box",
                 "obb",
+                "needle_geometry",
                 "obb_mask_geometry",
             }
             else None
@@ -5193,6 +5513,7 @@ def train(config: TrainConfig) -> TrainingResult:
                 "geometry_uncertainty",
                 "rectifier_box",
                 "obb",
+                "needle_geometry",
                 "obb_mask_geometry",
             }
             else None
@@ -5223,6 +5544,7 @@ def train(config: TrainConfig) -> TrainingResult:
                 "mobilenet_v2_keypoint",
                 "mobilenet_v2_detector",
                 "mobilenet_v2_geometry",
+                "mobilenet_v2_direction_geometry",
                 "mobilenet_v2_obb_geometry",
                 "mobilenet_v2_obb_mask_geometry",
                 "mobilenet_v2_obb_sequence_geometry",
@@ -5248,6 +5570,7 @@ def train(config: TrainConfig) -> TrainingResult:
             "mobilenet_v2_tiny",
             "mobilenet_v2_dualres_interval",
             "mobilenet_v2_direction",
+            "mobilenet_v2_direction_geometry",
             "mobilenet_v2_fraction",
             "mobilenet_v2_detector",
             "mobilenet_v2_geometry",
@@ -5295,6 +5618,12 @@ def train(config: TrainConfig) -> TrainingResult:
         )
         if config.model_family in {"mobilenet_v2_direction", "compact_direction"}:
             _compile_direction_model(
+                model,
+                learning_rate=config.learning_rate,
+                spec=spec,
+            )
+        elif config.model_family == "mobilenet_v2_direction_geometry":
+            _compile_direction_geometry_model(
                 model,
                 learning_rate=config.learning_rate,
                 spec=spec,
@@ -5467,6 +5796,12 @@ def train(config: TrainConfig) -> TrainingResult:
                 learning_rate=config.learning_rate,
                 spec=spec,
             )
+        elif config.model_family == "mobilenet_v2_direction_geometry":
+            _compile_direction_geometry_model(
+                model,
+                learning_rate=config.learning_rate,
+                spec=spec,
+            )
         elif config.model_family == "mobilenet_v2_fraction":
             _compile_fraction_model(
                 model,
@@ -5614,6 +5949,12 @@ def train(config: TrainConfig) -> TrainingResult:
         print("[TRAIN] Compact CNN stage: training end-to-end with callbacks.")
         if config.model_family in {"mobilenet_v2_direction", "compact_direction"}:
             _compile_direction_model(
+                model,
+                learning_rate=config.learning_rate,
+                spec=spec,
+            )
+        elif config.model_family == "mobilenet_v2_direction_geometry":
+            _compile_direction_geometry_model(
                 model,
                 learning_rate=config.learning_rate,
                 spec=spec,

@@ -242,7 +242,7 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 				float final_value = result;
 
 				if (AppBaselineRuntime_GetLastEstimate(&baseline_temp, &baseline_conf)) {
-					if (baseline_conf >= 20.0f) {
+					if (baseline_conf >= 2.0f) {
 						final_value = baseline_temp;
 						use_baseline = true;
 					}

@@ -250,7 +250,7 @@ static size_t app_ai_forced_crop_width = 0U;
 static size_t app_ai_forced_crop_height = 0U;
 static const char *app_ai_forced_crop_label = NULL;
 __attribute__((section(".xspi2_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
-uint8_t _mem_pool_xSPI2_scalar_full_finetune_from_best_piecewise_calibrated_int8[32U] = {
+uint8_t _mem_pool_xSPI2_prod_model_v0_6_scalar_int8[32U] = {
 	0U,
 };
 /* Rectifier pool placed in its own section so the linker script can map it to
@@ -290,19 +290,19 @@ volatile size_t app_ai_scalar_preprocess_last_row = (size_t)SIZE_MAX;
  *     print('tail: ', bytes(d[-16:]).hex())" */
 static const uint8_t app_ai_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
 	0xEFU,
-	0x1AU,
+	0x1BU,
 	0x2BU,
 	0xE0U,
 	0xD7U,
 	0xE5U,
 	0xECU,
-	0x06U,
-	0x05U,
+	0x07U,
+	0x04U,
 	0x00U,
 	0x34U,
 	0xECU,
 	0x1AU,
-	0xDEU,
+	0xDDU,
 	0x14U,
 	0x05U,
 };
@@ -322,7 +322,7 @@ static const uint8_t app_ai_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U,
 	0x00U,
 	0x00U,
-	0xC0U,
+	0xDEU,
 };
 /* Rectifier v3 xSPI2 signatures used when the board boots with the rectifier
  * blob already flashed at 0x70200000. */
@@ -426,7 +426,7 @@ static bool app_ai_obb_sig_valid = false;
 /* Declare the generated NN instance locally so the dry-run helper can run the
  * AtoNN runtime on the exact network produced by Cube.AI. */
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
-	scalar_full_finetune_from_best_piecewise_calibrated_int8);
+	prod_model_v0_6_scalar_int8);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 	mobilenetv2_rectifier_hardcase_finetune);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
@@ -476,11 +476,11 @@ typedef struct
 static const AppAI_ModelStageSpec app_ai_scalar_stage = {
 	.stage_label = "scalar",
 	.model_image_path = APP_AI_SCALAR_XSPI2_MODEL_IMAGE_PATH,
-	.nn_instance = &NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8,
+	.nn_instance = &NN_Instance_prod_model_v0_6_scalar_int8,
 	.network_init_fn =
-		LL_ATON_EC_Network_Init_scalar_full_finetune_from_best_piecewise_calibrated_int8,
+		LL_ATON_EC_Network_Init_prod_model_v0_6_scalar_int8,
 	.inference_init_fn =
-		LL_ATON_EC_Inference_Init_scalar_full_finetune_from_best_piecewise_calibrated_int8,
+		LL_ATON_EC_Inference_Init_prod_model_v0_6_scalar_int8,
 	.uses_rectifier_box = false,
 	.xspi2_chip_offset = APP_AI_XSPI2_SCALAR_CHIP_OFFSET,
 	.xspi2_base_addr = APP_AI_XSPI2_SCALAR_BASE_ADDR,
@@ -4812,7 +4812,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 static const LL_Buffer_InfoTypeDef *AppAI_GetInputBufferInfo(void)
 {
 	const LL_Buffer_InfoTypeDef *input_info =
-		NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8.network
+		NN_Instance_prod_model_v0_6_scalar_int8.network
 			->input_buffers_info();
 
 	if ((input_info == NULL) || (input_info->name == NULL))
@@ -4826,7 +4826,7 @@ static const LL_Buffer_InfoTypeDef *AppAI_GetInputBufferInfo(void)
 static const LL_Buffer_InfoTypeDef *AppAI_GetOutputBufferInfo(void)
 {
 	const LL_Buffer_InfoTypeDef *output_info =
-		NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8.network
+		NN_Instance_prod_model_v0_6_scalar_int8.network
 			->output_buffers_info();
 
 	if ((output_info == NULL) || (output_info->name == NULL))
@@ -4904,7 +4904,7 @@ static void AppAI_LogScalarInternalOutputProbe(
 	}
 
 	internal_buffers =
-		LL_ATON_Internal_Buffers_Info_scalar_full_finetune_from_best_piecewise_calibrated_int8();
+		LL_ATON_Internal_Buffers_Info_prod_model_v0_6_scalar_int8();
 	if ((internal_buffers != NULL) && !internal_name_dump_done)
 	{
 		size_t entry_index = 0U;
@@ -5040,7 +5040,7 @@ static void AppAI_LogInferenceResult(
 
 	internal_buffers =
 		LL_ATON_Internal_Buffers_Info(
-			&NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8);
+			&NN_Instance_prod_model_v0_6_scalar_int8);
 	quantize_output_info = AppAI_FindFirstBufferInfoByNames(internal_buffers,
 															quantize_output_names, sizeof(quantize_output_names) / sizeof(quantize_output_names[0]));
 	sub_output_info = AppAI_FindFirstBufferInfoByNames(internal_buffers,

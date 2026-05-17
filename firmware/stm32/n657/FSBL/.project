@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <projectDescription>
 	<name>n657_FSBL</name>
-	<comment></comment>
+	<comment/>
 	<projects>
 	</projects>
 	<buildSpec>
@@ -109,6 +109,16 @@
 			<name>Drivers/STM32N6xx_HAL_Driver/stm32n6xx_hal_usart_ex.c</name>
 			<type>1</type>
 			<locationURI>PARENT-1-PROJECT_LOC/Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_usart_ex.c</locationURI>
+		</link>
+		<link>
+			<name>Drivers/BSP/STM32N6xx_Nucleo/stm32n6xx_nucleo.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Drivers/BSP/STM32N6xx_Nucleo/stm32n6xx_nucleo.c</locationURI>
+		</link>
+		<link>
+			<name>Drivers/BSP/STM32N6xx_Nucleo/stm32n6xx_nucleo_bus.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Drivers/BSP/STM32N6xx_Nucleo/stm32n6xx_nucleo_bus.c</locationURI>
 		</link>
 	</linkedResources>
 </projectDescription>

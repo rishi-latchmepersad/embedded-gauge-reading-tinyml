@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import asdict, dataclass
+import functools
+import json
 from pathlib import Path
 import math
 from typing import Any, Callable, Final, Literal, cast
@@ -44,7 +46,9 @@ TRAINING_CROP_Y_MIN_RATIO: Final[float] = 0.2573
 TRAINING_CROP_X_MAX_RATIO: Final[float] = 0.7987
 TRAINING_CROP_Y_MAX_RATIO: Final[float] = 0.8071
 
-OBB_CROP_SCALE: Final[float] = 1.30
+# Keep the OBB crop slightly tighter than the old board default; the replay
+# calibration was fit around this crop scale and the hot end under-read with 1.30.
+OBB_CROP_SCALE: Final[float] = 1.20
 OBB_MIN_BOX_RATIO: Final[float] = 0.05
 # The hard-tail captures we care about often land around 0.18-0.20 of the
 # rectified training crop size. The old 0.60 minimum forced those cases into the
@@ -80,6 +84,9 @@ DEFAULT_SCALAR_MODEL: Final[Path] = (
     / "deployment"
     / "scalar_full_finetune_from_best_piecewise_calibrated_int8"
     / "model_int8.tflite"
+)
+DEFAULT_CALIBRATION_JSON: Final[Path] = (
+    ML_ROOT / "artifacts" / "calibration" / "prodv0_3_obb_scalar_calibration.json"
 )
 
 
@@ -139,6 +146,17 @@ class BoardPipelineResult:
     reported_prediction: float
     burst_history_count: int
     burst_history_reset: bool
+
+
+@dataclass(frozen=True, slots=True)
+class BoardCalibration:
+    """Calibration payload applied to the raw scalar prediction."""
+
+    mode: Literal["identity", "affine", "piecewise"]
+    scale: float = 1.0
+    bias: float = 0.0
+    weights: tuple[float, ...] = ()
+    knots: tuple[float, ...] = ()
 
 
 def _jsonable(result: BoardPipelineResult) -> dict[str, Any]:
@@ -246,6 +264,52 @@ def _clamp_norm(value: float) -> float:
     if value > 1.0:
         return 1.0
     return value
+
+
+@functools.lru_cache(maxsize=8)
+def _load_board_calibration(calibration_path: str) -> BoardCalibration:
+    """Load a calibration payload from disk and normalize it for replay."""
+    path = Path(calibration_path)
+    if not path.exists():
+        return BoardCalibration(mode="identity")
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    mode = str(payload.get("selected_mode", "identity")).strip().lower()
+    if mode == "affine":
+        affine = payload.get("affine", {})
+        return BoardCalibration(
+            mode="affine",
+            scale=float(affine.get("scale", 1.0)),
+            bias=float(affine.get("bias", 0.0)),
+        )
+    if mode == "piecewise":
+        piecewise = payload.get("piecewise", {})
+        weights = tuple(float(value) for value in piecewise.get("weights", ()))
+        knots = tuple(float(value) for value in piecewise.get("knots", ()))
+        return BoardCalibration(
+            mode="piecewise",
+            scale=1.0,
+            bias=float(piecewise.get("bias", 0.0)),
+            weights=weights,
+            knots=knots,
+        )
+    return BoardCalibration(mode="identity")
+
+
+def _apply_board_calibration(raw_prediction: float, calibration: BoardCalibration) -> float:
+    """Apply the board-side calibration mapping to one scalar prediction."""
+    if calibration.mode == "identity":
+        return raw_prediction
+    if calibration.mode == "affine":
+        return (calibration.scale * raw_prediction) + calibration.bias
+    if calibration.mode == "piecewise":
+        if not calibration.weights:
+            return raw_prediction
+        calibrated = calibration.bias + (calibration.weights[0] * raw_prediction)
+        for weight, knot in zip(calibration.weights[1:], calibration.knots):
+            calibrated += weight * max(raw_prediction - knot, 0.0)
+        return calibrated
+    return raw_prediction
 
 
 def _training_crop_box(width_pixels: int, height_pixels: int) -> tuple[float, float, float, float]:
@@ -745,6 +809,7 @@ def predict_board_pipeline_on_capture(
     obb_crop_scale: float = OBB_CROP_SCALE,
     min_crop_size: float = OBB_MIN_CROP_SIZE_PIXELS,
     use_calibration: bool = False,
+    calibration_path: Path | None = None,
 ) -> BoardPipelineResult:
     """Replay the full board pipeline on one capture."""
     def emit(message: str) -> None:
@@ -803,6 +868,15 @@ def predict_board_pipeline_on_capture(
             selected_stage = "rectifier"
         else:
             calibrated_prediction = raw_prediction
+            if use_calibration:
+                resolved_calibration_path = (
+                    calibration_path if calibration_path is not None else DEFAULT_CALIBRATION_JSON
+                )
+                calibration = _load_board_calibration(str(resolved_calibration_path))
+                calibrated_prediction = _apply_board_calibration(
+                    raw_prediction,
+                    calibration,
+                )
             if history is None:
                 reported_prediction = calibrated_prediction
                 history_reset = False
@@ -857,6 +931,12 @@ def predict_board_pipeline_on_capture(
     )
     emit("scalar invoke done stage=rectifier")
     calibrated_prediction = raw_prediction
+    if use_calibration:
+        resolved_calibration_path = (
+            calibration_path if calibration_path is not None else DEFAULT_CALIBRATION_JSON
+        )
+        calibration = _load_board_calibration(str(resolved_calibration_path))
+        calibrated_prediction = _apply_board_calibration(raw_prediction, calibration)
     if history is None:
         reported_prediction = calibrated_prediction
         history_reset = False

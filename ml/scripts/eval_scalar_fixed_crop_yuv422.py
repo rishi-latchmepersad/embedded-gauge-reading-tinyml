@@ -51,7 +51,7 @@ def main() -> None:
         "--model",
         type=Path,
         default=PROJECT_ROOT
-        / "artifacts/deployment/scalar_full_finetune_from_best_piecewise_calibrated_int8/model_int8.tflite",
+        / "artifacts/deployment/mobilenetv2_bluraware_reader_v41_int8/model_int8.tflite",
     )
     parser.add_argument(
         "--captures-dir", type=Path, default=REPO_ROOT / "data" / "captured" / "images"

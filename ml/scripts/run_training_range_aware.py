@@ -87,6 +87,7 @@ def parse_args() -> argparse.Namespace:
             "mobilenet_v2",
             "mobilenet_v2_tiny",
             "mobilenet_v2_dualres_interval",
+            "mobilenet_v2_direction_geometry",
         ],
         default="mobilenet_v2",
         help="Select model architecture family.",
