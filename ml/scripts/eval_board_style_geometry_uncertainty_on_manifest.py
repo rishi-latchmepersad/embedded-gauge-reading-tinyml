@@ -52,6 +52,16 @@ def _parse_args() -> argparse.Namespace:
         default=224,
         help="Square model input size.",
     )
+    parser.add_argument(
+        "--input-scale",
+        choices=("zero_one", "zero_255"),
+        default="zero_one",
+        help=(
+            "Input scaling expected by the model. "
+            "`zero_one` feeds [0,1] floats, while `zero_255` feeds [0,255] floats "
+            "(useful when the model already contains preprocess_input)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -97,6 +107,7 @@ def _predict_item(
     image_path: Path,
     *,
     image_size: int,
+    input_scale: str,
 ) -> dict[str, float]:
     """Run one board-style crop through the model and normalize all outputs."""
     source_image = load_rgb_image(image_path)
@@ -114,7 +125,10 @@ def _predict_item(
         ),
         image_size=image_size,
     )
-    batch = np.expand_dims(board_crop.astype(np.float32) / 255.0, axis=0)
+    image_float = board_crop.astype(np.float32)
+    if input_scale == "zero_one":
+        image_float = image_float / 255.0
+    batch = np.expand_dims(image_float, axis=0)
     prediction = model.predict(batch, verbose=0)
 
     output_names = list(model.output_names)
@@ -150,7 +164,12 @@ def main() -> None:
     for image_path, true_value in items:
         print(f"[BOARD-KERAS] Predicting {image_path.name}...", flush=True)
         try:
-            pred = _predict_item(model, image_path, image_size=args.image_size)
+            pred = _predict_item(
+                model,
+                image_path,
+                image_size=args.image_size,
+                input_scale=args.input_scale,
+            )
         except ValueError:
             print(
                 f"[BOARD-KERAS] Skipping {image_path.name}: board crop heuristic failed.",

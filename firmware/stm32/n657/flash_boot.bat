@@ -22,11 +22,13 @@ set SCRIPT_DIR=%~dp0
 set "REPO_ROOT=%SCRIPT_DIR%..\..\..\"
 set "FSBL_BIN=%SCRIPT_DIR%FSBL\Debug\n657_FSBL.bin"
 set "FSBL_TRUSTED=%SCRIPT_DIR%FSBL\Debug\FSBL_trusted.bin"
-set "SCALAR_RAW=%REPO_ROOT%st_ai_output\atonbuf.xSPI2.raw"
-set "RECTIFIER_RAW=%REPO_ROOT%st_ai_output\atonbuf.rectifier.xSPI2.raw"
-set "OBB_RAW=%REPO_ROOT%st_ai_output\atonbuf.obb.xSPI2.raw"
-if not exist "%RECTIFIER_RAW%" set "RECTIFIER_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.rectifier.xSPI2.raw"
-if not exist "%OBB_RAW%" set "OBB_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.obb.xSPI2.raw"
+REM Prefer firmware-local model artifacts first; repo-root artifacts may be stale.
+set "SCALAR_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.xSPI2.raw"
+set "RECTIFIER_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.rectifier.xSPI2.raw"
+set "OBB_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.obb.xSPI2.raw"
+if not exist "%SCALAR_RAW%" set "SCALAR_RAW=%REPO_ROOT%st_ai_output\atonbuf.xSPI2.raw"
+if not exist "%RECTIFIER_RAW%" set "RECTIFIER_RAW=%REPO_ROOT%st_ai_output\atonbuf.rectifier.xSPI2.raw"
+if not exist "%OBB_RAW%" set "OBB_RAW=%REPO_ROOT%st_ai_output\atonbuf.obb.xSPI2.raw"
 REM CubeProgrammer v2.21 does not accept .raw extension with -w; stage as .bin
 set "SCALAR_BIN=%SCRIPT_DIR%Appli\Debug\scalar_model_stage.bin"
 set "RECTIFIER_BIN=%SCRIPT_DIR%Appli\Debug\rectifier_model_stage.bin"

@@ -983,7 +983,7 @@ Run 2:
 - Board needs BOOT0=0, BOOT1=0 and power-cycle to run from flash.
 
 ---
-## 2026-05-16 — Scalar HardFault diagnosis and fix
+## 2026-05-16  Scalar HardFault diagnosis and fix
 
 ### Problem
 Scalar inference stage was crashing with a HardFault during preprocess resize.
@@ -996,12 +996,12 @@ The fault was a precise data bus error: the CPU tried to read from  x096E0800, w
 
 ### Root cause
 The Cube.AI-generated scalar model placed its input tensor at  x34100000 (AXISRAM2 base).
-The application .bss section ends at  x34106d58, meaning ThreadX globals live inside  x34100000–0x34106d58.
+The application .bss section ends at  x34106d58, meaning ThreadX globals live inside  x341000000x34106d58.
 Map-file evidence:
 - _tx_thread_execute_ptr =  x34105a30
 - _tx_thread_current_ptr =  x34105a34
 
-Scalar preprocess writes a 224×224×3 float32 tensor (602112 bytes) row-by-row.
+Scalar preprocess writes a 2242243 float32 tensor (602112 bytes) row-by-row.
 Each row = 224 * 3 * 4 = 2688 bytes.
 Row 8 starts at  x34100000 + 8 * 2688 = 0x34105400 and ends at  x34105e80,
 which completely covers _tx_thread_execute_ptr at  x34105a30.
@@ -1101,3 +1101,23 @@ to free up the first 64 KB of SRAM2 and make the offset unnecessary.
   - hard-case manifest worsened to mae=11.3299C
   - the cold tail still dominated the worst errors, so range balancing alone is not enough
 - Current takeaway: the polar-voting formulation is still the right direction, but the remaining cold-tail collapse likely needs either a richer geometry target than a single angle distribution, or more explicit live cold-case supervision from the board captures, especially for negative-temperature examples.
+
+---
+## 2026-05-18 Note Index
+
+- Consolidated 2026-05-18 deployment/runtime chronology is recorded in:
+  - `docs/ai-memory/ml-experiments.md`
+  - section: `2026-05-18 End-to-End Deployment + Firmware Integration Notes`
+- Deploy-specific decode/signature/flash summary is recorded in:
+  - `docs/ai-memory/polar-vote-deploy-2026-05-18.md`
+- Additional 2026-05-18 updates now recorded in:
+  - `docs/ai-memory/ml-experiments.md`
+  - sections:
+    - `9) Flash-script path trap we hit (important)`
+    - `10) Post-fix verification + latest live quality check`
+
+## 2026-05-18 Maintenance Note
+
+- `docs/ai-memory.md` was repaired to valid UTF-8 so it can be patched/read reliably by tooling.
+- Pre-repair backup retained at:
+  - `tmp/ai-memory.md.pre_utf8_fix_2026-05-18`

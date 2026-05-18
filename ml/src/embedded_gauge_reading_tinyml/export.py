@@ -98,6 +98,7 @@ def _load_model(model_path: Path, *, legacy_mobilenetv2_preprocess: bool) -> ker
         model_path,
         custom_objects=custom_objects,
         compile=False,
+        safe_mode=False,
     )
     print(f"[EXPORT] Loaded model '{model.name}' from {model_path}.", flush=True)
     return model

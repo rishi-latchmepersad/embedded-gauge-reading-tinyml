@@ -1,0 +1,294 @@
+{
+  "attempted_samples": 57,
+  "successful_samples": 51,
+  "failed_samples": 6,
+  "mae": 9.48729133605957,
+  "rmse": 18.663183212280273,
+  "value_bucket_size": 10.0,
+  "worst_cases": [
+    {
+      "image_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_m18c.png",
+      "true_value": -18.0,
+      "predicted_value": 42.8888888888889,
+      "abs_error": 60.8888888888889,
+      "confidence": 13.832563148485296
+    },
+    {
+      "image_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_2026-04-22_07-45-57.png",
+      "true_value": 28.0,
+      "predicted_value": -27.03703703703704,
+      "abs_error": 55.03703703703704,
+      "confidence": 18.040605186097036
+    },
+    {
+      "image_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_2026-04-22_07-22-58.png",
+      "true_value": 28.0,
+      "predicted_value": -23.185185185185187,
+      "abs_error": 51.18518518518519,
+      "confidence": 18.82038312491173
+    },
+    {
+      "image_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_2026-04-22_07-41-14.png",
+      "true_value": 28.0,
+      "predicted_value": -22.296296296296294,
+      "abs_error": 50.29629629629629,
+      "confidence": 15.374270881541923
+    },
+    {
+      "image_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_2026-04-22_07-18-03.png",
+      "true_value": 28.0,
+      "predicted_value": -17.259259259259252,
+      "abs_error": 45.25925925925925,
+      "confidence": 11.652623932772604
+    },
+    {
+      "image_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_p20.jpg",
+      "true_value": 20.0,
+      "predicted_value": -17.259259259259252,
+      "abs_error": 37.25925925925925,
+      "confidence": 8.544836779135462
+    },
+    {
+      "image_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_0007.png",
+      "true_value": 18.0,
+      "predicted_value": -16.962962962962962,
+      "abs_error": 34.96296296296296,
+      "confidence": 10.209650474919169
+    },
+    {
+      "image_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_2026-04-22_07-37-33.png",
+      "true_value": 28.0,
+      "predicted_value": 9.70370370370371,
+      "abs_error": 18.29629629629629,
+      "confidence": 23.56332071406309
+    },
+    {
+      "image_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_2026-04-22_07-24-43.png",
+      "true_value": 28.0,
+      "predicted_value": 16.51851851851852,
+      "abs_error": 11.481481481481481,
+      "confidence": 16.07763180637428
+    },
+    {
+      "image_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_2026-04-22_07-25-57.png",
+      "true_value": 28.0,
+      "predicted_value": 16.51851851851852,
+      "abs_error": 11.481481481481481,
+      "confidence": 18.34046130732781
+    }
+  ],
+  "by_image_family": [
+    {
+      "group_key": "m18c",
+      "sample_count": 1,
+      "mae": 60.88888931274414,
+      "rmse": 60.88888931274414,
+      "max_abs_error": 60.88888931274414
+    },
+    {
+      "group_key": "p20",
+      "sample_count": 1,
+      "mae": 37.25925827026367,
+      "rmse": 37.25925827026367,
+      "max_abs_error": 37.25925827026367
+    },
+    {
+      "group_key": "0007",
+      "sample_count": 1,
+      "mae": 34.96296310424805,
+      "rmse": 34.96296310424805,
+      "max_abs_error": 34.96296310424805
+    },
+    {
+      "group_key": "2026-04-22",
+      "sample_count": 26,
+      "mae": 11.173788070678711,
+      "rmse": 20.713056564331055,
+      "max_abs_error": 55.03703689575195
+    },
+    {
+      "group_key": "p5c",
+      "sample_count": 1,
+      "mae": 9.518518447875977,
+      "rmse": 9.518518447875977,
+      "max_abs_error": 9.518518447875977
+    },
+    {
+      "group_key": "2026-04-03",
+      "sample_count": 3,
+      "mae": 6.123456954956055,
+      "rmse": 6.4455084800720215,
+      "max_abs_error": 7.814815044403076
+    },
+    {
+      "group_key": "m30c",
+      "sample_count": 1,
+      "mae": 3.8518519401550293,
+      "rmse": 3.8518519401550293,
+      "max_abs_error": 3.8518519401550293
+    },
+    {
+      "group_key": "p50c",
+      "sample_count": 1,
+      "mae": 2.9629628658294678,
+      "rmse": 2.9629628658294678,
+      "max_abs_error": 2.9629628658294678
+    },
+    {
+      "group_key": "p20c",
+      "sample_count": 1,
+      "mae": 2.8888888359069824,
+      "rmse": 2.8888888359069824,
+      "max_abs_error": 2.8888888359069824
+    },
+    {
+      "group_key": "0008",
+      "sample_count": 1,
+      "mae": 2.5185184478759766,
+      "rmse": 2.5185184478759766,
+      "max_abs_error": 2.5185184478759766
+    },
+    {
+      "group_key": "p35c",
+      "sample_count": 2,
+      "mae": 2.222222328186035,
+      "rmse": 2.2225308418273926,
+      "max_abs_error": 2.2592592239379883
+    },
+    {
+      "group_key": "m25c",
+      "sample_count": 1,
+      "mae": 2.1111111640930176,
+      "rmse": 2.1111111640930176,
+      "max_abs_error": 2.1111111640930176
+    },
+    {
+      "group_key": "p10c",
+      "sample_count": 1,
+      "mae": 2.0740740299224854,
+      "rmse": 2.0740740299224854,
+      "max_abs_error": 2.0740740299224854
+    },
+    {
+      "group_key": "m10c",
+      "sample_count": 2,
+      "mae": 1.7777777910232544,
+      "rmse": 2.0581398010253906,
+      "max_abs_error": 2.814814805984497
+    },
+    {
+      "group_key": "p30c",
+      "sample_count": 2,
+      "mae": 1.6296296119689941,
+      "rmse": 1.7340296506881714,
+      "max_abs_error": 2.222222328186035
+    },
+    {
+      "group_key": "m19c",
+      "sample_count": 1,
+      "mae": 1.1481481790542603,
+      "rmse": 1.1481481790542603,
+      "max_abs_error": 1.1481481790542603
+    },
+    {
+      "group_key": "p31c",
+      "sample_count": 1,
+      "mae": 1.1481481790542603,
+      "rmse": 1.1481481790542603,
+      "max_abs_error": 1.1481481790542603
+    },
+    {
+      "group_key": "p15c",
+      "sample_count": 1,
+      "mae": 0.9259259104728699,
+      "rmse": 0.9259259104728699,
+      "max_abs_error": 0.9259259104728699
+    },
+    {
+      "group_key": "p42c",
+      "sample_count": 1,
+      "mae": 0.8888888955116272,
+      "rmse": 0.8888888955116272,
+      "max_abs_error": 0.8888888955116272
+    },
+    {
+      "group_key": "0c",
+      "sample_count": 1,
+      "mae": 0.37037035822868347,
+      "rmse": 0.37037035822868347,
+      "max_abs_error": 0.37037035822868347
+    },
+    {
+      "group_key": "p25c",
+      "sample_count": 1,
+      "mae": 0.18518517911434174,
+      "rmse": 0.18518517911434174,
+      "max_abs_error": 0.18518517911434174
+    }
+  ],
+  "by_value_bucket": [
+    {
+      "group_key": "-20..-10",
+      "sample_count": 2,
+      "mae": 31.018518447875977,
+      "rmse": 43.062599182128906,
+      "max_abs_error": 60.88888931274414
+    },
+    {
+      "group_key": "10..20",
+      "sample_count": 4,
+      "mae": 11.44444465637207,
+      "rmse": 17.948810577392578,
+      "max_abs_error": 34.96296310424805
+    },
+    {
+      "group_key": "20..30",
+      "sample_count": 30,
+      "mae": 11.112346649169922,
+      "rmse": 20.459529876708984,
+      "max_abs_error": 55.03703689575195
+    },
+    {
+      "group_key": "0..10",
+      "sample_count": 2,
+      "mae": 4.944444179534912,
+      "rmse": 6.7357025146484375,
+      "max_abs_error": 9.518518447875977
+    },
+    {
+      "group_key": "-30..-20",
+      "sample_count": 2,
+      "mae": 2.9814815521240234,
+      "rmse": 3.105926036834717,
+      "max_abs_error": 3.8518519401550293
+    },
+    {
+      "group_key": "50..60",
+      "sample_count": 1,
+      "mae": 2.9629628658294678,
+      "rmse": 2.9629628658294678,
+      "max_abs_error": 2.9629628658294678
+    },
+    {
+      "group_key": "30..40",
+      "sample_count": 6,
+      "mae": 2.685185194015503,
+      "rmse": 3.413407325744629,
+      "max_abs_error": 7.259259223937988
+    },
+    {
+      "group_key": "40..50",
+      "sample_count": 2,
+      "mae": 2.092592716217041,
+      "rmse": 2.414093255996704,
+      "max_abs_error": 3.2962963581085205
+    },
+    {
+      "group_key": "-10..0",
+      "sample_count": 2,
+      "mae": 1.7777777910232544,
+      "rmse": 2.0581398010253906,
+      "max_abs_error": 2.814814805984497
+    }
+  ]
+}

@@ -44,9 +44,13 @@ from embedded_gauge_reading_tinyml.board_crop_compare import (  # noqa: E402
     resize_with_pad_rgb,
 )
 from embedded_gauge_reading_tinyml.gauge.processing import (  # noqa: E402
+    GaugeSpec,
     fraction_to_angle_rad,
     load_gauge_specs,
     value_to_fraction,
+)
+from embedded_gauge_reading_tinyml.baseline_classical_cv import (  # noqa: E402
+    run_classical_baseline,
 )
 from embedded_gauge_reading_tinyml.polar_projection import (  # noqa: E402
     polar_project_image,
@@ -68,6 +72,9 @@ DEFAULT_FINE_BINS: int = 14
 DEFAULT_FRACTION_LOSS_WEIGHT: float = 0.0
 DEFAULT_FRACTION_LOSS_DELTA: float = 0.04
 DEFAULT_SWEEP_KERNEL: Literal["gaussian", "reflect"] = "gaussian"
+DEFAULT_VOTE_DECODE_MODE: Literal["expectation", "argmax", "topk_expectation"] = "expectation"
+DEFAULT_VOTE_DECODE_TEMPERATURE: float = 1.0
+DEFAULT_VOTE_DECODE_TOPK: int = 8
 
 
 @dataclass(frozen=True)
@@ -286,6 +293,8 @@ def _crop_and_polar_image(
     polar_size: int,
     input_mode: Literal["rgb", "edge3", "rgb_edge6", "rgb_edge6_vote7"] = "rgb",
     center_search_px: int = 0,
+    center_mode: Literal["image_center", "classical_baseline"] = "image_center",
+    gauge_spec: GaugeSpec | None = None,
 ) -> np.ndarray:
     """Crop an image and keep the full polar projection as a 2D CNN input."""
     rgb = _load_rgb_or_yuv422(image_path)
@@ -301,6 +310,19 @@ def _crop_and_polar_image(
 
     default_center_x = float(polar_size) * 0.5
     default_center_y = float(polar_size) * 0.5
+    if center_mode == "classical_baseline":
+        if gauge_spec is None:
+            raise ValueError("gauge_spec is required when center_mode=classical_baseline.")
+        # The baseline helper expects BGR input; convert once and reuse its
+        # strongest center hypothesis while still keeping the CNN as the value
+        # predictor.
+        cropped_bgr = np.ascontiguousarray(cropped[..., ::-1])
+        center_x, center_y, _radius, _detection = run_classical_baseline(
+            cropped_bgr,
+            gauge_spec,
+        )
+        default_center_x = float(center_x)
+        default_center_y = float(center_y)
 
     if center_search_px <= 0:
         polar = polar_project_image(
@@ -1068,6 +1090,9 @@ def _logits_to_temperature_sweep(
     *,
     value_min: float,
     value_max: float,
+    decode_mode: Literal["expectation", "argmax", "topk_expectation"] = DEFAULT_VOTE_DECODE_MODE,
+    decode_temperature: float = DEFAULT_VOTE_DECODE_TEMPERATURE,
+    decode_topk: int = DEFAULT_VOTE_DECODE_TOPK,
 ) -> np.ndarray:
     """Convert linear sweep logits into Celsius values."""
     logits = np.asarray(logits, dtype=np.float32)
@@ -1077,10 +1102,35 @@ def _logits_to_temperature_sweep(
     if num_bins < 2:
         raise ValueError("logits must have at least two bins.")
 
-    shifted = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
-    probs = shifted / np.sum(shifted, axis=-1, keepdims=True)
-    bin_positions = np.linspace(0.0, 1.0, num_bins, dtype=np.float32)
-    fraction = np.sum(probs * bin_positions[None, :], axis=-1)
+    if decode_mode == "argmax":
+        argmax_bins = np.argmax(logits, axis=-1).astype(np.float32)
+        fraction = argmax_bins / np.float32(max(num_bins - 1, 1))
+    elif decode_mode == "topk_expectation":
+        if decode_temperature <= 0.0:
+            raise ValueError("decode_temperature must be > 0.")
+        if decode_topk <= 0:
+            raise ValueError("decode_topk must be >= 1.")
+        topk = min(int(decode_topk), num_bins)
+        logits_scaled = logits / np.float32(decode_temperature)
+        # Keep only top-k bins per sample, then take expectation over the
+        # renormalized sparse distribution. This suppresses low-probability
+        # tails that can drag sweep expectation toward the middle.
+        topk_indices = np.argpartition(logits_scaled, -topk, axis=-1)[:, -topk:]
+        masked_logits = np.full_like(logits_scaled, fill_value=np.float32(-1e9))
+        row_indices = np.arange(logits_scaled.shape[0], dtype=np.int64)[:, None]
+        masked_logits[row_indices, topk_indices] = logits_scaled[row_indices, topk_indices]
+        shifted = np.exp(masked_logits - np.max(masked_logits, axis=-1, keepdims=True))
+        probs = shifted / np.sum(shifted, axis=-1, keepdims=True)
+        bin_positions = np.linspace(0.0, 1.0, num_bins, dtype=np.float32)
+        fraction = np.sum(probs * bin_positions[None, :], axis=-1)
+    else:
+        if decode_temperature <= 0.0:
+            raise ValueError("decode_temperature must be > 0.")
+        logits_scaled = logits / np.float32(decode_temperature)
+        shifted = np.exp(logits_scaled - np.max(logits_scaled, axis=-1, keepdims=True))
+        probs = shifted / np.sum(shifted, axis=-1, keepdims=True)
+        bin_positions = np.linspace(0.0, 1.0, num_bins, dtype=np.float32)
+        fraction = np.sum(probs * bin_positions[None, :], axis=-1)
     span = np.float32(value_max - value_min)
     return (np.float32(value_min) + fraction * span).astype(np.float32)
 
@@ -1091,6 +1141,9 @@ def _structured_logits_to_temperature(
     structure_mode: Literal["vote", "ordinal", "coarse_to_fine", "two_stage"],
     value_min: float,
     value_max: float,
+    vote_decode_mode: Literal["expectation", "argmax", "topk_expectation"] = DEFAULT_VOTE_DECODE_MODE,
+    vote_decode_temperature: float = DEFAULT_VOTE_DECODE_TEMPERATURE,
+    vote_decode_topk: int = DEFAULT_VOTE_DECODE_TOPK,
 ) -> np.ndarray:
     """Convert structured logits into Celsius values."""
     if structure_mode == "vote":
@@ -1100,6 +1153,9 @@ def _structured_logits_to_temperature(
             logits,
             value_min=value_min,
             value_max=value_max,
+            decode_mode=vote_decode_mode,
+            decode_temperature=vote_decode_temperature,
+            decode_topk=vote_decode_topk,
         )
     if structure_mode == "ordinal":
         assert not isinstance(logits, dict)
@@ -1267,6 +1323,9 @@ class TemperatureMaeCallback(keras.callbacks.Callback):
         structure_mode: Literal["vote", "ordinal", "coarse_to_fine", "two_stage"],
         value_min: float,
         value_max: float,
+        vote_decode_mode: Literal["expectation", "argmax", "topk_expectation"] = DEFAULT_VOTE_DECODE_MODE,
+        vote_decode_temperature: float = DEFAULT_VOTE_DECODE_TEMPERATURE,
+        vote_decode_topk: int = DEFAULT_VOTE_DECODE_TOPK,
     ) -> None:
         super().__init__()
         self._val_inputs = val_inputs
@@ -1275,6 +1334,9 @@ class TemperatureMaeCallback(keras.callbacks.Callback):
         self._structure_mode = structure_mode
         self._value_min = float(value_min)
         self._value_max = float(value_max)
+        self._vote_decode_mode = vote_decode_mode
+        self._vote_decode_temperature = float(vote_decode_temperature)
+        self._vote_decode_topk = int(vote_decode_topk)
 
     def on_epoch_end(
         self, epoch: int, logs: dict[str, float] | None = None
@@ -1291,6 +1353,9 @@ class TemperatureMaeCallback(keras.callbacks.Callback):
             structure_mode=self._structure_mode,
             value_min=self._value_min,
             value_max=self._value_max,
+            vote_decode_mode=self._vote_decode_mode,
+            vote_decode_temperature=self._vote_decode_temperature,
+            vote_decode_topk=self._vote_decode_topk,
         )
         mae = float(
             np.mean(np.abs(predictions.astype(np.float32) - self._val_values))
@@ -1325,6 +1390,7 @@ def _precompute_arrays(
     aux_sigma_bins: float | None = None,
     sweep_kernel: Literal["gaussian", "reflect"] = DEFAULT_SWEEP_KERNEL,
     center_search_px: int = 0,
+    center_mode: Literal["image_center", "classical_baseline"] = "image_center",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray, np.ndarray]:
     """Precompute polar inputs, primary targets, optional auxiliary targets, values, and weights."""
     spec = load_gauge_specs()[gauge_id]
@@ -1344,6 +1410,8 @@ def _precompute_arrays(
                 polar_size=polar_size,
                 input_mode=input_mode,
                 center_search_px=center_search_px,
+                center_mode=center_mode,
+                gauge_spec=spec,
             )
         else:
             representation_input = _crop_and_polar_profile(
@@ -1663,6 +1731,17 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--center-mode",
+        type=str,
+        choices=["image_center", "classical_baseline"],
+        default="image_center",
+        help=(
+            "How to pick the polar projection center before optional offset search. "
+            "`classical_baseline` runs the polar-voting geometry center finder and "
+            "then applies any center-search offsets around that estimate."
+        ),
+    )
+    parser.add_argument(
         "--label-smoothing",
         type=float,
         default=0.0,
@@ -1728,6 +1807,31 @@ def _parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_FRACTION_LOSS_DELTA,
         help="Huber delta for the expected-fraction auxiliary term.",
+    )
+    parser.add_argument(
+        "--vote-decode-mode",
+        type=str,
+        choices=["expectation", "argmax", "topk_expectation"],
+        default=DEFAULT_VOTE_DECODE_MODE,
+        help="How to decode vote logits into temperature for eval/checkpoint metrics.",
+    )
+    parser.add_argument(
+        "--vote-decode-temperature",
+        type=float,
+        default=DEFAULT_VOTE_DECODE_TEMPERATURE,
+        help=(
+            "Softmax temperature used when vote-decode-mode=expectation. "
+            "Values below 1 sharpen uncertain outputs."
+        ),
+    )
+    parser.add_argument(
+        "--vote-decode-topk",
+        type=int,
+        default=DEFAULT_VOTE_DECODE_TOPK,
+        help=(
+            "Top-k bin count used when vote-decode-mode=topk_expectation. "
+            "Only the top-k logit bins are kept before expectation."
+        ),
     )
     parser.add_argument(
         "--aux-head-mode",
@@ -1867,6 +1971,7 @@ def main() -> None:
         aux_sigma_bins=aux_sigma_bins,
         sweep_kernel=args.sweep_kernel,
         center_search_px=args.center_search_px,
+        center_mode=args.center_mode,
     )
     val_inputs, val_targets, val_aux_targets, val_values, val_weights = _precompute_arrays(
         val_df,
@@ -1885,6 +1990,7 @@ def main() -> None:
         aux_sigma_bins=aux_sigma_bins,
         sweep_kernel=args.sweep_kernel,
         center_search_px=args.center_search_px,
+        center_mode=args.center_mode,
     )
     test_inputs, test_targets, test_aux_targets, test_values, test_weights = _precompute_arrays(
         test_df,
@@ -1903,6 +2009,7 @@ def main() -> None:
         aux_sigma_bins=aux_sigma_bins,
         sweep_kernel=args.sweep_kernel,
         center_search_px=args.center_search_px,
+        center_mode=args.center_mode,
     )
 
     # Balanced softmax uses the effective bin frequencies from the training
@@ -2128,6 +2235,9 @@ def main() -> None:
         structure_mode=args.structure_mode,
         value_min=spec.min_value,
         value_max=spec.max_value,
+        vote_decode_mode=args.vote_decode_mode,
+        vote_decode_temperature=args.vote_decode_temperature,
+        vote_decode_topk=args.vote_decode_topk,
     )
 
     callbacks = [
@@ -2173,6 +2283,9 @@ def main() -> None:
         structure_mode=args.structure_mode,
         value_min=spec.min_value,
         value_max=spec.max_value,
+        vote_decode_mode=args.vote_decode_mode,
+        vote_decode_temperature=args.vote_decode_temperature,
+        vote_decode_topk=args.vote_decode_topk,
     )
     test_metrics = _compute_metrics(test_values, test_predictions)
     for key, value in test_metrics.items():
@@ -2232,6 +2345,7 @@ def main() -> None:
             fine_bins=fine_bins,
             sweep_kernel=args.sweep_kernel,
             center_search_px=args.center_search_px,
+            center_mode=args.center_mode,
         )
         extra_logits_raw = model.predict(
             extra_inputs,
@@ -2243,6 +2357,9 @@ def main() -> None:
             structure_mode=args.structure_mode,
             value_min=spec.min_value,
             value_max=spec.max_value,
+            vote_decode_mode=args.vote_decode_mode,
+            vote_decode_temperature=args.vote_decode_temperature,
+            vote_decode_topk=args.vote_decode_topk,
         )
         extra_metrics = _compute_metrics(extra_values, extra_predictions)
         stem = extra_path.stem.replace(".", "_")

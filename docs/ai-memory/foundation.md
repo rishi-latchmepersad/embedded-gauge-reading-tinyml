@@ -3,6 +3,13 @@
 This file holds the stable, high-level project context.
 See `archive.md` for the full chronology.
 
+## Latest Session Index
+
+- 2026-05-18 consolidated execution log (runtime fixes, packaging, decode integration, flash flow):
+  - `ml-experiments.md` section: `2026-05-18 End-to-End Deployment + Firmware Integration Notes`
+- 2026-05-18 deploy-specific note (exact decode settings + signature refresh summary):
+  - `polar-vote-deploy-2026-05-18.md`
+
 ## Project Goal
 
 - Build a gauge-reading pipeline for low-power embedded hardware.

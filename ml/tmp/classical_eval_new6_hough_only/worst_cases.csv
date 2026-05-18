@@ -1,0 +1,11 @@
+rank,image_path,true_value,predicted_value,abs_error,confidence
+1,/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_m18c.png,-18.0,42.8888888888889,60.8888888888889,13.832563148485296
+2,/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_2026-04-22_07-45-57.png,28.0,-27.03703703703704,55.03703703703704,18.040605186097036
+3,/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_2026-04-22_07-22-58.png,28.0,-23.185185185185187,51.18518518518519,18.82038312491173
+4,/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_2026-04-22_07-41-14.png,28.0,-22.296296296296294,50.29629629629629,15.374270881541923
+5,/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_2026-04-22_07-18-03.png,28.0,-17.259259259259252,45.25925925925925,11.652623932772604
+6,/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_p20.jpg,20.0,-17.259259259259252,37.25925925925925,8.544836779135462
+7,/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_0007.png,18.0,-16.962962962962962,34.96296296296296,10.209650474919169
+8,/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_2026-04-22_07-37-33.png,28.0,9.70370370370371,18.29629629629629,23.56332071406309
+9,/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_2026-04-22_07-24-43.png,28.0,16.51851851851852,11.481481481481481,16.07763180637428
+10,/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images/capture_2026-04-22_07-25-57.png,28.0,16.51851851851852,11.481481481481481,18.34046130732781

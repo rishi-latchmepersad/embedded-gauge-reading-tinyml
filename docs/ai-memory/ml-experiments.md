@@ -229,3 +229,105 @@ Runs:
 Key takeaway:
 - On this hard set, forcing a focused second-stage fine-tune without augmentation closed the last gap.
 - The remaining tail errors are concentrated in a few low-temperature failures and can be targeted separately without changing the core recipe.
+
+## 2026-05-18 End-to-End Deployment + Firmware Integration Notes
+
+This section records the full path we took from unstable board runs to a stable packaged flash with the latest polar-vote decode wiring.
+
+### 1) Runtime stability fixes that blocked model progress
+
+- We repeatedly hit scalar-stage HardFaults while running preprocess/resize after model updates.
+- Root cause (confirmed from map/fault traces): tensor memory overlap with live ThreadX globals when a generated scalar input buffer landed in an unsafe SRAM address range.
+- Durable fix pattern:
+  - Keep scalar model input/intermediate buffers out of app-global overlap zones.
+  - Preserve one-shot runtime behavior for ATON stage execution (avoid per-frame network reset regressions).
+  - Re-verify tensor placement whenever a new model package is generated.
+
+### 2) xSPI2 signature/version drift after new model packaging
+
+- We repeatedly saw scalar stage aborts from xSPI2 signature mismatch after model swaps.
+- Working fix:
+  - Re-package the new scalar blob into the expected workspace and canonical flash artifact path.
+  - Update scalar start/tail signature constants in firmware to match the freshly generated blob.
+  - Reflash with full boot flow (FSBL + model blobs + signed app), not app-only flash.
+
+### 3) Calibration behavior (what worked and what did not)
+
+- Calibration was active and improved scalar output bias by roughly +2.5C in many live traces.
+- But calibration alone did not fix large structural misses when crop/features were wrong.
+- Conclusion: calibration is a useful bias correction layer, not a substitute for feature-parity and robust geometry.
+
+### 4) Hybrid selector behavior diagnosis
+
+- "Freeze" at `HYBRID] Waiting for fresh baseline result...` was not a hard lock in the AI stage.
+- It was gating on baseline freshness/latency and often resolved once baseline produced a valid fresh frame.
+- This helped explain apparent stalls that were actually synchronization behavior between AI and baseline branches.
+
+### 5) Polar-vote decode integration that was packaged for board use
+
+- Integrated scalar multi-bin decode as top-k expectation in firmware:
+  - `topk=8`
+  - `temperature=1.0`
+  - decode range `[-30C, 50C]`
+- Kept scalar fallback path for single-value outputs.
+- Added safer preprocess behavior for model-input size expansion:
+  - if input tensor bytes exceed legacy RGB tensor size, zero-fill full tensor first to avoid stale SRAM channels.
+
+### 6) Export, package, build, flash (successful)
+
+- Exported int8 model for the hard-case polar-vote winner family to deployment artifacts.
+- Packaged into the STM32 integration workspace and refreshed canonical scalar blob at:
+  - `firmware/stm32/n657/st_ai_output/atonbuf.xSPI2.raw`
+- Rebuilt Appli with the Windows STM32 build toolchain.
+- Flashed successfully with `flash_boot.bat` including FSBL, scalar blob, rectifier blob, OBB blob, and signed app.
+
+### 7) Important caveat for live accuracy
+
+- The deployed polar-vote model contract is `224x224x7` (`rgb_edge6_vote7` style input), while the historical scalar firmware preprocess path is RGB-first.
+- We now avoid undefined tensor data via zero-fill, but this is still not full training/inference feature parity.
+- If live accuracy is still weak, the next required step is full on-device parity for the 7-channel polar feature construction (or retraining to match exact on-device inputs).
+
+### 8) Practical update checklist for future model refreshes
+
+- Re-run packaging pipeline and refresh `atonbuf.xSPI2.raw`.
+- Update scalar signature constants in firmware if blob bytes changed.
+- Confirm scalar tensor placement does not overlap app globals.
+- Rebuild and full flash (not app-only).
+- Run live trace sanity checks for:
+  - preprocess completion,
+  - stage inference completion,
+  - baseline freshness gate behavior,
+  - calibrated and raw outputs.
+
+### 9) Flash-script path trap we hit (important)
+
+- We hit recurring `xSPI2 scalar signature mismatch` even though firmware signatures matched the new scalar blob.
+- Root cause: `flash_boot.bat` was sourcing scalar model bytes from repo-root `st_ai_output\atonbuf.xSPI2.raw` (stale/large file) instead of firmware-local `firmware/stm32/n657/st_ai_output/atonbuf.xSPI2.raw` (current packaged file).
+- Fix: `flash_boot.bat` now prefers `SCRIPT_DIR\st_ai_output\...` first for scalar/rectifier/OBB blobs, then falls back to repo-root only if local files are missing.
+
+### 10) Post-fix verification + latest live quality check
+
+- Verified scalar signatures and blobs:
+  - Firmware constants:
+    - head: `c4f9c7e11eec1458c1296aa84446a93e`
+    - tail: `00000000000000000000000000000017`
+  - Firmware-local scalar blob (`firmware/stm32/n657/st_ai_output/atonbuf.xSPI2.raw`):
+    - size: `39409`
+    - head/tail exactly match firmware constants.
+  - Repo-root scalar blob (`st_ai_output/atonbuf.xSPI2.raw`) was different/stale:
+    - size: `3218865`
+    - head: `ef1b2be0d7e5ec07040034ec1add1405`
+    - tail: `000000000000000000000000000000de`
+- This confirms the mismatch loop was caused by flashing the wrong artifact path, not by bad signature constants.
+
+- Latest live trace quality check (from `2026-05-15_21-36-32` log):
+  - CNN output before calibration: `36.959908C`
+  - CNN output after calibration: `39.473652C`
+  - Baseline selected: `46.777092C` with `conf=8.331`
+  - CNN under-read relative to baseline on this frame: `~7.30C`
+- Input/output contract indicators on this trace:
+  - scalar input tensor bytes: `602112` (`224x224x3` float32)
+  - scalar output bytes: `4` (single scalar float output path)
+- Practical takeaway:
+  - System stability/signature issues are now understood and patched.
+  - Accuracy gap remains a model/input-representation issue; calibration alone is not enough.

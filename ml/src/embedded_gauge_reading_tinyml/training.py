@@ -4572,7 +4572,11 @@ def _compile_direction_geometry_model(
         },
         loss_weights={
             "gauge_value": 1.0,
-            "needle_xy": 1.0,
+            # Keep geometric direction as an auxiliary signal only.
+            # Hard-case manifests often contain value-only labels, so forcing a
+            # strong direction loss can overpower the scalar objective and hurt
+            # generalization on unseen board captures.
+            "needle_xy": 0.0,
         },
         metrics={
             "gauge_value": [
@@ -4986,10 +4990,12 @@ def train(config: TrainConfig) -> TrainingResult:
         if not init_model_path.is_absolute():
             init_model_path = ML_ROOT / init_model_path
         if config.model_family in {
+            "compact_direction",
             "mobilenet_v2_interval",
             "mobilenet_v2_dualres_interval",
             "compact_interval",
             "compact_geometry",
+            "mobilenet_v2_direction",
             "mobilenet_v2_geometry_uncertainty",
             "mobilenet_v2_rectifier",
             "mobilenet_v2_ordinal",
@@ -5374,6 +5380,7 @@ def train(config: TrainConfig) -> TrainingResult:
     target_kind: Literal[
         "value",
         "needle_unit_xy",
+        "needle_geometry",
         "sweep_fraction",
         "interval_value",
         "ordinal_thresholds",
@@ -5386,68 +5393,43 @@ def train(config: TrainConfig) -> TrainingResult:
         "obb_mask_geometry",
         "obb_relation_geometry",
         "bluraware_obb_geometry",
-    ] = (
-        "needle_unit_xy"
-        if config.model_family in {"mobilenet_v2_direction", "compact_direction"}
-        else (
-            "sweep_fraction"
-            if config.model_family == "mobilenet_v2_fraction"
-            else (
-                "keypoint_heatmaps"
-                if config.model_family
-                in {"mobilenet_v2_keypoint", "mobilenet_v2_detector"}
-                else (
-                    "geometry_uncertainty"
-                    if config.model_family == "mobilenet_v2_geometry_uncertainty"
-                    else (
-                        "rectifier_box"
-                        if config.model_family == "mobilenet_v2_rectifier"
-                        else (
-                            "obb"
-                            if config.model_family == "mobilenet_v2_obb"
-                            else (
-                                "obb_mask_geometry"
-                                if config.model_family
-                                in {
-                                "mobilenet_v2_obb_mask_geometry",
-                                "mobilenet_v2_obb_sequence_geometry",
-                                "mobilenet_v2_obb_relation_geometry",
-                                "mobilenet_v2_bluraware_obb_relation_geometry",
-                                }
-                                else (
-                                    "obb_geometry"
-                                    if config.model_family
-                                    in {
-                                        "mobilenet_v2_obb_geometry",
-                                        "mobilenet_v2_bluraware_obb_geometry",
-                                    }
-                                    else (
-                                        "geometry"
-                                        if config.model_family
-                                        in {"mobilenet_v2_geometry", "compact_geometry"}
-                                        else (
-                                            "ordinal_thresholds"
-                                        if config.model_family == "mobilenet_v2_ordinal"
-                                        else (
-                                            "interval_value"
-                                            if config.model_family
-                                            in {
-                                                "mobilenet_v2_interval",
-                                                "compact_interval",
-                                                "mobilenet_v2_dualres_interval",
-                                            }
-                                            else "value"
-                                        )
-                                    )
-                                )
-                                )
-                            )
-                        )
-                    )
-                )
-            )
-        )
-    )
+    ] = "value"
+    if config.model_family in {"mobilenet_v2_direction", "compact_direction"}:
+        target_kind = "needle_unit_xy"
+    elif config.model_family == "mobilenet_v2_direction_geometry":
+        target_kind = "needle_geometry"
+    elif config.model_family == "mobilenet_v2_fraction":
+        target_kind = "sweep_fraction"
+    elif config.model_family in {"mobilenet_v2_keypoint", "mobilenet_v2_detector"}:
+        target_kind = "keypoint_heatmaps"
+    elif config.model_family == "mobilenet_v2_geometry_uncertainty":
+        target_kind = "geometry_uncertainty"
+    elif config.model_family == "mobilenet_v2_rectifier":
+        target_kind = "rectifier_box"
+    elif config.model_family == "mobilenet_v2_obb":
+        target_kind = "obb"
+    elif config.model_family in {
+        "mobilenet_v2_obb_mask_geometry",
+        "mobilenet_v2_obb_sequence_geometry",
+        "mobilenet_v2_obb_relation_geometry",
+        "mobilenet_v2_bluraware_obb_relation_geometry",
+    }:
+        target_kind = "obb_mask_geometry"
+    elif config.model_family in {
+        "mobilenet_v2_obb_geometry",
+        "mobilenet_v2_bluraware_obb_geometry",
+    }:
+        target_kind = "obb_geometry"
+    elif config.model_family in {"mobilenet_v2_geometry", "compact_geometry"}:
+        target_kind = "geometry"
+    elif config.model_family == "mobilenet_v2_ordinal":
+        target_kind = "ordinal_thresholds"
+    elif config.model_family in {
+        "mobilenet_v2_interval",
+        "compact_interval",
+        "mobilenet_v2_dualres_interval",
+    }:
+        target_kind = "interval_value"
     print("[TRAIN] step: build-datasets", flush=True)
     train_ds = _build_tf_dataset(
         split.train_examples,
@@ -5527,41 +5509,32 @@ def train(config: TrainConfig) -> TrainingResult:
     else:
         model_params = "unknown"
     print(f"[TRAIN] Built model '{model_name}' with {model_params} parameters.")
-    monitor_metric: str = (
-        "val_mae"
-        if config.model_family == "mobilenet_v2_rectifier"
-        else (
-            "val_sweep_fraction_mae"
-            if config.model_family == "mobilenet_v2_fraction"
-            else (
-                "val_gauge_value_mae"
-                if config.model_family
-                in {
-                    "mobilenet_v2_interval",
-                    "mobilenet_v2_dualres_interval",
-                    "compact_interval",
-                    "compact_geometry",
-                    "mobilenet_v2_geometry_uncertainty",
-                    "mobilenet_v2_ordinal",
-                    "mobilenet_v2_keypoint",
-                    "mobilenet_v2_detector",
-                    "mobilenet_v2_geometry",
-                    "mobilenet_v2_direction_geometry",
-                    "mobilenet_v2_obb_geometry",
-                    "mobilenet_v2_obb_mask_geometry",
-                    "mobilenet_v2_obb_sequence_geometry",
-                    "mobilenet_v2_obb_relation_geometry",
-                    "mobilenet_v2_bluraware_obb_geometry",
-                    "mobilenet_v2_bluraware_obb_relation_geometry",
-                }
-                else (
-                    "val_obb_params_mae"
-                    if config.model_family == "mobilenet_v2_obb"
-                    else "val_mae"
-                )
-            )
-        )
-    )
+    monitor_metric: str = "val_mae"
+    if config.model_family == "mobilenet_v2_rectifier":
+        monitor_metric = "val_mae"
+    elif config.model_family == "mobilenet_v2_fraction":
+        monitor_metric = "val_sweep_fraction_mae"
+    elif config.model_family in {
+        "mobilenet_v2_interval",
+        "mobilenet_v2_dualres_interval",
+        "compact_interval",
+        "compact_geometry",
+        "mobilenet_v2_geometry_uncertainty",
+        "mobilenet_v2_ordinal",
+        "mobilenet_v2_keypoint",
+        "mobilenet_v2_detector",
+        "mobilenet_v2_geometry",
+        "mobilenet_v2_direction_geometry",
+        "mobilenet_v2_obb_geometry",
+        "mobilenet_v2_obb_mask_geometry",
+        "mobilenet_v2_obb_sequence_geometry",
+        "mobilenet_v2_obb_relation_geometry",
+        "mobilenet_v2_bluraware_obb_geometry",
+        "mobilenet_v2_bluraware_obb_relation_geometry",
+    }:
+        monitor_metric = "val_gauge_value_mae"
+    elif config.model_family == "mobilenet_v2_obb":
+        monitor_metric = "val_obb_params_mae"
     callbacks: list[keras.callbacks.Callback] = _make_training_callbacks(
         monitor=monitor_metric
     )

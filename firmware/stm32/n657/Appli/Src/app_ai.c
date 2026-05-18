@@ -202,6 +202,15 @@
  * gauge. This avoids propagating corrupted tensor reads into logs/control. */
 #define APP_AI_INFERENCE_VALUE_MIN_C (-80.0f)
 #define APP_AI_INFERENCE_VALUE_MAX_C (180.0f)
+/* Scalar vote-logit decode settings.
+ * Keep these aligned with the training/eval decode path:
+ *   mode=topk_expectation, topk=8, temperature=1.0.
+ * The current gauge span in gauge_calibration_parameters.toml is [-30, 50] C.
+ */
+#define APP_AI_SCALAR_DECODE_TOPK 8U
+#define APP_AI_SCALAR_DECODE_TEMPERATURE 1.0f
+#define APP_AI_SCALAR_DECODE_VALUE_MIN_C (-30.0f)
+#define APP_AI_SCALAR_DECODE_VALUE_MAX_C (50.0f)
 /* xSPI2 window base address (chip address 0). */
 #define APP_AI_XSPI2_CHIP_BASE_ADDR 0x70000000UL
 /* Scalar model: immediately after FSBL (0x70000000) + App (0x70100000, 1 MB
@@ -290,22 +299,22 @@ volatile size_t app_ai_scalar_preprocess_last_row = (size_t)SIZE_MAX;
  *     print('start:', bytes(d[:16]).hex())
  *     print('tail: ', bytes(d[-16:]).hex())" */
 static const uint8_t app_ai_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0xEFU,
-	0x1BU,
-	0x2BU,
-	0xE0U,
-	0xD7U,
-	0xE5U,
+	0xC4U,
+	0xF9U,
+	0xC7U,
+	0xE1U,
+	0x1EU,
 	0xECU,
-	0x07U,
-	0x04U,
-	0x00U,
-	0x34U,
-	0xECU,
-	0x1AU,
-	0xDDU,
 	0x14U,
-	0x05U,
+	0x58U,
+	0xC1U,
+	0x29U,
+	0x6AU,
+	0xA8U,
+	0x44U,
+	0x46U,
+	0xA9U,
+	0x3EU,
 };
 static const uint8_t app_ai_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U,
@@ -323,7 +332,7 @@ static const uint8_t app_ai_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U,
 	0x00U,
 	0x00U,
-	0xDEU,
+	0x17U,
 };
 /* Rectifier v3 xSPI2 signatures used when the board boots with the rectifier
  * blob already flashed at 0x70200000. */
@@ -664,6 +673,11 @@ static bool AppAI_DecodeRectifierCropBox(
 	const LL_Buffer_InfoTypeDef *output_buffer_info,
 	AppAI_SourceCrop *crop_out,
 	AppAI_RectifierBox *rectifier_box_out);
+static bool AppAI_DecodeScalarTopKExpectationFromOutput(
+	const LL_Buffer_InfoTypeDef *output_info,
+	const uint8_t *output_ptr,
+	size_t output_len_bytes,
+	float *decoded_value_out);
 int mcu_cache_clean_range(uint32_t start_addr, uint32_t end_addr)
 {
 	return AppAI_ApplyCacheRange(start_addr, end_addr, true, false);
@@ -3686,6 +3700,160 @@ static bool AppAI_DecodeObbCropBox(
 	return true;
 }
 
+static bool AppAI_DecodeScalarTopKExpectationFromOutput(
+	const LL_Buffer_InfoTypeDef *output_info,
+	const uint8_t *output_ptr,
+	size_t output_len_bytes,
+	float *decoded_value_out)
+{
+	size_t element_count = 0U;
+	size_t topk = 0U;
+	float top_logits[APP_AI_SCALAR_DECODE_TOPK];
+	size_t top_indices[APP_AI_SCALAR_DECODE_TOPK];
+	float scale_value = 1.0f;
+	int16_t zero_point = 0;
+	float max_logit = 0.0f;
+	float weighted_fraction_sum = 0.0f;
+	float weight_sum = 0.0f;
+	float fraction = 0.0f;
+	float decoded_value = 0.0f;
+	size_t i = 0U;
+
+	if ((output_info == NULL) || (output_ptr == NULL) || (decoded_value_out == NULL))
+	{
+		return false;
+	}
+
+	if (output_info->nbits <= 8U)
+	{
+		element_count = output_len_bytes;
+		if (output_info->scale != NULL)
+		{
+			(void)memcpy(&scale_value, output_info->scale, sizeof(scale_value));
+		}
+		if (output_info->offset != NULL)
+		{
+			(void)memcpy(&zero_point, output_info->offset, sizeof(zero_point));
+		}
+	}
+	else if (output_info->nbits == 32U)
+	{
+		element_count = output_len_bytes / sizeof(float);
+	}
+	else
+	{
+		return false;
+	}
+
+	if (element_count < 2U)
+	{
+		return false;
+	}
+
+	topk = (element_count < (size_t)APP_AI_SCALAR_DECODE_TOPK)
+			   ? element_count
+			   : (size_t)APP_AI_SCALAR_DECODE_TOPK;
+	if (topk == 0U)
+	{
+		return false;
+	}
+
+	for (i = 0U; i < topk; ++i)
+	{
+		top_logits[i] = -INFINITY;
+		top_indices[i] = 0U;
+	}
+
+	for (i = 0U; i < element_count; ++i)
+	{
+		float logit_value = 0.0f;
+		size_t min_slot = 0U;
+		size_t j = 0U;
+
+		if (output_info->nbits <= 8U)
+		{
+			int32_t q_value = 0;
+			if (output_info->Qunsigned != 0U)
+			{
+				q_value = (int32_t)output_ptr[i];
+			}
+			else
+			{
+				q_value = (int32_t)(*(const int8_t *)&output_ptr[i]);
+			}
+			logit_value =
+				((float)q_value - (float)zero_point) * scale_value;
+		}
+		else
+		{
+			(void)memcpy(
+				&logit_value,
+				output_ptr + (i * sizeof(float)),
+				sizeof(logit_value));
+		}
+
+		for (j = 1U; j < topk; ++j)
+		{
+			if (top_logits[j] < top_logits[min_slot])
+			{
+				min_slot = j;
+			}
+		}
+
+		if (logit_value > top_logits[min_slot])
+		{
+			top_logits[min_slot] = logit_value;
+			top_indices[min_slot] = i;
+		}
+	}
+
+	max_logit = top_logits[0];
+	for (i = 1U; i < topk; ++i)
+	{
+		if (top_logits[i] > max_logit)
+		{
+			max_logit = top_logits[i];
+		}
+	}
+
+	for (i = 0U; i < topk; ++i)
+	{
+		const float scaled =
+			(top_logits[i] - max_logit) / APP_AI_SCALAR_DECODE_TEMPERATURE;
+		const float weight = expf(scaled);
+		const float bin_position =
+			(float)top_indices[i] / (float)(element_count - 1U);
+
+		weight_sum += weight;
+		weighted_fraction_sum += weight * bin_position;
+	}
+
+	if ((weight_sum <= 0.0f) || !AppAI_IsFiniteFloat(weight_sum))
+	{
+		return false;
+	}
+
+	fraction = weighted_fraction_sum / weight_sum;
+	if (fraction < 0.0f)
+	{
+		fraction = 0.0f;
+	}
+	else if (fraction > 1.0f)
+	{
+		fraction = 1.0f;
+	}
+
+	decoded_value = APP_AI_SCALAR_DECODE_VALUE_MIN_C +
+					fraction * (APP_AI_SCALAR_DECODE_VALUE_MAX_C - APP_AI_SCALAR_DECODE_VALUE_MIN_C);
+	if (!AppAI_IsFiniteFloat(decoded_value))
+	{
+		return false;
+	}
+
+	*decoded_value_out = decoded_value;
+	return true;
+}
+
 static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 									const uint8_t *frame_bytes, size_t frame_size,
 									const AppAI_SourceCrop *forced_crop,
@@ -3966,7 +4134,23 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	 * internal buffer info pointers will become stale after reconfigure.
 	 * Some scalar exports expose an int8/uint8 head output, so decode using
 	 * quant params when the buffer is <= 8 bits. */
-	if (output_info->nbits <= 8U)
+	if ((stage == &app_ai_scalar_stage) &&
+		AppAI_DecodeScalarTopKExpectationFromOutput(
+			output_info,
+			output_ptr,
+			output_len_bytes,
+			&output_value))
+	{
+		DebugConsole_Printf(
+			"[AI] Scalar decode mode: topk_expectation topk=%lu temp=%lu.%01lu bins=%lu\r\n",
+			(unsigned long)APP_AI_SCALAR_DECODE_TOPK,
+			(unsigned long)APP_AI_SCALAR_DECODE_TEMPERATURE,
+			(unsigned long)((APP_AI_SCALAR_DECODE_TEMPERATURE * 10.0f)) % 10UL,
+			(unsigned long)((output_info->nbits <= 8U)
+								? output_len_bytes
+								: (output_len_bytes / sizeof(float))));
+	}
+	else if (output_info->nbits <= 8U)
 	{
 		float scale_value = 1.0f;
 		int16_t zero_point = 0;
@@ -5962,9 +6146,20 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 	}
 
 	(void)DebugConsole_WriteString("[AI] Preprocess diagnostics OK.\r\n");
-	/* The affine-fill resize path overwrites the full tensor, so clearing the
-	 * entire 224x224x3 float buffer first just burns time on the CPU. */
-	(void)DebugConsole_WriteString("[AI] Preprocess zero-fill skipped.\r\n");
+	/* Keep legacy speed for 3-channel models, but if a wider tensor is
+	 * provisioned (for example, feature-augmented channels), clear it first so
+	 * unwritten channels are deterministic instead of stale SRAM. */
+	if (input_len_bytes > (size_t)APP_AI_MODEL_INPUT_FLOAT_BYTES)
+	{
+		(void)memset(input_ptr, 0, input_len_bytes);
+		DebugConsole_Printf(
+			"[AI] Preprocess zero-fill applied for extended input: bytes=%lu\r\n",
+			(unsigned long)input_len_bytes);
+	}
+	else
+	{
+		(void)DebugConsole_WriteString("[AI] Preprocess zero-fill skipped.\r\n");
+	}
 	(void)DebugConsole_WriteString("[AI] Preprocess resize start.\r\n");
 
 #if APP_AI_YUV422_INPUT_LUMA_ONLY
