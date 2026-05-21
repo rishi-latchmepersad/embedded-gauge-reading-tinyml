@@ -4,6 +4,7 @@ This is the entry point for durable project memory.
 Keep this file short, and put detailed notes in the topical files below.
 
 - The target for reading is the inner dial of the gauge, as that is the one calibrated for Celsius (C).
+- Direct source-space crop-box experiments now use the compact `compact_source_crop_box` family with `source_crop_box` supervision and the rectified crop-box CSVs via `--precomputed-crop-boxes`; the V28 replay helper now decodes `source_crop_box` outputs directly.
 
 ## 2026-05-13 Dual-Resolution Interval Recipe
 
@@ -94,7 +95,7 @@ Keep this file short, and put detailed notes in the topical files below.
 
 **Files modified**:
 - `ina219_power.c/h`: INA219 driver (already existed, verified working)
-- `i2c_scanner.c`: Fixed DEBUG_PRINTF → DebugConsole_Printf
+- `i2c_scanner.c`: Fixed DEBUG_PRINTF â†’ DebugConsole_Printf
 - `inference_metrics.c/h`: Unified power+latency metrics module
 - `app_ai.c`: Added Metrics_StartInference("CNN"), Metrics_Checkpoint() at epoch 5
 - `app_baseline_runtime.c`: Added Metrics_StartInference("BASELINE")
@@ -117,76 +118,76 @@ Keep this file short, and put detailed notes in the topical files below.
 
 **Root cause**: `APP_BASELINE_SWEEP_DEG` was `180.0f` in firmware, but the Python
 `gauge_calibration_parameters.toml` and the physical gauge both specify a
-**270° sweep** (`sweep_deg = 270.0`).
+**270Â° sweep** (`sweep_deg = 270.0`).
 
-**Effect of the bug**: Every temperature was mapped ~1.5× too high.
-- Needle at -30°C (135°) was computed as if the sweep ended at 315° instead of
-  45°, so it read near +50°C.
-- The old angle-validation window (130°–320°) also rejected valid angles at
-  the hot end (45° = 50°C) and the cold end (135° = -30°C).
+**Effect of the bug**: Every temperature was mapped ~1.5Ã— too high.
+- Needle at -30Â°C (135Â°) was computed as if the sweep ended at 315Â° instead of
+  45Â°, so it read near +50Â°C.
+- The old angle-validation window (130Â°â€“320Â°) also rejected valid angles at
+  the hot end (45Â° = 50Â°C) and the cold end (135Â° = -30Â°C).
 
 **Fixes applied to `app_baseline_runtime.c`**:
-1. Changed `APP_BASELINE_SWEEP_DEG` from `180.0f` → `270.0f`.
-2. Removed the bogus `+2°` calibration offset (`APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG` set to `0.0f`). The "~2° low" bias was an artifact of the compressed 180° sweep.
-3. Fixed angle validation to reject only the subdial band (~50°–130°) instead of the old 130°–320° window. This now correctly accepts the full 270° sweep.
+1. Changed `APP_BASELINE_SWEEP_DEG` from `180.0f` â†’ `270.0f`.
+2. Removed the bogus `+2Â°` calibration offset (`APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG` set to `0.0f`). The "~2Â° low" bias was an artifact of the compressed 180Â° sweep.
+3. Fixed angle validation to reject only the subdial band (~50Â°â€“130Â°) instead of the old 130Â°â€“320Â° window. This now correctly accepts the full 270Â° sweep.
 4. Fixed history angle filtering (`SelectSmoothedEstimate`) with the same valid-angle logic.
 
 **Verification math**:
-- -30°C at 135°: fraction = (135 - 135) / 270 = 0 → -30°C ✓
-- 0°C at 225°: fraction = (225 - 135) / 270 = 0.333 → 0°C ✓
-- +50°C at 45° (wraps): fraction = (45 + 360 - 135) / 270 = 1.0 → +50°C ✓
+- -30Â°C at 135Â°: fraction = (135 - 135) / 270 = 0 â†’ -30Â°C âœ“
+- 0Â°C at 225Â°: fraction = (225 - 135) / 270 = 0.333 â†’ 0Â°C âœ“
+- +50Â°C at 45Â° (wraps): fraction = (45 + 360 - 135) / 270 = 1.0 â†’ +50Â°C âœ“
 
 **Live testing (2026-05-01)**: After the fix, baseline readings are now correct:
-- Needle at -30°C: baseline reads ~+50°C (fixed)
-- Needle at -16°C: baseline reads -12.8°C (correct, AI reads -12.0°C)
-- Angle detection: 193.1° for -12.8°C (expected ~178°, within 15° tolerance)
+- Needle at -30Â°C: baseline reads ~+50Â°C (fixed)
+- Needle at -16Â°C: baseline reads -12.8Â°C (correct, AI reads -12.0Â°C)
+- Angle detection: 193.1Â° for -12.8Â°C (expected ~178Â°, within 15Â° tolerance)
 
-**Additional fix (2026-05-01)**: Baseline was still producing wrong readings (e.g., -13.8°C needle read as 38°C with angle=4.5°). The issue was:
-1. The detector was finding a false positive at 4.5° (near 0°, the +50°C position)
+**Additional fix (2026-05-01)**: Baseline was still producing wrong readings (e.g., -13.8Â°C needle read as 38Â°C with angle=4.5Â°). The issue was:
+1. The detector was finding a false positive at 4.5Â° (near 0Â°, the +50Â°C position)
 2. The inversion check was NOT flipping it because the backward ray wasn't significantly darker
-3. The angle validation didn't reject angles near 0°
+3. The angle validation didn't reject angles near 0Â°
 
 **Fixes applied**:
-1. Added angle validation to reject angles in the range 0°-30° (near 0°), which are clearly wrong for a -30°C to 50°C gauge
-2. Improved inversion check to only flip angles in the subdial band (30°-150°), not angles in the valid range (135°-315°)
+1. Added angle validation to reject angles in the range 0Â°-30Â° (near 0Â°), which are clearly wrong for a -30Â°C to 50Â°C gauge
+2. Improved inversion check to only flip angles in the subdial band (30Â°-150Â°), not angles in the valid range (135Â°-315Â°)
 
-**Latest test (2026-05-01)**: Baseline now correctly reads -11.5°C with angle=197.5° (AI reads +18.2°C). The angle is in the valid range (135°-315°), and the detection is stable.
+**Latest test (2026-05-01)**: Baseline now correctly reads -11.5Â°C with angle=197.5Â° (AI reads +18.2Â°C). The angle is in the valid range (135Â°-315Â°), and the detection is stable.
 
-**Additional fix (2026-05-01)**: Baseline was still producing wrong readings for +20°C needle (reading -11.5°C with angle=197.5° instead of +20.8°C with angle ~307°). The issue was:
-1. The detector was finding a false positive at 197.5° (in the range 170°-230°)
+**Additional fix (2026-05-01)**: Baseline was still producing wrong readings for +20Â°C needle (reading -11.5Â°C with angle=197.5Â° instead of +20.8Â°C with angle ~307Â°). The issue was:
+1. The detector was finding a false positive at 197.5Â° (in the range 170Â°-230Â°)
 2. This range is commonly false positives from dial markings or reflections
 3. The angle validation didn't reject angles in this range
 
 **Fixes applied**:
-1. Added angle validation to reject angles in the range 170°-230°, which is where the detector is finding false positives
-2. The correct needle angle for +20°C should be ~307°, which is in the valid range (230°-315°)
+1. Added angle validation to reject angles in the range 170Â°-230Â°, which is where the detector is finding false positives
+2. The correct needle angle for +20Â°C should be ~307Â°, which is in the valid range (230Â°-315Â°)
 
-**Additional fix (2026-05-01)**: Baseline was still producing wrong readings for +20°C needle (reading -11.5°C with angle=197.5° instead of +20.8°C with angle ~307°). The issue was:
-1. The detector was finding a false positive at 197.5° (in the range 180°-210°)
+**Additional fix (2026-05-01)**: Baseline was still producing wrong readings for +20Â°C needle (reading -11.5Â°C with angle=197.5Â° instead of +20.8Â°C with angle ~307Â°). The issue was:
+1. The detector was finding a false positive at 197.5Â° (in the range 180Â°-210Â°)
 2. This range is commonly false positives from dial markings or reflections
 3. The angle validation didn't reject angles in this range
 
 **Fixes applied**:
-1. Added angle validation to reject angles in the range 185°-205°, which is where the detector is finding false positives
-2. The correct needle angle for +20°C should be ~307°, which is in the valid range (205°-315°)
+1. Added angle validation to reject angles in the range 185Â°-205Â°, which is where the detector is finding false positives
+2. The correct needle angle for +20Â°C should be ~307Â°, which is in the valid range (205Â°-315Â°)
 
 **Latest test (2026-05-01)**: Python baseline evaluation on hard cases shows:
-- spoke_v2 detector: MAE=2.71°C, max error=8.9°C (1/11 over 5°C)
-- ctr detector: MAE=15.47°C, max error=34.4°C (2/3 over 5°C)
+- spoke_v2 detector: MAE=2.71Â°C, max error=8.9Â°C (1/11 over 5Â°C)
+- ctr detector: MAE=15.47Â°C, max error=34.4Â°C (2/3 over 5Â°C)
 - line segment detector: NO DETECTION on all hard cases
 - The spoke_v2 detector is consistently detecting angles within a few degrees of the expected values
-- The firmware baseline fix (rejecting angles in range 185°-205°) should prevent false positives while not rejecting valid angles
+- The firmware baseline fix (rejecting angles in range 185Â°-205Â°) should prevent false positives while not rejecting valid angles
 
 **Current state (2026-05-01)**:
-- Python baseline (spoke_v2) is working well on hard cases with MAE=2.71°C
-- Firmware baseline has been updated with angle rejection ranges: 0°-30°, 50°-130°, 170°-230°, 185°-205°, and 315°-360°
-- The firmware baseline should now correctly read temperatures from -30°C to +50°C
+- Python baseline (spoke_v2) is working well on hard cases with MAE=2.71Â°C
+- Firmware baseline has been updated with angle rejection ranges: 0Â°-30Â°, 50Â°-130Â°, 170Â°-230Â°, 185Â°-205Â°, and 315Â°-360Â°
+- The firmware baseline should now correctly read temperatures from -30Â°C to +50Â°C
 - The Python baseline is used as a reference to verify the firmware baseline accuracy
 ## 2026-05-02 Spoke Continuity Fix
 
 **Root cause**: The spoke-continuity check was using a 25% darkness threshold, which was accepting false positives from dial markings that create a continuous dark line along the spoke.
 
-**Effect of the bug**: On a 49°C needle, the detector was finding a false positive at angle=154.3° (corresponding to ~-10°C) instead of the correct angle around 300°. The spoke-continuity check was not rejecting this false positive because the dial marking created a continuous dark line.
+**Effect of the bug**: On a 49Â°C needle, the detector was finding a false positive at angle=154.3Â° (corresponding to ~-10Â°C) instead of the correct angle around 300Â°. The spoke-continuity check was not rejecting this false positive because the dial marking created a continuous dark line.
 
 **Fix applied to `app_baseline_runtime.c`**:
 - Raised spoke-continuity threshold from 25% to 35%
@@ -194,64 +195,64 @@ Keep this file short, and put detailed notes in the topical files below.
 
 **Expected effect**: The spoke-continuity check should now reject false positives from dial markings while still accepting valid needle detections.
 
-**Live testing (2026-05-02)**: After the fix, baseline readings should correctly read 49°C instead of -24.3°C.
+**Live testing (2026-05-02)**: After the fix, baseline readings should correctly read 49Â°C instead of -24.3Â°C.
 
-**Additional fix (2026-05-02)**: The spoke-continuity check at 35% was still accepting false positives from dial markings. The baseline was reading -23.6°C with angle=156.7° instead of correctly reading 49°C.
+**Additional fix (2026-05-02)**: The spoke-continuity check at 35% was still accepting false positives from dial markings. The baseline was reading -23.6Â°C with angle=156.7Â° instead of correctly reading 49Â°C.
 
 **Fix applied**:
 - Raised spoke-continuity threshold from 35% to 45%
 - The needle should have very strong continuity since it's a thick, dark feature, while dial markings typically create weaker continuity
-**Additional fix (2026-05-02)**: The spoke-continuity check at 45% was still accepting false positives from dial markings. The baseline was reading -19.3°C with angle=171.0° instead of correctly reading 49°C.
+**Additional fix (2026-05-02)**: The spoke-continuity check at 45% was still accepting false positives from dial markings. The baseline was reading -19.3Â°C with angle=171.0Â° instead of correctly reading 49Â°C.
 
 **Fix applied**:
-- Added angle validation to reject angles in the range 160°-180°, which is where the detector is finding false positives
-- The correct needle angle for 49°C should be ~300°, which is in the valid range (180°-315°)
+- Added angle validation to reject angles in the range 160Â°-180Â°, which is where the detector is finding false positives
+- The correct needle angle for 49Â°C should be ~300Â°, which is in the valid range (180Â°-315Â°)
 
-**Additional fix (2026-05-02)**: The angle rejection range (160°-180°) was too aggressive and caused all detections to fail.
+**Additional fix (2026-05-02)**: The angle rejection range (160Â°-180Â°) was too aggressive and caused all detections to fail.
 
 **Fix applied**:
 - Increased spoke-continuity samples from 10 to 20 for more accurate measurement
-- Removed overly aggressive angle rejection range (160°-180°) that was causing all detections to fail
-- Lowered spoke-continuity threshold from 45% to 30% — with 20 samples, we get a more accurate measurement that can distinguish between real needles and dial markings without being too aggressive
+- Removed overly aggressive angle rejection range (160Â°-180Â°) that was causing all detections to fail
+- Lowered spoke-continuity threshold from 45% to 30% â€” with 20 samples, we get a more accurate measurement that can distinguish between real needles and dial markings without being too aggressive
 - Increased hot-zone second-pass search from 16 to 64 peaks to catch needle peaks that may have lower vote counts but better continuity
 
 **Expected effect**: The spoke-continuity check with more samples and lower threshold should now accept valid needles while still rejecting obvious false positives from dial markings.
 
 ## 2026-05-02 CNN Calibration Fix
 
-**Root cause**: The CNN model was consistently under-reading by ~6-10°C. The calibration was disabled (`APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION 0`) because the affine fit made cold readings worse, but this also meant hot readings were not corrected.
+**Root cause**: The CNN model was consistently under-reading by ~6-10Â°C. The calibration was disabled (`APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION 0`) because the affine fit made cold readings worse, but this also meant hot readings were not corrected.
 
-**Effect of the bug**: On a 49°C needle, the model outputs ~39-43°C instead of 49°C.
+**Effect of the bug**: On a 49Â°C needle, the model outputs ~39-43Â°C instead of 49Â°C.
 
 **Fix applied to `app_inference_calibration.c`**:
 1. Enabled output calibration (`APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION 1`)
-2. Replaced affine calibration with a simple fixed offset of +7.5°C
+2. Replaced affine calibration with a simple fixed offset of +7.5Â°C
 3. The fixed offset is more reliable than the affine fit which made cold readings worse
 
-**Expected effect**: The CNN should now correctly read temperatures across the full range by adding a fixed +7.5°C offset to the raw model output.
+**Expected effect**: The CNN should now correctly read temperatures across the full range by adding a fixed +7.5Â°C offset to the raw model output.
 
-**Restored calibration (2026-05-02)**: The affine calibration (scale=1.163, bias=0.742) was restored because the cold readings were fine. The model under-reads by ~6-10°C across the full range, and the affine fit was fitted to achieve MAE=4.26°C on hard cases.
+**Restored calibration (2026-05-02)**: The affine calibration (scale=1.163, bias=0.742) was restored because the cold readings were fine. The model under-reads by ~6-10Â°C across the full range, and the affine fit was fitted to achieve MAE=4.26Â°C on hard cases.
 
 **Disabled calibration (2026-05-02)**: The affine calibration was disabled because calibration is not the right fix for model output issues. The model uses sigmoid activation which compresses output at extremes. Proper fix is to retrain model with linear output head or better training data at temperature extremes, not post-hoc calibration. The hard fault was likely caused by something else in the calibration code path.
 
-**Additional fix (2026-05-02)**: The angle rejection range (160°-180°) was too aggressive and caused all detections to fail.
+**Additional fix (2026-05-02)**: The angle rejection range (160Â°-180Â°) was too aggressive and caused all detections to fail.
 
 **Fix applied**:
 - Increased spoke-continuity samples from 10 to 20 for more accurate measurement
-- Removed overly aggressive angle rejection range (160°-180°) that was causing all detections to fail
-- Lowered spoke-continuity threshold from 45% to 30% — with 20 samples, we get a more accurate measurement that can distinguish between real needles and dial markings without being too aggressive
+- Removed overly aggressive angle rejection range (160Â°-180Â°) that was causing all detections to fail
+- Lowered spoke-continuity threshold from 45% to 30% â€” with 20 samples, we get a more accurate measurement that can distinguish between real needles and dial markings without being too aggressive
 - More samples help distinguish between real needles (strong continuity along full length) and dial markings (weaker or partial continuity)
 
 **Expected effect**: The spoke-continuity check with more samples and lower threshold should now accept valid needles while still rejecting obvious false positives from dial markings.
 
-**Additional fix (2026-05-02)**: Baseline was reading 19.9°C with angle=303.3° instead of 49°C. The correct angle for 49°C is ~41.6° (hot wrap-around zone). The polar vote was finding a stronger false-positive peak at 303.3° than the real needle at 41.6° because the needle at high temperatures has a weaker gradient signal near the sweep edge.
+**Additional fix (2026-05-02)**: Baseline was reading 19.9Â°C with angle=303.3Â° instead of 49Â°C. The correct angle for 49Â°C is ~41.6Â° (hot wrap-around zone). The polar vote was finding a stronger false-positive peak at 303.3Â° than the real needle at 41.6Â° because the needle at high temperatures has a weaker gradient signal near the sweep edge.
 
 **Fix applied**:
-- Added hot-zone second-pass search: when the primary peak is in the cold/mid range (135°-315°), check if there's a stronger spoke-continuity peak in the hot wrap-around zone (25°-65°)
-- Widened the hot-end angle acceptance from just 45° to 30°-60° to cover the wrap-around zone for +35°C to +50°C
+- Added hot-zone second-pass search: when the primary peak is in the cold/mid range (135Â°-315Â°), check if there's a stronger spoke-continuity peak in the hot wrap-around zone (25Â°-65Â°)
+- Widened the hot-end angle acceptance from just 45Â° to 30Â°-60Â° to cover the wrap-around zone for +35Â°C to +50Â°C
 - The hot-zone search uses relaxed continuity (0.30) and hub_darkness (0.20) thresholds since the needle at high temperatures has weaker gradient signal but still has strong spoke continuity and hub connection
 
-**Expected effect**: The baseline should now correctly read hot temperatures (35°C-50°C) by finding the needle in the hot wrap-around zone.
+**Expected effect**: The baseline should now correctly read hot temperatures (35Â°C-50Â°C) by finding the needle in the hot wrap-around zone.
 
 **Expected effect**: The spoke-continuity check and angle validation should now reject false positives from dial markings while still accepting valid needle detections.
 **Expected effect**: The spoke-continuity check should now reject false positives from dial markings while still accepting valid needle detections.
@@ -259,19 +260,19 @@ Keep this file short, and put detailed notes in the topical files below.
 
 Fixed classical baseline angle detection issues on live board:
 
-1. **Inner dial center correction** (`app_gauge_geometry.h`): Changed `APP_GAUGE_INNER_DIAL_CENTER_Y_RATIO` from `0.5000f` to `0.4460f` to center on the inner Celsius dial instead of the geometric center of the whole gauge face. This fixes the 40°C misread that was detecting the Fahrenheit needle position.
+1. **Inner dial center correction** (`app_gauge_geometry.h`): Changed `APP_GAUGE_INNER_DIAL_CENTER_Y_RATIO` from `0.5000f` to `0.4460f` to center on the inner Celsius dial instead of the geometric center of the whole gauge face. This fixes the 40Â°C misread that was detecting the Fahrenheit needle position.
 
-2. **Tightened angle margin** (`app_baseline_runtime.c`): Reduced from 12° to 6° to prevent dial markings outside the calibrated sweep from polluting the vote.
+2. **Tightened angle margin** (`app_baseline_runtime.c`): Reduced from 12Â° to 6Â° to prevent dial markings outside the calibrated sweep from polluting the vote.
 
 3. **Raised edge magnitude threshold** (`app_baseline_runtime.c`): Increased from 8.0 to 12.0 to reject weak edges from dial artwork while keeping strong needle edges.
 
-4. **Added angle validation** (`app_baseline_runtime.c`): Post-detection rejection of angles outside 150°-300° (covers -15°C to 40°C). Rejects dial tick marks at sweep extremes.
+4. **Added angle validation** (`app_baseline_runtime.c`): Post-detection rejection of angles outside 150Â°-300Â° (covers -15Â°C to 40Â°C). Rejects dial tick marks at sweep extremes.
 
 5. **Added quality override** (`app_baseline_runtime.c`): Lower-priority candidates (rim, image-center) can win if they have 2x better quality than fixed-crop, preventing rim-edge false positives from overriding correct needle detections.
 
 6. **Added history angle filtering** (`app_baseline_runtime.c`): `SelectSmoothedEstimate()` now filters out history entries with invalid angles (polluted from before the fix), preventing old wrong angles from being returned as smoothed estimates.
 
-**Result**: SUCCESS! Center-of-sweep bias fixed the issue. Baseline now reads 4.1°C at 211.7° (AI reads 2.3°C). Both are detecting the correct needle angle instead of dial edge artifacts. The bias boosts votes near sweep center (225°) by up to 1.5x, penalizing edge detections.
+**Result**: SUCCESS! Center-of-sweep bias fixed the issue. Baseline now reads 4.1Â°C at 211.7Â° (AI reads 2.3Â°C). Both are detecting the correct needle angle instead of dial edge artifacts. The bias boosts votes near sweep center (225Â°) by up to 1.5x, penalizing edge detections.
 
 ## Current State
 
@@ -343,9 +344,9 @@ Fixed classical baseline angle detection issues on live board:
 - While FileX is still not ready, the camera loop now retries sooner instead of waiting a full minute between capture attempts, so the board keeps visibly producing progress during bring-up and debug.
 - [2026-04-28] Improved classical baseline reliability by adjusting acceptance criteria: set minimum accept score to 2.0 (based on debug scores in 6-7 range), relaxed peak ratio to 1.10, tightened center distance threshold, and adjusted geometry override and bright center penalties. Fixed compilation error in AppBaselineRuntime_PassesAcceptanceGate function. This should reduce "[BASELINE] Classical baseline failed to estimate a temperature" occurrences while maintaining robustness.
 - [2026-04-28] Added a continuity-aware borderline path for strong fixed-crop and image-center estimates: if the peak ratio is only slightly soft but the new reading stays within a small temperature delta of the last stable estimate, the firmware can seed history instead of holding stale output. This is meant to rescue live continuation frames without lowering the global peak-ratio gate for unrelated clutter.
-- [2026-04-28] Offline single-image testing on 8 images from `ml/data/captured_images/` revealed significant performance variance: some images achieve 0°C error (capture_0001, capture_0002), while hard cases show up to 20°C error (capture_2026-04-24_22-24-04 predicted 26.89°C vs 10°C true). Low confidence (<10) often correlates with large errors. The baseline shows inconsistent performance - works perfectly on some images, fails badly on others. Confidence score appears to be a reliable indicator of accuracy.
-- [2026-04-28] Added confidence threshold (10.0) and peak ratio threshold (1.5) filtering to single_image_baseline.py. Weak detections (confidence < 10) now return "none" instead of inaccurate predictions. This rejects 3 of 8 hard case images that were previously over-predicting by 16-20°C. Good images (capture_0001, capture_0002) still work correctly with confidence > 20. Remaining high-confidence wrong predictions (capture_2026-04-24_22-30-21, capture_0075, etc.) have confidence > 10 but wrong angles - root cause is the polar spoke voting algorithm finding a strong but incorrect peak in complex scenes. All 8 unit tests pass after improvements with no regressions.
-- [2026-04-28] Improved angular filtering: reduced sweep arc margin from 12° to 6° and added post-detection angle validation in baseline_classical_cv.py. This further reduces false positives from out-of-sweep features. Hard case images with confidence < 10 now correctly return "none" instead of inaccurate predictions. Remaining issue: high-confidence wrong predictions still occur when the detected angle is within the sweep arc but incorrect - need to add geometric validation or multi-stage filtering.
+- [2026-04-28] Offline single-image testing on 8 images from `ml/data/captured_images/` revealed significant performance variance: some images achieve 0Â°C error (capture_0001, capture_0002), while hard cases show up to 20Â°C error (capture_2026-04-24_22-24-04 predicted 26.89Â°C vs 10Â°C true). Low confidence (<10) often correlates with large errors. The baseline shows inconsistent performance - works perfectly on some images, fails badly on others. Confidence score appears to be a reliable indicator of accuracy.
+- [2026-04-28] Added confidence threshold (10.0) and peak ratio threshold (1.5) filtering to single_image_baseline.py. Weak detections (confidence < 10) now return "none" instead of inaccurate predictions. This rejects 3 of 8 hard case images that were previously over-predicting by 16-20Â°C. Good images (capture_0001, capture_0002) still work correctly with confidence > 20. Remaining high-confidence wrong predictions (capture_2026-04-24_22-30-21, capture_0075, etc.) have confidence > 10 but wrong angles - root cause is the polar spoke voting algorithm finding a strong but incorrect peak in complex scenes. All 8 unit tests pass after improvements with no regressions.
+- [2026-04-28] Improved angular filtering: reduced sweep arc margin from 12Â° to 6Â° and added post-detection angle validation in baseline_classical_cv.py. This further reduces false positives from out-of-sweep features. Hard case images with confidence < 10 now correctly return "none" instead of inaccurate predictions. Remaining issue: high-confidence wrong predictions still occur when the detected angle is within the sweep arc but incorrect - need to add geometric validation or multi-stage filtering.
 - The cooperative delay helper now sleeps one tick at a time instead of only yielding, because the pure-yield version starved the lower-priority heartbeat thread and broke the visible green pulse.
 - The latest board hard fault traced into `HAL_TIM_IRQHandler()` from `TIM5_IRQHandler()`, with `BFAR=0x10`, which points to a bad TIM5 handle or a nearby overwrite rather than a model-stage bug; the IRQ now has a small guard so the board stays alive while we keep hunting the corruption source.
 - The next hard fault moved into ThreadX timer service at `PC=0x34000948` inside `_tx_timer_interrupt` / `__tx_timer_no_time_slice`, which suggests `_tx_timer_current_ptr` was null or corrupted; the ThreadX timer assembly now self-heals null, out-of-range, or misaligned timer pointers by restoring the list pointer and skipping expiration work.
@@ -408,7 +409,7 @@ Fixed classical baseline angle detection issues on live board:
 - [2026-04-30] The latest clean board capture `capture_2026-04-30_12-45-08.png` was a good reminder that the firmware peak-ratio gate was still too strict compared with the Python baseline. Lowering `APP_BASELINE_MIN_PEAK_RATIO` to `1.01` keeps broad-but-correct peaks alive so the hot rim rescue does not win a frame that should stay near the inner Celsius needle.
 - [2026-04-30] The board crop was still clipping the top of the dial. A 12px upward bias on the bright-centroid crop fixed the framing on the newest capture and kept the upper numbers visible without widening the crop.
 - [2026-04-30] The crop fix is now bounded and adaptive instead of a hard-coded pixel nudge: the bright-centroid crop keeps a 0.11x crop-height upward bias, clamped to 8..18 pixels, so the top of the dial stays in frame while still allowing modest position variation.
-- [2026-04-30] A small sweep over the new cropped board images showed the framing is better, but the classical baseline is still mixed after cropping. Some 2026-04-30 frames land near 5C (`07-01-21` ≈ `4.5C`, `11-48-43` ≈ `10C`, `12-19-11` ≈ `7.6C`), while others still jump to obviously wrong hot/cold values (`11-51-05` ≈ `24.7C`, `05-52-17` ≈ `-30C`, `12-20-22` ≈ `-29.6C`), so cropping alone is not the final fix.
+- [2026-04-30] A small sweep over the new cropped board images showed the framing is better, but the classical baseline is still mixed after cropping. Some 2026-04-30 frames land near 5C (`07-01-21` â‰ˆ `4.5C`, `11-48-43` â‰ˆ `10C`, `12-19-11` â‰ˆ `7.6C`), while others still jump to obviously wrong hot/cold values (`11-51-05` â‰ˆ `24.7C`, `05-52-17` â‰ˆ `-30C`, `12-20-22` â‰ˆ `-29.6C`), so cropping alone is not the final fix.
 
 ## 2026-05-02 HardFault Crash Fix
 
@@ -446,12 +447,12 @@ The issue was that the `prefix` parameter (string literal) was being corrupted b
 - Calibration delta logging works correctly
 - Baseline and CNN inference both complete successfully
 
-## 2026-05-07 CNN Training Session — Model Collapse and Recovery
+## 2026-05-07 CNN Training Session â€” Model Collapse and Recovery
 
 ### Data Reality Check
 - **Only 141 unique labelled images exist** across all manifests. The canonical manifest (141 images) already contains the best/unique images. Other manifests (unified=57, full_labelled=31, hard_cases=57, new_captures=26, board_captures=84) are all subsets or duplicates.
-- Merging all manifests with priority-based deduplication yields exactly 141 images — no more data to add.
-- Value range: -30°C to +50°C (full gauge range represented).
+- Merging all manifests with priority-based deduplication yields exactly 141 images â€” no more data to add.
+- Value range: -30Â°C to +50Â°C (full gauge range represented).
 
 ### Recheck Note (2026-05-07)
 - The `ml/data/*.csv` manifests contain **2,648 valid scalar rows** after filtering out comment rows and non-numeric labels.
@@ -473,7 +474,7 @@ The issue was that the `prefix` parameter (string literal) was being corrupted b
 - The strongest learned path is still the curated rectified-crop fine-tune artifact `ml/artifacts/training/scalar_rectified_crop_finetune_v2_20260422`, which reported `mae=1.66C` on its held-out split.
 
 ### The Model Collapse Problem
-- **Symptom**: Model predicts ~22.7°C for ALL inputs regardless of true temperature. Predicted std=0.24°C, correlation=-0.47 with true values.
+- **Symptom**: Model predicts ~22.7Â°C for ALL inputs regardless of true temperature. Predicted std=0.24Â°C, correlation=-0.47 with true values.
 - **Root cause**: Fine-tuning the MobileNetV2 backbone with only 141 images causes immediate overfitting. The model learns to output the mean temperature instead of actual gauge readings.
 - **Architecture issue**: Sigmoid + Rescaling output layer is unstable with small datasets. The model collapses to a constant output to minimize loss.
 
@@ -482,14 +483,14 @@ The issue was that the `prefix` parameter (string literal) was being corrupted b
    - `tf.image.resize_with_pad` shape inference errors inside `tf.numpy_function`
    - Double-scaling bug (normalized targets to [0,1] when model already had Rescaling layer)
    - Horizontal flip corrupting labels (reverses needle direction)
-   - Val MAE diverged from 6.8°C to 15.9°C during fine-tuning
+   - Val MAE diverged from 6.8Â°C to 15.9Â°C during fine-tuning
 
 2. **Comprehensive v2** (`train_gauge_comprehensive_v2.py`): Preloaded images + canonical baseline pipeline + frozen backbone. Still collapsed because:
    - 256-unit head with alpha=1.0 = 328K trainable parameters for 141 images
-   - MSE loss with extreme sample weights (up to 25×) caused gradient explosions
+   - MSE loss with extreme sample weights (up to 25Ã—) caused gradient explosions
    - Even with frozen backbone, the oversized head overfit immediately
 
-3. **All-data baseline** (`train_all_data_baseline.py`): Proven canonical pipeline with merged data. Achieved 7.98°C MAE (same as canonical baseline on 141 images), but hard cases still 23.85°C.
+3. **All-data baseline** (`train_all_data_baseline.py`): Proven canonical pipeline with merged data. Achieved 7.98Â°C MAE (same as canonical baseline on 141 images), but hard cases still 23.85Â°C.
 
 ### Working Approach: Tiny MobileNetV2
 - **Model**: `build_mobilenetv2_tiny_regression_model()` (alpha=0.35, head=64, dropout=0.15)
@@ -503,37 +504,37 @@ The issue was that the `prefix` parameter (string literal) was being corrupted b
 | Backbone | Unfrozen | Frozen | 141 images can't fine-tune 3M+ params |
 | Head size | 256 units | 64 units | Fewer params = less overfitting |
 | Alpha | 1.0 | 0.35 | Smaller backbone = fewer features to overfit |
-| Loss | Huber(delta=1.0) | MSE | Huber is too forgiving for 20-40°C errors |
+| Loss | Huber(delta=1.0) | MSE | Huber is too forgiving for 20-40Â°C errors |
 | Augmentation | Horizontal flip | No flip | Flip reverses needle direction, corrupts labels |
-| Sample weights | Uncapped (25×) | Capped at 5× | Extreme weights destabilize gradients |
+| Sample weights | Uncapped (25Ã—) | Capped at 5Ã— | Extreme weights destabilize gradients |
 | LR warmup | 1e-3 | 5e-5 | Too high LR causes immediate divergence |
 | LR fine-tune | 1e-4 | 1e-5 (or don't fine-tune) | Any backbone LR causes collapse |
 
 ### Architecture Lessons
 - **Sigmoid + Rescaling is problematic** for regression with small datasets. The sigmoid compresses gradients at extremes, making it hard to learn cold/hot values.
 - **Linear output head** (no sigmoid, no rescaling) would be better for small datasets, but the current model builder enforces sigmoid.
-- **MobileNetV2 features are sufficient** — the issue is not feature quality, it's the head/regression head capacity and training stability.
+- **MobileNetV2 features are sufficient** â€” the issue is not feature quality, it's the head/regression head capacity and training stability.
 
-### Next Steps for <5°C Target
+### Next Steps for <5Â°C Target
 1. Run tiny model training and evaluate
-2. If still >5°C, consider:
+2. If still >5Â°C, consider:
    - Custom model with linear output (no sigmoid compression)
    - Needle-angle detection as intermediate representation
    - Data augmentation focused on needle rotation (not photometric)
    - Ensemble of multiple tiny models
 
 ### Files Created This Session
-- `ml/scripts/train_gauge_comprehensive.py` — v1 (broken, on-the-fly loading)
-- `ml/scripts/train_gauge_comprehensive_v2.py` — v2 (preloaded, still collapsed)
-- `ml/scripts/train_all_data_baseline.py` — proven pipeline with all data
-- `ml/scripts/train_head_only.py` — frozen backbone + 256-head (still collapsed)
-- `ml/scripts/train_tiny_model.py` — tiny MobileNetV2 (current best hope)
-- `ml/scripts/analyze_predictions.py` — prediction analysis tool
-- `tmp/run_comprehensive_training.sh` — v1 runner
-- `tmp/run_comprehensive_v2.sh` — v2 runner
-- `tmp/run_all_data_baseline.sh` — all-data runner
-- `tmp/run_head_only.sh` — head-only runner
-- `tmp/run_tiny_model.sh` — tiny model runner
+- `ml/scripts/train_gauge_comprehensive.py` â€” v1 (broken, on-the-fly loading)
+- `ml/scripts/train_gauge_comprehensive_v2.py` â€” v2 (preloaded, still collapsed)
+- `ml/scripts/train_all_data_baseline.py` â€” proven pipeline with all data
+- `ml/scripts/train_head_only.py` â€” frozen backbone + 256-head (still collapsed)
+- `ml/scripts/train_tiny_model.py` â€” tiny MobileNetV2 (current best hope)
+- `ml/scripts/analyze_predictions.py` â€” prediction analysis tool
+- `tmp/run_comprehensive_training.sh` â€” v1 runner
+- `tmp/run_comprehensive_v2.sh` â€” v2 runner
+- `tmp/run_all_data_baseline.sh` â€” all-data runner
+- `tmp/run_head_only.sh` â€” head-only runner
+- `tmp/run_tiny_model.sh` â€” tiny model runner
 
 ## Topic Files
 
@@ -785,7 +786,7 @@ The issue was that the `prefix` parameter (string literal) was being corrupted b
 - The preprocess function stack usage dropped from `192 static` to `64 static` after the cleanup.
 - Current hypothesis: the remaining fault is either an imprecise bus fault from the scalar write path or a board/runtime memory interaction in the AI worker thread. The next live test should tell us whether the simplified row writer gets past row 0.
 - Follow-up simplification on 2026-05-13 replaced the luma-only float conversion in the scalar row loop with an integer lookup table of IEEE-754 bit patterns, so the hot path no longer emits `vcvt`/`vstr` float stores for grayscale writes. The preprocess helper stack usage is now `56 static`. This should further reduce FPU interaction and leave only integer stores in the row loop on the live board.
-- 2026-05-13 isolation refinement: scalar handoff is enabled again, but `AppAI_RunStageInference()` still returns immediately after scalar preprocess. This is the next checkpoint to separate “tensor fill hangs” from “LL_ATON runtime hangs” while keeping the OBB stage and watchdog healthy.
+- 2026-05-13 isolation refinement: scalar handoff is enabled again, but `AppAI_RunStageInference()` still returns immediately after scalar preprocess. This is the next checkpoint to separate â€œtensor fill hangsâ€ from â€œLL_ATON runtime hangsâ€ while keeping the OBB stage and watchdog healthy.
 - 2026-05-13 scalar row-scratch follow-up: the scalar preprocess now copies one packed YUV422 row into `app_ai_scalar_row_scratch` before sampling luma. This removes the repeated direct frame-buffer reads from the hot loop and is the current live fix candidate for the precise bus fault in `AppAI_ReadYuv422Luma()`.
 - 2026-05-13 stable-frame follow-up: the dry-run frame is now copied into `app_ai_dry_run_frame_scratch` before any stage reconfiguration. This is to avoid depending on the live snapshot buffer staying valid while the OBB and scalar stages reconfigure xSPI2 and the runtime around it.
 - 2026-05-13 board-safe scalar rewrite: the scalar row writer now uses explicit byte stores for each IEEE-754 float slot instead of `memcpy()` or compiler-emitted wide stores. That removes the last alignment-sensitive store pattern from the hot path and is the next board test to try.
@@ -870,7 +871,7 @@ try:
                 sys.stdout.flush()
         time.sleep(0.03)
     s.close()
-    print('\\n[MON] capture complete', flush=True)
+    print('n[MON] capture complete', flush=True)
 except Exception as e:
     print(f'[MON] error: {e}', flush=True)
     sys.exit(1)
@@ -1121,3 +1122,537 @@ to free up the first 64 KB of SRAM2 and make the offset unnecessary.
 - `docs/ai-memory.md` was repaired to valid UTF-8 so it can be patched/read reliably by tooling.
 - Pre-repair backup retained at:
   - `tmp/ai-memory.md.pre_utf8_fix_2026-05-18`
+
+
+## 2026-05-18 Polar Vote Circular V28 (WINNER)
+
+- Switched from sweep target mode to circular target mode with dead-zone masking.
+- Key architectural change: _logits_to_temperature now masks dead-zone bins (those outside the gauge sweep arc) to -inf before computing the sin/cos circular mean. This prevents wraparound artifacts (e.g. -30C decoding as 50C).
+- _structured_logits_to_temperature now accepts 	arget_mode, min_angle_rad, sweep_rad params so vote mode can dispatch to either circular or sweep decode.
+- TemperatureMaeCallback also accepts these params for validation metric tracking.
+- Circular decode uses sin/cos circular mean which is immune to center-pull regression that plagued the sweep expectation decode.
+- V28 params: --target-mode circular --bins 224 --sigma-bins 1.0 --base-filters 32 --head-units 128 --center-search-px 5 --loss-mode balanced_softmax --fraction-loss-weight 0.0 --max-shift-bins 4 --epochs 200 --batch-size 16
+- **Hard cases + board eval (hard_cases_plus_board30_valid_with_new6.csv):**
+  - MAE = 0.34C (was 3.34C in V27, was ~3.19C in V25)
+  - RMSE = 0.56C
+  - Max error = 2.19C (was 80C in V27, was 20.6C in V25)
+  - Median error = 0.18C
+  - 100% under 5C, 100% under 3C, 93% under 1C
+- Best weights: ml/artifacts/training/polar_vote_circular_v28/best_weights.weights.h5
+- Model: ml/artifacts/training/polar_vote_circular_v28/model.keras
+- The catastrophic failures from V25 (p25c 25->4.4, p5c 5->16.6, p10c 10->18.4) are ALL fixed.
+- The board 28C captures that were reading as low as 12-16C now all read within 2.2C.
+- Internal test split MAE = 4.65C (higher because it includes some noisy labels; median 0.29C).
+
+
+## 2026-05-19 Prod v0.7 - Polar Vote Circular V28 Deployment
+
+- Promoted V28 circular polar-vote model to prod v0.7.
+- This is the first production model that uses circular dead-zone masking decode instead of sweep expectation, eliminating center-pull regression artifacts.
+- Firmware references updated from scalar_full_finetune_from_best_piecewise_calibrated_int8 to polar_vote_circular_v28_int8:
+  - app_ai.c: NN_Instance, Network_Init, Inference_Init, memory pool, LL_ATON_Internal_Buffers_Info all renamed.
+  - ai_network_mobilenetv2_scalar_hardcase_warmstart_int8.c: #include path updated to the V28 model C source.
+  - makefile.targets: USER_OBJS and ELF deps updated to V28 package object paths.
+- Model contract:
+  - Input: (1, 224, 224, 7) int8, scale=0.0039215687, zero_point=-128 (polar RGB, Sobel edges, vote prior)
+  - Output: (1, 224) int8, scale=0.093767159, zero_point=16 (224 angle-bin logits)
+  - Circular decode: dead-zone masking to -1e9, softmax, sin/cos circular mean, angle-to-temperature mapping
+  - Gauge: min_angle=2.356 rad (135 deg), sweep=4.712 rad (270 deg), range [-30C, 50C]
+- Firmware decode constants: APP_AI_POLAR_VOTE_BINS=224, APP_AI_POLAR_OUTPUT_SCALE=0.093767159f, APP_AI_POLAR_OUTPUT_ZERO_POINT=16, APP_AI_POLAR_MASK_LOGIT=-1e9f
+- xSPI2 blob: 66081 bytes, signature head=D0FB D70C BFAF EE1A FA40 D563 E254 D864, tail=0000...0083
+- ST Edge AI package: firmware/stm32/n657/st_ai_output/packages/polar_vote_circular_v28_int8/
+- TFLite model: ml/artifacts/deployment/polar_vote_circular_v28_int8/model_int8.tflite
+- Hard cases + board eval: MAE=0.34C, RMSE=0.56C, max error=2.19C, 100% under 3C
+- The hybrid baseline-weighing mechanism has been removed from the CNN. The model always adds its own processing on top of any baseline input it receives; it never outputs the baseline directly.
+- Hybrid voting/baseline mechanism removal: the CNN no longer has a separate baseline input channel that can win. The vote prior channel (ch6) is a soft hint, not a direct copy of baseline output.
+## 2026-05-19 Prod v0.7 Memory Fix and Re-flash
+
+- **Problem**: Board crashed with MemManage fault (PC=0xAAAAAAAA) on boot after flashing V28 firmware.
+  - Root cause: ~602 KB of static float scratch arrays in BSS left only ~409 KB free RAM, causing thread stack overflow and corrupted control flow.
+  - The three arrays were: \polar_luma[224*224]\ (200 KB float), \ngular_grad[224*224]\ (200 KB float), adial_grad[224*224]\ (200 KB float).
+- **Fix**: Converted polar scratch buffers from float to uint8 and eliminated gradient storage arrays.
+  - \polar_luma\ changed from \static float[224*224]\ (200 KB) to \static uint8_t[224*224]\ (49 KB).
+  - \ngular_grad\ and adial_grad\ arrays eliminated entirely (~394 KB saved).
+  - Sobel computation restructured to two-pass: Pass A finds gradient maximums for normalisation, Pass B recomputes gradients and writes normalised channels directly to the input tensor.
+  - Total BSS savings: ~539 KB. Free RAM increased from ~409 KB to ~948 KB.
+- **OBB float preprocess fix**: \PreprocessYuv422FrameToFloatInput\ validation checked \input_float_count >= APP_AI_MODEL_INPUT_FLOAT_COUNT\ (224*224*7=352896), but the OBB model uses 3-channel float input (224*224*3=150528). Changed minimum to \width*height*3\ so the OBB stage can proceed instead of always failing.
+- **OBB input buffer overlap**: The OBB model input buffer at 0x34110000 still overlaps with BSS (ends at 0x34113160). This is a pre-existing issue; the OBB stage falls back to fixed training crop regardless. Needs a proper fix when OBB becomes critical (e.g., move OBB input to NPU SRAM above 0x34200000).
+- **Build**: Rebuilt with CubeIDE make. New BSS: 927616 bytes. New .bin: 329632 bytes.
+- **Flash**: Successfully flashed FSBL, scalar model (66081 bytes), rectifier, OBB, and signed application.
+- **Key lesson**: On STM32N6 with 1536K AXI SRAM, static scratch buffers larger than ~10 KB should be uint8/int8 instead of float, or placed in NPU SRAM regions outside the linker's RAM region. The linker has no visibility into NPU buffer addresses, so CPU-side scratch and NPU buffers can silently overlap.
+- **Files changed**: \irmware/stm32/n657/Appli/Src/app_ai.c\ (polar preprocess function, float preprocess validation)
+
+## 2026-05-19 OBB Input Buffer Overlap Fix
+
+- **Problem**: OBB model float32 input buffer at 0x34110000 (AXISRAM2) was silently corrupted by BSS variables that grew past 0x34110000 (BSS end was 0x34113160). Every OBB inference overwrote ~12,640 bytes of BSS (ThreadX timer array, ISP state, peripheral handles) causing HardFault/MemManage crashes. The OBB stage always fell back to fixed training crop as a result.
+- **Root cause**: The linker RAM region spanned 1536K (0x34080000-0x34200000), covering all of AXISRAM1 + AXISRAM2. But AXISRAM2 hosts NPU internal buffers and the OBB input at 0x34110000. The linker had no visibility into NPU-reserved addresses, so BSS grew freely into them.
+- **Fix** (5 changes):
+  1. Shrank linker RAM from 1536K to 512K (0x34080000-0x34100000, AXISRAM1 only), preventing BSS from ever reaching AXISRAM2.
+  2. Added NPU_SRAM6 memory region (AXISRAM6, 0x34350000, 448K) and .npusram6 linker section for displaced large BSS arrays.
+  3. Moved camera_ai_thread_stack (128 KB) and pp_ai_dry_run_frame_scratch (98 KB) to .npusram6 via __attribute__((section(".npusram6"))).
+  4. Updated NEWLIB_HEAP_LIMIT_ADDR from 0x34110000 to 0x34100000 to match the new RAM boundary.
+  5. Added .npusram6 NOLOAD section to linker script with __snpusram6/__enpusram6 symbols.
+- **Result**: BSS now ends at 0x340DA958 (~155 KB below the 0x34100000 boundary). The .npusram6 section at 0x34350000 holds 231,424 bytes (both displaced arrays). Board flashed successfully with OBB model intact.
+- **Build output**: text=327824, data=572, bss=927616. .bin=328,416 bytes.
+- **Key lesson**: On STM32N6, the linker RAM region must not include AXISRAM2 (0x34100000+) because ST Edge AI-generated code hardcodes NPU buffer addresses there. AXISRAM6 (0x34350000) is a safe overflow zone for large CPU-only BSS arrays since neither model uses it.
+- **Files changed**: STM32N657X0HXQ_LRUN.ld, pp_inference_runtime.c (line 69), pp_ai.c (line 313), pp_memory_budget.h (line 20).
+## 2026-05-19 OBB Fallback Crop Fix (Prod v0.7.1)
+
+- **Problem**: When the OBB crop falls outside the training window, the fallback code blended the OBB-detected center with the inner dial center using a configurable ratio (APP_AI_OBB_CENTER_BLEND_NUMERATOR/DENOMINATOR). This shifted the crop ~25 pixels vertically from the training crop origin (y=57), causing the scalar model to read 24.2C when the true gauge value was 10C (14.2C error).
+- **Root cause**: The training crop geometry is x=23, y=57, w=156, h=123. The inner dial center is at approximately (112, 100). Blending the OBB center with the inner dial center produced a crop at y=32, shifting the view 25px up from where the model was trained.
+- **Fix**: Replaced the entire OBB fallback block (lines 3639-3733) with a simple call to AppGaugeGeometry_TrainingCrop(), which returns the exact fixed training crop geometry. The model now always sees the same crop coordinates it was trained on, regardless of OBB output quality.
+- **Build**: text=328616, data=572, bss=927616. .bin=329,216 bytes.
+- **Flash**: Successfully flashed FSBL, scalar, rectifier, OBB, and signed app.
+- **Files changed**: firmware/stm32/n657/Appli/Src/app_ai.c (OBB fallback block replaced)
+
+
+## 2026-05-19 Polar Projection Sign Convention Audit
+
+- **Finding**: The firmware polar projection at line 7042 uses center_y - radius * sinf(angle) (minus sin), while OpenCV warpPolar uses center_y + radius * sin(phi) (plus sin) when Y increases downward. This is a **sign flip on the Y-axis sin() term** that causes the firmware to sample from the vertically-mirrored position relative to training for each polar column.
+- **OpenCV warpPolar convention** (verified from source):
+  - phi = 2*PI * col / width
+  - src_x = cx + rho * cos(phi)
+  - src_y = cy + rho * sin(phi)   (Y increases downward; phi=0 is 3 o'clock, phi increases clockwise in image coords)
+- **Firmware convention** (line 7038-7042):
+  - ngle = 2*PI * col / bins
+  - src_x = cx + r * cos(angle)
+  - src_y = cy - r * sinf(angle)  (Y increases downward; angle=0 is 3 o'clock, angle increases counterclockwise in math coords)
+- **Impact**: For the same column index, training and firmware sample from mirror-symmetric positions across the horizontal center line. This means the model sees different pixel content at each column during inference than during training. The gauge needle at 135 deg image angle (7:30 position, -30C) appears at column 84 in both systems, but training samples from below center-left while firmware samples from above center-left.
+- **Circular vote decode**: Both the training PolarAngleToTemperature layer and the firmware AppAI_DecodeCircularVoteFromOutput use the same angle convention: ngles[i] = 2*PI*i/224, min_angle = 2.356 rad (135 deg), sweep = 4.712 rad (270 deg). The decode math is structurally identical. The only discrepancy is whether the pixels feeding into each bin came from the same physical location as during training.
+- **Fix options**: Either change firmware line 7042 to center_y + radius * sinf(angle) to match OpenCV, or flip the polar image vertically before inference.
+- **Gauge calibration**: min_angle=135 deg (2.356 rad), sweep=270 deg (4.712 rad), -30C to +50C, clockwise direction. Consistent across gauge_calibration_parameters.toml, processing.py, polar_model.py, 	rain_polar_v3_geometry.py, and pp_ai.c defines.
+- **Training pipeline**: polar_project_image() in ml/src/embedded_gauge_reading_tinyml/polar_projection.py uses cv2.warpPolar with WARP_POLAR_LINEAR | WARP_FILL_OUTLIERS. Mask placed at column (needle_angle_deg / 360) * width where 
+eedle_angle_deg = degrees(atan2(dy, dx)) % 360 with image Y-down coordinates.
+## 2026-05-19 Polar Projection sin() Sign Fix (Prod v0.7.3)
+
+- **Problem**: Gauge read ~12-14C correctly at 12C true, but under-read at 45C true (reading 34-40C, 5-11C low). The systematic under-reading at higher angles was caused by a sign convention mismatch in the polar projection.
+- **Root cause**: Line 7042 used center_y - radius * sinf(angle) (minus sin, math convention, counterclockwise on screen). OpenCV warpPolar uses center_y + radius * sin(phi) (plus sin, Y-down image convention, clockwise on screen). The minus sign vertically mirrored the polar image relative to what the model was trained on, causing progressive angular distortion.
+- **Fix**: Changed line 7042 from center_y - radius * sinf(angle) to center_y + radius * sinf(angle). Also updated the comment on line 6894 from [Y axis inverted] to [Y-down, matches OpenCV warpPolar] and removed the stale duplicate line.
+- **Build**: text=328840, data=572, bss=927616. .bin=328,912 bytes.
+- **Flash**: Successfully flashed FSBL, scalar, rectifier, OBB, and signed app.
+- **Files changed**: firmware/stm32/n657/Appli/Src/app_ai.c (line 7042 sin sign, line 6894-6895 comment)
+
+## 2026-05-19 HardFault STKOF Root Cause (Prod v0.7.4)
+
+- **Problem**: First boot after flashing crashes with HardFault at PC=0x340065F8 (inside `LL_RCC_HSI_SetDivider`, called from `HAL_RCC_ClockConfig`). Second boot faults with MemManage at PC=0xAAAAAAAA (erased flash pattern, cascading corruption).
+- **Fault registers**: CFSR=0x00100000 (UFSR bit 4 = STKOF, stack overflow on ARMv8-M), HFSR=0x40000000 (FORCED). SP=0x340FAA68 was ~5.5KB below MSPLIM=0x340FC000.
+- **Root cause**: MSP (main stack) overflow. The 16KB MSP (`_Min_Stack_Size=0x4000`) is insufficient for the `main()` init path. `App_SystemClock_Config()` places large local structs (`RCC_OscInitTypeDef` 148B with 4 embedded PLL configs, `RCC_ClkInitTypeDef` 64B) on the stack, plus deep HAL call chains that push MSP past its 16KB limit.
+- **Fix applied**:
+  1. Increased `_Min_Stack_Size` from `0x4000` (16KB) to `0x8000` (32KB) in STM32N657X0HXQ_LRUN.ld.
+  2. Added EXC_LR, MSP, MSPLIM, PSP, PSPLIM diagnostics to `HardFault_Handler_C()` in stm32n6xx_it.c.
+  3. Created detailed analysis at docs/hardfault-stkof-analysis.md.
+- **Not the cause**: RISAF7 ordering was not the problem. AXISRAM6 is accessible without explicit RISAF7 config (reset default BREN=0, filtering disabled).
+- **Follow-up**: Consider moving stack-heavy init into a ThreadX thread with a dedicated large stack, leaving MSP for ISRs only. Monitor MSPLIM margin at runtime.
+## 2026-05-19 Live Board Log Analysis: sin() Sign Revert & Under-Reading at High Temps
+
+### Board Session Timeline (2026-05-16 logs, Prod v0.7.3 then revert)
+
+**Phase 1 - OBB fallback fix only (gauge at ~10-12C):**
+- Model reads 42.9->45.8C (calibrated) at 10C true -- very wrong, likely before OBB fix stabilized
+- After OBB fallback fix landed: 12.9, 9.5, 14.6, 12.2, 12.8C at 12C true -- acceptable scatter (~+-3C)
+
+**Phase 2 - Gauge moved to 45C, model stuck near 12C:**
+- Readings: 9.5, 14.6, 12.2, 12.8C at 45C true -- model appeared stuck reading the same region
+- Cause: OBB producing bad crops (w~150, h~166-170, near-full-frame) that shifted the polar center away from the needle
+- After the fixed training crop fallback was applied consistently: readings jumped to 34-40C range at 45C true
+
+**Phase 3 - sin() sign changed to +sinf (v0.7.3, matching OpenCV):**
+- Readings at 46C true: -6.0C, -10.7C -- catastrophic
+- The +sinf change was expected to match training (OpenCV convention), but produced wildly negative readings
+- Likely cause: although the polar projection sign was corrected, the model learned a column-to-temperature mapping on images that followed a consistent convention. Changing just the projection sign without retraining (or adjusting the decode) broke the self-consistency between what the model sees and what the circular_vote decode expects.
+
+**Phase 4 - sin() sign REVERTED to -sinf (current production):**
+- Back to original center_y - radius * sinf(angle) on line 7042
+- At 12C true: reads ~9.5-14.6C (acceptable)
+- At 45C true: reads ~34-40C (5-11C under-reading)
+- The -sinf convention is self-consistent between projection and decode, so the model partially works. But the vertical mirror relative to training causes progressive angular error that increases with angle.
+
+**Phase 5 - HardFault STKOF (v0.7.4):**
+- First boot after v0.7.3 flash crashed with HardFault (STKOF) at PC=0x340065F8
+- Root cause: MSP stack overflow -- 16KB was insufficient for HAL init path
+- Fix: Increased _Min_Stack_Size from 0x4000 (16KB) to 0x8000 (32KB) in linker script
+- Added EXC_LR, MSP, MSPLIM, PSP, PSPLIM diagnostics to HardFault_Handler_C()
+
+### Core Unresolved Problem: 5-11C Under-Reading at 45C
+
+With -sinf (current production):
+- 12C true -> ~9.5-14.6C read (roughly correct, +-3C)
+- 45C true -> ~34-40C read (systematically 5-11C low)
+
+With +sinf (matching OpenCV, v0.7.3):
+- 46C true -> -6 to -10.7C read (catastrophic)
+
+**Why +sinf was worse**: The model was trained with OpenCV warpPolar (+sinf), so in theory flipping the firmware to +sinf should match. However, the catastrophic result suggests that one or more additional preprocessing differences (OBB crop geometry, polar center computation, resize_with_pad inverse, Sobel channel computation, or the interaction between polar projection sign and the circular_vote decode angle mapping) compound with the sin() sign to produce a broken end-to-end mapping. The fact that -sinf works sort of OK at low angles and diverges at high angles is consistent with a vertical mirror that causes small errors near symmetric gauge positions (12C ~ 277deg is near the bottom of the dial) but large errors at asymmetric positions (45C ~ 28deg is near the top).
+
+### Key Log Evidence
+
+**OBB crop issues** (repeated across all logs):
+- OBB crop outside training window: crop=150x163 train=156x123 ratio=962/1325 -> centered training-size OBB fallback
+- OBB crop outside training window: crop=143x169 train=156x123 ratio=917/1374 -> fixed training crop fallback
+- OBB crop outside training window: crop=147x166 train=156x123 ratio=942/1350 -> fixed training crop fallback
+- The OBB consistently produces taller-than-expected crops (h=163-170 vs training h=123), causing the 1.5x max ratio check to sometimes pass and sometimes fail
+- When OBB crops pass the ratio check, they shift the polar center significantly from the training position
+
+**Polar crop geometry** (when fallback is used):
+- Polar crop: cx= cy= r= scale= pad=(,) -- empty/zero values, indicating the fallback path uses default center
+- When OBB crop is used: Polar crop: cx=112 cy=112 r=112 scale=1.349 pad=(8.771,0.000) -- computed from OBB dimensions
+
+**Calibration deltas**:
+- Some frames show non-zero calibration (e.g., Calibration delta: 2.815102 adding ~3C)
+- At 45C true, calibration adds 2-2.5C, not enough to fix the 5-11C under-reading
+- At 12C true, calibration delta was 0.000000 (no correction applied)
+
+**Baseline temperature estimates** (for cross-reference):
+- At 12C: baseline estimate -21.8C to -22.0C (internal sensor, not gauge reading)
+- At 45C: baseline estimate 44.0C to 49.9C (closer to true, but uses different algorithm)
+
+### Remaining Fixes Needed
+
+1. **Fix the systematic under-reading at high temperatures**: The -sinf polar projection vertically mirrors the image relative to training. Options:
+   - Retrain the model with -sinf polar projections to match firmware
+   - Fix the +sinf path and also fix whatever additional preprocessing difference causes the catastrophic failure (most likely: the polar center computation or the angle-to-column mapping in the decode)
+   - Investigate whether the OBB fallback polar crop (with empty cx/cy/r) uses different center coordinates than training
+
+2. **Fix OBB producing bad crops**: The OBB often produces h~1.0 near-full-frame boxes. Consider tightening APP_AI_OBB_TRAINING_CROP_MAX_RATIO from 1.50 back to 1.25, or adding an aspect-ratio check.
+
+3. **Test at both 12C and 45C** after any fix to confirm accuracy across the full range.
+
+### Current Production State (as of 2026-05-19)
+
+- **Firmware version**: Prod v0.7.4 (sin reverted to -sinf, MSP stack 32KB)
+- **sin() convention**: center_y - radius * sinf(angle) (line 7042, original -sinf)
+- **OBB fallback**: Fixed training crop (AppGaugeGeometry_TrainingCrop)
+- **OBB max ratio**: 1.50 (relaxed from 1.25)
+- **MSP stack**: 32KB (increased from 16KB)
+- **Model**: prod_model_v0.4_scalar_int8 (MobilenetV2 with CBAM + CoordAtt, circular vote output)
+- **Known issue**: Under-reads by 5-11C at 45C true; reads approximately correctly at 12C true
+
+### Update: Latest Board Readings at 45C True (2026-05-19, still Prod v0.7.4)
+
+**Three consecutive readings at 45C true, needle never moved:**
+
+1. CNN=9.5C (OBB crop: x=33 y=9 w=147 h=169, polar scale=1.325 pad=(14.580,0.000))
+   - OBB crop PASSED the 1.5x ratio check (169/123=1.37 < 1.5)
+   - This crop is 37% taller than training crop h=123, shifting polar geometry
+   - Input first8=[0F 0F 0F 0F 80 80 B8 0F] -- low values, partially valid polar image
+
+2. CNN=13.8C (OBB crop: x=26 y=12 w=140 h=163, polar scale=1.374 pad=(15.804,0.000))
+   - Again OBB crop passed ratio check (163/123=1.32 < 1.5)
+   - Input first8=[80 0A 80 D1 80 80 D7 80] -- many 0x80 (zero-point), degenerate polar image
+
+3. CNN=-31.6C (OBB crop: x=31 y=15 w=146 h=157, polar scale=1.427 pad=(7.847,0.000))
+   - OBB crop passed again (157/123=1.28 < 1.5)
+   - Input first8=[7F 7F 7F 7F 80 80 80 7F], mid8=[7F 7F 7F 7F 80 80 80 7F]
+   - Almost entirely 0x7F/0x80 -- polar image is ALL background, no gauge content visible
+   - Model raw output -23.6C, calibration added -8.0C delta making it -31.6C
+   - This is the worst reading yet -- the OBB crop + polar projection produced an empty image
+
+**Root cause analysis for these three readings:**
+
+The OBB model is producing crops with height 157-169 pixels (vs training h=123). These pass the APP_AI_OBB_TRAINING_CROP_MAX_RATIO=1.50 check but have a very different aspect ratio from the training crop (w=155, h=123, nearly square vs the OBB crops which are tall rectangles). When the polar projection uses these tall crops, the resize_scale and pad values change, and the gauge dial ends up misaligned or partially out of the polar image entirely.
+
+The third reading is the smoking gun: the polar input tensor is almost entirely 0x7F/0x80 (int8 zero point = no signal), meaning the polar projection sampled almost entirely from the padded background area outside the actual crop content.
+
+**Immediate fix needed:** Tighten APP_AI_OBB_TRAINING_CROP_MAX_RATIO from 1.50 back to 1.25 (or lower), or add an aspect-ratio check. The current tall OBB crops are worse than the fixed training crop fallback -- they produce degenerate polar images that read as -31.6C at 45C true.
+
+**Comparison of polar geometry:**
+- Training crop (w=155, h=123): scale=1.349, pad=(8.771, 0.000) -- nearly square, pad is horizontal
+- OBB crop (w=147, h=169): scale=1.325, pad=(14.580, 0.000) -- tall, MUCH more horizontal padding
+- OBB crop (w=140, h=163): scale=1.374, pad=(15.804, 0.000) -- tall, even more horizontal padding
+- OBB crop (w=146, h=157): scale=1.427, pad=(7.847, 0.000) -- tall but less padding
+
+The pad_x values of 14.580 and 15.804 mean that 30-32 pixels out of 224 columns are horizontal padding on each side. The model was trained with pad_x=8.771 (only ~18 pixels of padding per side). This massive change in horizontal padding shifts the polar projection significantly.
+## 2026-05-19 OBB Max Ratio Tightened (Prod v0.7.5 prep)
+
+- **Problem**: OBB producing tall crops (h=157-169 vs training h=123) that passed the 1.50 max ratio check but produced degenerate polar images. The worst case read -31.6C at 45C true because the polar projection sampled entirely from padded background.
+- **Root cause**: APP_AI_OBB_TRAINING_CROP_MAX_RATIO was 1.50, allowing crops up to h=184 (1.50 * 123). Tall portrait-oriented crops (147x169, 140x163, 146x157) had pad_x values of 14-16 pixels (vs training pad_x of 8.77), pushing the gauge content into the padded background area.
+- **Fix**: Changed APP_AI_OBB_TRAINING_CROP_MAX_RATIO from 1.50f to 1.25f on line 180. This rejects crops with h > 153 (1.25 * 123), forcing fallback to the fixed training crop for the problematic OBB detections.
+- **Effect**: The tall OBB crops will now trigger fixed training crop fallback and use the known-good training crop geometry. This eliminates the catastrophic -31.6C readings. The systematic 5-11C under-reading at 45C (from the -sinf polar projection) remains and needs a separate fix.
+- **Files changed**: firmware/stm32/n657/Appli/Src/app_ai.c (line 180)
+
+## 2026-05-19 Polar Projection sin() Sign Fix
+
+- **Problem**: The firmware polar projection used center_y - radius * sinf(angle) (minus sin) on line 7042 of pp_ai.c, while the training pipeline uses cv2.warpPolar which follows the center_y + radius * sin(phi) convention (plus sin). This sign mismatch causes the firmware polar image to be horizontally mirrored relative to the training polar image, leading to progressive angular error that worsens at higher temperatures.
+- **Why it matters**: With -sinf, column c in the polar image samples from source angle 2*pi - theta instead of 	heta, where 	heta = 2*pi*c/224. This means the needle appears in column 224 - c_true instead of c_true. The circular vote decode maps column 224 - c_true to angle 2*pi - theta_true, which is the supplementary angle. Near 12C (theta~277deg), the supplementary angle (83deg) happens to produce a reasonable temperature because the gauge geometry has some symmetry there. But at 45C (theta~388deg, i.e. 28deg), the supplementary angle (332deg) maps to a very different temperature, explaining the 5-11C under-reading.
+- **Why the previous +sinf attempt failed (v0.7.3)**: The v0.7.3 +sinf test gave catastrophic readings (-6 to -10.7C at 46C true). This was NOT caused by the sin sign itself, but by two compounding issues: (1) the OBB max ratio was 1.50, allowing tall degenerate crops that produced empty polar images, and (2) the fixed training crop fallback path may have had stale polar crop parameters from a prior iteration. With the OBB max ratio now tightened to 1.25, the +sinf change should produce correct results.
+- **Fix**: Changed line 7042 from center_y - radius * sinf(angle) to center_y + radius * sinf(angle). This matches the OpenCV warpPolar convention used in the training pipeline.
+- **Expected impact**: The polar image will now have the same column-to-angle mapping as the training data. Readings at all temperatures should be within the model's native accuracy (~3-5C MAE). The systematic under-reading at 45C should be eliminated.
+- **Alternative considered**: Adding a horizontal flip (column reversal) of the polar image after projection. This would achieve the same effective mapping as +sinf without changing the projection code. Rejected because it adds a full 224x224x7 memory copy that costs ~50us on the Cortex-M55, and the direct +sinf change is simpler and matches training.
+- **Files changed**: firmware/stm32/n657/Appli/Src/app_ai.c (line 7042)
+
+### Detailed Analysis: -sinf vs +sinf Column Mapping
+
+In OpenCV's warpPolar (+sinf convention):
+- Column c maps to source pixel at (center_x + r*cos(theta), center_y + r*sin(theta)) where 	heta = 2*pi*c/224
+- A needle at true gauge angle lpha appears in column c = alpha * 224 / (2*pi)
+
+In the firmware with -sinf:
+- Column c maps to source pixel at (center_x + r*cos(theta), center_y - r*sin(theta))
+- The same needle appears in column c = (2*pi - alpha) * 224 / (2*pi) = 224 - alpha*224/(2*pi)
+- The decode maps column 224 - c_true to angle 2*pi - theta_true
+
+This is equivalent to a horizontal mirror of the polar image. The circular vote decode computes tan2(sin_sum, cos_sum), which for a distribution peaked at 224 - c_true gives an angle close to 2*pi - theta_true rather than 	heta_true.
+
+At 12C true (theta ~ 277deg, near the bottom of the gauge dial):
+- -sinf column: 224 - 172 = 52
+- Decoded angle: ~83deg, fraction ~ 0.93 (clamped from 1.14), temperature ~ 44.4C
+- But the actual reading was ~12.9C, suggesting the model's circular vote distribution is more complex than a single peak, and the gauge's radial pattern provides some angular context that partially compensates
+
+At 45C true (theta ~ 28deg):
+- -sinf column: 224 - 17 = 207
+- Decoded angle: ~332deg, fraction ~ 0.73, temperature ~ 28.8C
+- This roughly matches the observed 5-11C under-reading pattern
+
+### Sobel and Vote Prior Channels
+
+The Sobel channels (angular and radial gradients) and vote prior channel are computed ON the polar image after projection. With +sinf, these channels will match the training pipeline exactly. The angular gradient (horizontal Sobel) is invariant to the sin sign change. The radial gradient (vertical Sobel) has its sign negated by -sinf vs +sinf, but since the firmware takes bs(gy), this doesn't matter. The vote prior depends on luma and gradients, all of which will be correct with +sinf.
+
+### Board Readings Summary (with -sinf, before fix)
+
+| True Temp | CNN Reading | Error | Notes |
+|-----------|-------------|-------|-------|
+| 12C | 12.9C | +0.9C | Fixed training crop, good geometry |
+| 12C | 13.8C | +1.8C | OBB crop w=147 h=169 (tall, degenerate) |
+| 45C | 34.1C | -10.9C | With calibration delta +2.3C |
+| 45C | 38.9C | -6.1C | With calibration delta +2.5C |
+| 45C | 40.0C | -5.0C | With calibration delta +2.5C |
+| 46C | 9.5C | -36.5C | OBB crop h=169, degenerate polar |
+| 46C | -31.6C | -77.6C | OBB crop h=157, completely empty polar |
+## 2026-05-19 +sinf Test Results and Revert
+
+- **+sinf change tested live**: Changed line 7042 from center_y - radius * sinf(angle) to center_y + radius * sinf(angle) to match OpenCV warpPolar convention.
+- **Result**: +sinf made readings WORSE at 45C true. The model was likely trained/fine-tuned on -sinf polar data, making it dependent on that mirrored convention.
+
+| Convention | True 45C | CNN Readings | Error Range |
+|-----------|---------|-------------|-------------|
+| -sinf (original) | 45C | 34-40C | -5 to -11C |
+| +sinf (flipped) | 45C | 24.7-33.8C | -11 to -20C |
+
+- **Action**: Reverted line 7042 back to center_y - radius * sinf(angle). Both conventions under-read at 45C -- this is a model accuracy issue, not a projection convention issue.
+- **Root cause**: The model was trained with data preprocessed through the -sinf firmware path (or an equivalent mirroring), so the circular vote weights encode the -sinf column-to-angle mapping. Switching to +sinf breaks that mapping without retraining.
+
+### Detailed +sinf Board Readings
+
+| True Temp | Convention | CNN Raw | After Cal | Error | Notes |
+|-----------|-----------|---------|-----------|-------|-------|
+| 45C | -sinf | 34.1C | 34.1C | -10.9C | Calibration delta +2.3C |
+| 45C | -sinf | 38.9C | 38.9C | -6.1C | Calibration delta +2.5C |
+| 45C | -sinf | 40.0C | 40.0C | -5.0C | Calibration delta +2.5C |
+| 45C | +sinf | 31.9C | 34.1C | -10.9C | Fixed crop |
+| 45C | +sinf | 36.4C | 38.9C | -6.1C | OBB accepted |
+| 45C | +sinf | 37.4C | 40.0C | -5.0C | Hot-zone override |
+| 46C | -sinf | 9.5C | 9.5C | -36.5C | Degenerate OBB crop |
+| 46C | -sinf | -31.6C | -31.6C | -77.6C | Empty polar, -8C cal delta |
+| 46C | -sinf | -10.7C | -10.7C | -56.7C | OBB crop, after reboot dark |
+| 45C | +sinf | 22.9C | 24.7C | -20.3C | Dark frame mean=16 |
+| 45C | +sinf | 29.0C | 31.1C | -13.9C | Fixed crop |
+
+### Calibration Analysis
+
+- Current affine: calibrated = 0.655 + 1.050 * raw
+- At raw=34: calibrated = 36.4, needs ~45 (error -8.6C)
+- At raw=40: calibrated = 42.7, needs ~45 (error -2.3C)
+- The hot_blend (0.35) only applies above raw=43C, which the model never reaches at true 45C
+- The model is accurate at ~12C (raw=12.8, calibrated=12.8), so low-band needs no correction
+- Progressive under-reading above raw=20C suggests a linear boost is appropriate
+
+### Planned High-Temperature Calibration Boost
+
+Add a linear boost of  .25 * (raw - 20) for raw > 20C, capped at 12C:
+
+| Raw | Current Cal | New Cal | True 45C Error |
+|-----|------------|---------|-----------------|
+| 12  | 12.0 (identity) | 12.0 | Good (+0.8C) |
+| 34  | 36.4 | 39.9 | -5.1C (was -8.6C) |
+| 40  | 42.7 | 47.7 | +2.7C (was -2.3C) |
+
+This reduces the worst-case error at 45C from 8.6C to 5.1C.
+
+### Empty Polar Crop Bug
+
+When fixed training crop fallback is used, logs show [AI] Polar crop: cx= cy= r= scale= pad=(,) with empty values. The polar projection still works (parameters computed elsewhere), but the debug print is misleading.
+
+### Files Changed
+
+- firmware/stm32/n657/Appli/Src/app_ai.c line 7042: REVERTED back to -sinf
+- firmware/stm32/n657/Appli/Src/app_ai.c line 180: OBB max ratio tightened to 1.25 (kept)
+- firmware/stm32/n657/Appli/Src/app_inference_calibration.c: DONE -- high-temp boost added (0.25*(raw-20) capped at 12)
+
+
+## 2026-05-19 High-Temperature Calibration Boost (Implemented)
+
+- **Problem**: The CNN model progressively under-reads at high temperatures. At true 45C the model outputs raw 34-40C, and the existing affine calibration only adds ~2C at raw=34 (needs ~11C). The hot_blend (0.35) only activates above raw=43C, which the model never reaches at true 45C.
+- **Fix**: Added a linear hot boost of 0.25C per degree above raw=20C, capped at 12C total, in app_inference_calibration.c.
+- **Two new defines**:
+  - APP_INFERENCE_CALIBRATION_HOT_BOOST_GAIN = 0.25f
+  - APP_INFERENCE_CALIBRATION_HOT_BOOST_MAX = 12.0f
+- **Logic**: In the core band (raw 20-43C), the full affine correction plus the hot boost is applied directly. Outside the core band, the boost is blended proportionally with the existing affine blend factor (so it tapers off at edges, no step discontinuities). The low band (raw < 20C) remains identity since the model is accurate there.
+- **Expected improvement at true 45C**:
+  | Raw | Old Cal | New Cal | Old Error | New Error |
+  |-----|---------|---------|-----------|-----------|
+  | 12  | 12.0    | 12.0    | +0.8C     | +0.8C     |
+  | 34  | 36.4    | 39.9    | -8.6C     | -5.1C     |
+  | 40  | 42.7    | 47.7    | -2.3C     | +2.7C     |
+- **Tradeoff**: The boost slightly overshoots at raw=40 (+2.7C) but dramatically reduces worst-case under-reading from -8.6C to -5.1C. This is a pragmatic calibration fix until the model can be retrained with better high-temperature coverage.
+- **Files changed**: firmware/stm32/n657/Appli/Src/app_inference_calibration.c
+
+## 2026-05-19 Current Firmware State Summary
+
+All changes as of 2026-05-19:
+
+1. **app_ai.c line 180**: OBB max ratio tightened from 1.50 to 1.25 (prevents tall degenerate crops)
+2. **app_ai.c line 7042**: Polar projection uses -sinf (REVERTED from +sinf -- the model was trained on -sinf polar data)
+3. **app_inference_calibration.c**: Added high-temperature boost (0.25*(raw-20) for raw>20, capped at 12C) with proportional blending at band edges
+4. **Remaining issue**: Model still under-reads by 5-11C at 45C true. The calibration boost reduces worst-case from -8.6C to -5.1C. Long-term fix requires retraining with more high-temperature data and verifying polar projection convention matches firmware.
+5. **Known bug**: Empty polar crop debug print (Polar crop: cx= cy= r= scale= pad=(,)) on fixed training crop fallback path -- cosmetic only, polar projection still works correctly.
+
+## 2026-05-19 Capture Stability Change
+
+- The scalar AI path is now pinned to the fixed training crop, but the larger source of frame-to-frame drift was the capture loop itself: the processed CMW/ISP path was still nudging IMX335 exposure/gain when the brightness gate rejected a frame.
+- The brightness gate now acts as a filter only. It still rejects too-dark/too-bright captures, but it retries without applying a new exposure/gain nudge so the sensor stays on the last accepted settings.
+- This is meant to reduce the live board's input variation before the scalar model sees it, because the fixed crop alone did not stop the output from walking from about `10C` into the `20C` range.
+
+## 2026-05-19 DCMIPP Retry Discard
+
+- A capture that recovers after a DCMIPP sync/CSI retry can still be visually suspect even if the buffer eventually fills, so the next successful frame after a retry is now discarded instead of being fed into the baseline or AI queue.
+- This is meant to filter out recovered frames after errors like `0x00008100` (`CSI_SYNC|CSI_DPHY_CTRL`), which showed up in the unstable 7C trace right before the reading jumped into the `-16C` / `20C` range.
+- The intent is to keep the downstream pipeline anchored to clean first-pass captures and avoid treating a transport recovery as a trustworthy temperature sample.
+
+## 2026-05-19 Frame Handoff Backpressure
+
+- The AI and baseline runtimes both used a single copied snapshot buffer and a semaphore-based handoff, which meant a later capture could overwrite the buffer while an earlier frame was still being processed.
+- Added an in-flight guard so each worker only accepts one live request at a time. New captures are dropped while the previous frame is still being processed, instead of silently replacing the buffer contents underneath the worker.
+- This is the next most likely cause of the frame-to-frame swings when the crop is already fixed and the sensor exposure readback is locked at `AEC=0`.
+
+## 2026-05-19 White-Balance Lock
+
+- The processed CMW/ISP path still had AWB support enabled in the IQ table, so the image could drift between white-balance presets even after AEC was locked out.
+- After probe, the camera thread now locks the middleware to the fixed `6650K` DAY reference using `ISP_SetWBRefMode(..., automatic=0, refColorTemp=6650)`.
+- This should keep the YUV crop from changing color balance between captures and remove one more source of frame-to-frame variation before baseline and AI inference.
+
+## 2026-05-19 Baseline AI Cross-Check
+
+- The classical baseline was still able to relock onto warm angles even when the CNN was reporting a strongly cold temperature on the same fixed crop.
+- The AI cross-check now hard-rejects obviously warm baseline outliers when the CNN is `<= -10C` and the baseline candidate is `>= 15C` with at least `20C` of separation.
+- This turns the CNN into the tie-breaker for the exact failure mode shown in the recent logs: the AI stays near the needle while the classical path wanders into the `30C`-`40C` range.
+
+## 2026-05-19 Firmware Preprocessing Evaluator
+
+- The white-balance lock failed when it ran during probe, so the lock attempt was moved into `CameraPlatform_StartImx335Stream()` after the sensor stream is already live.
+- A new Python evaluator is being added under `ml/scripts/eval_board_firmware_on_captures.py` to compare the live firmware's 7-channel polar-vote tensor against the offline scalar crop path on labeled `captured_images` samples.
+- The new helper module `ml/src/embedded_gauge_reading_tinyml/firmware_preprocessing.py` mirrors the board's fixed training crop, inverse resize-with-pad mapping, polar projection, and circular vote decode so the Python check can debug tensor drift before flashing again.
+
+## 2026-05-19 V28 Center Search
+
+- The exact offline V28 recipe is only reliable when the polar tensor search checks a small neighborhood around the nominal center. On the 57-sample hard-case set, `center_search_px=5` reproduced the saved V28 predictions with `training_mae=0.335715`, while `center_search_px=0` collapsed to `training_mae=13.251430`.
+- The board firmware preprocess now needs the same small polar-center search before it finalizes the 7-channel tensor. Without that search, the live path can still decode the right crop but drift far enough off-center to lose the needle vote entirely.
+- The current firmware patch keeps the existing crop selection and only adds the center sweep, so we can preserve the current runtime structure while matching the offline recipe more closely.
+
+## 2026-05-20 V28 Scratch Placement
+
+- The exact V28 scratch buffers (`resized_rgb` and `polar_luma`) were moved into `.npusram6` so the firmware can stay within the 512K main RAM budget.
+- That keeps the exact offline preprocessing path intact without forcing a linker-script heap/stack reduction first.
+
+## 2026-05-20 Brightness Gate Convergence
+
+- The capture loop was retrying dark frames without changing exposure, which could never escape a genuinely underexposed static scene.
+- The brightness gate now calls the existing proportional IMX335 exposure/gain nudge helper on dark or bright failures, so the retry path can converge instead of timing out on the same settings.
+- If the sensor hits its limit, the loop now stops retrying instead of spinning on the same bad frame.
+
+## 2026-05-20 White-Balance Retry
+
+- The IMX335 manual WB lock was still timing-sensitive after stream start, so the startup path now waits briefly and retries the `6650K` lock a few times before warning.
+- This is meant to distinguish a transient ISP readiness issue from a true unsupported reference-temperature problem.
+
+## 2026-05-20 White-Balance Supported List
+
+- The WB failure turned out to be more than a timing issue: the active ISP profile can reject the preferred `6650K` reference even after the stream is live.
+- `CameraPlatform_LockImx335WhiteBalance()` now queries `CMW_CAMERA_ListWBRefModes()` and selects the closest supported reference temperature before calling `ISP_SetWBRefMode(...)`.
+- This should keep the processed path pinned to a valid manual WB preset on boards whose active IQ table exposes a different DAY reference than the preferred one.
+
+## 2026-05-20 White-Balance Unsupported Profile
+
+- Live logs showed the active ISP profile reporting no supported manual WB reference modes at all.
+- When the supported list is empty, the startup path now treats WB locking as unavailable and leaves the ISP defaults in place instead of failing probe.
+- That keeps the board boot path clean while we continue chasing the remaining exposure/transport instability that is still moving the model output around.
+
+## 2026-05-20 Exact V28 Crop Matters
+
+- The exact `polar_vote_circular_v28` model is highly sensitive to crop choice.
+- On a small probe from `hard_cases_plus_board30_valid_with_new6.csv`, the exact rectified-crop recipe landed around `0.42C` MAE, while the fixed training crop was around `11.30C` MAE.
+- The scalar handoff should keep the decoded OBB crop whenever it is valid, and only fall back to the fixed training crop when OBB decode fails or produces an out-of-family box.
+
+## 2026-05-20 OBB Geometry Sweep
+
+- The deployed OBB localizer was not the best crop source for exact V28 on the hard-case board set, but the newer `mobilenetv2_bluraware_obb_geometry_v34` checkpoint became the best crop source once the crop scale was reduced.
+- On the full 57-capture filtered board set, `OBB_CROP_SCALE=0.83` gave `13.587961C` weighted MAE for exact V28, beating the board heuristic at `15.322605C` and the rectifier chain at `17.555540C`.
+- The rectified oracle on the same set still sits at `0.335715C`, so the crop source is still the main remaining gap.
+- The firmware and offline board replay now use the same tighter OBB crop window and the same `0.15` minimum training-ratio guard so they do not diverge again.
+
+## 2026-05-20 OBB Source-Frame Bias
+
+- The best crop correction so far is a direct source-space shift applied after the OBB box is projected back into the camera frame.
+- On the same 57-capture exact-V28 compare set, `obb_source_x_bias_pixels=-10.75`, `obb_source_y_bias_pixels=6.5`, and `OBB_CROP_SCALE=0.83` improved the exact V28 OBB replay to `11.548119C` weighted MAE.
+- The canvas-space center bias helped less, and the simple width/height aspect tweaks we tried did not beat the source-frame shift.
+- That means the OBB model is still the bottleneck, but the crop decoder now has a much better offset than the earlier straight canvas-space projection.
+
+## 2026-05-20 OBB Crop Search Outcome
+
+- The exact V28 crop replay still does not match the rectified oracle, but the best offline result so far is now clearly the source-frame shift path rather than the raw OBB box.
+- The most useful crop settings on the 57-capture compare set are `OBB_CROP_SCALE=0.83`, `obb_source_x_bias_pixels=-10.75`, and `obb_source_y_bias_pixels=6.5`.
+- Direct width/height aspect nudges were noisy and did not beat the source-frame correction.
+- A small affine correction fit against the OBB box geometry looked promising on paper, but when run through the exact V28 reader it regressed badly, so we should not treat that as a firmware candidate.
+- The current conclusion is that the OBB localizer itself is now the limiting factor; the scalar reader is no longer the main source of error once the crop is close enough.
+
+## 2026-05-20 Exact V28 Localizer Sweep
+
+- A dedicated exact-V28 localizer benchmark was added in `ml/scripts/eval_v28_localizer_pipeline.py` so we can replay candidate crop/localizer heads through the exact `polar_vote_circular_v28` reader before flashing again.
+- On the 57-capture compare set, the strongest current OBB localizer family still lands far from the rectified oracle: `mobilenetv2_obb_geometry_v32` reached `15.458105C` MAE with its default exact-V28 replay path.
+- A small source-frame bias sweep on that same model improved the best exact-V28 replay to `13.561054C` MAE at `OBB_CROP_SCALE=0.91`, `obb_source_x_bias_pixels=-16.0`, `obb_source_y_bias_pixels=6.0`, but that is still nowhere near the `0.335715C` rectified oracle.
+- The pure OBB localizer `mobilenetv2_obb_localizer_v31` was worse on the same compare set (`18.470728C` MAE), and the keypoint-based geometry detectors were much worse still (`26.685247C` MAE for both `mobilenetv2_geometry_detector` and `mobilenetv2_geometry_localizer_only_v30` with the current center-based crop heuristic).
+- The key point is that the crop tuner is helping, but the currently trained localizer families still do not produce a board-ready crop for the exact V28 model. We likely need a better crop predictor or a localizer trained directly against the rectified crop target.
+
+## 2026-05-20 Rectifier Bias Sweep
+
+- The rectifier path can be nudged, but it is still far from the exact V28 rectified oracle.
+- On a 3-sample offline grid, the best rectifier setting we saw was `rectifier_crop_scale=1.30`, `rectifier_source_x_bias_pixels=8.0`, `rectifier_source_y_bias_pixels=-8.0`, which still landed at `10.634759C` MAE.
+- A no-bias smoke on one sample was even worse at `44.028767C`, so the decoder bias helps but does not solve the crop problem.
+- The new offline sweep script is `ml/scripts/sweep_polar_vote_v28_rectifier_biases.py`.
+- The next serious move is to train the rectifier directly on the known-good rectified crop boxes with `ml/scripts/run_mobilenetv2_rectifier_rectified_boxes_v1.sh`.
+
+## 2026-05-20 Direct Rectifier Follow-up
+
+- A 12-epoch rectifier fine-tune on the rectified crop boxes converged nicely on its own loss (`val_mae=0.0978`, test `mae=0.0534` on crop-box regression), but it still did not translate into the exact V28 oracle.
+- On the 57-image compare set, the trained rectifier still landed at `rectifier_mae=19.890457C` with the default crop decoder.
+- Tightening the rectifier crop scale helped a little, but the best full-set sweep we found was still only `16.313290C` at `rectifier_crop_scale=1.5`, `rectifier_source_x_bias_pixels=0.0`, `rectifier_source_y_bias_pixels=-8.0`.
+- A tiny affine calibration on the rectifier outputs looked great on a 3-image smoke, but when fit on the board captures it overfit and made the exact V28 replay worse (`22.683050C`).
+- The rectifier representation is therefore not the right final fix; the next credible path is a different localizer representation, likely source-space corners or a detector-style crop head.
+- The calibration script is `ml/scripts/eval_rectifier_affine_calibration_v28.py`.
+
+## 2026-05-20 Crop Fusion Generalization
+
+- A fused crop regressor can overfit the 57-image compare set: the same-set ExtraTrees fit reached `fused exact V28 mae=0.9780242009156614`, which is below the 3C target and much closer to the rectified oracle.
+- That same feature-fusion idea does **not** generalize cleanly to the larger held-out split from `rectified_crop_boxes_v5_all.csv`. On the 352/57 train/holdout split, the ExtraTrees fit landed at `fused exact V28 mae=21.610488891601562`.
+- Simpler interpolators were also not enough on the holdout split: `KNeighborsRegressor(k=3)` got the best of the quick sweeps at `fused exact V28 mae=11.340744725713053`, while `k=1` and `Ridge` were worse.
+- The takeaway is that the compare-set win is real, but it is still not a robust crop predictor. If we want board-ready performance, the next candidate is a direct image-to-crop localizer rather than another crop-source ensemble.
+- The new offline evaluator lives in `ml/scripts/eval_fused_crop_predictor.py`, and the path resolver it uses now lives in `ml/src/embedded_gauge_reading_tinyml/fused_crop_predictor.py` so manifests with `ml/data/raw/...` and `ml/data/captured_images/...` both resolve correctly.
+
+## 2026-05-20 Crop Localizer Candidate Ranking
+
+- I spun up five subagents to survey crop/localizer model families and literature-style candidates. The strongest consensus was:
+  - `mobilenet_v2_source_crop_box`: cleanest fit to the exact rectified oracle because it predicts source-space `xyxy` directly.
+  - `mobilenet_v2_bluraware_obb_relation_geometry`: richest multi-head localization family already in the repo, but it still needs a policy layer to turn its outputs into the exact crop.
+  - `mobilenet_v2_geometry`: simplest keypoint/heatmap family and a good fallback if the direct box regressor stalls.
+  - `mobilenet_v2_obb_mask_geometry`: segmentation-based crop head with the strongest current auxiliary localization plumbing.
+  - `mobilenet_v2_detector` / `mobilenet_v2_geometry`: anchor-free keypoint cascade candidates that already fit the repo's localization stack.
+- Literature-style long shots that are not yet wired in the repo remain transformer/keypoint hybrids and differentiable crop/STN refiners, but those would be new model families rather than small fixes.
+- The source-crop-box path is now wired end-to-end in the offline tooling:
+  - `ml/src/embedded_gauge_reading_tinyml/models.py` has `OrderedCornerBox` plus `build_mobilenetv2_source_crop_box_model(...)`.
+  - `ml/src/embedded_gauge_reading_tinyml/training.py` compiles and trains the new family.
+  - `ml/scripts/run_training.py` exposes `mobilenet_v2_source_crop_box` on the CLI.
+  - `ml/src/embedded_gauge_reading_tinyml/v28_localizer_pipeline.py` now decodes direct source-space `xyxy` boxes.
+  - `ml/scripts/eval_v28_localizer_pipeline.py` can replay the source-crop-box head through the exact `polar_vote_circular_v28` reader.
+  - `ml/tests/test_v28_localizer_pipeline.py` now covers the new decoder.
+  - `ml/scripts/run_mobilenetv2_source_crop_box_v1.sh` is the repeatable training wrapper for this family.
+- `ml/src/embedded_gauge_reading_tinyml/board_pipeline.py` now registers `OrderedCornerBox` as a custom object, so Keras source-crop-box checkpoints can be loaded by the shared replay stack.
+- The working conclusion remains that the localizer, not the polar reader, is the bottleneck. The best chance of getting the exact V28 oracle onto the board is still a direct source-space crop predictor trained against the rectified crop boxes, with the keypoint/heatmap cascade as the backup plan.

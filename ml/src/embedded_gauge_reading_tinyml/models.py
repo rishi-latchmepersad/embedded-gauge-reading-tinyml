@@ -1,4 +1,4 @@
-"""Model builders for gauge-reading networks."""
+﻿"""Model builders for gauge-reading networks."""
 
 from __future__ import annotations
 
@@ -194,6 +194,66 @@ class CenterCropResize(keras.layers.Layer):
                 "interpolation": self.interpolation,
             }
         )
+        return config
+
+
+@keras.saving.register_keras_serializable(package="embedded_gauge_reading_tinyml")
+class OrderedCornerBox(keras.layers.Layer):
+    """Convert two unordered corner pairs into a stable xyxy crop box.
+
+    The direct crop-box head predicts two x coordinates and two y coordinates.
+    Sorting each pair keeps the target ordered without forcing the model to
+    learn that constraint implicitly.
+    """
+
+    def call(self, inputs: tf.Tensor) -> tf.Tensor:
+        """Sort the x and y corner pairs into `(x0, y0, x1, y1)` order."""
+        corners = tf.cast(inputs, tf.float32)
+        if corners.shape.rank is not None and corners.shape[-1] != 4:
+            raise ValueError("OrderedCornerBox expects a 4D last dimension.")
+
+        x_pair = tf.sort(corners[..., :2], axis=-1)
+        y_pair = tf.sort(corners[..., 2:], axis=-1)
+        return tf.concat(
+            [x_pair[..., :1], y_pair[..., :1], x_pair[..., 1:], y_pair[..., 1:]],
+            axis=-1,
+        )
+
+    def get_config(self) -> dict[str, object]:
+        """Serialize the layer configuration for SavedModel/Keras export."""
+        return super().get_config()
+
+
+@keras.saving.register_keras_serializable(package="embedded_gauge_reading_tinyml")
+class CornerKeypointsToBox(keras.layers.Layer):
+    """Convert four corner keypoints into a normalized axis-aligned crop box."""
+
+    def __init__(self, *, heatmap_size: int, **kwargs) -> None:
+        super().__init__(**kwargs)
+        if heatmap_size < 4:
+            raise ValueError("heatmap_size must be >= 4.")
+        self.heatmap_size = int(heatmap_size)
+        self._denominator = float(max(self.heatmap_size - 1, 1))
+
+    def call(self, inputs: tf.Tensor) -> tf.Tensor:
+        """Reduce four corner coordinates into a clipped xyxy box."""
+        keypoints = tf.cast(inputs, tf.float32)
+        if keypoints.shape.rank is not None and keypoints.shape[-2:] != (4, 2):
+            raise ValueError("CornerKeypointsToBox expects shape (batch, 4, 2).")
+
+        normalized = tf.clip_by_value(keypoints / self._denominator, 0.0, 1.0)
+        x_coords = normalized[..., 0]
+        y_coords = normalized[..., 1]
+        x_min = tf.reduce_min(x_coords, axis=-1, keepdims=True)
+        y_min = tf.reduce_min(y_coords, axis=-1, keepdims=True)
+        x_max = tf.reduce_max(x_coords, axis=-1, keepdims=True)
+        y_max = tf.reduce_max(y_coords, axis=-1, keepdims=True)
+        return keras.ops.concatenate([x_min, y_min, x_max, y_max], axis=-1)
+
+    def get_config(self) -> dict[str, object]:
+        """Serialize the heatmap sizing used to normalize the keypoints."""
+        config = super().get_config()
+        config.update({"heatmap_size": self.heatmap_size})
         return config
 
 
@@ -594,39 +654,6 @@ def _build_interval_expectation_head(
     probs = keras.layers.Softmax(name="interval_probs")(logits)
     value = centers(probs)
     return value, probs
-
-
-def _build_interval_hybrid_head(
-    features: keras.KerasTensor,
-    logits: keras.KerasTensor,
-    *,
-    value_min: float,
-    value_max: float,
-    bin_width: float,
-) -> tuple[keras.KerasTensor, keras.KerasTensor]:
-    """Combine coarse bin expectation with a bounded residual correction."""
-    coarse_value, interval_probs = _build_interval_expectation_head(
-        logits,
-        value_min=value_min,
-        value_max=value_max,
-        bin_width=bin_width,
-    )
-
-    # Let the network learn a bounded local correction inside the coarse bin.
-    half_bin_width = 0.5 * bin_width
-    residual = keras.layers.Dense(
-        1,
-        activation="tanh",
-        name="interval_residual_raw",
-    )(features)
-    residual = keras.layers.Rescaling(
-        half_bin_width,
-        offset=0.0,
-        name="interval_residual",
-    )(residual)
-
-    value = keras.layers.Add(name="gauge_value")([coarse_value, residual])
-    return value, interval_probs
 
 
 def _build_ordinal_expectation_head(
@@ -1172,8 +1199,7 @@ def build_compact_interval_model(
         num_bins,
         name="interval_logits",
     )(x)
-    gauge_value, interval_probs = _build_interval_hybrid_head(
-        x,
+    gauge_value, interval_probs = _build_interval_expectation_head(
         interval_logits,
         value_min=value_min,
         value_max=value_max,
@@ -1235,6 +1261,37 @@ def build_compact_geometry_model(
         name="compact_geometry_gauge_regressor",
     )
     return model
+
+
+def build_compact_source_crop_box_model(
+    image_height: int,
+    image_width: int,
+    *,
+    head_units: int = 96,
+    head_dropout: float = 0.15,
+) -> keras.Model:
+    """Build a compact CNN that regresses a normalized source-space crop box."""
+    inputs, x = _build_feature_backbone(image_height, image_width)
+
+    x = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="source_crop_box_dense",
+    )(x)
+    x = keras.layers.Dropout(head_dropout, name="source_crop_box_dropout")(x)
+
+    raw_box = keras.layers.Dense(
+        4,
+        activation="sigmoid",
+        name="source_crop_box_raw",
+    )(x)
+    source_crop_box = OrderedCornerBox(name="source_crop_box")(raw_box)
+
+    return keras.Model(
+        inputs=inputs,
+        outputs={"source_crop_box": source_crop_box},
+        name="compact_source_crop_box_regressor",
+    )
 
 
 def build_mobilenetv2_regression_model(
@@ -1431,7 +1488,6 @@ def build_mobilenetv2_interval_model(
     head_units: int = 128,
     head_dropout: float = 0.2,
 ) -> keras.Model:
-    """Build a transfer-learning hybrid regressor with a coarse interval head."""
     inputs, x, base_model = _build_mobilenetv2_backbone(
         image_height,
         image_width,
@@ -1453,8 +1509,7 @@ def build_mobilenetv2_interval_model(
         num_bins,
         name="interval_logits",
     )(x)
-    gauge_value, interval_probs = _build_interval_hybrid_head(
-        x,
+    gauge_value, interval_probs = _build_interval_expectation_head(
         interval_logits,
         value_min=value_min,
         value_max=value_max,
@@ -1690,8 +1745,7 @@ def build_mobilenetv2_dual_resolution_interval_model(
         num_bins,
         name="interval_logits",
     )(x)
-    gauge_value, interval_probs = _build_interval_hybrid_head(
-        x,
+    gauge_value, interval_probs = _build_interval_expectation_head(
         interval_logits,
         value_min=value_min,
         value_max=value_max,
@@ -3147,6 +3201,119 @@ def build_mobilenetv2_rectifier_model(
         ),
     )
     setattr(model, "_mobilenet_backbone", None)
+    return model
+
+
+def build_mobilenetv2_source_crop_box_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a MobileNetV2 crop-box regressor over source-image coordinates.
+
+    The head predicts two x corners and two y corners directly in normalized
+    source-frame coordinates. This keeps the learning target closer to the
+    offline rectified oracle than the older center/size rectifier.
+    """
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    x = keras.layers.GlobalAveragePooling2D(name="source_crop_box_gap")(x)
+    x = keras.layers.Dropout(head_dropout, name="source_crop_box_dropout_1")(x)
+    x = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="source_crop_box_dense",
+    )(x)
+    x = keras.layers.Dropout(head_dropout, name="source_crop_box_dropout_2")(x)
+
+    raw_box = keras.layers.Dense(
+        4,
+        activation="sigmoid",
+        name="source_crop_box_raw",
+    )(x)
+    source_crop_box = OrderedCornerBox(name="source_crop_box")(raw_box)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={"source_crop_box": source_crop_box},
+        name=_mobilenetv2_model_name(
+            regression_kind="source_crop_box",
+            alpha=1.0,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_source_crop_corner_model(
+    image_height: int,
+    image_width: int,
+    *,
+    heatmap_size: int = 28,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a corner-localizer that decodes four heatmaps into a crop box.
+
+    This candidate keeps the localization problem geometric: it learns the
+    four crop corners with heatmaps, converts those to corner coordinates, and
+    then reduces the coordinates to an axis-aligned source crop box.
+    """
+    _ = head_units
+    _ = head_dropout
+
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    heatmaps = _build_keypoint_heatmap_head(
+        x,
+        heatmap_size=heatmap_size,
+        num_keypoints=4,
+    )
+    keypoints = SpatialSoftArgmax2D(
+        heatmap_size=heatmap_size,
+        num_keypoints=4,
+        name="keypoint_coords",
+    )(heatmaps)
+    source_crop_canvas_box = CornerKeypointsToBox(
+        heatmap_size=heatmap_size,
+        name="source_crop_canvas_box",
+    )(keypoints)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "source_crop_canvas_box": source_crop_canvas_box,
+            "keypoint_heatmaps": heatmaps,
+            "keypoint_coords": keypoints,
+        },
+        name=_mobilenetv2_model_name(
+            regression_kind="source_crop_corner",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
     return model
 
 

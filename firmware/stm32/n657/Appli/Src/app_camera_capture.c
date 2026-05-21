@@ -729,6 +729,7 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	CAMERA_CAPTURE_BRIGHTNESS_RETRY_LIMIT;
 	uint32_t capture_attempt = 0U;
 	bool capture_ok = false;
+	bool discard_next_successful_frame = false;
 	AppCameraCapture_BrightnessStats_t brightness_stats = { 0 };
 	AppCameraCapture_BrightnessGate_t brightness_gate =
 	APP_CAMERA_CAPTURE_BRIGHTNESS_OK;
@@ -755,6 +756,17 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 		}
 
 		if (AppCameraCapture_CaptureSingleFrame(&captured_bytes)) {
+			if (discard_next_successful_frame) {
+				/* A DCMIPP retry can recover a usable buffer, but the preceding
+				 * transport error means this frame is less trustworthy than a clean
+				 * first-pass capture. Skip it and wait for the next clean frame. */
+				(void) DebugConsole_WriteString(
+						"[CAMERA][CAPTURE] Discarding frame after DCMIPP retry; requesting another capture.\r\n");
+				discard_next_successful_frame = false;
+				capture_ok = false;
+				continue;
+			}
+
 			capture_ok = true;
 			image_ptr = camera_capture_result_buffer;
 			if (camera_capture_use_cmw_pipeline) {
@@ -775,18 +787,20 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 				if (brightness_gate != APP_CAMERA_CAPTURE_BRIGHTNESS_OK) {
 					AppCameraCapture_LogBrightnessGateDecision(&brightness_stats,
 							brightness_gate);
-					/* Treat the gate as an exposure hint and retry the capture on the
-					 * next loop iteration. The current frame is still too bright for the
-					 * model, so we do not want to feed it downstream. */
+					/* Let the retry path move the fixed manual exposure/gain toward
+					 * the gate target. A static scene should converge in a few nudges;
+					 * if the sensor hits its limit, fail fast instead of looping on the
+					 * same underexposed or overexposed settings. */
 					if (!CameraPlatform_AdjustImx335ExposureGain(
-							brightness_gate
-									== APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_DARK)) {
-						DebugConsole_Printf(
-								"[CAMERA][CAPTURE] Brightness gate hint could not be applied; retrying capture anyway.\r\n");
-					} else {
+							brightness_gate ==
+							APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_DARK)) {
 						DebugConsole_WriteString(
-								"[CAMERA][CAPTURE] Brightness gate adjustment queued for the next capture cycle.\r\n");
+								"[CAMERA][CAPTURE] Brightness gate could not nudge IMX335 exposure/gain; stopping retries.\r\n");
+						capture_ok = false;
+						break;
 					}
+					DebugConsole_WriteString(
+							"[CAMERA][CAPTURE] Brightness gate triggered; retrying capture after exposure/gain nudge.\r\n");
 					capture_ok = false;
 					continue;
 				}
@@ -799,6 +813,8 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 		if (!AppCameraCapture_ShouldRetryDcmippError(camera_capture_error_code)) {
 			break;
 		}
+
+		discard_next_successful_frame = true;
 	}
 
 	if (!capture_ok) {

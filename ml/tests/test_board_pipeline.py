@@ -10,6 +10,12 @@ import pytest
 
 from embedded_gauge_reading_tinyml.board_pipeline import (
     BoardCalibration,
+    OBB_CROP_SCALE,
+    OBB_HEIGHT_SCALE,
+    OBB_TRAINING_CROP_MIN_RATIO,
+    OBB_TRAINING_CROP_MAX_RATIO,
+    OBB_WIDTH_SCALE,
+    RECTIFIER_CROP_SCALE,
     InferenceBurstHistory,
     _apply_board_calibration,
     _load_board_calibration,
@@ -34,8 +40,8 @@ def test_yuv422_loader_repeats_luma(tmp_path: Path) -> None:
     assert int(image[0, 1, 2]) == 50
 
 
-def test_rectifier_falls_back_to_training_crop_when_center_runs_away() -> None:
-    """Rectifier center values outside the trust window should use the fixed crop."""
+def test_rectifier_scales_crop_even_when_center_runs_away() -> None:
+    """Rectifier crop decode should stay geometry-aware even when the center drifts."""
     rectifier_params = np.array([0.95, 0.50, 0.40, 0.40], dtype=np.float32)
     result = decode_rectifier_crop_box(
         rectifier_params,
@@ -44,12 +50,15 @@ def test_rectifier_falls_back_to_training_crop_when_center_runs_away() -> None:
     )
 
     assert result.accepted is True
-    assert result.fallback_reason == "centre out of range"
-    assert result.crop_box_xyxy == _training_crop_box(224, 224)
+    assert result.fallback_reason is None
+    expected_width = pytest.approx(0.40 * 224.0 * RECTIFIER_CROP_SCALE)
+    expected_height = pytest.approx(0.40 * 224.0 * RECTIFIER_CROP_SCALE)
+    assert result.crop_box_xyxy[2] - result.crop_box_xyxy[0] == expected_width
+    assert result.crop_box_xyxy[3] - result.crop_box_xyxy[1] == expected_height
 
 
-def test_rectifier_uses_blended_training_crop_when_center_is_plausible() -> None:
-    """A plausible rectifier center should keep the fixed training crop size."""
+def test_rectifier_uses_the_same_crop_scale_for_a_plausible_center() -> None:
+    """A plausible rectifier center should keep the same crop geometry."""
     rectifier_params = np.array([0.60, 0.55, 0.40, 0.40], dtype=np.float32)
     result = decode_rectifier_crop_box(
         rectifier_params,
@@ -57,35 +66,132 @@ def test_rectifier_uses_blended_training_crop_when_center_is_plausible() -> None
         source_height=224,
     )
 
-    training_x0, training_y0, training_x1, training_y1 = _training_crop_box(224, 224)
-    expected_width = training_x1 - training_x0
-    expected_height = training_y1 - training_y0
-
     assert result.accepted is True
     assert result.fallback_reason is None
-    assert result.crop_box_xyxy[2] - result.crop_box_xyxy[0] == expected_width
-    assert result.crop_box_xyxy[3] - result.crop_box_xyxy[1] == expected_height
+    assert result.crop_box_xyxy[2] - result.crop_box_xyxy[0] == pytest.approx(
+        0.40 * 224.0 * RECTIFIER_CROP_SCALE
+    )
+    assert result.crop_box_xyxy[3] - result.crop_box_xyxy[1] == pytest.approx(
+        0.40 * 224.0 * RECTIFIER_CROP_SCALE
+    )
 
 
-def test_obb_rejects_crops_outside_the_training_window() -> None:
-    """Very large OBB boxes should be rejected and sent to the rectifier."""
-    obb_params = np.array([0.50, 0.50, 0.95, 0.95, 1.0, 0.0], dtype=np.float32)
+def test_obb_keeps_tiny_crops_usable_with_the_min_size_floor() -> None:
+    """Tiny OBB boxes should still expand to a usable crop instead of collapsing."""
+    obb_params = np.array([0.50, 0.50, 0.05, 0.05, 1.0, 0.0], dtype=np.float32)
     result = decode_obb_crop_box(
         obb_params,
         source_width=224,
         source_height=224,
     )
 
-    assert result.accepted is False
-    assert result.fallback_reason == "crop outside training window"
-    assert (
-        result.details["crop_width_ratio"] < 0.60
-        or result.details["crop_width_ratio"] > 1.40
+    assert result.accepted is True
+    assert result.fallback_reason is None
+    assert OBB_CROP_SCALE == pytest.approx(0.83)
+    assert OBB_TRAINING_CROP_MIN_RATIO == pytest.approx(0.15)
+    assert OBB_TRAINING_CROP_MAX_RATIO == pytest.approx(1.60)
+    assert result.crop_box_xyxy[2] - result.crop_box_xyxy[0] == pytest.approx(48.0)
+    assert result.crop_box_xyxy[3] - result.crop_box_xyxy[1] == pytest.approx(48.0)
+    assert result.details["crop_width_ratio"] >= OBB_TRAINING_CROP_MIN_RATIO
+    assert result.details["crop_height_ratio"] >= OBB_TRAINING_CROP_MIN_RATIO
+
+
+def test_obb_center_bias_shifts_the_crop_window() -> None:
+    """The OBB decoder should expose a controllable center bias for replay tuning."""
+    obb_params = np.array([0.50, 0.50, 0.50, 0.40, 1.0, 0.0], dtype=np.float32)
+    baseline = decode_obb_crop_box(
+        obb_params,
+        source_width=224,
+        source_height=224,
     )
-    assert (
-        result.details["crop_height_ratio"] < 0.60
-        or result.details["crop_height_ratio"] > 1.40
+    biased = decode_obb_crop_box(
+        obb_params,
+        source_width=224,
+        source_height=224,
+        obb_center_x_bias_pixels=5.0,
+        obb_center_y_bias_pixels=-5.0,
     )
+
+    assert biased.crop_box_xyxy[0] == pytest.approx(baseline.crop_box_xyxy[0] + 5.0)
+    assert biased.crop_box_xyxy[1] == pytest.approx(baseline.crop_box_xyxy[1] - 5.0)
+    assert biased.details["center_x_bias_pixels"] == pytest.approx(5.0)
+    assert biased.details["center_y_bias_pixels"] == pytest.approx(-5.0)
+
+
+def test_obb_aspect_scales_adjust_the_crop_shape() -> None:
+    """The OBB decoder should allow separate width and height tuning."""
+    obb_params = np.array([0.50, 0.50, 0.50, 0.40, 1.0, 0.0], dtype=np.float32)
+    baseline = decode_obb_crop_box(
+        obb_params,
+        source_width=224,
+        source_height=224,
+    )
+    shaped = decode_obb_crop_box(
+        obb_params,
+        source_width=224,
+        source_height=224,
+        obb_width_scale=0.94,
+        obb_height_scale=1.18,
+    )
+
+    baseline_width = baseline.crop_box_xyxy[2] - baseline.crop_box_xyxy[0]
+    baseline_height = baseline.crop_box_xyxy[3] - baseline.crop_box_xyxy[1]
+    shaped_width = shaped.crop_box_xyxy[2] - shaped.crop_box_xyxy[0]
+    shaped_height = shaped.crop_box_xyxy[3] - shaped.crop_box_xyxy[1]
+
+    assert OBB_WIDTH_SCALE == pytest.approx(1.0)
+    assert OBB_HEIGHT_SCALE == pytest.approx(1.0)
+    assert shaped_width == pytest.approx(baseline_width * 0.94)
+    assert shaped_height == pytest.approx(baseline_height * 1.18)
+
+
+def test_obb_source_bias_shifts_the_final_crop_box() -> None:
+    """The OBB decoder should allow direct source-space crop correction."""
+    obb_params = np.array([0.50, 0.50, 0.50, 0.40, 1.0, 0.0], dtype=np.float32)
+    baseline = decode_obb_crop_box(
+        obb_params,
+        source_width=224,
+        source_height=224,
+    )
+    shifted = decode_obb_crop_box(
+        obb_params,
+        source_width=224,
+        source_height=224,
+        obb_source_x_bias_pixels=-10.0,
+        obb_source_y_bias_pixels=6.0,
+    )
+
+    assert shifted.crop_box_xyxy[0] == pytest.approx(baseline.crop_box_xyxy[0] - 10.0)
+    assert shifted.crop_box_xyxy[1] == pytest.approx(baseline.crop_box_xyxy[1] + 6.0)
+    assert shifted.details["source_x_bias_pixels"] == pytest.approx(-10.0)
+    assert shifted.details["source_y_bias_pixels"] == pytest.approx(6.0)
+
+
+def test_obb_source_shape_scales_adjust_the_final_crop_box() -> None:
+    """The OBB decoder should allow post-projection width and height tuning."""
+    obb_params = np.array([0.50, 0.50, 0.50, 0.40, 1.0, 0.0], dtype=np.float32)
+    baseline = decode_obb_crop_box(
+        obb_params,
+        source_width=224,
+        source_height=224,
+    )
+    shaped = decode_obb_crop_box(
+        obb_params,
+        source_width=224,
+        source_height=224,
+        obb_source_width_scale=0.90,
+        obb_source_height_scale=0.80,
+    )
+
+    baseline_width = baseline.crop_box_xyxy[2] - baseline.crop_box_xyxy[0]
+    baseline_height = baseline.crop_box_xyxy[3] - baseline.crop_box_xyxy[1]
+    shaped_width = shaped.crop_box_xyxy[2] - shaped.crop_box_xyxy[0]
+    shaped_height = shaped.crop_box_xyxy[3] - shaped.crop_box_xyxy[1]
+
+    assert shaped_width == pytest.approx(baseline_width * 0.90)
+    assert shaped_height == pytest.approx(baseline_height * 0.80)
+    assert shaped.details["source_width_scale"] == pytest.approx(0.90)
+    assert shaped.details["source_height_scale"] == pytest.approx(0.80)
 
 
 def test_burst_history_matches_firmware_median_and_reset() -> None:

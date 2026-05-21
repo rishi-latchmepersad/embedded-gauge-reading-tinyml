@@ -145,6 +145,14 @@ if "%FLASH_MODEL%"=="1" (
     echo === Step 4: Skipping model image flash (FLASH_MODEL not set) ===
 )
 
+if "%FLASH_MODEL%"=="1" (
+    echo.
+    echo === Step 4d: Extract model signatures for firmware update ===
+    python "%REPO_ROOT%ml\scripts\extract_model_signature.py" "%SCALAR_RAW%"
+) else (
+    echo === Step 4d: Skipping model signature extraction ===
+)
+
 if "%FLASH_APP%"=="1" (
     echo.
     echo === Step 5: Sign application binary ===
@@ -188,4 +196,3 @@ echo.
 echo === Done! ===
 echo Now set flash-boot mode (BOOT0=0, BOOT1=0) and power-cycle the board.
 echo.
-

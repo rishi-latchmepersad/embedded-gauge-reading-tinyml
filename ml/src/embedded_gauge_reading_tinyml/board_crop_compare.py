@@ -251,6 +251,14 @@ def estimate_board_crop_from_rgb(
     *,
     bright_threshold: int = BOARD_BRIGHT_THRESHOLD,
     border_pixels: int = BOARD_BORDER_PIXELS,
+    crop_width_scale: float = BOARD_CROP_WIDTH_SCALE_NUMERATOR
+    / BOARD_CROP_WIDTH_SCALE_DENOMINATOR,
+    crop_height_scale: float = BOARD_CROP_HEIGHT_SCALE_NUMERATOR
+    / BOARD_CROP_HEIGHT_SCALE_DENOMINATOR,
+    center_x_bias_pixels: int = BOARD_CROP_CENTER_X_BIAS_PIXELS,
+    center_y_bias_ratio: float = BOARD_CROP_CENTER_Y_BIAS_RATIO,
+    center_y_bias_min_pixels: int = BOARD_CROP_CENTER_Y_BIAS_MIN_PIXELS,
+    center_y_bias_max_pixels: int = BOARD_CROP_CENTER_Y_BIAS_MAX_PIXELS,
 ) -> BoardCropEstimate | None:
     """Estimate the board crop using the same bright-luma heuristic as firmware."""
     height, width, channels = image.shape
@@ -280,8 +288,7 @@ def estimate_board_crop_from_rgb(
         int(round(
             width
             * (TRAINING_CROP_X_MAX_RATIO - TRAINING_CROP_X_MIN_RATIO)
-            * BOARD_CROP_WIDTH_SCALE_NUMERATOR
-            / BOARD_CROP_WIDTH_SCALE_DENOMINATOR,
+            * crop_width_scale,
         )),
     )
     crop_height = max(
@@ -289,15 +296,14 @@ def estimate_board_crop_from_rgb(
         int(round(
             height
             * (TRAINING_CROP_Y_MAX_RATIO - TRAINING_CROP_Y_MIN_RATIO)
-            * BOARD_CROP_HEIGHT_SCALE_NUMERATOR
-            / BOARD_CROP_HEIGHT_SCALE_DENOMINATOR,
+            * crop_height_scale,
         )),
     )
 
-    y_bias_pixels = int(round(crop_height * BOARD_CROP_CENTER_Y_BIAS_RATIO))
-    y_bias_pixels = max(BOARD_CROP_CENTER_Y_BIAS_MIN_PIXELS, y_bias_pixels)
-    y_bias_pixels = min(BOARD_CROP_CENTER_Y_BIAS_MAX_PIXELS, y_bias_pixels)
-    biased_center_x = max(0, centroid_x - BOARD_CROP_CENTER_X_BIAS_PIXELS)
+    y_bias_pixels = int(round(crop_height * center_y_bias_ratio))
+    y_bias_pixels = max(center_y_bias_min_pixels, y_bias_pixels)
+    y_bias_pixels = min(center_y_bias_max_pixels, y_bias_pixels)
+    biased_center_x = max(0, centroid_x - center_x_bias_pixels)
     biased_center_y = max(0, centroid_y - y_bias_pixels)
     left = max(0, biased_center_x - (crop_width // 2))
     top = max(0, biased_center_y - (crop_height // 2))

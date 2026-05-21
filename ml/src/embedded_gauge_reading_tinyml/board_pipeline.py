@@ -46,9 +46,13 @@ TRAINING_CROP_Y_MIN_RATIO: Final[float] = 0.2573
 TRAINING_CROP_X_MAX_RATIO: Final[float] = 0.7987
 TRAINING_CROP_Y_MAX_RATIO: Final[float] = 0.8071
 
-# Keep the OBB crop slightly tighter than the old board default; the replay
-# calibration was fit around this crop scale and the hot end under-read with 1.30.
-OBB_CROP_SCALE: Final[float] = 1.20
+# The exact V28 replay on the hard-case board set preferred a tighter OBB crop;
+# the 0.83 sweep beat the board heuristic and every larger OBB scale we tried.
+OBB_CROP_SCALE: Final[float] = 0.83
+OBB_WIDTH_SCALE: Final[float] = 1.0
+OBB_HEIGHT_SCALE: Final[float] = 1.0
+OBB_SOURCE_WIDTH_SCALE: Final[float] = 1.0
+OBB_SOURCE_HEIGHT_SCALE: Final[float] = 1.0
 OBB_MIN_BOX_RATIO: Final[float] = 0.05
 # The hard-tail captures we care about often land around 0.18-0.20 of the
 # rectified training crop size. The old 0.60 minimum forced those cases into the
@@ -58,7 +62,7 @@ OBB_TRAINING_CROP_MAX_RATIO: Final[float] = 1.60
 OBB_MIN_CROP_SIZE_PIXELS: Final[float] = 48.0
 
 RECTIFIER_MIN_BOX_RATIO: Final[float] = 0.05
-RECTIFIER_FIXED_SCALE_CROP: Final[bool] = True
+RECTIFIER_FIXED_SCALE_CROP: Final[bool] = False
 RECTIFIER_CENTER_BLEND_NUMERATOR: Final[int] = 1
 RECTIFIER_CENTER_BLEND_DENOMINATOR: Final[int] = 5
 RECTIFIER_CENTER_MIN_RATIO: Final[float] = 0.10
@@ -477,6 +481,8 @@ def load_model_session(model_path: Path, model_kind: ModelKind = "auto") -> Mode
             model_path,
             custom_objects={
                 "preprocess_input": tf.keras.applications.mobilenet_v2.preprocess_input,
+                "OrderedCornerBox": model_layers.OrderedCornerBox,
+                "CornerKeypointsToBox": model_layers.CornerKeypointsToBox,
                 "SpatialSoftArgmax2D": model_layers.SpatialSoftArgmax2D,
                 "GaugeValueFromKeypoints": model_layers.GaugeValueFromKeypoints,
                 "GaugeValueFromRelationKeypoints": model_layers.GaugeValueFromRelationKeypoints,
@@ -505,7 +511,15 @@ def decode_obb_crop_box(
     source_height: int,
     input_size: int = DEFAULT_IMAGE_SIZE,
     obb_crop_scale: float = OBB_CROP_SCALE,
+    obb_width_scale: float = OBB_WIDTH_SCALE,
+    obb_height_scale: float = OBB_HEIGHT_SCALE,
+    obb_source_width_scale: float = OBB_SOURCE_WIDTH_SCALE,
+    obb_source_height_scale: float = OBB_SOURCE_HEIGHT_SCALE,
     min_crop_size: float = OBB_MIN_CROP_SIZE_PIXELS,
+    obb_center_x_bias_pixels: float = 0.0,
+    obb_center_y_bias_pixels: float = 0.0,
+    obb_source_x_bias_pixels: float = 0.0,
+    obb_source_y_bias_pixels: float = 0.0,
 ) -> CropDecodeDecision:
     """Mirror the firmware's OBB-to-scalar crop decoder."""
     if obb_params.size < 6:
@@ -519,10 +533,22 @@ def decode_obb_crop_box(
     angle_sin = float(obb_params[5])
     theta_rad = 0.5 * math.atan2(angle_sin, angle_cos)
 
-    canvas_center_x = center_x_norm * float(input_size)
-    canvas_center_y = center_y_norm * float(input_size)
-    half_width = 0.5 * box_w_norm * float(input_size) * obb_crop_scale
-    half_height = 0.5 * box_h_norm * float(input_size) * obb_crop_scale
+    canvas_center_x = (center_x_norm * float(input_size)) + obb_center_x_bias_pixels
+    canvas_center_y = (center_y_norm * float(input_size)) + obb_center_y_bias_pixels
+    half_width = (
+        0.5
+        * box_w_norm
+        * float(input_size)
+        * obb_crop_scale
+        * obb_width_scale
+    )
+    half_height = (
+        0.5
+        * box_h_norm
+        * float(input_size)
+        * obb_crop_scale
+        * obb_height_scale
+    )
 
     cos_theta = math.cos(theta_rad)
     sin_theta = math.sin(theta_rad)
@@ -554,6 +580,32 @@ def decode_obb_crop_box(
         image_height=source_height,
         min_size=min_crop_size,
     )
+    crop_x_min_f += obb_source_x_bias_pixels
+    crop_y_min_f += obb_source_y_bias_pixels
+
+    # Apply source-space width and height shaping after projection so the final
+    # crop can be tuned without distorting the canvas-space OBB interpretation.
+    source_center_x = 0.5 * (crop_x_min_f + crop_x_max_f)
+    source_center_y = 0.5 * (crop_y_min_f + crop_y_max_f)
+    source_width_f = max(1.0, (crop_x_max_f - crop_x_min_f) * obb_source_width_scale)
+    source_height_f = max(1.0, (crop_y_max_f - crop_y_min_f) * obb_source_height_scale)
+    crop_x_min_f = source_center_x - (0.5 * source_width_f)
+    crop_y_min_f = source_center_y - (0.5 * source_height_f)
+    crop_x_max_f = crop_x_min_f + source_width_f
+    crop_y_max_f = crop_y_min_f + source_height_f
+
+    if crop_x_min_f < 0.0:
+        crop_x_min_f = 0.0
+        crop_x_max_f = min(float(source_width), source_width_f)
+    if crop_y_min_f < 0.0:
+        crop_y_min_f = 0.0
+        crop_y_max_f = min(float(source_height), source_height_f)
+    if crop_x_max_f > float(source_width):
+        crop_x_max_f = float(source_width)
+        crop_x_min_f = max(0.0, crop_x_max_f - source_width_f)
+    if crop_y_max_f > float(source_height):
+        crop_y_max_f = float(source_height)
+        crop_y_min_f = max(0.0, crop_y_max_f - source_height_f)
 
     crop_width = crop_x_max_f - crop_x_min_f
     crop_height = crop_y_max_f - crop_y_min_f
@@ -578,6 +630,14 @@ def decode_obb_crop_box(
         "angle_cos": angle_cos,
         "angle_sin": angle_sin,
         "theta_deg": math.degrees(theta_rad),
+        "center_x_bias_pixels": obb_center_x_bias_pixels,
+        "center_y_bias_pixels": obb_center_y_bias_pixels,
+        "source_x_bias_pixels": obb_source_x_bias_pixels,
+        "source_y_bias_pixels": obb_source_y_bias_pixels,
+        "source_width_scale": obb_source_width_scale,
+        "source_height_scale": obb_source_height_scale,
+        "width_scale": obb_width_scale,
+        "height_scale": obb_height_scale,
         "training_crop_width": training_crop_width,
         "training_crop_height": training_crop_height,
         "crop_width_ratio": crop_width_ratio,
@@ -807,7 +867,15 @@ def predict_board_pipeline_on_capture(
     progress: Callable[[str], None] | None = None,
     image_size: int = DEFAULT_IMAGE_SIZE,
     obb_crop_scale: float = OBB_CROP_SCALE,
+    obb_width_scale: float = OBB_WIDTH_SCALE,
+    obb_height_scale: float = OBB_HEIGHT_SCALE,
+    obb_source_width_scale: float = OBB_SOURCE_WIDTH_SCALE,
+    obb_source_height_scale: float = OBB_SOURCE_HEIGHT_SCALE,
     min_crop_size: float = OBB_MIN_CROP_SIZE_PIXELS,
+    obb_center_x_bias_pixels: float = 0.0,
+    obb_center_y_bias_pixels: float = 0.0,
+    obb_source_x_bias_pixels: float = 0.0,
+    obb_source_y_bias_pixels: float = 0.0,
     use_calibration: bool = False,
     calibration_path: Path | None = None,
 ) -> BoardPipelineResult:
@@ -844,7 +912,15 @@ def predict_board_pipeline_on_capture(
         source_height=source_height,
         input_size=image_size,
         obb_crop_scale=obb_crop_scale,
+        obb_width_scale=obb_width_scale,
+        obb_height_scale=obb_height_scale,
+        obb_source_width_scale=obb_source_width_scale,
+        obb_source_height_scale=obb_source_height_scale,
         min_crop_size=min_crop_size,
+        obb_center_x_bias_pixels=obb_center_x_bias_pixels,
+        obb_center_y_bias_pixels=obb_center_y_bias_pixels,
+        obb_source_x_bias_pixels=obb_source_x_bias_pixels,
+        obb_source_y_bias_pixels=obb_source_y_bias_pixels,
     )
 
     selected_stage: Literal["obb", "rectifier"] = "obb"

@@ -169,11 +169,13 @@ typedef struct
 #define APP_BASELINE_HOT_OVERRIDE_COLD_HISTORY_TEMP_C 0.0f
 #define APP_BASELINE_HOT_OVERRIDE_WARM_TARGET_TEMP_C 25.0f
 #define APP_BASELINE_HOT_OVERRIDE_COLD_HISTORY_MIN_RATIO 0.90f
-/* Recovery guard: allow cold estimates to break out of poisoned warm history
- * in normal frames when the jump direction is warm->cold and confidence is
- * still reasonable for this baseline. */
+/* Recovery guard: allow cool estimates to break out of poisoned warm history
+ * in normal frames when the jump direction is warm->cool and confidence is
+ * still reasonable for this baseline. This needs to cover 10C-class board
+ * readings, not just near-freezing values, or the runtime can stay pinned to
+ * a stale warm estimate for too long. */
 #define APP_BASELINE_COLD_RECOVERY_HISTORY_TEMP_C 20.0f
-#define APP_BASELINE_COLD_RECOVERY_TARGET_TEMP_C 0.0f
+#define APP_BASELINE_COLD_RECOVERY_TARGET_TEMP_C 15.0f
 #define APP_BASELINE_COLD_RECOVERY_MIN_CONFIDENCE 2.5f
 /* Cross-check guard against stale warm baseline locks: when AI strongly says
  * cold, do not accept a warm baseline jump into history. */
@@ -195,6 +197,7 @@ static TX_SEMAPHORE camera_baseline_request_semaphore;
 static bool camera_baseline_sync_created = false;
 static volatile const uint8_t *camera_baseline_request_frame_ptr = NULL;
 static volatile ULONG camera_baseline_request_frame_length = 0U;
+static volatile bool camera_baseline_request_in_flight = false;
 static bool app_baseline_runtime_initialized = false;
 static volatile bool camera_baseline_last_result_valid = false;
 static volatile float camera_baseline_last_temperature_c = 0.0f;
@@ -413,6 +416,13 @@ bool AppBaselineRuntime_RequestEstimate(const uint8_t *frame_ptr,
 		return false;
 	}
 
+	if (camera_baseline_request_in_flight)
+	{
+		DebugConsole_Printf(
+			"[BASELINE] Request dropped; previous frame still in flight.\r\n");
+		return false;
+	}
+
 	if ((frame_ptr == NULL) || (frame_length == 0U))
 	{
 		DebugConsole_Printf(
@@ -443,9 +453,11 @@ bool AppBaselineRuntime_RequestEstimate(const uint8_t *frame_ptr,
 	camera_baseline_request_frame_ptr = camera_baseline_frame_snapshot;
 	camera_baseline_request_frame_length = frame_length;
 	camera_baseline_request_generation++;
+	camera_baseline_request_in_flight = true;
 
 	if (tx_semaphore_put(&camera_baseline_request_semaphore) != TX_SUCCESS)
 	{
+		camera_baseline_request_in_flight = false;
 		DebugConsole_Printf(
 			"[BASELINE] Failed to signal baseline request semaphore.\r\n");
 		return false;
@@ -488,6 +500,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 		{
 			DebugConsole_Printf(
 				"[BASELINE] Worker woke without a queued frame; ignoring.\r\n");
+			camera_baseline_request_in_flight = false;
 			continue;
 		}
 
@@ -502,6 +515,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 			{
 				DebugConsole_Printf(
 					"[BASELINE] Classical baseline failed to estimate a temperature.\r\n");
+				camera_baseline_request_in_flight = false;
 				continue;
 			}
 
@@ -510,6 +524,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 			DebugConsole_Printf(
 				"[BASELINE] Holding last stable estimate after an invalid frame.\r\n");
 			AppBaselineRuntime_LogEstimate(&held_estimate);
+			camera_baseline_request_in_flight = false;
 			continue;
 		}
 
@@ -519,6 +534,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 			{
 				DebugConsole_Printf(
 					"[BASELINE] Classical baseline failed to estimate a temperature.\r\n");
+				camera_baseline_request_in_flight = false;
 				continue;
 			}
 
@@ -527,6 +543,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 			DebugConsole_WriteString(
 				"[BASELINE] Holding last stable estimate after an unstable frame.\r\n");
 			AppBaselineRuntime_LogEstimate(&held_estimate);
+			camera_baseline_request_in_flight = false;
 			continue;
 		}
 
@@ -539,16 +556,19 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 		{
 			DebugConsole_Printf(
 				"[BASELINE] Classical baseline smoothing failed unexpectedly.\r\n");
+			camera_baseline_request_in_flight = false;
 			continue;
 		}
 
 		if (!estimate.valid)
 		{
+			camera_baseline_request_in_flight = false;
 			continue;
 		}
 
 		AppBaselineRuntime_StoreLastEstimate(&estimate);
 		AppBaselineRuntime_LogEstimate(&estimate);
+		camera_baseline_request_in_flight = false;
 	}
 }
 
@@ -1601,9 +1621,10 @@ static bool AppBaselineRuntime_IsStableEstimateForHistory(
 		}
 	}
 
-	/* AI cross-check: if the latest AI value is strongly cold, warn about warm
-	 * baseline candidates but do not hard-block them. This lets a credible cold
-	 * frame replace stale warm history instead of freezing the estimate. */
+	/* AI cross-check: if the latest AI value is strongly cold, reject warm
+	 * baseline candidates instead of letting the classical path relock to a
+	 * stale warm angle. The CNN has already seen the fixed crop and acts as the
+	 * tie-breaker for obviously warm outliers. */
 	{
 		float ai_temp_c = 0.0f;
 		if (App_AI_GetLastInferenceResult(&ai_temp_c))
@@ -1621,13 +1642,14 @@ static bool AppBaselineRuntime_IsStableEstimateForHistory(
 				const long delta_x10 =
 					AppBaselineRuntime_RoundToLong(cross_delta * 10.0f);
 				DebugConsole_Printf(
-					"[BASELINE] Stability warn: AI cross-check ai=%ld.%01ldC base=%ld.%01ldC delta=%ld.%01ldC\r\n",
+					"[BASELINE] Stability reject: AI cross-check ai=%ld.%01ldC base=%ld.%01ldC delta=%ld.%01ldC\r\n",
 					ai_x10 / 10L,
 					((ai_x10 % 10L) < 0L) ? -(ai_x10 % 10L) : (ai_x10 % 10L),
 					base_x10 / 10L,
 					((base_x10 % 10L) < 0L) ? -(base_x10 % 10L) : (base_x10 % 10L),
 					delta_x10 / 10L,
 					((delta_x10 % 10L) < 0L) ? -(delta_x10 % 10L) : (delta_x10 % 10L));
+				return false;
 			}
 		}
 	}

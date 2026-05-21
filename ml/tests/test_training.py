@@ -14,6 +14,7 @@ import embedded_gauge_reading_tinyml.training as training
 from embedded_gauge_reading_tinyml.models import (
     build_compact_interval_model,
     build_compact_geometry_model,
+    build_compact_source_crop_box_model,
     build_mobilenetv2_dual_resolution_interval_model,
     build_mobilenetv2_direction_model,
     build_mobilenetv2_geometry_uncertainty_model,
@@ -215,6 +216,19 @@ def test_build_compact_geometry_model_outputs_geometry_tensors() -> None:
     assert outputs["gauge_value"].shape == (2, 1)
     assert outputs["keypoint_heatmaps"].shape == (2, 16, 16, 2)
     assert outputs["keypoint_coords"].shape == (2, 2, 2)
+
+
+def test_build_compact_source_crop_box_model_outputs_box() -> None:
+    """Compact source-crop CNN should emit a normalized xyxy box."""
+    model = build_compact_source_crop_box_model(
+        image_height=32,
+        image_width=32,
+    )
+    batch: tf.Tensor = tf.zeros((2, 32, 32, 3), dtype=tf.float32)
+    outputs = model(batch)
+
+    assert model.name == "compact_source_crop_box_regressor"
+    assert outputs["source_crop_box"].shape == (2, 4)
 
 
 def test_build_mobilenetv2_geometry_uncertainty_model_outputs_bounds() -> None:
@@ -912,6 +926,44 @@ def test_load_crop_and_preprocess_image_outputs_normalized_tensor(
     assert float(target.numpy()) == pytest.approx(12.5)
 
 
+def test_build_tf_dataset_returns_source_crop_boxes(tmp_path: Path) -> None:
+    """_build_tf_dataset should emit normalized xyxy boxes for source-crop targets."""
+    examples: list[training.TrainingExample] = []
+    for i in range(3):
+        path: Path = tmp_path / f"img_{i}.jpg"
+        _write_test_jpeg(path, h=8, w=8)
+        examples.append(
+            training.TrainingExample(
+                image_path=str(path),
+                value=float(i),
+                crop_box_xyxy=(1.0, 1.0, 7.0, 7.0),
+                needle_unit_xy=(1.0, 0.0),
+            )
+        )
+
+    config: training.TrainConfig = training.TrainConfig(
+        image_height=16,
+        image_width=16,
+        batch_size=2,
+        augment_training=False,
+    )
+
+    dataset: tf.data.Dataset = training._build_tf_dataset(
+        examples,
+        config,
+        training=False,
+        target_kind="source_crop_box",
+    )
+    batches = list(dataset.as_numpy_iterator())
+
+    assert len(batches) == 2
+    images, targets = batches[0]
+    assert images.shape == (2, 16, 16, 3)
+    assert targets.shape == (2, 4)
+    assert images.dtype == np.float32
+    assert targets.dtype == np.float32
+
+
 def test_build_tf_dataset_returns_batched_tensors(tmp_path: Path) -> None:
     """_build_tf_dataset should emit batched (image, value, weight) tensors."""
     examples: list[training.TrainingExample] = []
@@ -945,6 +997,120 @@ def test_build_tf_dataset_returns_batched_tensors(tmp_path: Path) -> None:
     assert targets.shape == (2,)
     assert images.dtype == np.float32
     assert targets.dtype == np.float32
+
+
+def test_train_happy_path_with_compact_source_crop_box_mocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """train should route through the compact source-crop-box family."""
+    spec: GaugeSpec = _make_spec()
+
+    label_summary: LabelSummary = LabelSummary(
+        total_samples=10,
+        in_sweep=9,
+        out_of_sweep=1,
+        min_fraction=0.0,
+        max_fraction=1.0,
+    )
+
+    examples: list[training.TrainingExample] = [
+        training.TrainingExample("a.jpg", 1.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("b.jpg", 2.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("c.jpg", 3.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+        training.TrainingExample("d.jpg", 4.0, (0.0, 0.0, 8.0, 8.0), (1.0, 0.0)),
+    ]
+    split: training.DatasetSplit = training.DatasetSplit(
+        train_examples=examples[:2],
+        val_examples=examples[2:3],
+        test_examples=examples[3:],
+    )
+
+    class _FakeHistory:
+        """Small stand-in for keras.callbacks.History."""
+
+        def __init__(self) -> None:
+            self.history: dict[str, list[float]] = {"loss": [1.0], "val_loss": [1.2]}
+
+    class _FakeModel:
+        """Small stand-in for a compiled source-crop-box model."""
+
+        def compile(self, **kwargs: Any) -> None:
+            _ = kwargs
+
+        def fit(
+            self,
+            train_ds: Any,
+            validation_data: Any,
+            epochs: int,
+            callbacks: list[Any],
+            verbose: int,
+        ) -> _FakeHistory:
+            assert train_ds is not None
+            assert validation_data is not None
+            assert epochs == 1
+            assert len(callbacks) == 2
+            assert verbose == 2
+            return _FakeHistory()
+
+        def evaluate(
+            self, test_ds: Any, return_dict: bool, verbose: int
+        ) -> dict[str, float]:
+            assert test_ds is not None
+            assert return_dict is True
+            assert verbose == 0
+            return {"loss": 1.0, "mae": 0.5, "rmse": 0.75}
+
+    fake_model = _FakeModel()
+
+    def _build_tf_dataset_stub(
+        examples: list[training.TrainingExample],
+        config: training.TrainConfig,
+        training: bool,
+        target_kind: str = "value",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        assert target_kind == "source_crop_box"
+        return {"n": len(examples), "train": training, "target_kind": target_kind}
+
+    monkeypatch.setattr(training, "load_gauge_specs", lambda: {spec.gauge_id: spec})
+    monkeypatch.setattr(
+        training, "load_dataset", lambda labelled_dir, raw_dir: [object()] * 10
+    )
+    monkeypatch.setattr(
+        training, "summarize_label_sweep", lambda samples, spec: label_summary
+    )
+    monkeypatch.setattr(
+        training,
+        "_build_training_examples",
+        lambda samples, spec, **kwargs: (examples, 1),
+    )
+    monkeypatch.setattr(training, "_split_examples", lambda examples, config: split)
+    monkeypatch.setattr(training, "_build_tf_dataset", _build_tf_dataset_stub)
+    monkeypatch.setattr(
+        training,
+        "build_compact_source_crop_box_model",
+        lambda *args, **kwargs: fake_model,
+    )
+    monkeypatch.setattr(
+        training,
+        "_compute_mean_baseline_mae",
+        lambda train_examples, test_examples: 2.5,
+    )
+
+    result: training.TrainingResult = training.train(
+        training.TrainConfig(epochs=1, model_family="compact_source_crop_box")
+    )
+
+    assert result.model is fake_model
+    assert result.label_summary == label_summary
+    assert result.dropped_out_of_sweep == 1
+    assert result.baseline_test_mae == pytest.approx(2.5)
+    assert result.test_metrics == {
+        "loss": 1.0,
+        "mae": 0.5,
+        "rmse": 0.75,
+        "baseline_mae_mean_predictor": 2.5,
+    }
 
 
 def test_compute_edge_weights_emphasizes_extremes() -> None:

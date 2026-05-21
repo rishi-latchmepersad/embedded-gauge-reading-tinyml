@@ -331,3 +331,46 @@ This section records the full path we took from unstable board runs to a stable 
 - Practical takeaway:
   - System stability/signature issues are now understood and patched.
   - Accuracy gap remains a model/input-representation issue; calibration alone is not enough.
+
+
+## 2026-05-18 Circular Vote Decode Fix (V27->V28)
+
+- V27 first introduced circular target mode with sin/cos mean decode, replacing sweep linear expectation.
+- V27 had a catastrophic wrap-around bug: the circular mean could land in the dead zone (90 degree arc not covered by the gauge), causing -30C to decode as 50C. Several board captures also wrapped.
+- Fix: added dead-zone masking in _logits_to_temperature - bins outside the gauge sweep arc are set to -1e9 before computing the circular mean. This constrains the decode to only produce angles within the valid gauge sweep.
+- Also added 	arget_mode, min_angle_rad, sweep_rad params to _structured_logits_to_temperature and TemperatureMaeCallback so vote mode can dispatch to either circular or sweep decode.
+- V28 (circular + dead-zone masking + larger model base_filters=32 head_units=128) achieved:
+  - Hard cases MAE: 0.34C (target was <3C)
+  - 100% under 3C on hard cases
+  - Max error: 2.19C
+  - All catastrophic V25 failures fixed
+- The circular decode eliminates center-pull regression entirely because sin/cos mean is translation-invariant on the circle, unlike linear expectation which pulls toward the center when probability mass spreads.
+
+
+
+## 2026-05-19 Prod v0.7 Deployment
+
+- Promoted polar_vote_circular_v28 to prod v0.7.
+- Firmware wired for V28 circular polar-vote model:
+  - All references to scalar_full_finetune_from_best_piecewise_calibrated_int8 replaced with polar_vote_circular_v28_int8
+  - ai_network wrapper include path updated to V28 model C source
+  - makefile.targets updated to link V28 package objects (build_polar_vote_circular_v28_int8/)
+  - Model NN_Instance, Network_Init, Inference_Init all point to V28 symbols
+  - Memory pool renamed _mem_pool_xSPI2_polar_vote_circular_v28_int8
+  - 7-channel polar preprocessing (AppAI_PreprocessYuv422FrameToPolarInput) active for scalar stage
+  - Circular decode (AppAI_DecodeCircularVoteFromOutput) active for scalar stage
+- Hybrid baseline-weighing mechanism removed: no separate baseline channel that can win. The vote prior channel (ch6) is a soft spatial hint, not a copy of baseline output.
+- xSPI2 blob: 66081 bytes, matches signature constants in firmware.
+- TFLite: ml/artifacts/deployment/polar_vote_circular_v28_int8/model_int8.tflite
+- ST Edge AI package: firmware/stm32/n657/st_ai_output/packages/polar_vote_circular_v28_int8/
+- Next step: rebuild firmware in CubeIDE and flash with flash_boot.bat
+
+## 2026-05-19 Prod v0.7 Memory Fix
+
+- Board crashed on boot (MemManage, PC=0xAAAAAAAA) due to ~602 KB of float scratch arrays in BSS.
+- Fix: converted polar_luma from float[224*224] (200 KB) to uint8_t[224*224] (49 KB), eliminated angular_grad and radial_grad arrays (~394 KB saved).
+- Sobel restructured as two-pass (find max, then normalise and write) to avoid storing intermediate gradient planes.
+- Free RAM: 409 KB -> 948 KB. Board should boot and run scalar inference without stack overflow.
+- OBB float preprocess validation also fixed: minimum changed from 7-channel (352896 floats) to 3-channel (150528 floats) so OBB stage can proceed.
+- Known remaining issue: OBB model input buffer at 0x34110000 overlaps with BSS (ends 0x34113160). Pre-existing, not critical since OBB falls back to fixed crop.
+- Flash completed successfully: FSBL, scalar model, rectifier, OBB, signed app all written to flash.

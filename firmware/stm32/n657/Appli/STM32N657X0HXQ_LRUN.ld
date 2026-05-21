@@ -39,13 +39,15 @@ _estack = ORIGIN(RAM) + LENGTH(RAM); /* end of "RAM" Ram type memory */
 _sstack = _estack - _Min_Stack_Size;
 
 _Min_Heap_Size = 0x2000; /* required amount of heap (8KB — newlib printf needs malloc) */
-_Min_Stack_Size = 0x4000; /* required amount of stack (16KB — printf needs headroom) */
+_Min_Stack_Size = 0x8000; /* required amount of stack (32KB -- main() init path needs >16KB for HAL_RCC_OscConfig + HAL_RCC_ClockConfig) */
 
 /* Memories definition */
 MEMORY
 {
   ROM    (rx)     : ORIGIN = 0x34000400,   LENGTH = 511K
-  RAM    (xrw)    : ORIGIN = 0x34080000,   LENGTH = 1536K
+  /* Shrink RAM to 512K (AXISRAM1 only) so BSS cannot grow into AXISRAM2
+     where the OBB model input buffer lives at 0x34110000.  */
+  RAM    (xrw)    : ORIGIN = 0x34080000,   LENGTH = 512K
   /* Scalar model blob at 0x70200000 (matches FLASH_SCALAR in flash_boot.bat). */
   EXTRAM (rw)           : ORIGIN = 0x70200000,   LENGTH = 3200K
   /* Rectifier model blob at 0x70600000 (matches FLASH_RECTIFIER in flash_boot.bat).
@@ -56,6 +58,10 @@ MEMORY
   /* Non-secure alias A/B test — DCMIPP with MSEC=1 writes to 0x24xxxxxx.
    * Placed at top of AXISRAM1 non-secure alias, away from code/data. */
   RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 384K
+  /* AXISRAM6 -- unused by both NPU models; destination for displaced large
+     BSS arrays (thread stacks, frame scratch) that would otherwise push BSS
+     past 0x34100000 into the OBB input buffer region.  */
+  NPU_SRAM6 (xrw) : ORIGIN = 0x34350000,   LENGTH = 448K
 }
 
 PHDRS
@@ -221,6 +227,18 @@ SECTIONS
     _ebss = .;         /* define a global symbol at bss end */
     __bss_end__ = _ebss;
   } >RAM :data
+
+  /* AXISRAM6 section for large BSS arrays displaced from main RAM to avoid
+     overlapping the OBB model input buffer in AXISRAM2 (0x34110000).  */
+  .npusram6 (NOLOAD) :
+  {
+    . = ALIGN(32);
+    __snpusram6 = .;
+    KEEP(*(.npusram6))
+    KEEP(*(.npusram6*))
+    . = ALIGN(32);
+    __enpusram6 = .;
+  } >NPU_SRAM6
 
   /* User_heap_stack section, used to check that there is enough "RAM" Ram  type memory left */
   ._user_heap_stack :

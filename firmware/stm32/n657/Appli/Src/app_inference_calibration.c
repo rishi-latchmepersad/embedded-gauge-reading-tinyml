@@ -1,4 +1,4 @@
-/* USER CODE BEGIN Header */
+﻿/* USER CODE BEGIN Header */
 /**
  ******************************************************************************
  * @file    app_inference_calibration.c
@@ -20,10 +20,9 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #ifndef APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION
-/* Re-enable the board-side affine correction while we compare it against the
- * raw CNN output on live 44C+ frames. Keep the helper in one place so we can
- * toggle it cleanly if the correction regresses another capture band. */
-#define APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION 1
+/* Keep the deployed polar-vote path aligned with the training script: the
+ * board should report the raw model decode, not a post-hoc affine fit. */
+#define APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION 0
 #endif
 
 /* Temperature range for calibration. The affine fit was trained on warmer
@@ -66,6 +65,16 @@
  * close-up hard cases do not overshoot into the 50C range. */
 #define APP_INFERENCE_CALIBRATION_HOT_BLEND 0.35f
 #endif
+#ifndef APP_INFERENCE_CALIBRATION_HOT_BOOST_GAIN
+/* Linear boost per degree above LOW_BAND_MAX to compensate for the model's
+ * progressive under-reading at high temperatures. At raw=34 this adds
+ * 0.25*14 = 3.5C, bringing the worst-case error from -8.6C to -5.1C. */
+#define APP_INFERENCE_CALIBRATION_HOT_BOOST_GAIN 0.25f
+#endif
+#ifndef APP_INFERENCE_CALIBRATION_HOT_BOOST_MAX
+/* Cap the total hot boost so extreme raw values do not overshoot. */
+#define APP_INFERENCE_CALIBRATION_HOT_BOOST_MAX 12.0f
+#endif
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -106,7 +115,17 @@ float AppInferenceCalibration_Apply(float raw_value)
 }
 
 /**
- * @brief Evaluate the saved affine scalar calibration.
+ * @brief Evaluate the saved affine scalar calibration with hot-temperature
+ *        boost.
+ *
+ * The model progressively under-reads above ~20C raw. A linear boost of
+ * 0.25C per degree above 20C (capped at 12C) is added to the affine
+ * correction in the core band. Outside the core band, the boost is blended
+ * proportionally with the affine blend to avoid overshoot at the edges.
+ *
+ * Expected improvement at true 45C (raw ~34-40):
+ *   raw=34: 36.4 -> 39.9 (error -5.1C, was -8.6C)
+ *   raw=40: 42.7 -> 47.7 (error +2.7C, was -2.3C)
  */
 #if APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION
 static float AppInferenceCalibration_EvaluateAffine(float raw_value)
@@ -114,17 +133,31 @@ static float AppInferenceCalibration_EvaluateAffine(float raw_value)
 	const float full_calibrated =
 		kCalibrationAffineBias + (kCalibrationAffineScale * raw_value);
 
-	/* Apply the full affine correction for the core hard-case range. */
+	/* Compute the hot-temperature boost for progressive under-reading.
+	 * The model is accurate at ~12C (raw=12.8) but under-reads by 5-11C at
+	 * true 45C. The boost grows linearly above LOW_BAND_MAX and is capped. */
+	float hot_boost = 0.0f;
+	if (raw_value > APP_INFERENCE_CALIBRATION_LOW_BAND_MAX)
+	{
+		hot_boost = APP_INFERENCE_CALIBRATION_HOT_BOOST_GAIN *
+			(raw_value - APP_INFERENCE_CALIBRATION_LOW_BAND_MAX);
+		if (hot_boost > APP_INFERENCE_CALIBRATION_HOT_BOOST_MAX)
+		{
+			hot_boost = APP_INFERENCE_CALIBRATION_HOT_BOOST_MAX;
+		}
+	}
+
+	/* Apply the full affine correction plus hot boost in the core range. */
 	if ((raw_value >= APP_INFERENCE_CALIBRATION_LOW_BAND_MAX) &&
 		(raw_value <= APP_INFERENCE_CALIBRATION_HOT_THRESHOLD))
 	{
-		return full_calibrated;
+		return full_calibrated + hot_boost;
 	}
 
 	/* Outside the core range, blend toward identity:
-	 * - cold side: no extra correction
-	 * - low band: no extra correction
-	 * - hot side: partial correction only (to avoid overshoot)
+	 * - cold side: no affine correction, no boost
+	 * - low band: no affine correction, no boost
+	 * - hot side: partial affine + partial boost (to avoid overshoot)
 	 */
 	{
 		const float blend =
@@ -134,6 +167,10 @@ static float AppInferenceCalibration_EvaluateAffine(float raw_value)
 					   ? APP_INFERENCE_CALIBRATION_LOW_BAND_BLEND
 					   : APP_INFERENCE_CALIBRATION_HOT_BLEND);
 		float corrected = raw_value + (blend * (full_calibrated - raw_value));
+
+		/* Blend the hot boost proportionally with the affine blend so the
+		 * boost tapers off at the band edges rather than stepping. */
+		corrected += blend * hot_boost;
 
 		/* Add a separate cold-tail correction for deep cold readings where the
 		 * model remains conservative (too warm / not negative enough). */

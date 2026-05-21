@@ -125,6 +125,10 @@ extern "C" {
 #define CAMERA_IMX335_SEED_EXPOSURE_FRACTION_DENOMINATOR  3U
 #define CAMERA_IMX335_SEED_GAIN_FRACTION_NUMERATOR        1U
 #define CAMERA_IMX335_SEED_GAIN_FRACTION_DENOMINATOR      2U
+/* Prefer a fixed white-balance preset so AWB cannot silently shift the
+ * processed crop between captures. The runtime helper will choose the closest
+ * supported middleware reference at stream start. */
+#define CAMERA_IMX335_WB_REF_COLOR_TEMP               6650U
 /* Match ST's IMX335 middleware and upstream Linux driver ID check. */
 #define IMX335_CHIP_ID_REG                 0x3912U
 #define IMX335_CHIP_ID_VALUE               0x00U

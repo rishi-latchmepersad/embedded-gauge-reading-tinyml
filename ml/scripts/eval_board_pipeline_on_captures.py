@@ -141,10 +141,58 @@ def _parse_args() -> argparse.Namespace:
         help="Safety margin applied to the OBB box before crop decoding.",
     )
     parser.add_argument(
+        "--obb-width-scale",
+        type=float,
+        default=1.0,
+        help="Extra width multiplier applied when decoding the OBB crop box.",
+    )
+    parser.add_argument(
+        "--obb-height-scale",
+        type=float,
+        default=1.0,
+        help="Extra height multiplier applied when decoding the OBB crop box.",
+    )
+    parser.add_argument(
+        "--obb-source-width-scale",
+        type=float,
+        default=1.0,
+        help="Width multiplier applied after projecting the OBB crop into source coordinates.",
+    )
+    parser.add_argument(
+        "--obb-source-height-scale",
+        type=float,
+        default=1.0,
+        help="Height multiplier applied after projecting the OBB crop into source coordinates.",
+    )
+    parser.add_argument(
         "--min-crop-size",
         type=float,
         default=48.0,
         help="Minimum crop edge length after OBB expansion.",
+    )
+    parser.add_argument(
+        "--obb-center-x-bias-pixels",
+        type=float,
+        default=0.0,
+        help="Horizontal pixel bias applied to the OBB crop center.",
+    )
+    parser.add_argument(
+        "--obb-center-y-bias-pixels",
+        type=float,
+        default=0.0,
+        help="Vertical pixel bias applied to the OBB crop center.",
+    )
+    parser.add_argument(
+        "--obb-source-x-bias-pixels",
+        type=float,
+        default=0.0,
+        help="Horizontal pixel bias applied after the OBB crop is projected into source coordinates.",
+    )
+    parser.add_argument(
+        "--obb-source-y-bias-pixels",
+        type=float,
+        default=0.0,
+        help="Vertical pixel bias applied after the OBB crop is projected into source coordinates.",
     )
     parser.add_argument(
         "--no-calibration",
@@ -362,7 +410,15 @@ def main() -> None:
             progress=progress_callback,
             image_size=args.image_size,
             obb_crop_scale=args.obb_crop_scale,
+            obb_width_scale=args.obb_width_scale,
+            obb_height_scale=args.obb_height_scale,
+            obb_source_width_scale=args.obb_source_width_scale,
+            obb_source_height_scale=args.obb_source_height_scale,
             min_crop_size=args.min_crop_size,
+            obb_center_x_bias_pixels=args.obb_center_x_bias_pixels,
+            obb_center_y_bias_pixels=args.obb_center_y_bias_pixels,
+            obb_source_x_bias_pixels=args.obb_source_x_bias_pixels,
+            obb_source_y_bias_pixels=args.obb_source_y_bias_pixels,
             use_calibration=not args.no_calibration,
         )
         _print_result(result)

@@ -1068,13 +1068,23 @@ def _logits_to_temperature(
     min_angle_rad: float,
     sweep_rad: float,
 ) -> np.ndarray:
-    """Convert logits over angle bins into Celsius values."""
+    """Convert logits over angle bins into Celsius values.
+
+    Uses a gauge-constrained circular mean: dead-zone bins outside
+    the gauge sweep are masked to -inf before computing the sin/cos
+    mean, preventing wraparound artifacts.
+    """
     logits = np.asarray(logits, dtype=np.float32)
     if logits.ndim == 1:
         logits = logits[None, ...]
     num_bins = int(logits.shape[-1])
     angles = np.linspace(0.0, 2.0 * math.pi, num_bins, endpoint=False, dtype=np.float32)
-    shifted = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
+    # Mask out dead-zone bins outside the gauge sweep arc.
+    shifted_angles = np.mod(angles - np.float32(min_angle_rad), np.float32(2.0 * math.pi))
+    gauge_mask = shifted_angles <= np.float32(sweep_rad + 1e-6)
+    masked_logits = logits.copy()
+    masked_logits[:, ~gauge_mask] = np.float32(-1e9)
+    shifted = np.exp(masked_logits - np.max(masked_logits, axis=-1, keepdims=True))
     probs = shifted / np.sum(shifted, axis=-1, keepdims=True)
     sin_sum = np.sum(probs * np.sin(angles)[None, :], axis=-1)
     cos_sum = np.sum(probs * np.cos(angles)[None, :], axis=-1)
@@ -1141,6 +1151,9 @@ def _structured_logits_to_temperature(
     structure_mode: Literal["vote", "ordinal", "coarse_to_fine", "two_stage"],
     value_min: float,
     value_max: float,
+    target_mode: Literal["circular", "sweep"] = DEFAULT_TARGET_MODE,
+    min_angle_rad: float = 0.0,
+    sweep_rad: float = 2.0 * math.pi,
     vote_decode_mode: Literal["expectation", "argmax", "topk_expectation"] = DEFAULT_VOTE_DECODE_MODE,
     vote_decode_temperature: float = DEFAULT_VOTE_DECODE_TEMPERATURE,
     vote_decode_topk: int = DEFAULT_VOTE_DECODE_TOPK,
@@ -1149,6 +1162,16 @@ def _structured_logits_to_temperature(
     if structure_mode == "vote":
         if isinstance(logits, dict):
             logits = logits["fine_angle_logits"]
+        if target_mode == "circular":
+            # Circular decode: sin/cos mean is immune to center-pull regression.
+            return _logits_to_temperature(
+                logits,
+                value_min=value_min,
+                value_max=value_max,
+                min_angle_rad=min_angle_rad,
+                sweep_rad=sweep_rad,
+            )
+        # Sweep decode: linear bin expectation (subject to center-pull).
         return _logits_to_temperature_sweep(
             logits,
             value_min=value_min,
@@ -1323,6 +1346,9 @@ class TemperatureMaeCallback(keras.callbacks.Callback):
         structure_mode: Literal["vote", "ordinal", "coarse_to_fine", "two_stage"],
         value_min: float,
         value_max: float,
+        target_mode: Literal["circular", "sweep"] = DEFAULT_TARGET_MODE,
+        min_angle_rad: float = 0.0,
+        sweep_rad: float = 2.0 * math.pi,
         vote_decode_mode: Literal["expectation", "argmax", "topk_expectation"] = DEFAULT_VOTE_DECODE_MODE,
         vote_decode_temperature: float = DEFAULT_VOTE_DECODE_TEMPERATURE,
         vote_decode_topk: int = DEFAULT_VOTE_DECODE_TOPK,
@@ -1334,6 +1360,9 @@ class TemperatureMaeCallback(keras.callbacks.Callback):
         self._structure_mode = structure_mode
         self._value_min = float(value_min)
         self._value_max = float(value_max)
+        self._target_mode = target_mode
+        self._min_angle_rad = float(min_angle_rad)
+        self._sweep_rad = float(sweep_rad)
         self._vote_decode_mode = vote_decode_mode
         self._vote_decode_temperature = float(vote_decode_temperature)
         self._vote_decode_topk = int(vote_decode_topk)
@@ -1353,6 +1382,9 @@ class TemperatureMaeCallback(keras.callbacks.Callback):
             structure_mode=self._structure_mode,
             value_min=self._value_min,
             value_max=self._value_max,
+            target_mode=self._target_mode,
+            min_angle_rad=self._min_angle_rad,
+            sweep_rad=self._sweep_rad,
             vote_decode_mode=self._vote_decode_mode,
             vote_decode_temperature=self._vote_decode_temperature,
             vote_decode_topk=self._vote_decode_topk,
@@ -2235,6 +2267,9 @@ def main() -> None:
         structure_mode=args.structure_mode,
         value_min=spec.min_value,
         value_max=spec.max_value,
+        target_mode=args.target_mode,
+        min_angle_rad=spec.min_angle_rad,
+        sweep_rad=spec.sweep_rad,
         vote_decode_mode=args.vote_decode_mode,
         vote_decode_temperature=args.vote_decode_temperature,
         vote_decode_topk=args.vote_decode_topk,
@@ -2283,6 +2318,9 @@ def main() -> None:
         structure_mode=args.structure_mode,
         value_min=spec.min_value,
         value_max=spec.max_value,
+        target_mode=args.target_mode,
+        min_angle_rad=spec.min_angle_rad,
+        sweep_rad=spec.sweep_rad,
         vote_decode_mode=args.vote_decode_mode,
         vote_decode_temperature=args.vote_decode_temperature,
         vote_decode_topk=args.vote_decode_topk,
@@ -2357,6 +2395,9 @@ def main() -> None:
             structure_mode=args.structure_mode,
             value_min=spec.min_value,
             value_max=spec.max_value,
+            target_mode=args.target_mode,
+            min_angle_rad=spec.min_angle_rad,
+            sweep_rad=spec.sweep_rad,
             vote_decode_mode=args.vote_decode_mode,
             vote_decode_temperature=args.vote_decode_temperature,
             vote_decode_topk=args.vote_decode_topk,

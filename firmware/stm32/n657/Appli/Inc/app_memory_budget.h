@@ -17,15 +17,15 @@ extern "C" {
 /* Shared memory budgets ---------------------------------------------------- */
 /* Keep these in one place so we can tune the app footprint without digging
  * through the thread and capture logic. */
-#define NEWLIB_HEAP_LIMIT_ADDR          0x34110000UL
+#define NEWLIB_HEAP_LIMIT_ADDR          0x34100000UL
 #define INFERENCE_LOG_THREAD_STACK_SIZE_BYTES   8192U
 #define INFERENCE_LOG_QUEUE_DEPTH               8U
 
 #define CAMERA_INIT_THREAD_STACK_SIZE_BYTES     16384U
 #define CAMERA_ISP_THREAD_STACK_SIZE_BYTES      4096U
 #define CAMERA_HEARTBEAT_THREAD_STACK_SIZE_BYTES 1024U
-/* Keep the AI worker stack large enough for the OBB->scalar cascade, but
- * small enough to stay below the ATON input tensor base at 0x34110000. */
+/* Keep the AI worker stack large enough for the OBB->scalar cascade.
+ * Now placed in AXISRAM6 (.npusram6) to avoid the OBB input buffer at 0x34110000.  */
 #define CAMERA_AI_THREAD_STACK_SIZE_BYTES      131072U
 #define BASELINE_RUNTIME_THREAD_STACK_SIZE_BYTES 16384U
 #define IMAGE_CLEANUP_THREAD_STACK_SIZE_BYTES    4096U

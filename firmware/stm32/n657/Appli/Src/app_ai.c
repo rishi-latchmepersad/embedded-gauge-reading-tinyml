@@ -13,6 +13,7 @@
 /* USER CODE BEGIN Includes */
 #include <stddef.h>
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -93,8 +94,12 @@
 #define APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL 2U
 #define APP_AI_CAPTURE_FRAME_BYTES \
 	(APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL)
+/* V28 polar-vote circular CNN: 224x224x7 int8 input (polar RGB, Sobel edges,
+ * vote prior) replaces the old 224x224x3 float RGB input. The element count
+ * here is the total number of int8 values; the name is kept for backward
+ * compatibility with buffer-size macros that reference it. */
 #define APP_AI_MODEL_INPUT_FLOAT_COUNT \
-	(APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * 3U)
+	(APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * 7U)
 /* Bright-object detector threshold used to find the gauge face before
  * cropping and resizing the tensor. 80 was a better fit than 60 on captured
  * frames because 60 was too loose and pulled in most of the background. */
@@ -134,7 +139,35 @@
 #define APP_AI_BYPASS_SCALAR_STAGE_BEFORE_PREPROCESS 0U
 #define APP_AI_MODEL_INPUT_FLOAT_BYTES \
 	(APP_AI_MODEL_INPUT_FLOAT_COUNT * sizeof(float))
-#define APP_AI_MODEL_OUTPUT_FLOAT_BYTES sizeof(float)
+/* V28 circular output: 224 int8 angle-bin logits.  Round up to a cache-line
+ * multiple so the NPU has room for alignment padding. */
+#define APP_AI_MODEL_OUTPUT_INT8_COUNT 224U
+#define APP_AI_MODEL_OUTPUT_FLOAT_BYTES \
+	((APP_AI_MODEL_OUTPUT_INT8_COUNT + APP_AI_CACHE_LINE_BYTES - 1U) / \
+	 APP_AI_CACHE_LINE_BYTES * APP_AI_CACHE_LINE_BYTES)
+/* Circular decode constants from gauge_calibration_parameters.toml.
+ * The gauge sweeps clockwise from 135 deg (2.356 rad) over 270 deg (4.712 rad).
+ * Value range: -30 C to +50 C. */
+#define APP_AI_POLAR_VOTE_BINS 224U
+#define APP_AI_POLAR_VOTE_MIN_ANGLE_RAD 2.356f
+#define APP_AI_POLAR_VOTE_SWEEP_RAD 4.712f
+#define APP_AI_POLAR_VOTE_MIN_VALUE_C (-30.0f)
+#define APP_AI_POLAR_VOTE_MAX_VALUE_C 50.0f
+/* Match the offline V28 recipe by searching a small center neighborhood
+ * before building the polar tensor. The exact training helper uses a
+ * 3x3 sweep around the nominal pivot, which is enough to absorb a few
+ * pixels of framing drift without turning the preprocess into a full
+ * optimizer. */
+#define APP_AI_POLAR_CENTER_SEARCH_PIXELS 5U
+/* V28 polar input quantisation: float [0,1] -> int8 via q = round(x*255) - 128. */
+#define APP_AI_POLAR_INPUT_SCALE 0.0039215687f
+#define APP_AI_POLAR_INPUT_ZERO_POINT (-128)
+/* V28 polar output quantisation: dequantize via float_val = (q - 16) * 0.093767159. */
+#define APP_AI_POLAR_OUTPUT_SCALE 0.093767159f
+#define APP_AI_POLAR_OUTPUT_ZERO_POINT 16
+/* Dead-zone mask constant: logits outside the gauge sweep are set to this
+ * large negative value so they become zero after softmax. */
+#define APP_AI_POLAR_MASK_LOGIT (-1.0e9f)
 #define APP_AI_SCALAR_XSPI2_MODEL_IMAGE_PATH "atonbuf.xSPI2.raw"
 #define APP_AI_RECTIFIER_XSPI2_MODEL_IMAGE_PATH \
 	"atonbuf.rectifier.xSPI2.raw"
@@ -146,12 +179,18 @@
 /* Keep the rectifier crop slightly larger than the raw box so the scalar head
  * still sees the needle and a bit of surrounding dial context. */
 #define APP_AI_RECTIFIER_CROP_SCALE 1.80f
-/* The OBB path only needs a small safety margin around the detected box. */
-#define APP_AI_OBB_CROP_SCALE 1.20f
-/* Reject only extreme OBB crops that drift far from the stable training crop
- * size; moderate shape changes should stay on the fast OBB path. */
-#define APP_AI_OBB_TRAINING_CROP_MIN_RATIO 0.60f
-#define APP_AI_OBB_TRAINING_CROP_MAX_RATIO 1.25f
+/* The exact V28 board replay preferred a tighter OBB crop on the hard cases;
+ * 0.83 beat the board heuristic in the offline sweep. */
+#define APP_AI_OBB_CROP_SCALE 0.83f
+/* Keep the live OBB path aligned with the offline board replay window. The
+ * older 0.60 threshold was too strict and pushed valid crops into fallback. */
+#define APP_AI_OBB_TRAINING_CROP_MIN_RATIO 0.15f
+/* The hot-end rectified crops in the training set can be substantially taller
+ * than the fixed fallback crop, so keep the live OBB path from rejecting them
+ * back to the wrong framing. */
+/* Hot-end training crops can be noticeably taller than the baseline crop.
+ * Keep them on the OBB path instead of forcing the fixed fallback crop. */
+#define APP_AI_OBB_TRAINING_CROP_MAX_RATIO 1.60f
 /* When OBB box size drifts, keep scalar dimensions on training crop but let
  * OBB nudge the crop centre slightly instead of hard-falling to fixed crop. */
 #define APP_AI_OBB_CENTER_BLEND_NUMERATOR 1U
@@ -178,7 +217,7 @@
  * Keeps scalar input distribution within prod's training distribution while
  * letting framing follow the gauge across camera placements. Set to 0 to
  * restore the original (rectifier-sized box * crop scale) behaviour. */
-#define APP_AI_RECTIFIER_FIXED_SCALE_CROP 1U
+#define APP_AI_RECTIFIER_FIXED_SCALE_CROP 0U
 /* Rectifier center is still a little noisy on the current board captures, so
  * bias the crop center back toward the stable training-crop center instead of
  * trusting the raw rectifier center outright. This keeps us close to the
@@ -186,7 +225,7 @@
 #define APP_AI_RECTIFIER_CENTER_BLEND_NUMERATOR 1U
 #define APP_AI_RECTIFIER_CENTER_BLEND_DENOMINATOR 5U
 /* Reject the rectifier's centre prediction if it falls outside the central
- * 80% of the frame in either axis — that's almost certainly a runaway
+ * 80% of the frame in either axis ??? that's almost certainly a runaway
  * prediction and we should fall back to the static training crop instead of
  * shifting the scalar's framing into the bezel/background. Only used when
  * APP_AI_RECTIFIER_FIXED_SCALE_CROP is enabled. */
@@ -215,12 +254,12 @@
 #define APP_AI_XSPI2_CHIP_BASE_ADDR 0x70000000UL
 /* Scalar model: immediately after FSBL (0x70000000) + App (0x70100000, 1 MB
  * window). Must match FLASH_SCALAR address in flash_boot.bat.
- * Size: ~3.07 MB → occupies 0x70200000–0x7051FFFF (50 × 64 KB blocks). */
+ * Size: ~3.07 MB ??? occupies 0x70200000???0x7051FFFF (50 ?? 64 KB blocks). */
 #define APP_AI_XSPI2_SCALAR_BASE_ADDR 0x70200000UL
 #define APP_AI_XSPI2_SCALAR_CHIP_OFFSET (APP_AI_XSPI2_SCALAR_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
 /* Rectifier model: immediately after scalar region (aligned to next 64 KB).
  * Must match FLASH_RECTIFIER address in flash_boot.bat.
- * Size: ~118 KB → occupies 0x70600000–0x7053FFFF (2 × 64 KB blocks). */
+ * Size: ~118 KB ??? occupies 0x70600000???0x7053FFFF (2 ?? 64 KB blocks). */
 #define APP_AI_XSPI2_RECTIFIER_BASE_ADDR 0x70600000UL
 #define APP_AI_XSPI2_RECTIFIER_CHIP_OFFSET (APP_AI_XSPI2_RECTIFIER_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
 #define APP_AI_XSPI2_OBB_BASE_ADDR 0x70700000UL
@@ -260,11 +299,11 @@ static size_t app_ai_forced_crop_width = 0U;
 static size_t app_ai_forced_crop_height = 0U;
 static const char *app_ai_forced_crop_label = NULL;
 __attribute__((section(".xspi2_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
-uint8_t _mem_pool_xSPI2_scalar_full_finetune_from_best_piecewise_calibrated_int8[32U] = {
+uint8_t _mem_pool_xSPI2_polar_vote_circular_v28_int8[32U] = {
 	0U,
 };
 /* Rectifier pool placed in its own section so the linker script can map it to
- * the rectifier flash region at 0x70600000 — matching FLASH_RECTIFIER in
+ * the rectifier flash region at 0x70600000 ??? matching FLASH_RECTIFIER in
  * flash_boot.bat.  The NPU resolves all weight addresses as:
  *   _mem_pool_xSPI2_mobilenetv2_rectifier_hardcase_finetune + internal_offset
  * so this symbol MUST live at the base of the flashed blob. */
@@ -284,7 +323,7 @@ static uint8_t app_ai_scalar_row_scratch[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP
 __attribute__((aligned(APP_AI_CACHE_LINE_BYTES)))
 static uint8_t app_ai_scalar_output_row_scratch[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * 3U * sizeof(float)];
 __attribute__((aligned(APP_AI_CACHE_LINE_BYTES)))
-static uint8_t app_ai_dry_run_frame_scratch[APP_AI_CAPTURE_FRAME_BYTES];
+static uint8_t app_ai_dry_run_frame_scratch[APP_AI_CAPTURE_FRAME_BYTES] __attribute__((section(".npusram6")));
 volatile size_t app_ai_scalar_preprocess_last_row = (size_t)SIZE_MAX;
 /* Trace the scalar resize loop only every so often so we can tell whether it
  * is progressing without flooding UART in the hot path. */
@@ -299,22 +338,22 @@ volatile size_t app_ai_scalar_preprocess_last_row = (size_t)SIZE_MAX;
  *     print('start:', bytes(d[:16]).hex())
  *     print('tail: ', bytes(d[-16:]).hex())" */
 static const uint8_t app_ai_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0xC4U,
-	0xF9U,
-	0xC7U,
-	0xE1U,
-	0x1EU,
-	0xECU,
-	0x14U,
-	0x58U,
-	0xC1U,
-	0x29U,
-	0x6AU,
-	0xA8U,
-	0x44U,
-	0x46U,
-	0xA9U,
-	0x3EU,
+	0xD0U,
+	0xFBU,
+	0xD7U,
+	0x0CU,
+	0xBFU,
+	0xAFU,
+	0xEEU,
+	0x1AU,
+	0xFAU,
+	0x40U,
+	0xD5U,
+	0x63U,
+	0xE2U,
+	0x54U,
+	0xD8U,
+	0x64U,
 };
 static const uint8_t app_ai_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U,
@@ -332,7 +371,7 @@ static const uint8_t app_ai_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U,
 	0x00U,
 	0x00U,
-	0x17U,
+	0x83U,
 };
 /* Rectifier v3 xSPI2 signatures used when the board boots with the rectifier
  * blob already flashed at 0x70200000. */
@@ -436,7 +475,7 @@ static bool app_ai_obb_sig_valid = false;
 /* Declare the generated NN instance locally so the dry-run helper can run the
  * AtoNN runtime on the exact network produced by Cube.AI. */
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
-	scalar_full_finetune_from_best_piecewise_calibrated_int8);
+	polar_vote_circular_v28_int8);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 	mobilenetv2_rectifier_hardcase_finetune);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
@@ -486,11 +525,11 @@ typedef struct
 static const AppAI_ModelStageSpec app_ai_scalar_stage = {
 	.stage_label = "scalar",
 	.model_image_path = APP_AI_SCALAR_XSPI2_MODEL_IMAGE_PATH,
-	.nn_instance = &NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8,
+	.nn_instance = &NN_Instance_polar_vote_circular_v28_int8,
 	.network_init_fn =
-		LL_ATON_EC_Network_Init_scalar_full_finetune_from_best_piecewise_calibrated_int8,
+		LL_ATON_EC_Network_Init_polar_vote_circular_v28_int8,
 	.inference_init_fn =
-		LL_ATON_EC_Inference_Init_scalar_full_finetune_from_best_piecewise_calibrated_int8,
+		LL_ATON_EC_Inference_Init_polar_vote_circular_v28_int8,
 	.uses_rectifier_box = false,
 	.xspi2_chip_offset = APP_AI_XSPI2_SCALAR_CHIP_OFFSET,
 	.xspi2_base_addr = APP_AI_XSPI2_SCALAR_BASE_ADDR,
@@ -664,6 +703,22 @@ static void AppAI_ReadRgbFromYuv422Bilinear(const uint8_t *frame_bytes,
 											size_t frame_height_pixels,
 											float source_x, float source_y,
 											float *r_out, float *g_out, float *b_out);
+static void AppAI_ReadRgbFromRgbBilinear(const uint8_t *rgb_bytes,
+										 size_t frame_width_pixels,
+										 size_t frame_height_pixels,
+										 float source_x, float source_y,
+										 float *r_out, float *g_out, float *b_out);
+static uint8_t AppAI_FindHistogramPercentile(const uint32_t *histogram,
+											 size_t histogram_len,
+											 uint32_t total_count,
+											 float percentile);
+static float AppAI_ScorePolarAlignmentCandidate(
+	const uint8_t *resized_rgb,
+	size_t output_dim,
+	float center_x,
+	float center_y,
+	float max_radius,
+	uint8_t *polar_luma_out);
 static void AppAI_SetForcedCrop(const char *label, size_t x_min,
 								size_t y_min, size_t width, size_t height);
 static void AppAI_ClearForcedCrop(void);
@@ -673,11 +728,21 @@ static bool AppAI_DecodeRectifierCropBox(
 	const LL_Buffer_InfoTypeDef *output_buffer_info,
 	AppAI_SourceCrop *crop_out,
 	AppAI_RectifierBox *rectifier_box_out);
+#if !defined(APP_AI_DISABLE_LEGACY_TOPK_DECODE)
 static bool AppAI_DecodeScalarTopKExpectationFromOutput(
 	const LL_Buffer_InfoTypeDef *output_info,
 	const uint8_t *output_ptr,
 	size_t output_len_bytes,
 	float *decoded_value_out);
+#endif /* !APP_AI_DISABLE_LEGACY_TOPK_DECODE */
+static bool AppAI_DecodeCircularVoteFromOutput(
+	const uint8_t *output_ptr,
+	size_t output_len_bytes,
+	float *decoded_value_out);
+static bool AppAI_PreprocessYuv422FrameToPolarInput(
+	const uint8_t *frame_bytes, size_t frame_size,
+	uint8_t *input_ptr, size_t input_len_bytes,
+	const LL_Buffer_InfoTypeDef *input_info);
 int mcu_cache_clean_range(uint32_t start_addr, uint32_t end_addr)
 {
 	return AppAI_ApplyCacheRange(start_addr, end_addr, true, false);
@@ -3602,104 +3667,33 @@ static bool AppAI_DecodeObbCropBox(
 
 		if ((crop_width_ratio < APP_AI_OBB_TRAINING_CROP_MIN_RATIO) || (crop_width_ratio > APP_AI_OBB_TRAINING_CROP_MAX_RATIO) || (crop_height_ratio < APP_AI_OBB_TRAINING_CROP_MIN_RATIO) || (crop_height_ratio > APP_AI_OBB_TRAINING_CROP_MAX_RATIO))
 		{
-			const float obb_center_blend_f =
-				((float)APP_AI_OBB_CENTER_BLEND_NUMERATOR) /
-				((float)APP_AI_OBB_CENTER_BLEND_DENOMINATOR);
-			float centered_x_min_f = 0.0f;
-			float centered_y_min_f = 0.0f;
-			float centered_x_max_f = 0.0f;
-			float centered_y_max_f = 0.0f;
+			/* When the OBB crop is outside the training window, fall back to the
+			 * exact fixed training crop geometry. The inner-dial center blending
+			 * that was here before shifted the crop away from what the scalar
+			 * model was trained on, causing large reading errors. */
+			const AppGaugeGeometry_Crop_t fixed_crop = AppGaugeGeometry_TrainingCrop(
+				(size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
+				(size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS);
 
 			DebugConsole_Printf(
-				"[AI] OBB crop outside training window: crop=%lux%lu train=%lux%lu ratio=%ld/%ld -> centered training-size OBB fallback.\r\n",
+				"[AI] OBB crop outside training window: crop=%lux%lu train=%lux%lu ratio=%ld/%ld -> fixed training crop fallback.\r\n",
 				(unsigned long)crop_out->width,
 				(unsigned long)crop_out->height,
 				(unsigned long)training_crop_width,
 				(unsigned long)training_crop_height,
 				crop_width_ratio_milli, crop_height_ratio_milli);
 
-			if ((center_x < APP_AI_OBB_CENTER_MIN_RATIO) ||
-				(center_x > APP_AI_OBB_CENTER_MAX_RATIO) ||
-				(center_y < APP_AI_OBB_CENTER_MIN_RATIO) ||
-				(center_y > APP_AI_OBB_CENTER_MAX_RATIO))
-			{
-				return false;
-			}
-
-			AppGaugeGeometry_TrainingCropCenter(
-				(size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
-				(size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS,
-				&training_center_x, &training_center_y);
-
-			centered_x_min_f =
-				((float)training_center_x) +
-				((((float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS) * center_x - (float)training_center_x) * obb_center_blend_f) -
-				(0.5f * (float)training_crop_width);
-			centered_y_min_f =
-				((float)training_center_y) +
-				((((float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS) * center_y - (float)training_center_y) * obb_center_blend_f) -
-				(0.5f * (float)training_crop_height);
-			centered_x_max_f = centered_x_min_f + (float)training_crop_width;
-			centered_y_max_f = centered_y_min_f + (float)training_crop_height;
-
-			if (centered_x_min_f < 0.0f)
-			{
-				centered_x_max_f -= centered_x_min_f;
-				centered_x_min_f = 0.0f;
-			}
-			if (centered_y_min_f < 0.0f)
-			{
-				centered_y_max_f -= centered_y_min_f;
-				centered_y_min_f = 0.0f;
-			}
-			if (centered_x_max_f > source_width_f)
-			{
-				const float shift = centered_x_max_f - source_width_f;
-				centered_x_min_f = (centered_x_min_f > shift) ? (centered_x_min_f - shift) : 0.0f;
-				centered_x_max_f = source_width_f;
-			}
-			if (centered_y_max_f > source_height_f)
-			{
-				const float shift = centered_y_max_f - source_height_f;
-				centered_y_min_f = (centered_y_min_f > shift) ? (centered_y_min_f - shift) : 0.0f;
-				centered_y_max_f = source_height_f;
-			}
-			if ((centered_x_max_f <= centered_x_min_f) ||
-				(centered_y_max_f <= centered_y_min_f))
-			{
-				return false;
-			}
-
-			crop_out->x_min = (size_t)floorf(centered_x_min_f);
-			crop_out->y_min = (size_t)floorf(centered_y_min_f);
-			crop_out->width = (size_t)ceilf(centered_x_max_f) - crop_out->x_min;
-			crop_out->height = (size_t)ceilf(centered_y_max_f) - crop_out->y_min;
-			if (crop_out->width == 0U)
-			{
-				crop_out->width = 1U;
-			}
-			if (crop_out->height == 0U)
-			{
-				crop_out->height = 1U;
-			}
-			if ((crop_out->x_min + crop_out->width) > (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS)
-			{
-				crop_out->width = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS - crop_out->x_min;
-			}
-			if ((crop_out->y_min + crop_out->height) > (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS)
-			{
-				crop_out->height = (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS - crop_out->y_min;
-			}
-			if ((crop_out->width == 0U) || (crop_out->height == 0U))
-			{
-				return false;
-			}
+			crop_out->x_min = fixed_crop.x_min;
+			crop_out->y_min = fixed_crop.y_min;
+			crop_out->width = fixed_crop.width;
+			crop_out->height = fixed_crop.height;
 		}
 	}
 
 	return true;
 }
 
+#if !defined(APP_AI_DISABLE_LEGACY_TOPK_DECODE)
 static bool AppAI_DecodeScalarTopKExpectationFromOutput(
 	const LL_Buffer_InfoTypeDef *output_info,
 	const uint8_t *output_ptr,
@@ -3853,6 +3847,151 @@ static bool AppAI_DecodeScalarTopKExpectationFromOutput(
 	*decoded_value_out = decoded_value;
 	return true;
 }
+#endif /* !APP_AI_DISABLE_LEGACY_TOPK_DECODE */
+
+/* Decode V28 polar-vote circular output: 224 int8 logits -> gauge temperature.
+ *
+ * Steps:
+ *   1. Dequantize int8 logits to float using output scale/zero_point.
+ *   2. Build angle array: angles[i] = 2*pi*i / 224.
+ *   3. Compute shifted_angle[i] = fmod(angle[i] - min_angle_rad, 2*pi).
+ *   4. Mask: if shifted_angle > sweep_rad + eps, set logit to -1e9.
+ *   5. Softmax over 224 masked logits.
+ *   6. Circular mean: sin_sum = sum(probs * sin(angles)), cos_sum = sum(probs * cos(angles)).
+ *   7. mean_angle = fmod(atan2(sin_sum, cos_sum), 2*pi).
+ *   8. fraction = clamp(fmod(mean_angle - min_angle_rad, 2*pi) / sweep_rad, 0, 1).
+ *   9. temperature = min_value + fraction * (max_value - min_value).
+ */
+static bool AppAI_DecodeCircularVoteFromOutput(
+	const uint8_t *output_ptr,
+	size_t output_len_bytes,
+	float *decoded_value_out)
+{
+	/* Bins must match the model output dimension. */
+	const size_t bins = (size_t)APP_AI_POLAR_VOTE_BINS;
+	const float min_angle_rad = APP_AI_POLAR_VOTE_MIN_ANGLE_RAD;
+	const float sweep_rad = APP_AI_POLAR_VOTE_SWEEP_RAD;
+	const float min_value_c = APP_AI_POLAR_VOTE_MIN_VALUE_C;
+	const float max_value_c = APP_AI_POLAR_VOTE_MAX_VALUE_C;
+	const float mask_logit = APP_AI_POLAR_MASK_LOGIT;
+	const float scale = APP_AI_POLAR_OUTPUT_SCALE;
+	const int zero_point = APP_AI_POLAR_OUTPUT_ZERO_POINT;
+	const float two_pi = 2.0f * 3.14159265358979323846f;
+	float logits[224U];
+	float probs[224U];
+	float angles[224U];
+	float sin_sum = 0.0f;
+	float cos_sum = 0.0f;
+	float max_logit = -1.0e30f;
+	float sum_exp = 0.0f;
+	float mean_angle = 0.0f;
+	float fraction = 0.0f;
+	float temperature = 0.0f;
+	size_t i = 0U;
+
+	if ((output_ptr == NULL) || (decoded_value_out == NULL))
+	{
+		return false;
+	}
+
+	/* We expect exactly 224 int8 output elements. */
+	if (output_len_bytes < bins)
+	{
+		return false;
+	}
+
+	/* Step 1: dequantize int8 logits and build angle array. */
+	for (i = 0U; i < bins; ++i)
+	{
+		/* Dequantize: float_val = (q - zero_point) * scale. */
+		const int32_t q_val = (int32_t)(*(const int8_t *)&output_ptr[i]);
+		const float logit_val = ((float)(q_val - zero_point)) * scale;
+		const float angle = (two_pi * (float)i) / (float)bins;
+		const float shifted = angle - min_angle_rad;
+		float shifted_angle = shifted;
+		/* fmod-equivalent: wrap shifted_angle into [0, 2*pi). */
+		if (shifted_angle < 0.0f)
+		{
+			shifted_angle += two_pi;
+		}
+		if (shifted_angle >= two_pi)
+		{
+			shifted_angle -= two_pi;
+		}
+		/* Step 2-3: mask bins outside the gauge sweep. */
+		if (shifted_angle > (sweep_rad + 1.0e-6f))
+		{
+			logits[i] = mask_logit;
+		}
+		else
+		{
+			logits[i] = logit_val;
+		}
+		angles[i] = angle;
+	}
+
+	/* Step 4: softmax. Find max for numerical stability. */
+	for (i = 0U; i < bins; ++i)
+	{
+		if (logits[i] > max_logit)
+		{
+			max_logit = logits[i];
+		}
+	}
+
+	/* Compute exp(logit - max) and accumulate. */
+	for (i = 0U; i < bins; ++i)
+	{
+		probs[i] = expf(logits[i] - max_logit);
+		sum_exp += probs[i];
+	}
+
+	/* Normalize and compute circular mean. */
+	if ((sum_exp <= 0.0f) || !AppAI_IsFiniteFloat(sum_exp))
+	{
+		return false;
+	}
+
+	for (i = 0U; i < bins; ++i)
+	{
+		probs[i] /= sum_exp;
+		sin_sum += probs[i] * sinf(angles[i]);
+		cos_sum += probs[i] * cosf(angles[i]);
+	}
+
+	/* Step 5: circular mean angle. */
+	mean_angle = atan2f(sin_sum, cos_sum);
+	if (mean_angle < 0.0f)
+	{
+		mean_angle += two_pi;
+	}
+
+	/* Step 6: convert mean angle to gauge fraction and temperature. */
+	fraction = (mean_angle - min_angle_rad) / sweep_rad;
+	if (fraction < 0.0f)
+	{
+		fraction += (two_pi / sweep_rad);
+	}
+	/* Clamp fraction to [0, 1]. */
+	if (fraction < 0.0f)
+	{
+		fraction = 0.0f;
+	}
+	if (fraction > 1.0f)
+	{
+		fraction = 1.0f;
+	}
+
+	temperature = min_value_c + fraction * (max_value_c - min_value_c);
+
+	if (!AppAI_IsFiniteFloat(temperature))
+	{
+		return false;
+	}
+
+	*decoded_value_out = temperature;
+	return true;
+}
 
 static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 									const uint8_t *frame_bytes, size_t frame_size,
@@ -3944,8 +4083,20 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		return false;
 	}
 #else
-	if (input_info->nbits <= 8U)
+	if ((stage == &app_ai_scalar_stage) && (input_info->nbits <= 8U))
 	{
+		/* V28 polar-vote model: 7-channel int8 polar input. */
+		if (!AppAI_PreprocessYuv422FrameToPolarInput(frame_bytes, frame_size,
+														  input_bytes_ptr, input_len_bytes,
+														  input_info))
+		{
+			AppAI_ClearForcedCrop();
+			return false;
+		}
+	}
+	else if (input_info->nbits <= 8U)
+	{
+		/* Non-scalar int8 stages (rectifier, OBB): legacy 3-channel path. */
 		if (!AppAI_PreprocessYuv422FrameToInt8Input(frame_bytes, frame_size,
 													input_bytes_ptr, input_len_bytes,
 													input_info))
@@ -4132,24 +4283,36 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 
 	/* Cache the output value before xSPI2 reconfiguration, because the
 	 * internal buffer info pointers will become stale after reconfigure.
-	 * Some scalar exports expose an int8/uint8 head output, so decode using
-	 * quant params when the buffer is <= 8 bits. */
+	 * V28 polar-vote model: decode 224 int8 logits via circular softmax.
+	 * Fallback: single-scalar quantized decode for rectifier/OBB stages. */
 	if ((stage == &app_ai_scalar_stage) &&
-		AppAI_DecodeScalarTopKExpectationFromOutput(
-			output_info,
+		AppAI_DecodeCircularVoteFromOutput(
 			output_ptr,
 			output_len_bytes,
 			&output_value))
 	{
 		DebugConsole_Printf(
-			"[AI] Scalar decode mode: topk_expectation topk=%lu temp=%lu.%01lu bins=%lu\r\n",
+			"[AI] Scalar decode mode: circular_vote bins=%lu\r\n",
+			(unsigned long)APP_AI_POLAR_VOTE_BINS);
+	}
+#if !defined(APP_AI_DISABLE_LEGACY_TOPK_DECODE)
+	else if ((stage == &app_ai_scalar_stage) &&
+			 AppAI_DecodeScalarTopKExpectationFromOutput(
+				 output_info,
+				 output_ptr,
+				 output_len_bytes,
+				 &output_value))
+	{
+		DebugConsole_Printf(
+			"[AI] Scalar decode mode (legacy fallback): topk_expectation topk=%lu temp=%lu.%01lu bins=%lu\r\n",
 			(unsigned long)APP_AI_SCALAR_DECODE_TOPK,
 			(unsigned long)APP_AI_SCALAR_DECODE_TEMPERATURE,
 			(unsigned long)((APP_AI_SCALAR_DECODE_TEMPERATURE * 10.0f)) % 10UL,
 			(unsigned long)((output_info->nbits <= 8U)
-								? output_len_bytes
-								: (output_len_bytes / sizeof(float))));
+							? output_len_bytes
+							: (output_len_bytes / sizeof(float))));
 	}
+#endif /* !APP_AI_DISABLE_LEGACY_TOPK_DECODE */
 	else if (output_info->nbits <= 8U)
 	{
 		float scale_value = 1.0f;
@@ -4825,8 +4988,10 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 									  size_t frame_size)
 {
 	const uint8_t *safe_frame_bytes = frame_bytes;
+	const LL_Buffer_InfoTypeDef *rectifier_output_info = NULL;
 	const LL_Buffer_InfoTypeDef *obb_output_info = NULL;
 	const LL_Buffer_InfoTypeDef *scalar_output_info = NULL;
+	AppAI_RectifierBox rectifier_box = {0.0f, 0.0f, 0.0f, 0.0f};
 	AppAI_ObbBox obb_box = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 	AppAI_SourceCrop full_frame_crop = {0U, 0U,
 										(size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
@@ -4842,7 +5007,10 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		fixed_training_geometry.height,
 	};
 	AppAI_SourceCrop scalar_crop = {0U, 0U, 0U, 0U};
+	bool scalar_crop_from_rectifier = false;
+	bool scalar_crop_from_obb = false;
 	float obb_output_value = 0.0f;
+	float rectifier_output_value = 0.0f;
 	float scalar_output_value = 0.0f;
 
 	(void)DebugConsole_WriteString("[AI] Dry-run entry.\r\n");
@@ -4861,9 +5029,37 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		return false;
 	}
 
-	if (APP_AI_ENABLE_OBB_STAGE != 0U)
+	(void)DebugConsole_WriteString(
+		"[AI] Dry-run model init OK; launching rectifier stage.\r\n");
+
+	if (AppAI_RunStageInference(&app_ai_rectifier_stage, safe_frame_bytes, frame_size,
+								&full_frame_crop, &rectifier_output_info,
+								&rectifier_output_value) &&
+		AppAI_DecodeRectifierCropBox(rectifier_output_info, &scalar_crop,
+								 &rectifier_box))
 	{
-		(void)DebugConsole_WriteString("[AI] Dry-run model init OK; launching OBB stage.\r\n");
+		AppAI_LogRectifierResult(rectifier_output_info, &rectifier_box);
+		DebugConsole_Printf(
+			"[AI] Rectifier crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+			(unsigned long)scalar_crop.x_min,
+			(unsigned long)scalar_crop.y_min,
+			(unsigned long)scalar_crop.width,
+			(unsigned long)scalar_crop.height);
+		DebugConsole_Printf(
+			"[AI] Scalar stage using rectifier crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+			(unsigned long)scalar_crop.x_min,
+			(unsigned long)scalar_crop.y_min,
+			(unsigned long)scalar_crop.width,
+			(unsigned long)scalar_crop.height);
+		scalar_crop_from_rectifier = true;
+	}
+	else
+	{
+		(void)DebugConsole_WriteString(
+			"[AI] Rectifier stage or decode failed; trying OBB fallback.\r\n");
+
+#if APP_AI_ENABLE_OBB_STAGE != 0U
+		(void)DebugConsole_WriteString("[AI] Dry-run model init OK; launching OBB fallback stage.\r\n");
 
 		if (AppAI_RunStageInference(&app_ai_obb_stage, safe_frame_bytes, frame_size,
 									&full_frame_crop, &obb_output_info, &obb_output_value) &&
@@ -4871,87 +5067,96 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		{
 			AppAI_LogObbResult(obb_output_info, &obb_box);
 			DebugConsole_Printf(
-				"[AI] OBB crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+				"[AI] OBB fallback crop: x=%lu y=%lu w=%lu h=%lu\r\n",
 				(unsigned long)scalar_crop.x_min,
 				(unsigned long)scalar_crop.y_min,
 				(unsigned long)scalar_crop.width,
 				(unsigned long)scalar_crop.height);
-			DebugConsole_WriteString(
-				"[AI] Scalar stage using OBB crop handoff.\r\n");
-
-#if APP_AI_BYPASS_SCALAR_STAGE_BEFORE_PREPROCESS
-			(void)DebugConsole_WriteString(
-				"[AI] Scalar stage bypass active; skipping scalar handoff.\r\n");
-			app_ai_last_inference_valid = false;
-			app_ai_last_inference_value = 0.0f;
-			return true;
-#else
-#if APP_AI_BYPASS_SCALAR_INFERENCE
-			(void)DebugConsole_WriteString(
-				"[AI] Scalar handoff active; preprocess-only mode enabled.\r\n");
-#else
-			(void)DebugConsole_WriteString(
-				"[AI] Scalar handoff active; full scalar inference enabled.\r\n");
-#endif
-			if (AppAI_RunStageInference(&app_ai_scalar_stage, safe_frame_bytes, frame_size,
-										&scalar_crop, &scalar_output_info, &scalar_output_value))
-			{
-				/* Log the inference result immediately after inference, before xSPI2
-				 * reconfiguration for the next stage. This avoids stale pointer issues
-				 * when the internal buffer info pointers become invalid after reconfigure. */
-				{
-					char cached_output_line[96];
-					AppInferenceLog_FormatFloatMicros(
-						cached_output_line, sizeof(cached_output_line),
-						"[AI] Model output (cached): ", scalar_output_value);
-					DebugConsole_WriteString(cached_output_line);
-				}
-				app_ai_last_inference_value =
-					AppAI_TraceAndApplyInferenceCalibration(scalar_output_value);
-				app_ai_last_inference_valid = true;
-				return true;
-			}
-
-			(void)DebugConsole_WriteString(
-				"[AI] OBB scalar stage failed; falling back to fixed training crop.\r\n");
-#endif
+			DebugConsole_Printf(
+				"[AI] Scalar stage using OBB fallback crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+				(unsigned long)scalar_crop.x_min,
+				(unsigned long)scalar_crop.y_min,
+				(unsigned long)scalar_crop.width,
+				(unsigned long)scalar_crop.height);
+			scalar_crop_from_obb = true;
 		}
 		else
+#endif
 		{
 			(void)DebugConsole_WriteString(
-				"[AI] OBB stage or decode failed; falling back to fixed training crop.\r\n");
+				"[AI] OBB fallback failed; using fixed training crop.\r\n");
 		}
+	}
+
+	if (!scalar_crop_from_rectifier && !scalar_crop_from_obb)
+	{
+		scalar_crop = fixed_training_crop;
+		DebugConsole_Printf(
+			"[AI] Fixed training crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+			(unsigned long)scalar_crop.x_min,
+			(unsigned long)scalar_crop.y_min,
+			(unsigned long)scalar_crop.width,
+			(unsigned long)scalar_crop.height);
+		DebugConsole_Printf(
+			"[AI] Scalar stage using fixed training crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+			(unsigned long)scalar_crop.x_min,
+			(unsigned long)scalar_crop.y_min,
+			(unsigned long)scalar_crop.width,
+			(unsigned long)scalar_crop.height);
+	}
+
+#if APP_AI_BYPASS_SCALAR_STAGE_BEFORE_PREPROCESS
+	if (scalar_crop_from_rectifier)
+	{
+		(void)DebugConsole_WriteString(
+			"[AI] Scalar stage bypass active; skipping rectifier-crop handoff.\r\n");
+	}
+	else if (scalar_crop_from_obb)
+	{
+		(void)DebugConsole_WriteString(
+			"[AI] Scalar stage bypass active; skipping OBB fallback handoff.\r\n");
 	}
 	else
 	{
 		(void)DebugConsole_WriteString(
-			"[AI] OBB stage disabled; using fixed training crop.\r\n");
+			"[AI] Scalar stage bypass active; skipping fixed-crop handoff.\r\n");
 	}
-
-	(void)DebugConsole_WriteString(
-		"[AI] Dry-run model init OK; launching fixed training crop fallback.\r\n");
-
-	scalar_crop = fixed_training_crop;
-	DebugConsole_Printf(
-		"[AI] Fixed training crop: x=%lu y=%lu w=%lu h=%lu\r\n",
-		(unsigned long)scalar_crop.x_min,
-		(unsigned long)scalar_crop.y_min,
-		(unsigned long)scalar_crop.width,
-		(unsigned long)scalar_crop.height);
-
-#if APP_AI_BYPASS_SCALAR_STAGE_BEFORE_PREPROCESS
-	(void)DebugConsole_WriteString(
-		"[AI] Scalar stage bypass active; skipping fixed-crop handoff.\r\n");
 	app_ai_last_inference_valid = false;
 	app_ai_last_inference_value = 0.0f;
 	return true;
 #else
 #if APP_AI_BYPASS_SCALAR_INFERENCE
-	(void)DebugConsole_WriteString(
-		"[AI] Scalar handoff active; preprocess-only mode enabled.\r\n");
+	if (scalar_crop_from_rectifier)
+	{
+		(void)DebugConsole_WriteString(
+			"[AI] Scalar handoff active; rectifier-crop preprocess-only mode enabled.\r\n");
+	}
+	else if (scalar_crop_from_obb)
+	{
+		(void)DebugConsole_WriteString(
+			"[AI] Scalar handoff active; OBB fallback preprocess-only mode enabled.\r\n");
+	}
+	else
+	{
+		(void)DebugConsole_WriteString(
+			"[AI] Scalar handoff active; preprocess-only mode enabled.\r\n");
+	}
 #else
-	(void)DebugConsole_WriteString(
-		"[AI] Scalar handoff active; full scalar inference enabled.\r\n");
+	if (scalar_crop_from_rectifier)
+	{
+		(void)DebugConsole_WriteString(
+			"[AI] Scalar handoff active; rectifier-crop scalar inference enabled.\r\n");
+	}
+	else if (scalar_crop_from_obb)
+	{
+		(void)DebugConsole_WriteString(
+			"[AI] Scalar handoff active; OBB fallback scalar inference enabled.\r\n");
+	}
+	else
+	{
+		(void)DebugConsole_WriteString(
+			"[AI] Scalar handoff active; full scalar inference enabled.\r\n");
+	}
 #endif
 	if (!AppAI_RunStageInference(&app_ai_scalar_stage, safe_frame_bytes, frame_size,
 								 &scalar_crop, &scalar_output_info, &scalar_output_value))
@@ -4984,7 +5189,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 static const LL_Buffer_InfoTypeDef *AppAI_GetInputBufferInfo(void)
 {
 	const LL_Buffer_InfoTypeDef *input_info =
-		NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8.network
+		NN_Instance_polar_vote_circular_v28_int8.network
 			->input_buffers_info();
 
 	if ((input_info == NULL) || (input_info->name == NULL))
@@ -4998,7 +5203,7 @@ static const LL_Buffer_InfoTypeDef *AppAI_GetInputBufferInfo(void)
 static const LL_Buffer_InfoTypeDef *AppAI_GetOutputBufferInfo(void)
 {
 	const LL_Buffer_InfoTypeDef *output_info =
-		NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8.network
+		NN_Instance_polar_vote_circular_v28_int8.network
 			->output_buffers_info();
 
 	if ((output_info == NULL) || (output_info->name == NULL))
@@ -5076,7 +5281,7 @@ static void AppAI_LogScalarInternalOutputProbe(
 	}
 
 	internal_buffers =
-		LL_ATON_Internal_Buffers_Info_scalar_full_finetune_from_best_piecewise_calibrated_int8();
+		LL_ATON_Internal_Buffers_Info_polar_vote_circular_v28_int8();
 	if ((internal_buffers != NULL) && !internal_name_dump_done)
 	{
 		size_t entry_index = 0U;
@@ -5212,7 +5417,7 @@ static void AppAI_LogInferenceResult(
 
 	internal_buffers =
 		LL_ATON_Internal_Buffers_Info(
-			&NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8);
+			&NN_Instance_polar_vote_circular_v28_int8);
 	quantize_output_info = AppAI_FindFirstBufferInfoByNames(internal_buffers,
 															quantize_output_names, sizeof(quantize_output_names) / sizeof(quantize_output_names[0]));
 	sub_output_info = AppAI_FindFirstBufferInfoByNames(internal_buffers,
@@ -5965,9 +6170,14 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 		return false;
 	}
 
+	/* Minimum 3-channel float input (224*224*3) for RGB models like OBB.
+	 * The scalar model uses 7-channel int8 via the polar path, so this
+	 * float path only runs for non-scalar stages with nbits > 8. */
+	const size_t min_float_count = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * 3U;
+	const size_t min_float_bytes = min_float_count * sizeof(float);
 	if ((frame_size < (size_t)APP_AI_CAPTURE_FRAME_BYTES) ||
-		(input_float_count < (size_t)APP_AI_MODEL_INPUT_FLOAT_COUNT) ||
-		(input_len_bytes < (size_t)APP_AI_MODEL_INPUT_FLOAT_BYTES))
+		(input_float_count < min_float_count) ||
+		(input_len_bytes < min_float_bytes))
 	{
 		DebugConsole_Printf("[AI] PreprocessYuv422FrameToFloatInput: Buffer size mismatch: frame_size=%lu, input_float_count=%lu, input_len_bytes=%lu\r\n", 
 						   (unsigned long)frame_size, (unsigned long)input_float_count, (unsigned long)input_len_bytes);
@@ -6744,6 +6954,614 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToInt8Input(
 	return true;
 }
 
+/* V28 polar-vote preprocessing: YUV422 -> 224x224x7 int8 polar input.
+ *
+ * Channels 0-2: polar-projected RGB (normalized 0-1, mapped to int8).
+ * Channels 3-5: Sobel edge channels on polar luma (angular, radial gradients).
+ * Channel 6: vote prior (weighted darkness + edge evidence with radial mask).
+ *
+ * Polar projection maps each (row, col) in the 224x224 output to source (x, y):
+ *   angle = 2 * pi * col / 224
+ *   radius = (row / 224) * max_radius
+ *   source_y = center_y - radius * sin(angle)   [Y axis inverted]
+
+ *
+ * Sobel edges are computed on the polar luma:
+ *   Channel 4: |dI/dtheta| (horizontal Sobel = angular derivative)
+ *   Channel 5: |dI/dr|     (vertical Sobel = radial derivative)
+ *   Each normalized by its 99th percentile.
+ *
+ * Input quantisation: float [0,1] -> int8 via q = round(x*255) - 128, clamped [-128, 127].
+ */
+static float __attribute__((noinline)) AppAI_ScorePolarAlignmentCandidate(
+	const uint8_t *resized_rgb,
+	size_t output_dim,
+	float center_x,
+	float center_y,
+	float max_radius,
+	uint8_t *polar_luma_out)
+{
+	const float two_pi = 2.0f * 3.14159265358979323846f;
+	const size_t bins = (size_t)APP_AI_POLAR_VOTE_BINS;
+	uint32_t luma_hist[256U] = {0U};
+	const uint32_t total_luma_samples = (uint32_t)(output_dim * output_dim);
+	const float row_denominator = (output_dim > 1U) ? (float)(output_dim - 1U) : 1.0f;
+	float continuity_sum = 0.0f;
+
+	if ((resized_rgb == NULL) || (polar_luma_out == NULL) || (output_dim == 0U))
+	{
+		return 0.0f;
+	}
+
+	for (size_t row = 0U; row < output_dim; ++row)
+	{
+		for (size_t col = 0U; col < output_dim; ++col)
+		{
+			const float angle = two_pi * (float)col / (float)bins;
+			const float radius = ((float)row / (float)output_dim) * max_radius;
+			const float src_x = center_x + (radius * cosf(angle));
+			const float src_y = center_y - (radius * sinf(angle));
+			float out_r = 0.0f;
+			float out_g = 0.0f;
+			float out_b = 0.0f;
+			float luma_f = 0.0f;
+			int32_t luma_q = 0;
+
+			if ((src_x >= 0.0f) && (src_x < (float)output_dim) &&
+			    (src_y >= 0.0f) && (src_y < (float)output_dim))
+			{
+				AppAI_ReadRgbFromRgbBilinear(
+					resized_rgb, output_dim, output_dim,
+					src_x, src_y, &out_r, &out_g, &out_b);
+			}
+
+			luma_f = (0.299f * out_r) + (0.587f * out_g) + (0.114f * out_b);
+			luma_q = (int32_t)lroundf(luma_f * 255.0f);
+			if (luma_q < 0)
+			{
+				luma_q = 0;
+			}
+			else if (luma_q > 255)
+			{
+				luma_q = 255;
+			}
+
+			polar_luma_out[row * output_dim + col] = (uint8_t)luma_q;
+			luma_hist[(uint8_t)luma_q]++;
+		}
+	}
+
+	{
+		const uint8_t luma_threshold = AppAI_FindHistogramPercentile(
+			luma_hist, 256U, total_luma_samples, 0.38f);
+
+		for (size_t col = 0U; col < output_dim; ++col)
+		{
+			const float radial_mask_column = 1.0f;
+			float best_run = 0.0f;
+			float run = 0.0f;
+			for (size_t row = 0U; row < output_dim; ++row)
+			{
+				const float row_position = (float)row / row_denominator;
+				const float radial_mask =
+					((row_position >= 0.18f) && (row_position <= 0.95f)) ? radial_mask_column : 0.0f;
+				const uint8_t luma_q = polar_luma_out[row * output_dim + col];
+				if ((radial_mask > 0.5f) && (luma_q <= luma_threshold))
+				{
+					run += 1.0f;
+					if (run > best_run)
+					{
+						best_run = run;
+					}
+				}
+				else
+				{
+					run = 0.0f;
+				}
+			}
+			continuity_sum += best_run;
+		}
+	}
+
+	{
+		const uint32_t total_cells = (uint32_t)(output_dim * bins);
+		return continuity_sum / (float)((total_cells > 0U) ? total_cells : 1U);
+	}
+}
+
+static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToPolarInput(
+	const uint8_t *frame_bytes, size_t frame_size,
+	uint8_t *input_ptr, size_t input_len_bytes,
+	const LL_Buffer_InfoTypeDef *input_info)
+{
+	const size_t source_width = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+	const size_t source_height = (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+	const size_t output_dim = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+	const size_t channels = 7U;
+	const size_t required_bytes = output_dim * output_dim * channels;
+	const float two_pi = 2.0f * 3.14159265358979323846f;
+	const size_t bins = (size_t)APP_AI_POLAR_VOTE_BINS;
+
+	/* Polar projection center and radius in the resized 224x224 coordinate
+	 * space (matching the training pipeline crop -> resize_with_pad -> polar
+	 * flow).  The inverse resize_with_pad transform maps each polar pixel
+	 * back to the correct source frame coordinate. */
+	float center_x = 0.0f;
+	float center_y = 0.0f;
+	float max_radius = 0.0f;
+	float resize_scale = 1.0f;   /* 224 / max(crop_w, crop_h) */
+	float pad_x_f = 0.0f;       /* horizontal padding in resized space */
+	float pad_y_f = 0.0f;       /* vertical padding in resized space */
+	float crop_x_min_f = 0.0f;  /* crop origin in frame coords */
+	float crop_y_min_f = 0.0f;
+	float crop_width_f = 0.0f;   /* crop dims needed for padded-area check */
+	float crop_height_f = 0.0f;
+	float resized_w = 0.0f;     /* crop dims after resize_with_pad (in 224 space) */
+	float resized_h = 0.0f;
+	/* Scratch for polar luma plane: 224x224 uint8 (~49 KB in BSS).
+	 * Stores quantised luma as uint8 [0..255] instead of float [0..1]
+	 * to save ~148 KB per plane.  Gradients are recomputed on-the-fly
+	 * in a second pass instead of being stored in separate arrays,
+	 * eliminating two ~197 KB float arrays (~394 KB total savings). */
+	static uint8_t resized_rgb[224U * 224U * 3U] __attribute__((section(".npusram6"))); /* training-style resized crop */
+	static uint8_t polar_luma[224U * 224U] __attribute__((section(".npusram6")));  /* exact V28 polar luma scratch */
+
+	if ((frame_bytes == NULL) || (input_ptr == NULL) || (input_info == NULL))
+	{
+		return false;
+	}
+	if ((frame_size < (size_t)APP_AI_CAPTURE_FRAME_BYTES) ||
+		(input_len_bytes < required_bytes))
+	{
+		DebugConsole_Printf(
+			"[AI] PolarInput: buffer size mismatch frame=%lu input=%lu required=%lu\r\n",
+			(unsigned long)frame_size, (unsigned long)input_len_bytes,
+			(unsigned long)required_bytes);
+		return false;
+	}
+
+	/* Determine crop region from forced crop or training defaults. */
+	{
+		size_t crop_x_min = 0U;
+		size_t crop_y_min = 0U;
+		size_t crop_width = source_width;
+		size_t crop_height = source_height;
+
+		if (app_ai_forced_crop_active)
+		{
+			crop_x_min = app_ai_forced_crop_x_min;
+			crop_y_min = app_ai_forced_crop_y_min;
+			crop_width = app_ai_forced_crop_width;
+			crop_height = app_ai_forced_crop_height;
+		}
+		else
+		{
+			/* Use the training crop ratios as defaults. */
+			crop_x_min = (size_t)((float)source_width * APP_AI_TRAINING_CROP_X_MIN_RATIO);
+			crop_y_min = (size_t)((float)source_height * APP_AI_TRAINING_CROP_Y_MIN_RATIO);
+			crop_width = (size_t)((float)source_width * (APP_AI_TRAINING_CROP_X_MAX_RATIO - APP_AI_TRAINING_CROP_X_MIN_RATIO));
+			crop_height = (size_t)((float)source_height * (APP_AI_TRAINING_CROP_Y_MAX_RATIO - APP_AI_TRAINING_CROP_Y_MIN_RATIO));
+		}
+
+		/* Clamp crop to frame bounds. */
+		if (crop_x_min >= source_width)
+		{
+			crop_x_min = source_width - 1U;
+			crop_width = 1U;
+		}
+		if (crop_y_min >= source_height)
+		{
+			crop_y_min = source_height - 1U;
+			crop_height = 1U;
+		}
+		if ((crop_x_min + crop_width) > source_width)
+		{
+			crop_width = source_width - crop_x_min;
+		}
+		if ((crop_y_min + crop_height) > source_height)
+		{
+			crop_height = source_height - crop_y_min;
+		}
+
+		/* Training pipeline: crop -> tf.image.resize_with_pad(224x224) ->
+		 * polar(center=112,112, r=112).  We replicate this by computing
+		 * the inverse resize_with_pad transform so each polar pixel maps
+		 * back to the correct source frame coordinate. */
+		crop_x_min_f = (float)crop_x_min;
+		crop_y_min_f = (float)crop_y_min;
+		crop_width_f = (float)crop_width;
+		crop_height_f = (float)crop_height;
+		resize_scale = 224.0f / fmaxf(crop_width_f, crop_height_f);
+		resized_w = crop_width_f * resize_scale;
+		resized_h = crop_height_f * resize_scale;
+		pad_x_f = (224.0f - resized_w) * 0.5f;
+		pad_y_f = (224.0f - resized_h) * 0.5f;
+		/* Polar center and max_radius in the resized 224x224 space. */
+		center_x = 112.0f;
+		center_y = 112.0f;
+		max_radius = 112.0f;
+
+		/* newlib-nano does not support %f in printf; use integer formatting. */
+		{
+			const long scale_milli = (long)(resize_scale * 1000.0f + 0.5f);
+			const long padx_milli = (long)(pad_x_f * 1000.0f + 0.5f);
+			const long pady_milli = (long)(pad_y_f * 1000.0f + 0.5f);
+			DebugConsole_Printf("[AI] Polar crop: cx=%ld cy=%ld r=%ld scale=%ld.%03ld pad=(%ld.%03ld,%ld.%03ld)\r\n",
+				(long)center_x, (long)center_y, (long)max_radius,
+				scale_milli / 1000L, scale_milli % 1000L,
+				padx_milli / 1000L, padx_milli % 1000L,
+				pady_milli / 1000L, pady_milli % 1000L);
+		}
+	}
+
+	/* Step 1: build the resized 224x224 crop exactly like the offline
+	 * resize_with_pad path, using a temporary uint8 RGB buffer. */
+	(void)memset(input_ptr, 0, required_bytes);
+	(void)memset(resized_rgb, 0, sizeof(resized_rgb));
+	(void)memset(polar_luma, 0, sizeof(polar_luma));
+
+	for (size_t out_y = 0U; out_y < output_dim; ++out_y)
+	{
+		for (size_t out_x = 0U; out_x < output_dim; ++out_x)
+		{
+			const float resized_x = (float)out_x;
+			const float resized_y = (float)out_y;
+			uint8_t out_r = 0U;
+			uint8_t out_g = 0U;
+			uint8_t out_b = 0U;
+
+			if ((resized_x >= pad_x_f) && (resized_x < (pad_x_f + resized_w)) &&
+			    (resized_y >= pad_y_f) && (resized_y < (pad_y_f + resized_h)))
+			{
+				float crop_x = ((resized_x + 0.5f) / resize_scale) - 0.5f;
+				float crop_y = ((resized_y + 0.5f) / resize_scale) - 0.5f;
+				if (crop_x < 0.0f)
+				{
+					crop_x = 0.0f;
+				}
+				else if (crop_x > (crop_width_f - 1.0f))
+				{
+					crop_x = crop_width_f - 1.0f;
+				}
+				if (crop_y < 0.0f)
+				{
+					crop_y = 0.0f;
+				}
+				else if (crop_y > (crop_height_f - 1.0f))
+				{
+					crop_y = crop_height_f - 1.0f;
+				}
+
+				const float total_crop_x = crop_x_min_f + crop_x;
+				const float total_crop_y = crop_y_min_f + crop_y;
+				float sample_r = 0.0f;
+				float sample_g = 0.0f;
+				float sample_b = 0.0f;
+
+				AppAI_ReadRgbFromYuv422Bilinear(
+					frame_bytes, frame_size, source_width, source_height,
+					total_crop_x, total_crop_y,
+					&sample_r, &sample_g, &sample_b);
+
+				out_r = (uint8_t)lroundf(sample_r * 255.0f);
+				out_g = (uint8_t)lroundf(sample_g * 255.0f);
+				out_b = (uint8_t)lroundf(sample_b * 255.0f);
+			}
+
+			{
+				const size_t base = (out_y * output_dim + out_x) * 3U;
+				resized_rgb[base + 0U] = out_r;
+				resized_rgb[base + 1U] = out_g;
+				resized_rgb[base + 2U] = out_b;
+			}
+		}
+	}
+
+	/* Step 1.5: search a small 3x3 neighborhood around the nominal polar
+	 * pivot. This matches the offline V28 helper and keeps the live needle
+	 * vote from drifting when the crop lands a few pixels off-center. */
+	{
+		const int32_t offsets[] = {
+			0,
+			-(int32_t)APP_AI_POLAR_CENTER_SEARCH_PIXELS,
+			(int32_t)APP_AI_POLAR_CENTER_SEARCH_PIXELS,
+		};
+		float best_score = -1.0f;
+		float best_center_x = center_x;
+		float best_center_y = center_y;
+
+		for (size_t idx_y = 0U; idx_y < (sizeof(offsets) / sizeof(offsets[0])); ++idx_y)
+		{
+			for (size_t idx_x = 0U; idx_x < (sizeof(offsets) / sizeof(offsets[0])); ++idx_x)
+			{
+				const float candidate_center_x = center_x + (float)offsets[idx_x];
+				const float candidate_center_y = center_y + (float)offsets[idx_y];
+				const float candidate_score = AppAI_ScorePolarAlignmentCandidate(
+					resized_rgb,
+					output_dim,
+					candidate_center_x,
+					candidate_center_y,
+					max_radius,
+					polar_luma);
+				if (candidate_score > best_score)
+				{
+					best_score = candidate_score;
+					best_center_x = candidate_center_x;
+					best_center_y = candidate_center_y;
+				}
+			}
+		}
+
+		center_x = best_center_x;
+		center_y = best_center_y;
+
+		{
+			char search_log[128];
+			const long score_milli = (long)(best_score * 1000.0f + 0.5f);
+			(void)DebugConsole_Snprintf(
+				search_log,
+				sizeof(search_log),
+				"[AI] Polar center search: best=(%ld,%ld) score=%ld.%03ld\r\n",
+				(long)center_x,
+				(long)center_y,
+				score_milli / 1000L,
+				labs(score_milli % 1000L));
+			(void)DebugConsole_WriteString(search_log);
+		}
+	}
+
+	/* Step 2: polar-project the resized crop into the live 7-channel tensor. */
+	{
+		for (size_t row = 0U; row < output_dim; ++row)
+		{
+			for (size_t col = 0U; col < output_dim; ++col)
+			{
+				const float angle = two_pi * (float)col / (float)bins;
+				const float radius = ((float)row / (float)output_dim) * max_radius;
+				const float src_x = center_x + radius * cosf(angle);
+				const float src_y = center_y - radius * sinf(angle);
+				float out_r = 0.0f;
+				float out_g = 0.0f;
+				float out_b = 0.0f;
+
+				if ((src_x >= 0.0f) && (src_x < (float)output_dim) &&
+				    (src_y >= 0.0f) && (src_y < (float)output_dim))
+				{
+					AppAI_ReadRgbFromRgbBilinear(
+						resized_rgb, output_dim, output_dim,
+						src_x, src_y, &out_r, &out_g, &out_b);
+				}
+
+				{
+					const size_t base = (row * output_dim + col) * channels;
+					int32_t q_r = (int32_t)lroundf(out_r * 255.0f) - 128;
+					int32_t q_g = (int32_t)lroundf(out_g * 255.0f) - 128;
+					int32_t q_b = (int32_t)lroundf(out_b * 255.0f) - 128;
+					if (q_r < -128) q_r = -128;
+					if (q_r > 127) q_r = 127;
+					if (q_g < -128) q_g = -128;
+					if (q_g > 127) q_g = 127;
+					if (q_b < -128) q_b = -128;
+					if (q_b > 127) q_b = 127;
+					((int8_t *)input_ptr)[base + 0U] = (int8_t)q_r;
+					((int8_t *)input_ptr)[base + 1U] = (int8_t)q_g;
+					((int8_t *)input_ptr)[base + 2U] = (int8_t)q_b;
+				}
+
+				{
+					const float luma_f = 0.299f * out_r + 0.587f * out_g + 0.114f * out_b;
+					int32_t luma_q = (int32_t)lroundf(luma_f * 255.0f);
+					if (luma_q < 0) luma_q = 0;
+					if (luma_q > 255) luma_q = 255;
+					polar_luma[row * output_dim + col] = (uint8_t)luma_q;
+				}
+			}
+		}
+	}
+
+	/* Step 3: derive edge and vote channels from the polar luma plane using
+	 * the same percentile/continuity logic as the offline V28 pipeline. */
+	{
+		uint32_t angular_hist[256U] = {0U};
+		uint32_t radial_hist[256U] = {0U};
+		uint32_t luma_hist[256U] = {0U};
+		float sum_evidence[APP_AI_POLAR_VOTE_BINS] = {0.0f};
+		float continuity[APP_AI_POLAR_VOTE_BINS] = {0.0f};
+		float score[APP_AI_POLAR_VOTE_BINS] = {0.0f};
+		const uint32_t total_luma_samples = (uint32_t)(output_dim * output_dim);
+		const uint32_t total_gradient_samples = (uint32_t)((output_dim - 2U) * output_dim);
+		const float row_denominator = (output_dim > 1U) ? (float)(output_dim - 1U) : 1.0f;
+		uint32_t radial_mask_rows = 0U;
+
+		for (size_t row = 0U; row < output_dim; ++row)
+		{
+			for (size_t col = 0U; col < output_dim; ++col)
+			{
+				luma_hist[polar_luma[row * output_dim + col]]++;
+			}
+		}
+
+		for (size_t row = 1U; row + 1U < output_dim; ++row)
+		{
+			for (size_t col = 0U; col < output_dim; ++col)
+			{
+				const size_t col_prev = (col == 0U) ? (output_dim - 1U) : (col - 1U);
+				const size_t col_next = (col == output_dim - 1U) ? 0U : (col + 1U);
+				const int32_t gx = (int32_t)polar_luma[row * output_dim + col_next]
+					- (int32_t)polar_luma[row * output_dim + col_prev];
+				const int32_t gy = (int32_t)polar_luma[(row + 1U) * output_dim + col]
+					- (int32_t)polar_luma[(row - 1U) * output_dim + col];
+				const uint8_t abs_gx = (uint8_t)((gx >= 0) ? gx : -gx);
+				const uint8_t abs_gy = (uint8_t)((gy >= 0) ? gy : -gy);
+				angular_hist[abs_gx]++;
+				radial_hist[abs_gy]++;
+			}
+		}
+
+		const uint8_t luma_threshold = AppAI_FindHistogramPercentile(
+			luma_hist, 256U, total_luma_samples, 0.38f);
+		const uint8_t angular_threshold = AppAI_FindHistogramPercentile(
+			angular_hist, 256U, total_gradient_samples, 0.99f);
+		const uint8_t radial_threshold = AppAI_FindHistogramPercentile(
+			radial_hist, 256U, total_gradient_samples, 0.99f);
+		const float angular_inv = (angular_threshold > 0U) ? (1.0f / (float)angular_threshold) : 1.0f;
+		const float radial_inv = (radial_threshold > 0U) ? (1.0f / (float)radial_threshold) : 1.0f;
+		const float luma_threshold_f = (float)luma_threshold / 255.0f;
+
+		for (size_t row = 0U; row < output_dim; ++row)
+		{
+			const float row_position = (float)row / row_denominator;
+			const float radial_mask = ((row_position >= 0.18f) && (row_position <= 0.95f)) ? 1.0f : 0.0f;
+			if (radial_mask > 0.5f)
+			{
+				radial_mask_rows++;
+			}
+		}
+		if (radial_mask_rows == 0U)
+		{
+			radial_mask_rows = 1U;
+		}
+
+		for (size_t row = 0U; row < output_dim; ++row)
+		{
+			for (size_t col = 0U; col < output_dim; ++col)
+			{
+				const size_t base = (row * output_dim + col) * channels;
+				const float luma_val = (float)polar_luma[row * output_dim + col] / 255.0f;
+				float ang_val = 0.0f;
+				float rad_val = 0.0f;
+				if ((row > 0U) && (row + 1U < output_dim))
+				{
+					const size_t col_prev = (col == 0U) ? (output_dim - 1U) : (col - 1U);
+					const size_t col_next = (col == output_dim - 1U) ? 0U : (col + 1U);
+					const int32_t gx = (int32_t)polar_luma[row * output_dim + col_next]
+						- (int32_t)polar_luma[row * output_dim + col_prev];
+					const int32_t gy = (int32_t)polar_luma[(row + 1U) * output_dim + col]
+						- (int32_t)polar_luma[(row - 1U) * output_dim + col];
+					const int32_t abs_gx = (gx >= 0) ? gx : -gx;
+					const int32_t abs_gy = (gy >= 0) ? gy : -gy;
+					ang_val = (float)abs_gx * angular_inv;
+					rad_val = (float)abs_gy * radial_inv;
+					if (row == 1U)
+					{
+						/* Keep the compiler honest about the normalized range. */
+						if (ang_val < 0.0f) ang_val = 0.0f;
+						if (rad_val < 0.0f) rad_val = 0.0f;
+					}
+				}
+
+				{
+					int32_t q_luma = (int32_t)polar_luma[row * output_dim + col] - 128;
+					((int8_t *)input_ptr)[base + 3U] = (int8_t)q_luma;
+				}
+				{
+					int32_t q_ang = (int32_t)lroundf(ang_val * 255.0f) - 128;
+					if (q_ang < -128) q_ang = -128;
+					if (q_ang > 127) q_ang = 127;
+					((int8_t *)input_ptr)[base + 4U] = (int8_t)q_ang;
+				}
+				{
+					int32_t q_rad = (int32_t)lroundf(rad_val * 255.0f) - 128;
+					if (q_rad < -128) q_rad = -128;
+					if (q_rad > 127) q_rad = 127;
+					((int8_t *)input_ptr)[base + 5U] = (int8_t)q_rad;
+				}
+
+				{
+					const float row_position = (float)row / row_denominator;
+					const float radial_mask = ((row_position >= 0.18f) && (row_position <= 0.95f)) ? 1.0f : 0.0f;
+					const float darkness = (0.62f - luma_val) / 0.62f;
+					const float clipped_darkness = (darkness > 0.0f) ? ((darkness < 1.0f) ? darkness : 1.0f) : 0.0f;
+					const float edge = (ang_val > 1.0f) ? 1.0f : ang_val;
+					const float evidence = (0.65f * clipped_darkness + 0.35f * edge) * radial_mask;
+					sum_evidence[col] += evidence;
+				}
+			}
+		}
+
+		{
+			float score_min = 0.0f;
+			float score_max = 0.0f;
+			for (size_t col = 0U; col < output_dim; ++col)
+			{
+				float best_run = 0.0f;
+				float run = 0.0f;
+				for (size_t row = 0U; row < output_dim; ++row)
+				{
+					const float row_position = (float)row / row_denominator;
+					const float radial_mask = ((row_position >= 0.18f) && (row_position <= 0.95f)) ? 1.0f : 0.0f;
+					const uint8_t luma_q = polar_luma[row * output_dim + col];
+					if ((radial_mask > 0.5f) && (luma_q <= luma_threshold))
+					{
+						run += 1.0f;
+						if (run > best_run)
+						{
+							best_run = run;
+						}
+					}
+					else
+					{
+						run = 0.0f;
+					}
+				}
+				continuity[col] = best_run / (float)output_dim;
+				score[col] = (0.70f * (sum_evidence[col] / (float)radial_mask_rows)) + (0.30f * continuity[col]);
+			}
+
+			for (size_t col = 0U; col < output_dim; ++col)
+			{
+				const size_t prev = (col == 0U) ? (output_dim - 1U) : (col - 1U);
+				const size_t next = (col == (output_dim - 1U)) ? 0U : (col + 1U);
+				score[col] = (0.50f * score[col]) + (0.25f * score[prev]) + (0.25f * score[next]);
+			}
+			score_min = score[0U];
+			score_max = score[0U];
+			for (size_t col = 1U; col < output_dim; ++col)
+			{
+				if (score[col] < score_min)
+				{
+					score_min = score[col];
+				}
+				if (score[col] > score_max)
+				{
+					score_max = score[col];
+				}
+			}
+			for (size_t col = 0U; col < output_dim; ++col)
+			{
+				float prior = score[col] - score_min;
+				if (score_max > score_min)
+				{
+					prior = prior / (score_max - score_min);
+				}
+				if (prior < 0.0f)
+				{
+					prior = 0.0f;
+				}
+				else if (prior > 1.0f)
+				{
+					prior = 1.0f;
+				}
+
+				{
+					const int32_t q_prior = (int32_t)lroundf(prior * 255.0f) - 128;
+					for (size_t row = 0U; row < output_dim; ++row)
+					{
+						const size_t pixel_base = (row * output_dim + col) * channels;
+						int32_t clipped = q_prior;
+						if (clipped < -128) clipped = -128;
+						if (clipped > 127) clipped = 127;
+						((int8_t *)input_ptr)[pixel_base + 6U] = (int8_t)clipped;
+					}
+				}
+			}
+		}
+	}
+
+	(void)DebugConsole_WriteString("[AI] Polar preprocess OK.\r\n");
+	return true;
+}
+
 static float AppAI_ClampNormalizedFloat(float value)
 {
 	/* Add additional validation for NaN and infinity */
@@ -7237,6 +8055,128 @@ static void AppAI_ReadRgbFromYuv422Bilinear(const uint8_t *frame_bytes,
 		const float bottom_b = b01 + (fx * (b11 - b01));
 		*b_out = AppAI_ClampNormalizedFloat(top_b + (fy * (bottom_b - top_b)));
 	}
+}
+
+static void AppAI_ReadRgbFromRgbBilinear(const uint8_t *rgb_bytes,
+										size_t frame_width_pixels,
+										size_t frame_height_pixels,
+										float source_x, float source_y,
+										float *r_out, float *g_out, float *b_out)
+{
+	if ((rgb_bytes == NULL) || (frame_width_pixels == 0U) || (frame_height_pixels == 0U))
+	{
+		if (r_out != NULL) { *r_out = 0.0f; }
+		if (g_out != NULL) { *g_out = 0.0f; }
+		if (b_out != NULL) { *b_out = 0.0f; }
+		return;
+	}
+
+	if (source_x < 0.0f)
+	{
+		source_x = 0.0f;
+	}
+	if (source_y < 0.0f)
+	{
+		source_y = 0.0f;
+	}
+
+	const float max_x = (frame_width_pixels > 0U) ? (float)(frame_width_pixels - 1U) : 0.0f;
+	const float max_y = (frame_height_pixels > 0U) ? (float)(frame_height_pixels - 1U) : 0.0f;
+	float clamped_x = source_x;
+	float clamped_y = source_y;
+	if (clamped_x > max_x)
+	{
+		clamped_x = max_x;
+	}
+	if (clamped_y > max_y)
+	{
+		clamped_y = max_y;
+	}
+
+	const size_t x0 = (size_t)floorf(clamped_x);
+	const size_t y0 = (size_t)floorf(clamped_y);
+	const size_t x1 = (x0 + 1U < frame_width_pixels) ? (x0 + 1U) : x0;
+	const size_t y1 = (y0 + 1U < frame_height_pixels) ? (y0 + 1U) : y0;
+	const float fx = clamped_x - (float)x0;
+	const float fy = clamped_y - (float)y0;
+
+	const size_t base00 = ((y0 * frame_width_pixels) + x0) * 3U;
+	const size_t base10 = ((y0 * frame_width_pixels) + x1) * 3U;
+	const size_t base01 = ((y1 * frame_width_pixels) + x0) * 3U;
+	const size_t base11 = ((y1 * frame_width_pixels) + x1) * 3U;
+
+	const float r00 = ((float)rgb_bytes[base00 + 0U]) / 255.0f;
+	const float g00 = ((float)rgb_bytes[base00 + 1U]) / 255.0f;
+	const float b00 = ((float)rgb_bytes[base00 + 2U]) / 255.0f;
+	const float r10 = ((float)rgb_bytes[base10 + 0U]) / 255.0f;
+	const float g10 = ((float)rgb_bytes[base10 + 1U]) / 255.0f;
+	const float b10 = ((float)rgb_bytes[base10 + 2U]) / 255.0f;
+	const float r01 = ((float)rgb_bytes[base01 + 0U]) / 255.0f;
+	const float g01 = ((float)rgb_bytes[base01 + 1U]) / 255.0f;
+	const float b01 = ((float)rgb_bytes[base01 + 2U]) / 255.0f;
+	const float r11 = ((float)rgb_bytes[base11 + 0U]) / 255.0f;
+	const float g11 = ((float)rgb_bytes[base11 + 1U]) / 255.0f;
+	const float b11 = ((float)rgb_bytes[base11 + 2U]) / 255.0f;
+
+	if (r_out != NULL)
+	{
+		const float top_r = r00 + (fx * (r10 - r00));
+		const float bottom_r = r01 + (fx * (r11 - r01));
+		*r_out = AppAI_ClampNormalizedFloat(top_r + (fy * (bottom_r - top_r)));
+	}
+	if (g_out != NULL)
+	{
+		const float top_g = g00 + (fx * (g10 - g00));
+		const float bottom_g = g01 + (fx * (g11 - g01));
+		*g_out = AppAI_ClampNormalizedFloat(top_g + (fy * (bottom_g - top_g)));
+	}
+	if (b_out != NULL)
+	{
+		const float top_b = b00 + (fx * (b10 - b00));
+		const float bottom_b = b01 + (fx * (b11 - b01));
+		*b_out = AppAI_ClampNormalizedFloat(top_b + (fy * (bottom_b - top_b)));
+	}
+}
+
+static uint8_t AppAI_FindHistogramPercentile(const uint32_t *histogram,
+											 size_t histogram_len,
+											 uint32_t total_count,
+											 float percentile)
+{
+	uint32_t target = 0U;
+	uint32_t cumulative = 0U;
+	size_t bin = 0U;
+
+	if ((histogram == NULL) || (histogram_len == 0U) || (total_count == 0U))
+	{
+		return 0U;
+	}
+
+	if (percentile < 0.0f)
+	{
+		percentile = 0.0f;
+	}
+	if (percentile > 1.0f)
+	{
+		percentile = 1.0f;
+	}
+
+	target = (uint32_t)ceilf(percentile * (float)total_count);
+	if (target == 0U)
+	{
+		target = 1U;
+	}
+
+	for (bin = 0U; bin < histogram_len; ++bin)
+	{
+		cumulative += histogram[bin];
+		if (cumulative >= target)
+		{
+			return (uint8_t)bin;
+		}
+	}
+
+	return (uint8_t)(histogram_len - 1U);
 }
 
 bool App_AI_GetLastInferenceResult(float *value_out)

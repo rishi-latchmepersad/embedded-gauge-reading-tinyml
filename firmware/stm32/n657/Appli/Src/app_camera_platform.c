@@ -453,6 +453,144 @@ bool CameraPlatform_DisableImx335AutoExposure(void) {
 }
 
 /**
+ * @brief Pick a supported IMX335 WB reference temperature close to the preferred one.
+ *
+ * The middleware only accepts color temperatures that exist in the active IQ
+ * table, so we query the supported list and choose the closest non-zero entry.
+ * @param preferred_ref_color_temp Desired reference temperature in kelvin.
+ * @param[out] selected_ref_color_temp Closest supported reference temperature.
+ * @retval true when the middleware provided at least one usable WB reference.
+ */
+static bool CameraPlatform_SelectImx335WhiteBalanceReference(
+		uint32_t preferred_ref_color_temp,
+		uint32_t *selected_ref_color_temp) {
+	uint32_t supported_refs[ISP_AWB_COLORTEMP_REF] = { 0U };
+	uint32_t best_ref_color_temp = 0U;
+	uint32_t best_distance = UINT32_MAX;
+	bool exact_match = false;
+	bool found_supported_ref = false;
+	int32_t cmw_status = CMW_ERROR_NONE;
+
+	if (selected_ref_color_temp == NULL) {
+		return false;
+	}
+
+	cmw_status = CMW_CAMERA_ListWBRefModes(supported_refs);
+	if (cmw_status != CMW_ERROR_NONE) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Failed to list IMX335 WB reference modes, status=%ld.\r\n",
+				(long) cmw_status);
+		*selected_ref_color_temp = preferred_ref_color_temp;
+		return true;
+	}
+
+	DebugConsole_Printf("[CAMERA][CAPTURE] IMX335 WB reference modes:");
+	for (uint32_t index = 0U; index < ISP_AWB_COLORTEMP_REF; ++index) {
+		const uint32_t candidate_ref_color_temp = supported_refs[index];
+
+		if (candidate_ref_color_temp == 0U) {
+			continue;
+		}
+
+		found_supported_ref = true;
+		DebugConsole_Printf(" %luK",
+				(unsigned long) candidate_ref_color_temp);
+
+		if (candidate_ref_color_temp == preferred_ref_color_temp) {
+			best_ref_color_temp = candidate_ref_color_temp;
+			exact_match = true;
+			break;
+		}
+
+		{
+			const uint32_t distance =
+					(candidate_ref_color_temp > preferred_ref_color_temp) ?
+							(candidate_ref_color_temp
+									- preferred_ref_color_temp) :
+							(preferred_ref_color_temp
+									- candidate_ref_color_temp);
+
+			if ((best_ref_color_temp == 0U) || (distance < best_distance)) {
+				best_ref_color_temp = candidate_ref_color_temp;
+				best_distance = distance;
+			}
+		}
+	}
+	DebugConsole_Printf("\r\n");
+
+	if (!found_supported_ref) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] No supported IMX335 WB reference modes were reported.\r\n");
+		return false;
+	}
+
+	if (best_ref_color_temp == 0U) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Unable to choose a supported IMX335 WB reference mode.\r\n");
+		return false;
+	}
+
+	if (exact_match) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] IMX335 WB preferred reference %luK is supported.\r\n",
+				(unsigned long) preferred_ref_color_temp);
+	} else {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Using closest supported IMX335 WB ref %luK instead of preferred %luK.\r\n",
+				(unsigned long) best_ref_color_temp,
+				(unsigned long) preferred_ref_color_temp);
+	}
+
+	*selected_ref_color_temp = best_ref_color_temp;
+	return true;
+}
+
+/**
+ * @brief Lock the IMX335 white balance to one fixed middleware reference.
+ *
+ * This keeps the processed YUV path from drifting between AWB reference
+ * tables once the camera has been brought up for inference.
+ * @param ref_color_temp Middleware white-balance reference color temperature.
+ * @retval true when the ISP accepted the manual white-balance preset.
+ */
+bool CameraPlatform_LockImx335WhiteBalance(uint32_t ref_color_temp) {
+	uint32_t selected_ref_color_temp = ref_color_temp;
+
+	if (!CameraPlatform_SelectImx335WhiteBalanceReference(ref_color_temp,
+			&selected_ref_color_temp)) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] IMX335 white balance lock unavailable; leaving ISP defaults in place.\r\n");
+		return true;
+	}
+
+	for (uint32_t attempt = 0U; attempt < 3U; ++attempt) {
+		const ISP_StatusTypeDef status =
+				ISP_SetWBRefMode(&camera_sensor.hIsp, 0U,
+						selected_ref_color_temp);
+		if (status == ISP_OK) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] IMX335 white balance locked to %luK.\r\n",
+					(unsigned long) selected_ref_color_temp);
+			return true;
+		}
+
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] WB lock attempt %lu failed for %luK, status=%ld.\r\n",
+				(unsigned long) (attempt + 1U),
+				(unsigned long) selected_ref_color_temp,
+				(long) status);
+		if (attempt + 1U < 3U) {
+			CameraPlatform_CmwDelay(25U);
+		}
+	}
+
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE]   - Failed to lock IMX335 white balance to %luK.\r\n",
+			(unsigned long) ref_color_temp);
+	return false;
+}
+
+/**
  * @brief Log the current IMX335 ISP auto-exposure state.
  *
  * This is a cheap readback that helps us prove AEC is still enabled at the
@@ -811,6 +949,11 @@ bool CameraPlatform_StartImx335Stream(void) {
 	}
 
 	CameraPlatform_ReapplyImx335TestPattern();
+	CameraPlatform_CmwDelay(100U);
+	if (!CameraPlatform_LockImx335WhiteBalance(CAMERA_IMX335_WB_REF_COLOR_TEMP)) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Warning: failed to lock IMX335 white balance after stream start.\r\n");
+	}
 
 	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL,
 	IMX335_REG_MODE_SELECT, &mode_select, 1U) != IMX335_OK) {

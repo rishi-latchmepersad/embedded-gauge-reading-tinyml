@@ -44,11 +44,11 @@ typedef enum {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* Wait a little while for the baseline worker to finish before we fall back
- * to the CNN. The classical path is often slower, but when it is fresh it has
- * been more accurate on the live 44C+ frames. */
-#define APP_HYBRID_BASELINE_WAIT_MS 3000U
-#define APP_HYBRID_BASELINE_POLL_MS 10U
+/* The CNN is now the sole inference authority. The baseline is no longer
+ * allowed to override the CNN output. The classical path may still run
+ * for diagnostic logging, but the CNN value is always the final answer. */
+/* #define APP_HYBRID_BASELINE_WAIT_MS 3000U  -- removed, no hybrid wait */
+/* #define APP_HYBRID_BASELINE_POLL_MS 10U   -- removed, no hybrid poll */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -67,12 +67,13 @@ static ULONG inference_log_queue_storage[INFERENCE_LOG_QUEUE_DEPTH];
 
 static TX_THREAD camera_ai_thread;
 static ULONG camera_ai_thread_stack[CAMERA_AI_THREAD_STACK_SIZE_BYTES
-		/ sizeof(ULONG)];
+		/ sizeof(ULONG)] __attribute__((section(".npusram6")));
 static bool camera_ai_thread_created = false;
 static TX_SEMAPHORE camera_ai_request_semaphore;
 static bool camera_ai_sync_created = false;
 static volatile const uint8_t *camera_ai_request_frame_ptr = NULL;
 static volatile ULONG camera_ai_request_frame_length = 0U;
+static volatile bool camera_ai_request_in_flight = false;
 static bool app_inference_runtime_initialized = false;
 
 /* USER CODE END PV */
@@ -82,43 +83,15 @@ static bool app_inference_runtime_initialized = false;
 
 static VOID CameraAIThread_Entry(ULONG thread_input);
 static VOID InferenceLogThread_Entry(ULONG thread_input);
-static bool AppInferenceRuntime_GetFreshBaselineEstimate(
-	ULONG baseline_request_generation, float *temp_out,
-	float *confidence_out);
+/* AppInferenceRuntime_GetFreshBaselineEstimate removed: no hybrid override */
+
+
 
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
+/* AppInferenceRuntime_GetFreshBaselineEstimate() removed -- no hybrid override */
 
-/**
- * @brief Wait for a fresh baseline estimate and return it if it arrives.
- */
-static bool AppInferenceRuntime_GetFreshBaselineEstimate(
-	ULONG baseline_request_generation, float *temp_out,
-	float *confidence_out) {
-	const ULONG wait_ticks =
-		ThreadxUtils_MillisecondsToTicks(APP_HYBRID_BASELINE_WAIT_MS);
-	const ULONG start_tick = tx_time_get();
-
-	if (AppBaselineRuntime_GetLastEstimateGeneration() >=
-			baseline_request_generation) {
-		return AppBaselineRuntime_GetLastEstimate(temp_out, confidence_out);
-	}
-
-	(void) DebugConsole_WriteString(
-		"[HYBRID] Waiting for fresh baseline result...\r\n");
-
-	while ((ULONG) (tx_time_get() - start_tick) < wait_ticks) {
-		if (AppBaselineRuntime_GetLastEstimateGeneration() >=
-				baseline_request_generation) {
-			return AppBaselineRuntime_GetLastEstimate(temp_out,
-					confidence_out);
-		}
-		DelayMilliseconds_ThreadX(APP_HYBRID_BASELINE_POLL_MS);
-	}
-
-	return false;
-}
 
 /**
  * @brief Create the runtime synchronization objects used by the AI workers.
@@ -204,6 +177,12 @@ bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
 		return false;
 	}
 
+	if (camera_ai_request_in_flight) {
+		DebugConsole_Printf(
+				"[AI] Dry-run request dropped; previous frame still in flight.\r\n");
+		return false;
+	}
+
 	if ((frame_ptr == NULL) || (frame_length == 0U)) {
 		DebugConsole_Printf(
 				"[AI] Dry-run request dropped; empty frame ptr=%p len=%lu.\r\n",
@@ -223,9 +202,11 @@ bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
 	(void) DebugConsole_WriteString("[AI] Dry-run snapshot copied.\r\n");
 	(void) DebugConsole_WriteString("[AI] Queueing dry-run request.\r\n");
 
+	camera_ai_request_in_flight = true;
 	camera_ai_request_frame_ptr = camera_ai_frame_snapshot;
 	camera_ai_request_frame_length = frame_length;
 	if (tx_semaphore_put(&camera_ai_request_semaphore) != TX_SUCCESS) {
+		camera_ai_request_in_flight = false;
 		DebugConsole_Printf(
 				"[AI] Failed to signal dry-run request semaphore.\r\n");
 		return false;
@@ -264,11 +245,10 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 		if ((frame_ptr == NULL) || (frame_length == 0U)) {
 			DebugConsole_Printf(
 					"[AI] Worker woke without a queued frame; ignoring.\r\n");
+			camera_ai_request_in_flight = false;
 			continue;
 		}
 
-		const ULONG baseline_request_generation =
-			AppBaselineRuntime_GetRequestGeneration();
 		if (!App_AI_RunDryInferenceFromYuv422(frame_ptr,
 				(size_t) frame_length)) {
 			DebugConsole_Printf(
@@ -276,19 +256,7 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 		} else {
 			float result = 0.0f;
 			if (App_AI_GetLastInferenceResult(&result)) {
-				float baseline_temp = 0.0f;
-				float baseline_conf = 0.0f;
-				bool use_baseline = false;
 				float final_value = result;
-
-				if (AppInferenceRuntime_GetFreshBaselineEstimate(
-						baseline_request_generation, &baseline_temp,
-						&baseline_conf)) {
-					if (baseline_conf >= 2.0f) {
-						final_value = baseline_temp;
-						use_baseline = true;
-					}
-				}
 
 				union {
 					float f;
@@ -296,19 +264,11 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 				} bits = { .f = final_value };
 				char inference_line[64] = { 0 };
 
-				if (use_baseline) {
-					DebugConsole_Printf(
-						"[HYBRID] Classical selected: conf=%ld.%03ld temp=" ,
-						(long)(baseline_conf), (long)((baseline_conf - (long)baseline_conf) * 1000.0f));
-					AppInferenceLog_FormatFloatTenths(inference_line,
-							sizeof(inference_line), "", final_value);
-					(void) DebugConsole_WriteString(inference_line);
-					(void) DebugConsole_WriteString("\r\n");
-				} else {
-					AppInferenceLog_FormatFloatTenths(inference_line,
-							sizeof(inference_line), "[HYBRID] CNN selected: ", final_value);
-					(void) DebugConsole_WriteString(inference_line);
-				}
+				/* CNN is the sole inference authority. Log its value directly. */
+				AppInferenceLog_FormatFloatTenths(inference_line,
+						sizeof(inference_line), "[AI] CNN value: ", final_value);
+				(void) DebugConsole_WriteString(inference_line);
+				(void) DebugConsole_WriteString("\r\n");
 
 				AppInferenceLog_FormatFloatTenths(inference_line,
 						sizeof(inference_line), "[AI] Inference value: ", final_value);
@@ -324,6 +284,7 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 			}
 		}
 
+		camera_ai_request_in_flight = false;
 	}
 }
 

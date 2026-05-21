@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stddef.h>
+#include <cmsis_compiler.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -167,6 +168,14 @@ void HardFault_Handler_C(uint32_t *stacked_regs, uint32_t exc_lr)
   const uint32_t stacked_pc = stacked_regs[6];
   const uint32_t stacked_psr = stacked_regs[7];
 
+  /* Log EXC_LR to determine MSP vs PSP context at fault time.
+   * Bit 2 of EXC_LR: 0 = MSP was used (handler mode), 1 = PSP was used (thread mode).
+   * Also log MSPLIM/PSPLIM so we can see which stack limit was violated. */
+  const uint32_t msp_val   = __get_MSP();
+  const uint32_t msplim_val = __get_MSPLIM();
+  const uint32_t psp_val   = __get_PSP();
+  const uint32_t psplim_val = __get_PSPLIM();
+
   (void)exc_lr;
 
   IT_EnterFaultLedState();
@@ -185,6 +194,16 @@ void HardFault_Handler_C(uint32_t *stacked_regs, uint32_t exc_lr)
   IT_RawUartWriteHex32(stacked_r12);
   IT_RawUartWrite(" PSR=");
   IT_RawUartWriteHex32(stacked_psr);
+  IT_RawUartWrite(" EXC_LR=");
+  IT_RawUartWriteHex32(exc_lr);
+  IT_RawUartWrite(" MSP=");
+  IT_RawUartWriteHex32(msp_val);
+  IT_RawUartWrite(" MSPLIM=");
+  IT_RawUartWriteHex32(msplim_val);
+  IT_RawUartWrite(" PSP=");
+  IT_RawUartWriteHex32(psp_val);
+  IT_RawUartWrite(" PSPLIM=");
+  IT_RawUartWriteHex32(psplim_val);
   IT_RawUartWrite(" last_scalar_row=");
   IT_RawUartWriteHex32((uint32_t)app_ai_scalar_preprocess_last_row);
   IT_RawUartWrite("\r\n");

@@ -31,7 +31,7 @@ def test_baseline_confidence_gate_matches_snr_scale() -> None:
     # The live board needs a slightly more permissive gate so real captures can
     # seed history without waiting for perfect SNR.
     assert 1.0 < threshold < 2.0
-    assert 1.0 <= peak_ratio <= 1.05
+    assert 0.3 <= peak_ratio <= 0.4
     assert "baseline-polar-warming" in text
     assert "baseline-polar-smoothed" in text
     assert "baseline-polar-held" in text
@@ -56,7 +56,7 @@ def test_baseline_uses_polar_vote_histogram() -> None:
     assert "smoothed_votes[APP_BASELINE_ANGLE_BINS]" in normalized
     assert "const float tangential =" in normalized
     assert "vote = edge_mag * fabsf(tangential)" in normalized
-    assert "edge_mag <= 8.0f" in normalized
+    assert "edge_mag <= edge_threshold" in normalized
     assert "gradient_x_out, float *gradient_y_out" in normalized
     assert "AppBaselineRuntime_ReadEdgeMagnitude(" in text
     assert "training-crop-hough" not in text
@@ -77,7 +77,7 @@ def test_baseline_selection_penalizes_spiky_peak_outliers() -> None:
     assert "runner_up_score > 0.0f" in normalized
     assert "selected_is_fixed_crop" not in normalized
     assert "APP_BASELINE_MIN_ACCEPT_SCORE" in text
-    assert "dial_radius_px * 0.75f" in normalized
+    assert "APP_BASELINE_DIAL_RADIUS_FROM_CROP_HEIGHT_RATIO" in text
     assert "rim_geometry_hypothesis" in normalized
     assert "rim-center-polar" in text
     assert "candidate_quality > incumbent_quality" in normalized
@@ -119,6 +119,25 @@ def test_baseline_history_rejects_weak_near_ties() -> None:
     assert "estimate->best_score < APP_BASELINE_MIN_ACCEPT_SCORE" in normalized
     assert "estimate->runner_up_score > 0.0f" in normalized
     assert "estimate->confidence < APP_BASELINE_CONFIDENCE_THRESHOLD" in normalized
+
+
+def test_baseline_allows_cool_recovery_from_stale_warm_history() -> None:
+    """The warm-history unlock should cover 10C-class board readings."""
+    text = BASELINE_RUNTIME_FILE.read_text(encoding="utf-8")
+    cold_history_temp = _extract_float_constant(
+        "APP_BASELINE_COLD_RECOVERY_HISTORY_TEMP_C", text
+    )
+    cold_target_temp = _extract_float_constant(
+        "APP_BASELINE_COLD_RECOVERY_TARGET_TEMP_C", text
+    )
+    cold_min_confidence = _extract_float_constant(
+        "APP_BASELINE_COLD_RECOVERY_MIN_CONFIDENCE", text
+    )
+
+    assert cold_history_temp >= 20.0
+    assert cold_target_temp >= 10.0
+    assert cold_min_confidence <= 3.0
+    assert "warm->cool" in text
 
 
 def test_baseline_candidate_selection_enables_local_refinement_sweep() -> None:

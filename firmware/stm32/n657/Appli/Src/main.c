@@ -723,6 +723,12 @@ static void SystemIsolation_Config(void) {
 	/* USER CODE END RIF_Init 1 */
 	/* USER CODE BEGIN RIF_Init 2 */
 
+	/* Enable AXISRAM6 clock and take it out of shutdown so the CPU can access
+	 * the .npusram6 section (thread stacks, frame scratch) before ThreadX
+	 * tries to write initial stack frames into it during tx_thread_create(). */
+	RCC->MEMENR |= RCC_MEMENR_AXISRAM6EN;
+	RAMCFG_SRAM6_AXI->CR &= ~RAMCFG_CR_SRAMSD;
+
 	/* USER CODE END RIF_Init 2 */
 }
 
