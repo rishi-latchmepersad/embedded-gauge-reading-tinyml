@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate candidate localizers by replaying the exact V28 reader on their crops."""
+"""Evaluate a two-stage cascade: localizer -> coarse crop -> expanded crop -> V28 oracle."""
 
 from __future__ import annotations
 
@@ -23,21 +23,21 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 os.environ.setdefault("MPLCONFIGDIR", str(REPO_ROOT / "tmp" / "matplotlib"))
 
-from embedded_gauge_reading_tinyml.board_pipeline import (  # noqa: E402
+from embedded_gauge_reading_tinyml.board_pipeline import (
     decode_obb_crop_box,
     decode_rectifier_crop_box,
     load_capture_image,
     load_model_session,
 )
-from embedded_gauge_reading_tinyml.firmware_preprocessing import (  # noqa: E402
+from embedded_gauge_reading_tinyml.firmware_preprocessing import (
     build_training_style_polar_vote_float32,
     decode_circular_vote_logits,
 )
-from embedded_gauge_reading_tinyml.gauge.processing import load_gauge_specs  # noqa: E402
-from embedded_gauge_reading_tinyml.polar_vote_v28 import (  # noqa: E402
+from embedded_gauge_reading_tinyml.gauge.processing import load_gauge_specs
+from embedded_gauge_reading_tinyml.polar_vote_v28 import (
     build_polar_vote_v28_model,
 )
-from embedded_gauge_reading_tinyml.v28_localizer_pipeline import (  # noqa: E402
+from embedded_gauge_reading_tinyml.v28_localizer_pipeline import (
     LocalizerCropDecision,
     decode_heatmap_crop_box,
     decode_keypoint_crop_box,
@@ -50,7 +50,7 @@ DEFAULT_CAPTURE_ROOT: Final[Path] = PROJECT_ROOT / "data" / "captured_images"
 DEFAULT_WEIGHTS: Final[Path] = (
     PROJECT_ROOT / "artifacts" / "training" / "polar_vote_circular_v28" / "best_weights.weights.h5"
 )
-DEFAULT_OUTPUT_DIR: Final[Path] = REPO_ROOT / "tmp" / "v28_localizer_pipeline_eval"
+DEFAULT_OUTPUT_DIR: Final[Path] = REPO_ROOT / "tmp" / "two_stage_cascade_eval"
 DEFAULT_GAUGE_ID: Final[str] = "littlegood_home_temp_gauge_c"
 
 
@@ -65,7 +65,7 @@ class EvalItem:
 
 @dataclass(frozen=True, slots=True)
 class RowResult:
-    """Per-sample results for a localizer-driven V28 replay."""
+    """Per-sample results for two-stage cascade evaluation."""
 
     image_path: str
     source_kind: str
@@ -74,22 +74,30 @@ class RowResult:
     localizer_head: str
     accepted: bool
     fallback_reason: str | None
-    crop_x_min: float
-    crop_y_min: float
-    crop_x_max: float
-    crop_y_max: float
-    prediction: float
-    abs_error: float
+    exact_crop_x_min: float
+    exact_crop_y_min: float
+    exact_crop_x_max: float
+    exact_crop_y_max: float
+    expanded_crop_x_min: float
+    expanded_crop_y_min: float
+    expanded_crop_x_max: float
+    expanded_crop_y_max: float
+    exact_prediction: float
+    exact_abs_error: float
+    expanded_prediction: float
+    expanded_abs_error: float
     localizer_output_name: str
     localizer_output_crc32: str
-    v28_input_crc32: str
-    v28_output_crc32: str
+    exact_v28_input_crc32: str
+    exact_v28_output_crc32: str
+    expanded_v28_input_crc32: str
+    expanded_v28_output_crc32: str
 
 
 def _parse_args() -> argparse.Namespace:
-    """Parse command-line arguments for the localizer benchmark."""
+    """Parse command-line arguments for the two-stage cascade benchmark."""
     parser = argparse.ArgumentParser(
-        description="Evaluate a crop/localizer model by replaying exact V28 on its crop."
+        description="Evaluate localizer + expanded crop + exact V28 two-stage cascade."
     )
     parser.add_argument(
         "--manifest",
@@ -184,6 +192,12 @@ def _parse_args() -> argparse.Namespace:
         choices=("image_center", "classical_baseline"),
         default="image_center",
         help="How to pick the polar projection center before optional offset search.",
+    )
+    parser.add_argument(
+        "--crop-margin-scale",
+        type=float,
+        default=1.2,
+        help="Scale factor to expand the localizer crop before V28 (e.g., 1.2 = 20% larger).",
     )
     parser.add_argument(
         "--obb-crop-scale",
@@ -383,7 +397,6 @@ def _probe_crc32(tensor: np.ndarray) -> str:
     """Compute a compact firmware-style checksum for a tensor."""
     raw = np.ascontiguousarray(np.asarray(tensor)).tobytes()
     import zlib
-
     return f"0x{zlib.crc32(raw) & 0xFFFFFFFF:08X}"
 
 
@@ -393,6 +406,32 @@ def _squeeze_single_batch(tensor: np.ndarray) -> np.ndarray:
     if arr.ndim >= 1 and arr.shape[0] == 1:
         return arr[0]
     return arr
+
+
+def _expand_crop_box(
+    crop_box_xyxy: tuple[float, float, float, float],
+    margin_scale: float,
+    source_width: int,
+    source_height: int,
+) -> tuple[float, float, float, float]:
+    """Expand a crop box by margin_scale around its center, clamping to image bounds."""
+    x0, y0, x1, y1 = crop_box_xyxy
+    cx = (x0 + x1) / 2.0
+    cy = (y0 + y1) / 2.0
+    w = x1 - x0
+    h = y1 - y0
+    new_w = w * margin_scale
+    new_h = h * margin_scale
+    new_x0 = cx - new_w / 2.0
+    new_y0 = cy - new_h / 2.0
+    new_x1 = cx + new_w / 2.0
+    new_y1 = cy + new_h / 2.0
+    # Clamp to image bounds
+    new_x0 = max(0.0, min(new_x0, float(source_width)))
+    new_y0 = max(0.0, min(new_y0, float(source_height)))
+    new_x1 = max(1.0, min(new_x1, float(source_width)))
+    new_y1 = max(1.0, min(new_y1, float(source_height)))
+    return (new_x0, new_y0, new_x1, new_y1)
 
 
 def _decode_localizer_crop_box(
@@ -537,6 +576,7 @@ def _evaluate_one(
     localizer_head: str,
     center_search_px: int,
     center_mode: str,
+    crop_margin_scale: float,
     obb_crop_scale: float,
     obb_width_scale: float,
     obb_height_scale: float,
@@ -552,7 +592,7 @@ def _evaluate_one(
     keypoint_center_y_bias_pixels: float,
     keypoint_min_crop_size: float,
 ) -> RowResult:
-    """Evaluate one capture by running the localizer and then the exact V28 reader."""
+    """Evaluate one capture by running localizer, then V28 on exact and expanded crops."""
     source_image, source_kind = load_capture_image(
         item.image_path,
         image_width=image_size,
@@ -595,18 +635,41 @@ def _evaluate_one(
         keypoint_min_crop_size=keypoint_min_crop_size,
     )
 
-    v28_tensor = build_training_style_polar_vote_float32(
+    exact_box = crop_decision.crop_box_xyxy
+    expanded_box = _expand_crop_box(
+        exact_box,
+        margin_scale=crop_margin_scale,
+        source_width=source_image.shape[1],
+        source_height=source_image.shape[0],
+    )
+
+    # Exact crop V28
+    exact_v28_tensor = build_training_style_polar_vote_float32(
         source_image,
-        crop_box_xyxy=crop_decision.crop_box_xyxy,
+        crop_box_xyxy=exact_box,
         output_dim=image_size,
         center_search_px=center_search_px,
         center_mode=center_mode,
         gauge_spec=gauge_spec,
     )
-    v28_input_crc32 = _probe_crc32(_quantize_unit_float_to_int8(v28_tensor))
-    logits = exact_model.predict(v28_tensor[None, ...], verbose=0)[0]
-    v28_output_crc32 = _probe_crc32(logits)
-    prediction = decode_circular_vote_logits(logits, gauge_spec)
+    exact_v28_input_crc32 = _probe_crc32(_quantize_unit_float_to_int8(exact_v28_tensor))
+    exact_logits = exact_model.predict(exact_v28_tensor[None, ...], verbose=0)[0]
+    exact_v28_output_crc32 = _probe_crc32(exact_logits)
+    exact_prediction = decode_circular_vote_logits(exact_logits, gauge_spec)
+
+    # Expanded crop V28
+    expanded_v28_tensor = build_training_style_polar_vote_float32(
+        source_image,
+        crop_box_xyxy=expanded_box,
+        output_dim=image_size,
+        center_search_px=center_search_px,
+        center_mode=center_mode,
+        gauge_spec=gauge_spec,
+    )
+    expanded_v28_input_crc32 = _probe_crc32(_quantize_unit_float_to_int8(expanded_v28_tensor))
+    expanded_logits = exact_model.predict(expanded_v28_tensor[None, ...], verbose=0)[0]
+    expanded_v28_output_crc32 = _probe_crc32(expanded_logits)
+    expanded_prediction = decode_circular_vote_logits(expanded_logits, gauge_spec)
 
     return RowResult(
         image_path=item.image_path.as_posix(),
@@ -616,25 +679,41 @@ def _evaluate_one(
         localizer_head=crop_decision.crop_source,
         accepted=crop_decision.accepted,
         fallback_reason=crop_decision.fallback_reason,
-        crop_x_min=float(crop_decision.crop_box_xyxy[0]),
-        crop_y_min=float(crop_decision.crop_box_xyxy[1]),
-        crop_x_max=float(crop_decision.crop_box_xyxy[2]),
-        crop_y_max=float(crop_decision.crop_box_xyxy[3]),
-        prediction=float(prediction),
-        abs_error=abs(float(prediction) - item.value),
+        exact_crop_x_min=float(exact_box[0]),
+        exact_crop_y_min=float(exact_box[1]),
+        exact_crop_x_max=float(exact_box[2]),
+        exact_crop_y_max=float(exact_box[3]),
+        expanded_crop_x_min=float(expanded_box[0]),
+        expanded_crop_y_min=float(expanded_box[1]),
+        expanded_crop_x_max=float(expanded_box[2]),
+        expanded_crop_y_max=float(expanded_box[3]),
+        exact_prediction=float(exact_prediction),
+        exact_abs_error=abs(float(exact_prediction) - item.value),
+        expanded_prediction=float(expanded_prediction),
+        expanded_abs_error=abs(float(expanded_prediction) - item.value),
         localizer_output_name=localizer_output_name,
         localizer_output_crc32=_probe_crc32(localizer_outputs[localizer_output_name]),
-        v28_input_crc32=v28_input_crc32,
-        v28_output_crc32=v28_output_crc32,
+        exact_v28_input_crc32=exact_v28_input_crc32,
+        exact_v28_output_crc32=exact_v28_output_crc32,
+        expanded_v28_input_crc32=expanded_v28_input_crc32,
+        expanded_v28_output_crc32=expanded_v28_output_crc32,
     )
 
 
-def _summarize(rows: list[RowResult], manifest_path: Path, weights_path: Path, gauge_id: str) -> dict[str, Any]:
+def _summarize(
+    rows: list[RowResult],
+    manifest_path: Path,
+    weights_path: Path,
+    gauge_id: str,
+    crop_margin_scale: float,
+) -> dict[str, Any]:
     """Aggregate row-wise results into a compact metrics payload."""
     values = np.array([row.value for row in rows], dtype=np.float32)
     weights = np.array([row.sample_weight for row in rows], dtype=np.float32)
-    preds = np.array([row.prediction for row in rows], dtype=np.float32)
-    abs_err = np.array([row.abs_error for row in rows], dtype=np.float32)
+    exact_preds = np.array([row.exact_prediction for row in rows], dtype=np.float32)
+    expanded_preds = np.array([row.expanded_prediction for row in rows], dtype=np.float32)
+    exact_abs_err = np.array([row.exact_abs_error for row in rows], dtype=np.float32)
+    expanded_abs_err = np.array([row.expanded_abs_error for row in rows], dtype=np.float32)
     total_weight = float(np.sum(weights))
     if total_weight <= 0.0:
         total_weight = float(len(rows))
@@ -648,11 +727,18 @@ def _summarize(rows: list[RowResult], manifest_path: Path, weights_path: Path, g
         "weights": str(weights_path),
         "gauge_id": gauge_id,
         "samples": int(len(rows)),
-        "mae": float(np.mean(abs_err)),
-        "rmse": float(np.sqrt(np.mean(abs_err**2))),
-        "weighted_mae": _weighted_mean(abs_err),
-        "bias": float(np.mean(preds - values)),
-        "max_abs_error": float(np.max(abs_err)),
+        "crop_margin_scale": crop_margin_scale,
+        "exact_mae": float(np.mean(exact_abs_err)),
+        "exact_rmse": float(np.sqrt(np.mean(exact_abs_err ** 2))),
+        "exact_weighted_mae": _weighted_mean(exact_abs_err),
+        "exact_bias": float(np.mean(exact_preds - values)),
+        "exact_max_abs_error": float(np.max(exact_abs_err)),
+        "expanded_mae": float(np.mean(expanded_abs_err)),
+        "expanded_rmse": float(np.sqrt(np.mean(expanded_abs_err ** 2))),
+        "expanded_weighted_mae": _weighted_mean(expanded_abs_err),
+        "expanded_bias": float(np.mean(expanded_preds - values)),
+        "expanded_max_abs_error": float(np.max(expanded_abs_err)),
+        "mae_delta": float(np.mean(expanded_abs_err) - np.mean(exact_abs_err)),
         "accepted_count": int(sum(row.accepted for row in rows)),
         "rejected_count": int(sum(not row.accepted for row in rows)),
         "localizer_head": rows[0].localizer_head if rows else "n/a",
@@ -674,7 +760,7 @@ def _write_outputs(rows: list[RowResult], metrics: dict[str, Any], *, output_dir
 
 
 def main() -> None:
-    """Run the localizer-driven exact V28 benchmark."""
+    """Run the two-stage localizer + expanded crop + exact V28 benchmark."""
     args = _parse_args()
     items = _load_manifest(args.manifest, args.capture_root)
     items = _select_items(
@@ -689,21 +775,21 @@ def main() -> None:
     if not args.weights.exists():
         raise FileNotFoundError(f"Weights checkpoint not found: {args.weights}")
 
-    print(f"[V28-LOC] Loaded {len(items)} capture samples from {args.manifest}", flush=True)
-    print(f"[V28-LOC] Localizer: {args.localizer_model}", flush=True)
-    print(f"[V28-LOC] Weights: {args.weights}", flush=True)
-
-    gauge_spec = load_gauge_specs()[args.gauge_id]
-    exact_model = build_polar_vote_v28_model(
-        polar_size=args.image_size,
-        input_channels=7,
-        base_filters=32,
-        head_units=128,
-        dropout=0.2,
+    print(f"[2STAGE] Loading localizer: {args.localizer_model}", flush=True)
+    localizer_session = load_model_session(
+        args.localizer_model,
+        model_kind=args.localizer_model_kind,
+        
     )
-    exact_model.load_weights(str(args.weights))
-    localizer_session = load_model_session(args.localizer_model, args.localizer_model_kind)
 
+    print(f"[2STAGE] Loading V28 weights: {args.weights}", flush=True)
+    exact_model = build_polar_vote_v28_model(polar_size=args.image_size)
+    exact_model.load_weights(args.weights)
+
+    print(f"[2STAGE] Loading gauge spec: {args.gauge_id}", flush=True)
+    gauge_spec = load_gauge_specs()[args.gauge_id]
+
+    print(f"[2STAGE] Evaluating {len(items)} samples with margin_scale={args.crop_margin_scale}", flush=True)
     rows: list[RowResult] = []
     for index, item in enumerate(items, start=1):
         row = _evaluate_one(
@@ -711,10 +797,11 @@ def main() -> None:
             localizer_session=localizer_session,
             exact_model=exact_model,
             gauge_spec=gauge_spec,
-            image_size=args.image_size,
+            
             localizer_head=args.localizer_head,
             center_search_px=args.center_search_px,
             center_mode=args.center_mode,
+            crop_margin_scale=args.crop_margin_scale,
             obb_crop_scale=args.obb_crop_scale,
             obb_width_scale=args.obb_width_scale,
             obb_height_scale=args.obb_height_scale,
@@ -732,23 +819,23 @@ def main() -> None:
         )
         rows.append(row)
         print(
-            f"[V28-LOC] {index:03d}/{len(items):03d} {Path(row.image_path).name}: "
-            f"true={row.value:7.3f} pred={row.prediction:7.3f} "
-            f"abs_err={row.abs_error:6.3f} crop={row.localizer_head} "
-            f"accepted={row.accepted}",
+            f"[2STAGE] {index:03d}/{len(items):03d} {Path(row.image_path).name}: "
+            f"true={row.value:7.3f} exact={row.exact_prediction:7.3f}({row.exact_abs_error:6.3f}) "
+            f"expanded={row.expanded_prediction:7.3f}({row.expanded_abs_error:6.3f}) "
+            f"crop={row.localizer_head} accepted={row.accepted}",
             flush=True,
         )
 
-    metrics = _summarize(rows, args.manifest, args.weights, args.gauge_id)
+    metrics = _summarize(rows, args.manifest, args.weights, args.gauge_id, args.crop_margin_scale)
     _write_outputs(rows, metrics, output_dir=args.output_dir)
 
-    print("[V28-LOC] Summary:", flush=True)
+    print("[2STAGE] Summary:", flush=True)
     for key, value in metrics.items():
         if isinstance(value, float):
-            print(f"[V28-LOC]   {key}: {value:.6f}", flush=True)
+            print(f"[2STAGE]   {key}: {value:.6f}", flush=True)
         else:
-            print(f"[V28-LOC]   {key}: {value}", flush=True)
-    print(f"[V28-LOC] Wrote results to {args.output_dir}", flush=True)
+            print(f"[2STAGE]   {key}: {value}", flush=True)
+    print(f"[2STAGE] Wrote results to {args.output_dir}", flush=True)
 
 
 if __name__ == "__main__":

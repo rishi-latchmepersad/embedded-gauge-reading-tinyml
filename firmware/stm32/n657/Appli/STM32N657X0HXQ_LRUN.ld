@@ -55,6 +55,8 @@ MEMORY
    * correct flash region. */
   EXTRAM_RECTIFIER (rw) : ORIGIN = 0x70600000,   LENGTH = 256K
   EXTRAM_OBB (rw)       : ORIGIN = 0x70700000,   LENGTH = 4096K
+  /* Source-crop-box model blob at 0x70B00000 (matches FLASH_SOURCE_CROP_BOX in flash_boot.bat). */
+  EXTRAM_SOURCE_CROP_BOX (rw) : ORIGIN = 0x70B00000,   LENGTH = 512K
   /* Non-secure alias A/B test — DCMIPP with MSEC=1 writes to 0x24xxxxxx.
    * Placed at top of AXISRAM1 non-secure alias, away from code/data. */
   RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 384K
@@ -133,6 +135,16 @@ SECTIONS
     KEEP(*(.xspi2_obb_pool))
     . = ALIGN(32);
   } >EXTRAM_OBB
+
+  /* Source-crop-box model pool: placed at the source-crop-box flash region (0x70B00000).
+   * Separating this ensures _mem_pool_xSPI2_mobilenetv2_source_crop_box_*
+   * resolves to the correct flash address so the NPU reads weights from there. */
+  .xspi2_source_crop_box_pool (NOLOAD) :
+  {
+    . = ALIGN(32);
+    KEEP(*(.xspi2_source_crop_box_pool))
+    . = ALIGN(32);
+  } >EXTRAM_SOURCE_CROP_BOX
 
   .ARM.extab   : {
     . = ALIGN(4);

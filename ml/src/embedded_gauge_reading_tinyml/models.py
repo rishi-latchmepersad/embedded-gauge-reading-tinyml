@@ -3257,6 +3257,64 @@ def build_mobilenetv2_source_crop_box_model(
     return model
 
 
+def build_mobilenetv2_source_crop_box_v2_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 1.0,
+    head_units: int = 256,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a MobileNetV2 crop-box regressor v2 with attention and stronger head.
+
+    Changes from v1:
+    - CoordinateAttention before GAP to preserve spatial structure.
+    - Wider head (256 units default) for richer box regression.
+    - Same output head (sigmoid + OrderedCornerBox) so warm-start from
+      rectifier or v1 weights is possible for shared backbone layers.
+    """
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+
+    # Coordinate Attention to keep spatial structure before GAP
+    x = CoordinateAttention(reduction_ratio=16, name="source_crop_box_v2_coord_attn")(x)
+
+    x = keras.layers.GlobalAveragePooling2D(name="source_crop_box_v2_gap")(x)
+    x = keras.layers.Dropout(head_dropout, name="source_crop_box_v2_dropout_1")(x)
+    x = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="source_crop_box_v2_dense",
+    )(x)
+    x = keras.layers.Dropout(head_dropout, name="source_crop_box_v2_dropout_2")(x)
+
+    raw_box = keras.layers.Dense(
+        4,
+        activation="sigmoid",
+        name="source_crop_box_v2_raw",
+    )(x)
+    source_crop_box = OrderedCornerBox(name="source_crop_box")(raw_box)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={"source_crop_box": source_crop_box},
+        name=_mobilenetv2_model_name(
+            regression_kind="source_crop_box_v2",
+            alpha=1.0,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
 def build_mobilenetv2_source_crop_corner_model(
     image_height: int,
     image_width: int,

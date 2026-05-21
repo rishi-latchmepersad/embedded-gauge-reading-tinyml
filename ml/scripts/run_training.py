@@ -91,6 +91,8 @@ def parse_args() -> argparse.Namespace:
             "mobilenet_v2_bluraware_obb_relation_geometry",
             "mobilenet_v2_rectifier",
             "mobilenet_v2_source_crop_box",
+            "mobilenet_v2_source_crop_box_v2",
+            "mobilenet_v2_source_crop_corner",
             "mobilenet_v2_keypoint",
             "mobilenet_v2_interval",
             "mobilenet_v2_ordinal",
@@ -534,7 +536,7 @@ def main() -> None:
             if config.model_family == "mobilenet_v2_rectifier"
             else "Source crop-box head"
             if config.model_family
-            in {"mobilenet_v2_source_crop_box", "compact_source_crop_box"}
+            in {"mobilenet_v2_source_crop_box", "mobilenet_v2_source_crop_corner", "compact_source_crop_box"}
             else "Blur-aware reader"
             if config.model_family == "mobilenet_v2_bluraware_reader"
             else "Blur-aware OBB relation geometry head"

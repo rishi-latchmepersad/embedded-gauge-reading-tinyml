@@ -1656,3 +1656,71 @@ All changes as of 2026-05-19:
   - `ml/scripts/run_mobilenetv2_source_crop_box_v1.sh` is the repeatable training wrapper for this family.
 - `ml/src/embedded_gauge_reading_tinyml/board_pipeline.py` now registers `OrderedCornerBox` as a custom object, so Keras source-crop-box checkpoints can be loaded by the shared replay stack.
 - The working conclusion remains that the localizer, not the polar reader, is the bottleneck. The best chance of getting the exact V28 oracle onto the board is still a direct source-space crop predictor trained against the rectified crop boxes, with the keypoint/heatmap cascade as the backup plan.
+
+## 2026-05-20 Source-Crop-Box Board Deployment Ready
+
+- Trained mobilenetv2_source_crop_box_v1 on Windows (WSL unavailable).
+- Test MAE on crop-box regression: 0.2140 (test), 0.2666 (val).
+- Exported to int8 TFLite and discovered TopK nodes from 	f.sort in OrderedCornerBox.
+- Fixed by stripping the OrderedCornerBox layer and re-exporting; the min/max swap is now done in C firmware.
+- Generated Cube.AI C sources and raw blob via stedgeai.exe + 
+pu_driver.py.
+- Firmware integration complete:
+  - pp_ai.h: new defines, AppAI_SourceCropBox typedef, APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE=1U
+  - pp_ai.c: stage spec, decode function, cascade at head, memory pool, signatures
+  - STM32N657X0HXQ_LRUN.ld: EXTRAM_SOURCE_CROP_BOX at  x70B00000, 512K
+  - lash_boot.bat: flash step at  x70B00000
+  - i_network_mobilenetv2_source_crop_box_v1_stripped_int8.c: wrapper including generated sources
+  - makefile.targets + subdir.mk: build rules for wrapper and ll_aton.o
+- Firmware builds successfully: 
+657_Appli.elf (text=446360, data=668, bss=1094560).
+- Board flash remains blocked by user request until ready.
+- Next step: run lash_boot.bat when unblocked, then verify UART logs for source-crop-box init.
+
+## 2026-05-21 Subagent Session: Localizer Pipeline Deep Dive
+
+### The Oracle Is Already Great
+- `polar_vote_circular_v28` achieves **MAE=0.34C, RMSE=0.56C, max error=2.19C** on `hard_cases_plus_board30_valid_with_new6.csv` when given perfect rectified crops.
+- **100% of samples under 3C, 93% under 1C.**
+- This confirms the "great CNN" is the V28 oracle itself. The bottleneck is **not** the reader --- it is the localizer/crop stage.
+
+### Localizer Performance Gap
+- Best existing localizer end-to-end: `bluraware_obb_geometry_v34` at **14.46C MAE** on hard cases.
+- `mobilenetv2_source_crop_box_v1`: **21.61C MAE** --- predictions collapse to flat horizontal strips (~9-15 px tall, ~65 px wide).
+- Rectified oracle crops are roughly square (aspect ratio 0.81-1.28, mean 1.10). The strip collapse is a model/loss issue, not a data issue.
+
+### Bugs Found and Fixed
+1. **Training compile bug (`training.py`)**: `mobilenet_v2_source_crop_corner` was handled in the two-stage compile block but **missing** from the single-stage compile block. It fell through to `_compile_regression_model`, causing a Keras metrics mismatch crash at epoch 1.
+   - **Fix**: Added the missing `elif config.model_family == "mobilenet_v2_source_crop_corner":` block in the single-stage fit section (around line 6484).
+2. **Eval decoder bug (`eval_v28_localizer_pipeline.py`)**: `--localizer-head source_crop_canvas_box` was a valid CLI choice but had no matching `elif` in `_decode_localizer_crop_box`. It fell through to the `else` branch which tried `keypoint_heatmaps` decoding instead of using the direct box output.
+   - **Fix**: Added `elif localizer_head == "source_crop_canvas_box": head_order = ("source_crop_canvas_box",)`.
+
+### Path Mismatch (Non-Critical)
+- `rectified_crop_boxes_v5_all.csv` stores image paths under `ml/data/raw/` (e.g. `PXL_20260125_114517176.jpg`), while hard-case manifests reference `ml/data/captured_images/` (e.g. `capture_m30c_preview.png`).
+- The eval pipeline resolves captures correctly via `load_capture_image`, but direct CSV-to-CSV IoU comparisons need stem matching.
+
+### Corner Heatmap Model Is Most Promising Architecture
+- `build_mobilenetv2_source_crop_corner_model` predicts **4 corner heatmaps** (28x28) → `SpatialSoftArgmax2D` → `CornerKeypointsToBox`.
+- Unlike GAP-based direct regression, heatmaps preserve spatial structure. The model learns geometric corners explicitly.
+- Training wrapper: `ml/scripts/run_mobilenetv2_source_crop_corner_v1.ps1`
+- Warm-start from `mobilenetv2_rectifier_hardcase_finetune_v3` (same as v1).
+- **Training is now running** after the compile bug fix.
+
+### Source-Crop-Box v2 Design (Pascal Agent)
+- Diagnosis: v1 collapse caused by (a) GAP destroying spatial info, (b) weak Huber(delta=0.05) loss, (c) no aspect-ratio or center regularization.
+- Proposed v2 fixes:
+  1. Add `CoordinateAttention` before GAP in `models.py`.
+  2. Wider head (256 units default).
+  3. Custom combined loss: `GIoU + Huber + aspect-ratio + center-point`.
+  4. Patch files generated in `tmp/patch_training_loss.py` and `tmp/patch_v2.py` but **not yet applied**.
+
+### Active Parallel Experiments
+- **Newton**: Training `mobilenetv2_source_crop_corner_v1` (re-started after compile fix).
+- **Tesla**: Sweeping bluraware OBB decoder parameters (`obb_crop_scale`, width/height scales, bias pixels) on all existing OBB checkpoints.
+- **Pascal**: Implementing and training `source_crop_box_v2` with attention + GIoU.
+- **Confucius**: Designing a two-stage cascade (coarse center crop → fine V28 oracle on zoomed crop).
+- **James**: Auditing all existing localizer checkpoints end-to-end with exact V28 replay.
+
+### Environment Notes
+- **WSL is not installed** on this Windows machine. All ML work runs through native Windows Poetry/PowerShell.
+- Board flash is still blocked by user until offline <3C target is met. The offline target is achievable if the localizer matches rectified-crop quality, because the V28 oracle already hits 0.34C with those crops.

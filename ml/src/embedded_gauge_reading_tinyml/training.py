@@ -1,4 +1,4 @@
-﻿"""Training pipeline for gauge-value regression with dial ROI cropping."""
+"""Training pipeline for gauge-value regression with dial ROI cropping."""
 
 from __future__ import annotations
 
@@ -80,6 +80,7 @@ from embedded_gauge_reading_tinyml.models import (
     build_mobilenetv2_rectifier_model,
     build_mobilenetv2_source_crop_corner_model,
     build_mobilenetv2_source_crop_box_model,
+    build_mobilenetv2_source_crop_box_v2_model,
     build_mobilenetv2_obb_model,
     build_mobilenetv2_regression_model,
     build_mobilenetv2_direction_model,
@@ -158,6 +159,7 @@ class TrainConfig:
         "mobilenet_v2_obb",
         "mobilenet_v2_source_crop_corner",
         "mobilenet_v2_source_crop_box",
+        "mobilenet_v2_source_crop_box_v2",
         "mobilenet_v2_obb_geometry",
         "mobilenet_v2_obb_mask_geometry",
         "mobilenet_v2_obb_sequence_geometry",
@@ -454,6 +456,7 @@ def _hard_case_target_kind_for_model_family(model_family: str) -> str:
         return "value"
     if model_family in {
         "mobilenet_v2_source_crop_box",
+        "mobilenet_v2_source_crop_box_v2",
         "compact_source_crop_box",
     }:
         return "source_crop_box"
@@ -1987,6 +1990,7 @@ def _load_source_crop_corner_weight(
     weight: tf.Tensor,
     heatmap_weight: tf.Tensor,
     coord_weight: tf.Tensor,
+    box_weight: tf.Tensor,
 ) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
     """Load a full-frame corner-localizer example and attach sample weights."""
     image, targets = _load_source_crop_corner_target(
@@ -2000,7 +2004,7 @@ def _load_source_crop_corner_weight(
         image_width,
     )
     sample_weights = {
-        "source_crop_canvas_box": weight,
+        "source_crop_canvas_box": box_weight,
         "keypoint_heatmaps": heatmap_weight,
         "keypoint_coords": coord_weight,
     }
@@ -3792,6 +3796,17 @@ def _build_tf_dataset(
             ],
             dtype=np.float32,
         )
+        box_weights = np.array(
+            [
+                np.full(
+                    (4,),
+                    fill_value=weight if example.source_crop_corner_box is not None else 0.0,
+                    dtype=np.float32,
+                )
+                for example, weight in zip(examples, weights, strict=True)
+            ],
+            dtype=np.float32,
+        )
         dataset = tf.data.Dataset.from_tensor_slices(
             (
                 paths,
@@ -3803,6 +3818,7 @@ def _build_tf_dataset(
                 weights,
                 heatmap_weights,
                 coord_weights,
+                box_weights,
             )
         )
         dataset = dataset.shuffle(
@@ -3811,7 +3827,7 @@ def _build_tf_dataset(
             reshuffle_each_iteration=True,
         )
         dataset = dataset.map(
-            lambda p, y, h, c, b, crop_box, w, hw, cw: _load_source_crop_corner_weight(
+            lambda p, y, h, c, b, crop_box, w, hw, cw, bw: _load_source_crop_corner_weight(
                 p,
                 y,
                 h,
@@ -3823,6 +3839,7 @@ def _build_tf_dataset(
                 w,
                 hw,
                 cw,
+                bw,
             ),
             num_parallel_calls=tf.data.AUTOTUNE,
         )
@@ -4251,6 +4268,63 @@ def _build_tf_dataset(
                 lambda p, b: _load_source_crop_and_preprocess_image(
                     p,
                     b,
+                    config.image_height,
+                    config.image_width,
+                ),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+        elif target_kind == "source_crop_corner_box":
+            corner_boxes = np.array(
+                [
+                    (
+                        example.source_crop_corner_box
+                        if example.source_crop_corner_box is not None
+                        else np.zeros((4,), dtype=np.float32)
+                    )
+                    for example in examples
+                ],
+                dtype=np.float32,
+            )
+            corner_heatmaps = np.array(
+                [
+                    (
+                        example.source_crop_corner_heatmaps
+                        if example.source_crop_corner_heatmaps is not None
+                        else np.zeros(
+                            (
+                                config.keypoint_heatmap_size,
+                                config.keypoint_heatmap_size,
+                                4,
+                            ),
+                            dtype=np.float32,
+                        )
+                    )
+                    for example in examples
+                ],
+                dtype=np.float32,
+            )
+            corner_coords = np.array(
+                [
+                    (
+                        example.source_crop_corner_coords
+                        if example.source_crop_corner_coords is not None
+                        else np.zeros((4, 2), dtype=np.float32)
+                    )
+                    for example in examples
+                ],
+                dtype=np.float32,
+            )
+            dataset = tf.data.Dataset.from_tensor_slices(
+                (paths, corner_heatmaps, corner_coords, corner_boxes, boxes)
+            )
+            dataset = dataset.map(
+                lambda p, h, c, b, crop_box: _load_source_crop_corner_target(
+                    p,
+                    tf.constant(0.0, dtype=tf.float32),
+                    h,
+                    c,
+                    b,
+                    crop_box,
                     config.image_height,
                     config.image_width,
                 ),
@@ -4752,6 +4826,115 @@ def _compile_geometry_uncertainty_model(
     )
 
 
+
+
+def _source_crop_box_v2_loss(
+    y_true: tf.Tensor,
+    y_pred: tf.Tensor,
+    *,
+    giou_weight: float = 2.0,
+    huber_weight: float = 1.0,
+    aspect_weight: float = 1.0,
+    center_weight: float = 0.5,
+    eps: float = 1e-7,
+) -> tf.Tensor:
+    """Combined GIoU + Huber + aspect-ratio + center loss for source crop boxes.
+
+    Targets and predictions are ordered normalized xyxy tensors in [0, 1].
+    """
+    yt = tf.cast(y_true, tf.float32)
+    yp = tf.cast(y_pred, tf.float32)
+
+    # Split corners
+    xt0, yt0, xt1, yt1 = tf.split(yt, 4, axis=-1)
+    xp0, yp0, xp1, yp1 = tf.split(yp, 4, axis=-1)
+
+    # Widths and heights
+    w_true = tf.maximum(xt1 - xt0, 0.0)
+    h_true = tf.maximum(yt1 - yt0, 0.0)
+    w_pred = tf.maximum(xp1 - xp0, 0.0)
+    h_pred = tf.maximum(yp1 - yp0, 0.0)
+
+    # Areas
+    area_true = w_true * h_true
+    area_pred = w_pred * h_pred
+
+    # Intersection
+    xi0 = tf.maximum(xt0, xp0)
+    yi0 = tf.maximum(yt0, yp0)
+    xi1 = tf.minimum(xt1, xp1)
+    yi1 = tf.minimum(yt1, yp1)
+    wi = tf.maximum(xi1 - xi0, 0.0)
+    hi = tf.maximum(yi1 - yi0, 0.0)
+    intersection = wi * hi
+
+    union = area_true + area_pred - intersection
+    iou = intersection / (union + eps)
+
+    # Enclosing box for GIoU
+    xc0 = tf.minimum(xt0, xp0)
+    yc0 = tf.minimum(yt0, yp0)
+    xc1 = tf.maximum(xt1, xp1)
+    yc1 = tf.maximum(yt1, yp1)
+    wc = tf.maximum(xc1 - xc0, 0.0)
+    hc = tf.maximum(yc1 - yc0, 0.0)
+    area_c = wc * hc
+
+    giou = iou - (area_c - union) / (area_c + eps)
+    giou_loss = tf.reduce_mean(1.0 - giou)
+
+    # Huber for direct corner accuracy
+    huber_loss = tf.reduce_mean(
+        keras.losses.huber(yt, yp, delta=0.05)
+    )
+
+    # Aspect ratio loss: match arctan(w/h)
+    ar_true = tf.math.atan(w_true / (h_true + eps))
+    ar_pred = tf.math.atan(w_pred / (h_pred + eps))
+    aspect_loss = tf.reduce_mean(tf.square(ar_true - ar_pred))
+
+    # Center loss: keep predicted box centered on target
+    cx_true = (xt0 + xt1) * 0.5
+    cy_true = (yt0 + yt1) * 0.5
+    cx_pred = (xp0 + xp1) * 0.5
+    cy_pred = (yp0 + yp1) * 0.5
+    center_loss = tf.reduce_mean(
+        tf.square(cx_true - cx_pred) + tf.square(cy_true - cy_pred)
+    )
+
+    total = (
+        giou_weight * giou_loss
+        + huber_weight * huber_loss
+        + aspect_weight * aspect_loss
+        + center_weight * center_loss
+    )
+    return total
+
+
+def _compile_source_crop_box_v2_model(
+    model: keras.Model,
+    *,
+    learning_rate: float,
+) -> None:
+    """Compile a source-space crop-box v2 model with GIoU + aspect + center loss."""
+    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
+        learning_rate=learning_rate,
+        weight_decay=1e-4,
+        clipnorm=1.0,
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss={
+            "source_crop_box": _source_crop_box_v2_loss,
+        },
+        metrics={
+            "source_crop_box": [
+                keras.metrics.MeanAbsoluteError(name="mae"),
+                keras.metrics.RootMeanSquaredError(name="rmse"),
+            ],
+        },
+    )
 def _compile_rectifier_model(
     model: keras.Model,
     *,
@@ -5531,6 +5714,7 @@ def train(config: TrainConfig) -> TrainingResult:
             "mobilenet_v2_rectifier",
             "mobilenet_v2_source_crop_corner",
             "mobilenet_v2_source_crop_box",
+            "mobilenet_v2_source_crop_box_v2",
             "mobilenet_v2_ordinal",
             "mobilenet_v2_fraction",
             "mobilenet_v2_keypoint",
@@ -5868,6 +6052,17 @@ def train(config: TrainConfig) -> TrainingResult:
                 head_units=config.mobilenet_head_units,
                 head_dropout=config.mobilenet_head_dropout,
             )
+        elif config.model_family == "mobilenet_v2_source_crop_box_v2":
+            print("[TRAIN] Building MobileNetV2 source crop-box v2 model...")
+            model = build_mobilenetv2_source_crop_box_v2_model(
+                config.image_height,
+                config.image_width,
+                pretrained=config.mobilenet_pretrained,
+                backbone_trainable=config.mobilenet_backbone_trainable,
+                alpha=config.mobilenet_alpha,
+                head_units=config.mobilenet_head_units,
+                head_dropout=config.mobilenet_head_dropout,
+            )
         elif config.model_family == "mobilenet_v2_keypoint":
             print("[TRAIN] Building MobileNetV2 keypoint-heatmap model...")
             model = build_mobilenetv2_keypoint_model(
@@ -6083,7 +6278,10 @@ def train(config: TrainConfig) -> TrainingResult:
         monitor_metric = "val_source_crop_canvas_box_mae"
     elif config.model_family == "compact_source_crop_box":
         monitor_metric = "val_source_crop_box_mae"
-    elif config.model_family == "mobilenet_v2_source_crop_box":
+    elif config.model_family in {
+        "mobilenet_v2_source_crop_box",
+        "mobilenet_v2_source_crop_box_v2",
+    }:
         monitor_metric = "val_source_crop_box_mae"
     elif config.model_family == "mobilenet_v2_fraction":
         monitor_metric = "val_sweep_fraction_mae"
@@ -6291,6 +6489,11 @@ def train(config: TrainConfig) -> TrainingResult:
                 model,
                 learning_rate=config.learning_rate,
             )
+        elif config.model_family == "mobilenet_v2_source_crop_box_v2":
+            _compile_source_crop_box_v2_model(
+                model,
+                learning_rate=config.learning_rate,
+            )
         elif config.model_family == "compact_source_crop_box":
             _compile_source_crop_box_model(
                 model,
@@ -6481,6 +6684,11 @@ def train(config: TrainConfig) -> TrainingResult:
                 model,
                 learning_rate=config.learning_rate,
             )
+        elif config.model_family == "mobilenet_v2_source_crop_box_v2":
+            _compile_source_crop_box_v2_model(
+                model,
+                learning_rate=config.learning_rate,
+            )
         elif config.model_family == "compact_source_crop_box":
             _compile_source_crop_box_model(
                 model,
@@ -6625,8 +6833,20 @@ def train(config: TrainConfig) -> TrainingResult:
                 model,
                 learning_rate=config.learning_rate,
             )
+        elif config.model_family == "mobilenet_v2_source_crop_corner":
+            _compile_source_crop_corner_model(
+                model,
+                learning_rate=config.learning_rate,
+                heatmap_loss_weight=config.keypoint_heatmap_loss_weight,
+                coord_loss_weight=config.keypoint_coord_loss_weight,
+            )
         elif config.model_family == "mobilenet_v2_source_crop_box":
             _compile_source_crop_box_model(
+                model,
+                learning_rate=config.learning_rate,
+            )
+        elif config.model_family == "mobilenet_v2_source_crop_box_v2":
+            _compile_source_crop_box_v2_model(
                 model,
                 learning_rate=config.learning_rate,
             )

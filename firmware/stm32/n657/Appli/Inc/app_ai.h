@@ -18,6 +18,29 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
+/** @brief Path to the source-crop-box model image on xSPI2 flash. */
+#define APP_AI_SOURCE_CROP_BOX_XSPI2_MODEL_IMAGE_PATH \
+	"atonbuf.source_crop_box.xSPI2.raw"
+
+/** @brief Base address for the source-crop-box model in xSPI2 mapped window. */
+#define APP_AI_XSPI2_SOURCE_CROP_BOX_BASE_ADDR 0x70B00000UL
+
+/** @brief Chip offset for the source-crop-box model from xSPI2 chip base. */
+#define APP_AI_XSPI2_SOURCE_CROP_BOX_CHIP_OFFSET (APP_AI_XSPI2_SOURCE_CROP_BOX_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
+
+/** @brief Source-space xyxy crop box produced by the source-crop-box localizer. */
+typedef struct
+{
+	float x_min;
+	float y_min;
+	float x_max;
+	float y_max;
+} AppAI_SourceCropBox;
+
+#ifndef APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
+#define APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE 1U
+#endif
+
 /**
  * @brief Initialize the generated AI runtime package.
  *
@@ -32,7 +55,7 @@ bool App_AI_Model_Init(void);
 /**
  * @brief Run a one-shot inference using a captured 224x224 YUV422 frame.
  *
- * The helper converts the frame into the model's float32 RGB input buffer,
+ * The helper converts the frame into the model float32 RGB input buffer,
  * runs the generated LL_ATON runtime once, and logs the output summary.
  *
  * @param frame_bytes Pointer to the captured frame bytes.

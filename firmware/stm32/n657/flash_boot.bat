@@ -33,6 +33,9 @@ REM CubeProgrammer v2.21 does not accept .raw extension with -w; stage as .bin
 set "SCALAR_BIN=%SCRIPT_DIR%Appli\Debug\scalar_model_stage.bin"
 set "RECTIFIER_BIN=%SCRIPT_DIR%Appli\Debug\rectifier_model_stage.bin"
 set "OBB_BIN=%SCRIPT_DIR%Appli\Debug\obb_model_stage.bin"
+set "SOURCE_CROP_BOX_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.source_crop_box.xSPI2.raw"
+if not exist "%SOURCE_CROP_BOX_RAW%" set "SOURCE_CROP_BOX_RAW=%REPO_ROOT%st_ai_output\atonbuf.source_crop_box.xSPI2.raw"
+set "SOURCE_CROP_BOX_BIN=%SCRIPT_DIR%Appli\Debug\source_crop_box_model_stage.bin"
 set "APP_BIN=%SCRIPT_DIR%Appli\Debug\n657_Appli.bin"
 set "APP_SIGN=%SCRIPT_DIR%Appli\Debug\n657_Appli_sign_new.bin"
 set "APP_SIGN_TMP=%SCRIPT_DIR%Appli\Debug\n657_Appli_sign_tmp.bin"
@@ -70,6 +73,10 @@ if "%FLASH_MODEL%"=="1" if not exist "%RECTIFIER_RAW%" (
 )
 if "%FLASH_MODEL%"=="1" if not exist "%OBB_RAW%" (
     echo ERROR: OBB model not found: "%OBB_RAW%"
+    exit /b 1
+)
+if "%FLASH_MODEL%"=="1" if not exist "%SOURCE_CROP_BOX_RAW%" (
+    echo ERROR: Source-crop-box model not found: "%SOURCE_CROP_BOX_RAW%"
     exit /b 1
 )
 
@@ -141,6 +148,21 @@ if "%FLASH_MODEL%"=="1" (
         exit /b 1
     )
     echo OBB model flashed at 0x70700000.
+
+    echo === Step 4d: Flash source-crop-box model at 0x70B00000 ===
+    echo Source-crop-box source: "%SOURCE_CROP_BOX_RAW%"
+    for %%I in ("%SOURCE_CROP_BOX_RAW%") do echo Source-crop-box source size: %%~zI bytes
+    copy /y "%SOURCE_CROP_BOX_RAW%" "%SOURCE_CROP_BOX_BIN%" >nul
+    if errorlevel 1 (
+        echo ERROR: Could not stage source-crop-box model as .bin.
+        exit /b 1
+    )
+    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%SOURCE_CROP_BOX_BIN%" 0x70B00000
+    if errorlevel 1 (
+        echo ERROR: Source-crop-box model flash failed.
+        exit /b 1
+    )
+    echo Source-crop-box model flashed at 0x70B00000.
 ) else (
     echo === Step 4: Skipping model image flash (FLASH_MODEL not set) ===
 )

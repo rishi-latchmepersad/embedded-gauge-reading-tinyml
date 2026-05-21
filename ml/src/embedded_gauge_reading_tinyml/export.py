@@ -22,6 +22,7 @@ from embedded_gauge_reading_tinyml.dataset import load_dataset
 from embedded_gauge_reading_tinyml.models import (
     GaugeValueFromKeypoints,
     GaugeValueFromSweepDistribution,
+    OrderedCornerBox,
     SpatialSoftArgmax2D,
 )
 from embedded_gauge_reading_tinyml.gauge.processing import load_gauge_specs
@@ -52,7 +53,7 @@ class ExportConfig:
     model_path: Path
     output_dir: Path
     hard_case_manifest: Path
-    deployment_kind: Literal["scalar", "rectifier", "obb"] = "scalar"
+    deployment_kind: Literal["scalar", "rectifier", "obb", "source_crop_box"] = "scalar"
     representative_count: int = 32
     image_height: int = DEFAULT_IMAGE_HEIGHT
     image_width: int = DEFAULT_IMAGE_WIDTH
@@ -91,6 +92,7 @@ def _load_model(model_path: Path, *, legacy_mobilenetv2_preprocess: bool) -> ker
         "SpatialSoftArgmax2D": SpatialSoftArgmax2D,
         "GaugeValueFromKeypoints": GaugeValueFromKeypoints,
         "GaugeValueFromSweepDistribution": GaugeValueFromSweepDistribution,
+        "OrderedCornerBox": OrderedCornerBox,
     }
     if legacy_mobilenetv2_preprocess:
         print("[EXPORT] Legacy MobileNetV2 preprocess support enabled.", flush=True)
@@ -148,13 +150,35 @@ def _select_obb_deployment_model(model: keras.Model) -> keras.Model:
     return obb_model
 
 
+def _select_source_crop_box_deployment_model(model: keras.Model) -> keras.Model:
+    """Extract the source-crop-box output for deployment as a single-tensor model."""
+    try:
+        box_output = model.get_layer("source_crop_box").output
+    except ValueError:
+        return model
+
+    if len(model.outputs) == 1:
+        return model
+
+    box_model = keras.Model(
+        inputs=model.inputs,
+        outputs=box_output,
+        name=f"{model.name}_source_crop_box",
+    )
+    print(
+        "[EXPORT] Using source-crop-box deployment wrapper around multi-output model.",
+        flush=True,
+    )
+    return box_model
+
+
 def _build_representative_examples(
     *,
     hard_case_manifest: Path,
     image_height: int,
     image_width: int,
     representative_count: int,
-    deployment_kind: Literal["scalar", "rectifier", "obb"],
+    deployment_kind: Literal["scalar", "rectifier", "obb", "source_crop_box"],
 ) -> list[TrainingExample]:
     """Collect a deterministic slice of labeled images for TFLite calibration."""
     config = TrainConfig(
@@ -307,7 +331,7 @@ def build_export_metadata(
     output_zero_point: int,
     representative_examples: int,
     hard_case_manifest: Path,
-    deployment_kind: Literal["scalar", "rectifier", "obb"],
+    deployment_kind: Literal["scalar", "rectifier", "obb", "source_crop_box"],
 ) -> dict[str, Any]:
     """Build a serializable metadata payload for firmware handoff."""
     if deployment_kind == "scalar":
@@ -362,6 +386,8 @@ def export_board_tflite_artifacts(config: ExportConfig) -> ExportResult:
             model = _select_scalar_deployment_model(model)
         elif config.deployment_kind == "obb":
             model = _select_obb_deployment_model(model)
+        elif config.deployment_kind == "source_crop_box":
+            model = _select_source_crop_box_deployment_model(model)
         print(
             f"[EXPORT] Stage: load-model-done elapsed={time.monotonic() - start_time:.1f}s",
             flush=True,
@@ -385,7 +411,7 @@ def export_board_tflite_artifacts(config: ExportConfig) -> ExportResult:
         print("[EXPORT] Converting model to fully quantized int8 TFLite...", flush=True)
         converter = tf.lite.TFLiteConverter.from_keras_model(model)
         converter.optimizations = [tf.lite.Optimize.DEFAULT]
-        if config.deployment_kind in {"rectifier", "obb"}:
+        if config.deployment_kind in {"rectifier", "obb", "source_crop_box"}:
             converter.representative_dataset = lambda: _representative_dataset_rectifier(
                 representative_examples,
                 image_height=config.image_height,
