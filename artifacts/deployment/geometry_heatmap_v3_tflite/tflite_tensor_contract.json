@@ -1,0 +1,271 @@
+{
+  "calibration_candidate": "D_robust_linear",
+  "calibration_json": {
+    "candidates": {
+      "A_current_mapping": {
+        "kind": "current",
+        "name": "A_current_mapping",
+        "params": {},
+        "splits": {
+          "all": {
+            "count": 333.0,
+            "mae_c": 1.718141536216398,
+            "max_error_c": 4.9142613424026536
+          },
+          "test": {
+            "count": 59.0,
+            "mae_c": 1.5871668648718638,
+            "max_error_c": 4.895033476101144
+          },
+          "train": {
+            "count": 227.0,
+            "mae_c": 1.7424850931416702,
+            "max_error_c": 4.9142613424026536
+          },
+          "val": {
+            "count": 47.0,
+            "mae_c": 1.7649823487119431,
+            "max_error_c": 4.711826663611731
+          }
+        }
+      },
+      "B_constrained_cold_sweep": {
+        "kind": "cold_sweep",
+        "name": "B_constrained_cold_sweep",
+        "params": {
+          "cold_angle_degrees": 139.58235272903886,
+          "maximum_celsius": 50.0,
+          "minimum_celsius": -30.0,
+          "sweep_degrees": 265.8807449852301
+        },
+        "splits": {
+          "all": {
+            "count": 333.0,
+            "mae_c": 1.4025046126499483,
+            "max_error_c": 5.264086198614194
+          },
+          "test": {
+            "count": 59.0,
+            "mae_c": 1.3445250304994492,
+            "max_error_c": 3.9654961113214426
+          },
+          "train": {
+            "count": 227.0,
+            "mae_c": 1.3918475241921802,
+            "max_error_c": 5.264086198614194
+          },
+          "val": {
+            "count": 47.0,
+            "mae_c": 1.5267589621561806,
+            "max_error_c": 3.576306504494646
+          }
+        }
+      },
+      "C_linear_unwrapped": {
+        "kind": "linear",
+        "name": "C_linear_unwrapped",
+        "params": {
+          "cold_angle_degrees": 135.0,
+          "intercept": -33.00762857732633,
+          "slope": 0.31114298818883307
+        },
+        "splits": {
+          "all": {
+            "count": 333.0,
+            "mae_c": 1.1979293675610225,
+            "max_error_c": 6.081740666810191
+          },
+          "test": {
+            "count": 59.0,
+            "mae_c": 1.187359174998486,
+            "max_error_c": 3.2254190819164243
+          },
+          "train": {
+            "count": 227.0,
+            "mae_c": 1.2085153790188434,
+            "max_error_c": 6.081740666810191
+          },
+          "val": {
+            "count": 47.0,
+            "mae_c": 1.1600701496943067,
+            "max_error_c": 2.9792255942340944
+          }
+        }
+      },
+      "D_robust_linear": {
+        "kind": "robust_linear",
+        "name": "D_robust_linear",
+        "params": {
+          "cold_angle_degrees": 135.0,
+          "intercept": -33.14101213857672,
+          "slope": 0.3118859767261175
+        },
+        "splits": {
+          "all": {
+            "count": 333.0,
+            "mae_c": 1.195320083696125,
+            "max_error_c": 6.158708596962491
+          },
+          "test": {
+            "count": 59.0,
+            "mae_c": 1.190107360405394,
+            "max_error_c": 3.1606481067195844
+          },
+          "train": {
+            "count": 227.0,
+            "mae_c": 1.208056289621759,
+            "max_error_c": 6.158708596962491
+          },
+          "val": {
+            "count": 47.0,
+            "mae_c": 1.1403505502713196,
+            "max_error_c": 3.002785667889796
+          }
+        }
+      }
+    },
+    "manifest_path": "D:\\Projects\\embedded-gauge-reading-tinyml\\ml\\data\\geometry_reader_manifest_v2_clean.csv",
+    "selected_candidate_name": "D_robust_linear",
+    "selection_basis": "lowest train MAE among fitted calibration candidates B/C/D",
+    "test_count": 59,
+    "train_count": 227,
+    "val_count": 47
+  },
+  "calibration_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/artifacts/training/inner_dial_angle_calibration_v1/calibration_candidates.json",
+  "float32": {
+    "input": {
+      "dtype": "float32",
+      "name": "serving_default_input_image:0",
+      "quantization": {
+        "scale": 0.0,
+        "zero_point": 0
+      },
+      "quantized": false,
+      "shape": [
+        1,
+        224,
+        224,
+        3
+      ]
+    },
+    "model_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/artifacts/deployment/geometry_heatmap_v3_tflite/model_v3_float32.tflite",
+    "outputs": [
+      {
+        "dtype": "float32",
+        "name": "StatefulPartitionedCall_1:1",
+        "quantization": {
+          "scale": 0.0,
+          "zero_point": 0
+        },
+        "quantized": false,
+        "shape": [
+          1,
+          56,
+          56,
+          1
+        ]
+      },
+      {
+        "dtype": "float32",
+        "name": "StatefulPartitionedCall_1:0",
+        "quantization": {
+          "scale": 0.0,
+          "zero_point": 0
+        },
+        "quantized": false,
+        "shape": [
+          1,
+          56,
+          56,
+          1
+        ]
+      },
+      {
+        "dtype": "float32",
+        "name": "StatefulPartitionedCall_1:2",
+        "quantization": {
+          "scale": 0.0,
+          "zero_point": 0
+        },
+        "quantized": false,
+        "shape": [
+          1,
+          1
+        ]
+      }
+    ],
+    "requires_dequantization": false
+  },
+  "int8": {
+    "input": {
+      "dtype": "int8",
+      "name": "serving_default_input_image:0",
+      "quantization": {
+        "scale": 0.003921568859368563,
+        "zero_point": -128
+      },
+      "quantized": true,
+      "shape": [
+        1,
+        224,
+        224,
+        3
+      ]
+    },
+    "model_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/artifacts/deployment/geometry_heatmap_v3_tflite/model_v3_int8.tflite",
+    "outputs": [
+      {
+        "dtype": "int8",
+        "name": "StatefulPartitionedCall_1:1",
+        "quantization": {
+          "scale": 0.00390625,
+          "zero_point": -128
+        },
+        "quantized": true,
+        "shape": [
+          1,
+          56,
+          56,
+          1
+        ]
+      },
+      {
+        "dtype": "int8",
+        "name": "StatefulPartitionedCall_1:0",
+        "quantization": {
+          "scale": 0.00390625,
+          "zero_point": -128
+        },
+        "quantized": true,
+        "shape": [
+          1,
+          56,
+          56,
+          1
+        ]
+      },
+      {
+        "dtype": "int8",
+        "name": "StatefulPartitionedCall_1:2",
+        "quantization": {
+          "scale": 0.00390625,
+          "zero_point": -128
+        },
+        "quantized": true,
+        "shape": [
+          1,
+          1
+        ]
+      }
+    ],
+    "requires_dequantization": true
+  },
+  "selected_decode_method": "softargmax",
+  "selected_decode_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/artifacts/deployment/geometry_heatmap_v2_tflite_v2/selected_decode_method_corrected.json",
+  "selected_window_size": 3,
+  "semantic_output_order_indices": [
+    1,
+    0,
+    2
+  ]
+}

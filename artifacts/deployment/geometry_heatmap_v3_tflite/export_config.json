@@ -1,0 +1,180 @@
+{
+  "board_input_contract": {
+    "channels": "RGB",
+    "crop_coordinate_convention": "same loose crop convention as board replay",
+    "input_shape": [
+      1,
+      224,
+      224,
+      3
+    ],
+    "normalization": "uint8_to_float32_0_1",
+    "resize_method": "bilinear"
+  },
+  "calibration_json_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/artifacts/training/inner_dial_angle_calibration_v1/calibration_candidates.json",
+  "decoder": {
+    "decode_method": "softargmax",
+    "window_size": 3
+  },
+  "decoder_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/artifacts/deployment/geometry_heatmap_v2_tflite_v2/selected_decode_method_corrected.json",
+  "float32_contract": {
+    "input": {
+      "dtype": "float32",
+      "name": "serving_default_input_image:0",
+      "quantization": {
+        "scale": 0.0,
+        "zero_point": 0
+      },
+      "quantized": false,
+      "shape": [
+        1,
+        224,
+        224,
+        3
+      ]
+    },
+    "model_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/artifacts/deployment/geometry_heatmap_v3_tflite/model_v3_float32.tflite",
+    "outputs": [
+      {
+        "dtype": "float32",
+        "name": "StatefulPartitionedCall_1:1",
+        "quantization": {
+          "scale": 0.0,
+          "zero_point": 0
+        },
+        "quantized": false,
+        "shape": [
+          1,
+          56,
+          56,
+          1
+        ]
+      },
+      {
+        "dtype": "float32",
+        "name": "StatefulPartitionedCall_1:0",
+        "quantization": {
+          "scale": 0.0,
+          "zero_point": 0
+        },
+        "quantized": false,
+        "shape": [
+          1,
+          56,
+          56,
+          1
+        ]
+      },
+      {
+        "dtype": "float32",
+        "name": "StatefulPartitionedCall_1:2",
+        "quantization": {
+          "scale": 0.0,
+          "zero_point": 0
+        },
+        "quantized": false,
+        "shape": [
+          1,
+          1
+        ]
+      }
+    ],
+    "requires_dequantization": false
+  },
+  "float32_tflite_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/artifacts/deployment/geometry_heatmap_v3_tflite/model_v3_float32.tflite",
+  "heatmap_size": 56,
+  "input_size": 224,
+  "int8_contract": {
+    "input": {
+      "dtype": "int8",
+      "name": "serving_default_input_image:0",
+      "quantization": {
+        "scale": 0.003921568859368563,
+        "zero_point": -128
+      },
+      "quantized": true,
+      "shape": [
+        1,
+        224,
+        224,
+        3
+      ]
+    },
+    "model_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/artifacts/deployment/geometry_heatmap_v3_tflite/model_v3_int8.tflite",
+    "outputs": [
+      {
+        "dtype": "int8",
+        "name": "StatefulPartitionedCall_1:1",
+        "quantization": {
+          "scale": 0.00390625,
+          "zero_point": -128
+        },
+        "quantized": true,
+        "shape": [
+          1,
+          56,
+          56,
+          1
+        ]
+      },
+      {
+        "dtype": "int8",
+        "name": "StatefulPartitionedCall_1:0",
+        "quantization": {
+          "scale": 0.00390625,
+          "zero_point": -128
+        },
+        "quantized": true,
+        "shape": [
+          1,
+          56,
+          56,
+          1
+        ]
+      },
+      {
+        "dtype": "int8",
+        "name": "StatefulPartitionedCall_1:2",
+        "quantization": {
+          "scale": 0.00390625,
+          "zero_point": -128
+        },
+        "quantized": true,
+        "shape": [
+          1,
+          1
+        ]
+      }
+    ],
+    "requires_dequantization": true
+  },
+  "int8_tflite_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/artifacts/deployment/geometry_heatmap_v3_tflite/model_v3_int8.tflite",
+  "keras_output_names": [
+    "center_heatmap",
+    "tip_heatmap",
+    "confidence"
+  ],
+  "manifest_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/geometry_reader_manifest_v2_clean.csv",
+  "notes": [
+    "The representative dataset is train-only and includes identity plus mild-jitter board crops.",
+    "The dataset is stratified by temperature bins to improve quantization coverage.",
+    "The corrected decoder remains softargmax with a 3x3 window."
+  ],
+  "output_dir": "/mnt/d/Projects/embedded-gauge-reading-tinyml/artifacts/deployment/geometry_heatmap_v3_tflite",
+  "representative_dataset_count": 454,
+  "representative_dataset_manifest_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/artifacts/deployment/geometry_heatmap_v3_tflite/representative_dataset_manifest.csv",
+  "selected_preprocessing_mode": "python_training_rgb_bilinear",
+  "selected_thresholds_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/artifacts/training/geometry_heatmap_v2_board_replay/selected_board_guardrail_thresholds.json",
+  "semantic_output_names": [
+    "center_heatmap",
+    "tip_heatmap",
+    "confidence"
+  ],
+  "semantic_output_order_indices": [
+    1,
+    0,
+    2
+  ],
+  "sigma_pixels": 5.0,
+  "source_model_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/artifacts/training/geometry_heatmap_v3_quant_native/best_model.keras"
+}

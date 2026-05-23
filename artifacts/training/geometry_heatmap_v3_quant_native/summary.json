@@ -1,0 +1,197 @@
+{
+  "decoder_method": "softargmax",
+  "distillation_weight": 0.15,
+  "feasibility": {
+    "preferred_training_strategy": "quantization_native_training",
+    "tfmot_available": false
+  },
+  "final_val_summary": {
+    "acceptance_rate": 0.851063829787234,
+    "accepted_count": 40.0,
+    "accepted_gt20_failures": 0.0,
+    "accepted_mae_c": 2.2699731923527318,
+    "angle_mae_degrees": 37.398714688751326,
+    "center_heatmap_peak_mean": 0.690112663076279,
+    "center_heatmap_spread_mean": 22.913752251483025,
+    "center_mae_px_224": 4.284298473354881,
+    "confidence_mean": 0.6785148318777693,
+    "count": 47.0,
+    "guardrail_disagreement_count": 9.0,
+    "percentage_under_10c": 85.1063829787234,
+    "percentage_under_2c": 42.5531914893617,
+    "percentage_under_5c": 76.59574468085107,
+    "tip_heatmap_peak_mean": 0.6761785973893836,
+    "tip_heatmap_spread_mean": 16.764321266336644,
+    "tip_mae_px_224": 12.933687007202678,
+    "top_rejection_reasons": "tip_peak_too_low:7;predicted_angle_outside_valid_sweep:2;temperature_clamped_to_physical_range:2;temperature_outside_physical_margin:2",
+    "worst_accepted_error_c": 8.22105470448048
+  },
+  "frozen_val_summary": {
+    "acceptance_rate": 0.851063829787234,
+    "accepted_count": 40.0,
+    "accepted_gt20_failures": 0.0,
+    "accepted_mae_c": 2.2699731923527318,
+    "angle_mae_degrees": 37.398714688751326,
+    "center_heatmap_peak_mean": 0.690112663076279,
+    "center_heatmap_spread_mean": 22.913752251483025,
+    "center_mae_px_224": 4.284298473354881,
+    "confidence_mean": 0.6785148318777693,
+    "count": 47.0,
+    "guardrail_disagreement_count": 9.0,
+    "percentage_under_10c": 85.1063829787234,
+    "percentage_under_2c": 42.5531914893617,
+    "percentage_under_5c": 76.59574468085107,
+    "tip_heatmap_peak_mean": 0.6761785973893836,
+    "tip_heatmap_spread_mean": 16.764321266336644,
+    "tip_mae_px_224": 12.933687007202678,
+    "top_rejection_reasons": "tip_peak_too_low:7;predicted_angle_outside_valid_sweep:2;temperature_clamped_to_physical_range:2;temperature_outside_physical_margin:2",
+    "worst_accepted_error_c": 8.22105470448048
+  },
+  "loss_weights": {
+    "angle": 1.0,
+    "center_coord": 1.0,
+    "center_heatmap": 1.0,
+    "confidence": 0.1,
+    "distillation": 0.15,
+    "temperature": 0.5,
+    "tip_coord": 2.0,
+    "tip_heatmap": 2.0
+  },
+  "output_noise_stddev": 0.008,
+  "selected_best_model_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/artifacts/training/geometry_heatmap_v3_quant_native/best_model.keras",
+  "selected_calibration_candidate": "D_robust_linear",
+  "selected_calibration_json": {
+    "candidates": {
+      "A_current_mapping": {
+        "kind": "current",
+        "name": "A_current_mapping",
+        "params": {},
+        "splits": {
+          "all": {
+            "count": 333.0,
+            "mae_c": 1.718141536216398,
+            "max_error_c": 4.9142613424026536
+          },
+          "test": {
+            "count": 59.0,
+            "mae_c": 1.5871668648718638,
+            "max_error_c": 4.895033476101144
+          },
+          "train": {
+            "count": 227.0,
+            "mae_c": 1.7424850931416702,
+            "max_error_c": 4.9142613424026536
+          },
+          "val": {
+            "count": 47.0,
+            "mae_c": 1.7649823487119431,
+            "max_error_c": 4.711826663611731
+          }
+        }
+      },
+      "B_constrained_cold_sweep": {
+        "kind": "cold_sweep",
+        "name": "B_constrained_cold_sweep",
+        "params": {
+          "cold_angle_degrees": 139.58235272903886,
+          "maximum_celsius": 50.0,
+          "minimum_celsius": -30.0,
+          "sweep_degrees": 265.8807449852301
+        },
+        "splits": {
+          "all": {
+            "count": 333.0,
+            "mae_c": 1.4025046126499483,
+            "max_error_c": 5.264086198614194
+          },
+          "test": {
+            "count": 59.0,
+            "mae_c": 1.3445250304994492,
+            "max_error_c": 3.9654961113214426
+          },
+          "train": {
+            "count": 227.0,
+            "mae_c": 1.3918475241921802,
+            "max_error_c": 5.264086198614194
+          },
+          "val": {
+            "count": 47.0,
+            "mae_c": 1.5267589621561806,
+            "max_error_c": 3.576306504494646
+          }
+        }
+      },
+      "C_linear_unwrapped": {
+        "kind": "linear",
+        "name": "C_linear_unwrapped",
+        "params": {
+          "cold_angle_degrees": 135.0,
+          "intercept": -33.00762857732633,
+          "slope": 0.31114298818883307
+        },
+        "splits": {
+          "all": {
+            "count": 333.0,
+            "mae_c": 1.1979293675610225,
+            "max_error_c": 6.081740666810191
+          },
+          "test": {
+            "count": 59.0,
+            "mae_c": 1.187359174998486,
+            "max_error_c": 3.2254190819164243
+          },
+          "train": {
+            "count": 227.0,
+            "mae_c": 1.2085153790188434,
+            "max_error_c": 6.081740666810191
+          },
+          "val": {
+            "count": 47.0,
+            "mae_c": 1.1600701496943067,
+            "max_error_c": 2.9792255942340944
+          }
+        }
+      },
+      "D_robust_linear": {
+        "kind": "robust_linear",
+        "name": "D_robust_linear",
+        "params": {
+          "cold_angle_degrees": 135.0,
+          "intercept": -33.14101213857672,
+          "slope": 0.3118859767261175
+        },
+        "splits": {
+          "all": {
+            "count": 333.0,
+            "mae_c": 1.195320083696125,
+            "max_error_c": 6.158708596962491
+          },
+          "test": {
+            "count": 59.0,
+            "mae_c": 1.190107360405394,
+            "max_error_c": 3.1606481067195844
+          },
+          "train": {
+            "count": 227.0,
+            "mae_c": 1.208056289621759,
+            "max_error_c": 6.158708596962491
+          },
+          "val": {
+            "count": 47.0,
+            "mae_c": 1.1403505502713196,
+            "max_error_c": 3.002785667889796
+          }
+        }
+      }
+    },
+    "manifest_path": "D:\\Projects\\embedded-gauge-reading-tinyml\\ml\\data\\geometry_reader_manifest_v2_clean.csv",
+    "selected_candidate_name": "D_robust_linear",
+    "selection_basis": "lowest train MAE among fitted calibration candidates B/C/D",
+    "test_count": 59,
+    "train_count": 227,
+    "val_count": 47
+  },
+  "selected_model_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/artifacts/training/geometry_heatmap_v3_quant_native/model.keras",
+  "selected_stage": "frozen",
+  "window_size": 3
+}

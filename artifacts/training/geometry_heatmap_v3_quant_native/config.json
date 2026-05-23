@@ -1,0 +1,30 @@
+{
+  "calibration_json_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/artifacts/training/inner_dial_angle_calibration_v1/calibration_candidates.json",
+  "decoder_method": "softargmax",
+  "decoder_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/artifacts/deployment/geometry_heatmap_v2_tflite_v2/selected_decode_method_corrected.json",
+  "distillation_weight": 0.15,
+  "frozen_epochs": 40,
+  "frozen_learning_rate": 3e-06,
+  "initialization_mode": "v2",
+  "loss_weights": {
+    "angle": 1.0,
+    "center_coord": 1.0,
+    "center_heatmap": 1.0,
+    "confidence": 0.1,
+    "distillation": 0.15,
+    "temperature": 0.5,
+    "tip_coord": 2.0,
+    "tip_heatmap": 2.0
+  },
+  "manifest_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/geometry_reader_manifest_v2_clean.csv",
+  "model_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/artifacts/training/geometry_heatmap_v2/model.keras",
+  "output_model_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/artifacts/training/geometry_heatmap_v3_quant_native/model_v3.keras",
+  "output_noise_stddev": 0.008,
+  "selected_best_model_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/artifacts/training/geometry_heatmap_v3_quant_native/best_model.keras",
+  "selected_model_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/artifacts/training/geometry_heatmap_v3_quant_native/model.keras",
+  "selected_stage": "frozen",
+  "thresholds_path": "/mnt/d/Projects/embedded-gauge-reading-tinyml/ml/artifacts/training/geometry_heatmap_v2_board_replay/selected_board_guardrail_thresholds.json",
+  "unfrozen_epochs": 0,
+  "unfrozen_learning_rate": 5e-06,
+  "window_size": 3
+}

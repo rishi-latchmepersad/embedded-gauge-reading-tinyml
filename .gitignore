@@ -88,3 +88,7 @@ venv/
 env/
 ENV/
 ml/.venv/
+
+# ML debug outputs
+ml/debug/
+

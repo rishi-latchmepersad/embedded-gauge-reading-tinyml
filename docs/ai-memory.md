@@ -6,6 +6,21 @@ Keep this file short, and put detailed notes in the topical files below.
 - The target for reading is the inner dial of the gauge, as that is the one calibrated for Celsius (C).
 - Direct source-space crop-box experiments now use the compact `compact_source_crop_box` family with `source_crop_box` supervision and the rectified crop-box CSVs via `--precomputed-crop-boxes`; the V28 replay helper now decodes `source_crop_box` outputs directly.
 
+## 2026-05-22 Geometry Heatmap Quantization Drift
+
+- The current INT8 drift autopsy points at tip heatmap flattening/spread growth plus softargmax sensitivity, not tensor-order or dequantization issues.
+- The decode-method comparison now selects `peak_weighted_centroid_w5` as the best validated decoder from the saved summary data.
+- The replay/test jobs for the variant comparison kept stalling in WSL `dxgglo` I/O wait, so the temp-mirror strategy should be the next thing to automate if we need another full replay pass.
+
+## 2026-05-21 Geometry Heatmap Debug
+
+- Ground-truth heatmap generation is correct on 30 clean rows: mean argmax error is `0.333` px for center and `0.412` px for tip at `56x56`, with x/y ordering and normalized-coordinate conversion both verified.
+- The failed `geometry_heatmap_v1` model still produces diffuse, low-peaked predictions on the 30 test examples: mean center peak `0.1199`, mean tip peak `0.0800`, mean softargmax error `45.9` px center / `62.7` px tip.
+- The tiny 8-sample overfit gate did **not** pass the required crop-space thresholds. Final holdout-on-same-8 metrics were `center MAE=5.855 px`, `tip MAE=2.188 px`, `temperature MAE=3.844 C`.
+- Because the tiny overfit failed, do **not** proceed to a full heatmap v2 training run yet. Revisit the center localization path / loss weighting first.
+- Branch analysis on the same 8 samples showed the center labels sit much closer to the crop hub than the tip labels, and the v1 model's center decode is the weak branch (`center softargmax MAE=5.855 px` vs `tip softargmax MAE=2.188 px`).
+- Tiny-overfit v2 with stronger center weighting and frozen-then-unfrozen fallback still missed the temperature gate (`temperature MAE=3.732 C`), but the center-prior ablation was informative: using the loose-crop geometric center with the model-predicted tip improved to `2.995 C`, which suggests a fixed-center or tip-only architecture may be simpler for the first board version.
+
 ## 2026-05-13 Dual-Resolution Interval Recipe
 
 - The strongest learned reader so far is `mobilenet_v2_dualres_interval` with the new tensor-safe `CenterCropResize` layer, CBAM + Coordinate Attention on both MobileNetV2 branches, `range_aware_sampling=True`, and a lower `interval_loss_weight` (`0.10`).
@@ -1724,3 +1739,43 @@ pu_driver.py.
 ### Environment Notes
 - **WSL is not installed** on this Windows machine. All ML work runs through native Windows Poetry/PowerShell.
 - Board flash is still blocked by user until offline <3C target is met. The offline target is achievable if the localizer matches rectified-crop quality, because the V28 oracle already hits 0.34C with those crops.
+
+## 2026-05-21 Geometry Heatmap Calibration Decision
+
+- Phase 4.7 confirmed that the remaining temperature gap was mostly angle-to-temperature calibration, not geometry learning.
+- Oracle geometry with perfect center/tip labels under the current mapping is **1.718 C MAE** on the 333 clean rows.
+- A train-only robust linear calibration improves the oracle ceiling to **1.195 C MAE** overall.
+- Tiny-overfit v2 with calibrated mapping drops from **3.732 C** to **0.840 C**, so the heatmap setup is viable.
+- Center prediction is **not** the blocker after calibration:
+  - model-predicted center + predicted tip: **0.840 C**
+  - true center + predicted tip: **0.840 C**
+  - average-center / loose-center priors are worse than the model center.
+- Recommended Phase 5 direction: **A. center+tip heatmap full training** with the calibrated angle-to-temperature mapping kept in the evaluation path.
+
+## 2026-05-21 Geometry Heatmap v2 Full Training Result
+
+- Full `geometry_heatmap_v2` completed with the frozen backbone stage selected.
+- Test metrics with calibrated mapping:
+  - temperature MAE: **4.312 C**
+  - center MAE: **4.764 px**
+  - tip MAE: **17.850 px**
+  - angle MAE: **12.348 deg**
+- This beats `geometry_points_v1` on test temperature MAE and tip MAE, but it does **not** meet the stricter board-style replay target because the tip error is still above 12 px and the worst failures remain large.
+- Jitter robustness is mixed: identity and medium jitter are okay, but strong jitter still produces large tail errors.
+- The next safest step is to keep iterating on heatmap localization quality rather than moving to board-style replay yet.
+
+## 2026-05-23 Geometry Heatmap v2 Phase 8 QAT Setup
+
+- `tensorflow_model_optimization` is not installed in the active Poetry environment, so standard TFMOT QAT is not the practical path here.
+- Implemented a quantization-noise fallback for `geometry_heatmap_v2`:
+  - feasibility check: `ml/scripts/check_geometry_heatmap_qat_feasibility.py`
+  - training: `ml/scripts/train_geometry_heatmap_v2_qat.py`
+  - export: `ml/scripts/export_geometry_heatmap_v2_qat_int8.py`
+  - replay/eval: `ml/scripts/eval_geometry_heatmap_v2_qat_tflite_replay.py`
+- Added pure fake-quant helper: `ml/src/embedded_gauge_reading_tinyml/geometry_heatmap_qat_utils.py`
+- Smoke run status:
+  - one-epoch training smoke completed
+  - QAT float32 export completed
+  - QAT int8 export completed
+  - five-sample replay smoke completed
+- Keep the corrected decoder locked to `softargmax` with `window_size=3`.
