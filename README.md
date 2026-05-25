@@ -10,6 +10,10 @@ Target constraints for a deployable, low-cost prototype (under $200 USD total):
 
 This enables remote deployments (rural or offshore) using solar power, creating value without retrofitting legacy equipment or relying on expensive backhaul connectivity.
 
+## System Block Diagram
+
+![STM32N657 system block diagram](docs/system_diagrams-STM32N657%20System%20Block%20Diagram.drawio.png)
+
 ## Project Demo
 
 [![Project Demo Video](https://img.youtube.com/vi/EDLs6GXLhhM/maxresdefault.jpg)](https://youtu.be/EDLs6GXLhhM)

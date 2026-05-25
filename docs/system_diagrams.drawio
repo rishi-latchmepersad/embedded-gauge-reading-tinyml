@@ -192,7 +192,7 @@
     </mxGraphModel>
   </diagram>
   <diagram id="STM32N657SystemBlock" name="STM32N657 System Block Diagram">
-    <mxGraphModel dx="960" dy="674" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+    <mxGraphModel dx="1348" dy="889" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -202,31 +202,22 @@
         <mxCell id="stm32" value="&lt;b&gt;STM32N657 Nucleo Board&lt;br&gt;&lt;font style=&quot;font-size: 11px&quot;&gt;Cortex-M55 @ 800MHz + NPU&lt;/font&gt;&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;" parent="1" vertex="1">
           <mxGeometry x="550" y="150" width="300" height="530" as="geometry" />
         </mxCell>
-        <mxCell id="usb_c" value="USB-C Connector&lt;br&gt;&lt;font style=&quot;font-size: 11px&quot;&gt;5V Power + UCPD&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#fad7ac;strokeColor=#b46504;" parent="1" vertex="1">
+        <mxCell id="usb_c" value="USB-C Connector&lt;br&gt;&lt;font style=&quot;font-size: 11px&quot;&gt;STLink-V3 Programmer&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#fad7ac;strokeColor=#b46504;" parent="1" vertex="1">
           <mxGeometry x="100" y="150" width="180" height="100" as="geometry" />
         </mxCell>
         <mxCell id="camera" value="IMX335 Camera Module&lt;br&gt;&lt;font style=&quot;font-size: 11px&quot;&gt;224×224 YUV422&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#cce5ff;strokeColor=#36393d;" parent="1" vertex="1">
           <mxGeometry x="1050" y="150" width="200" height="120" as="geometry" />
         </mxCell>
         <mxCell id="sd_card" value="&lt;div&gt;Adafruit&lt;/div&gt;MicroSD Card Breakout Board" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#b0e3e6;strokeColor=#0e8088;" parent="1" vertex="1">
-          <mxGeometry x="1050" y="530" width="200" height="120" as="geometry" />
+          <mxGeometry x="1050" y="545" width="200" height="120" as="geometry" />
         </mxCell>
         <mxCell id="rtc" value="DS3231 RTC Module&lt;br&gt;&lt;font style=&quot;font-size: 11px&quot;&gt;High-Accuracy I2C RTC&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
           <mxGeometry x="100" y="550" width="200" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="e_usb_power" value="5V VBUS" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
-          <mxGeometry x="340" y="150" width="60" height="30" as="geometry" />
-        </mxCell>
-        <mxCell id="e_usb_vsense" value="VSENSE (PA11)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" vertex="1" parent="1">
-          <mxGeometry x="340" y="185" width="60" height="30" as="geometry" />
-        </mxCell>
-        <mxCell id="e_usb_isense" value="ISENSE (PA5)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" vertex="1" parent="1">
-          <mxGeometry x="340" y="220" width="60" height="30" as="geometry" />
-        </mxCell>
-        <mxCell id="e_cam_csi" value="CSI-2&lt;br&gt;(2 data lanes)&lt;br&gt;via ribbon cable" style="text;html=1;align=center;fontSize=11;fontColor=#0066CC;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="e_cam_csi" value="CSI-2&lt;br&gt;(2 data lanes)&lt;br&gt;via ribbon cable" style="text;html=1;align=center;fontSize=11;fontColor=#0066CC;fontStyle=1;" parent="1" vertex="1">
           <mxGeometry x="900" y="140" width="100" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="e_cam_i2c" value="I2C1&lt;br&gt;SCL: PH9&lt;br&gt;SDA: PC1" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" vertex="1" parent="1">
+        <mxCell id="e_cam_i2c" value="I2C2&lt;br&gt;SCL: PB10&lt;br&gt;SDA: PB11" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
           <mxGeometry x="920" y="210" width="60" height="60" as="geometry" />
         </mxCell>
         <mxCell id="e_sd_cs" value="CS (PA3)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
@@ -241,92 +232,107 @@
         <mxCell id="e_sd_mosi" value="MOSI (PG2)" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
           <mxGeometry x="920" y="620" width="60" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="e_rtc" value="I2C2&lt;br&gt;SCL: PB10&lt;br&gt;&lt;br&gt;&lt;div&gt;SDA: PB11&lt;/div&gt;" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
-          <mxGeometry x="340" y="550" width="60" height="70" as="geometry" />
+        <mxCell id="e_rtc" value="I2C1&lt;br&gt;SCL: PH9&lt;br&gt;&lt;br&gt;&lt;div&gt;SDA: PC1&lt;/div&gt;" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="440" y="550" width="60" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="line_usb_1" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" parent="1" edge="1">
+        <mxCell id="line_usb_3" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;startArrow=classic;startFill=1;" parent="1" edge="1">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
-            <mxPoint x="280" y="175" as="sourcePoint" />
-            <mxPoint x="550" y="175" as="targetPoint" />
+            <mxPoint x="280" y="199.5" as="sourcePoint" />
+            <mxPoint x="550" y="199.5" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="line_usb_2" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" parent="1" edge="1">
-          <mxGeometry width="50" height="50" relative="1" as="geometry">
-            <mxPoint x="280" y="205" as="sourcePoint" />
-            <mxPoint x="550" y="205" as="targetPoint" />
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="line_usb_3" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" edge="1" parent="1">
-          <mxGeometry width="50" height="50" relative="1" as="geometry">
-            <mxPoint x="280" y="239.5" as="sourcePoint" />
-            <mxPoint x="550" y="239.5" as="targetPoint" />
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="line_cam_ribbon" value="" style="endArrow=classic;html=1;strokeWidth=4;strokeColor=#0066CC;" edge="1" parent="1">
+        <mxCell id="line_cam_ribbon" value="" style="endArrow=classic;html=1;strokeWidth=4;strokeColor=#0066CC;startArrow=classic;startFill=1;" parent="1" edge="1">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
             <mxPoint x="1050" y="199" as="sourcePoint" />
             <mxPoint x="850" y="199" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="line_cam_i2c" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;dashed=1;" edge="1" parent="1">
+        <mxCell id="line_cam_i2c" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;dashed=1;startArrow=block;startFill=1;" parent="1" edge="1">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
             <mxPoint x="1050" y="260" as="sourcePoint" />
             <mxPoint x="850" y="260" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="line_sd_1" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" parent="1" edge="1">
+        <mxCell id="line_sd_1" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;startArrow=classic;startFill=1;" parent="1" edge="1">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
             <mxPoint x="1050" y="559.01" as="sourcePoint" />
             <mxPoint x="850" y="559.01" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="line_sd_2" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" parent="1" edge="1">
+        <mxCell id="line_sd_2" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;startArrow=classic;startFill=1;" parent="1" edge="1">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
             <mxPoint x="1050" y="589.01" as="sourcePoint" />
             <mxPoint x="850" y="589.01" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="ext_flash" value="MX25UM51245G&lt;br&gt;Onboard Flash&lt;br&gt;&lt;font style=&quot;font-size: 11px&quot;&gt;64MB OctoSPI (xSPI2)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+        <mxCell id="ext_flash" value="MX25UM51245G&lt;br&gt;Onboard Flash&lt;br&gt;&lt;font style=&quot;font-size: 11px&quot;&gt;64MB OctoSPI (xSPI2)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="1050" y="350" width="200" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="debug_uart" value="Debug UART&lt;br&gt;&lt;font style=&quot;font-size: 11px&quot;&gt;115200 8N1&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
-          <mxGeometry x="100" y="350" width="180" height="100" as="geometry" />
+        <mxCell id="debug_uart" value="Debug UART&lt;br&gt;&lt;font style=&quot;font-size: 11px&quot;&gt;115200 8N1&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="100" y="260" width="180" height="100" as="geometry" />
         </mxCell>
-        <mxCell id="e_flash_xspi" value="xSPI2 (8-bit)&lt;br&gt;OctoSPI STR" style="text;html=1;align=center;fontSize=11;fontColor=#0066CC;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="e_flash_xspi" value="xSPI2 (8-bit)&lt;br&gt;OctoSPI STR" style="text;html=1;align=center;fontSize=11;fontColor=#0066CC;fontStyle=1;" parent="1" vertex="1">
           <mxGeometry x="900" y="370" width="100" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="e_uart_label" value="LPUART1&lt;br&gt;TX: PE5&lt;br&gt;&lt;br&gt;&lt;div&gt;RX: PE6&lt;/div&gt;" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" vertex="1" parent="1">
-          <mxGeometry x="340" y="360" width="60" height="80" as="geometry" />
+        <mxCell id="e_uart_label" value="LPUART1&lt;br&gt;TX: PE5&lt;br&gt;&lt;br&gt;&lt;div&gt;RX: PE6&lt;/div&gt;" style="text;html=1;align=center;fontSize=10;fontColor=#0066CC;" parent="1" vertex="1">
+          <mxGeometry x="340" y="270" width="60" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="line_flash" value="" style="endArrow=classic;html=1;strokeWidth=4;strokeColor=#0066CC;" edge="1" parent="1">
+        <mxCell id="line_flash" value="" style="endArrow=classic;html=1;strokeWidth=4;strokeColor=#0066CC;startArrow=classic;startFill=1;" parent="1" edge="1">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
             <mxPoint x="1050" y="410" as="sourcePoint" />
             <mxPoint x="850" y="410" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="line_uart" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" edge="1" parent="1">
+        <mxCell id="line_uart" value="" style="endArrow=none;html=1;strokeWidth=2;strokeColor=#0066CC;startArrow=block;startFill=1;endFill=0;" parent="1" edge="1">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
-            <mxPoint x="280" y="400" as="sourcePoint" />
-            <mxPoint x="550" y="400" as="targetPoint" />
+            <mxPoint x="280" y="309.5" as="sourcePoint" />
+            <mxPoint x="550" y="309.5" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="line_rtc_1" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" parent="1" edge="1">
+        <mxCell id="line_rtc_1" value="" style="endArrow=classic;html=1;strokeWidth=4;strokeColor=#0066CC;startArrow=classic;startFill=1;" parent="1" edge="1">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
             <mxPoint x="300" y="590" as="sourcePoint" />
             <mxPoint x="550" y="590" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="agt3TEKDgEGOjcKXkZ9e-1" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" edge="1" parent="1">
+        <mxCell id="agt3TEKDgEGOjcKXkZ9e-1" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;startArrow=classic;startFill=1;" parent="1" edge="1">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
             <mxPoint x="1050" y="619.01" as="sourcePoint" />
             <mxPoint x="850" y="619.01" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="agt3TEKDgEGOjcKXkZ9e-2" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" edge="1" parent="1">
+        <mxCell id="agt3TEKDgEGOjcKXkZ9e-2" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;startArrow=classic;startFill=1;" parent="1" edge="1">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
             <mxPoint x="1050" y="648.01" as="sourcePoint" />
             <mxPoint x="850" y="650" as="targetPoint" />
           </mxGeometry>
+        </mxCell>
+        <mxCell id="ZiMgRxPoV-rBj4Zj8GWu-1" value="INA219&lt;div&gt;Current Shunt Module&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#fad7ac;strokeColor=#b46504;" vertex="1" parent="1">
+          <mxGeometry x="100" y="400" width="180" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="ZiMgRxPoV-rBj4Zj8GWu-3" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;startArrow=classic;startFill=1;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="280" y="480" as="sourcePoint" />
+            <mxPoint x="430" y="590" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="280" y="480" />
+              <mxPoint x="431" y="480" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ZiMgRxPoV-rBj4Zj8GWu-4" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;startArrow=classic;startFill=1;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="280" y="440" as="sourcePoint" />
+            <mxPoint x="550" y="440" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ZiMgRxPoV-rBj4Zj8GWu-5" value="12V Power (CN5 pin 8)&amp;nbsp;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontColor=#0066CC;" vertex="1" connectable="0" parent="ZiMgRxPoV-rBj4Zj8GWu-4">
+          <mxGeometry x="-0.4444" relative="1" as="geometry">
+            <mxPoint x="45" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ZiMgRxPoV-rBj4Zj8GWu-6" value="SPI5" style="text;html=1;align=center;fontSize=12;fontColor=#0066CC;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="850" y="660" width="60" height="30" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>

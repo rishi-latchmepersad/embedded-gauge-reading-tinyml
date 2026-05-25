@@ -400,6 +400,9 @@ def build_mobilenetv2_geometry_heatmap_v4_112(
     input_shape=(224, 224, 3),
     alpha=0.35,
     backbone_frozen=True,
+    include_aux_coords=False,
+    aux_head_size="small",
+    aux_head_type="none",
 ):
     """Build the 112x112 geometry heatmap model for tip-stable INT8 deployment.
 
@@ -408,7 +411,24 @@ def build_mobilenetv2_geometry_heatmap_v4_112(
     56x56 skip before the final upsampling stage. That gives the decoder a
     cleaner spatial signal than a plain bilinear 56->112 wrapper while keeping
     the model compact enough for embedded deployment.
+
+    Auxiliary head types (aux_head_type):
+      - "none": no aux head (default). include_aux_coords is ignored.
+      - "gap": GAP-based aux coords regression head predicting
+        [center_x_norm, center_y_norm, tip_x_norm, tip_y_norm] from pooled
+        decoder features (same as include_aux_coords=True).
+        aux_head_size: "small" (Dense(64)->Dense(4)) or "large" (Dense(128)->Dense(64)->Dense(4))
+      - "local_offset": spatially-aware offset head that branches from the
+        112x112 decoder tensor and predicts per-pixel dx/dy offsets via a
+        small conv head. Output is 112x112x4 with channels
+        [center_dx, center_dy, tip_dx, tip_dy] in tanh range [-1, 1].
+
+    For backward compat, include_aux_coords=True is equivalent to aux_head_type="gap".
     """
+
+    # Backward compat: include_aux_coords=True maps to aux_head_type="gap"
+    if include_aux_coords and aux_head_type == "none":
+        aux_head_type = "gap"
 
     inputs = keras.Input(shape=input_shape, name="input_image")
 
@@ -421,16 +441,12 @@ def build_mobilenetv2_geometry_heatmap_v4_112(
     )
     backbone.trainable = not backbone_frozen
 
-    # Build a small feature extractor so the skip and bottleneck tensors are
-    # connected to the same functional graph as the external model input.
     feature_extractor = keras.Model(
         inputs=backbone.input,
         outputs=[backbone.get_layer("block_3_expand_relu").output, backbone.output],
         name="mobilenetv2_geometry_heatmap_v4_112_backbone",
     )
 
-    # Pull a shallow skip from the 56x56 backbone stage so the final 112x112
-    # heatmaps can preserve a bit more localization detail than a pure upsample.
     skip_56, x = feature_extractor(inputs)
 
     x = layers.Conv2D(
@@ -488,8 +504,68 @@ def build_mobilenetv2_geometry_heatmap_v4_112(
     confidence_features = layers.GlobalAveragePooling2D(name="geometry_confidence_gap")(x)
     confidence = layers.Dense(1, activation="sigmoid", name="confidence")(confidence_features)
 
+    outputs: list[keras.layers.Layer] = [center_heatmap, tip_heatmap, confidence]
+
+    if aux_head_type == "gap":
+        if aux_head_size == "large":
+            aux_coords = layers.Dense(
+                128,
+                activation="relu",
+                kernel_initializer="he_normal",
+                name="aux_coords_dense_1",
+            )(confidence_features)
+            aux_coords = layers.Dense(
+                64,
+                activation="relu",
+                kernel_initializer="he_normal",
+                name="aux_coords_dense_2",
+            )(aux_coords)
+        else:
+            aux_coords = layers.Dense(
+                64,
+                activation="relu",
+                kernel_initializer="he_normal",
+                name="aux_coords_dense",
+            )(confidence_features)
+        aux_coords = layers.Dense(
+            4,
+            activation="sigmoid",
+            name="aux_coords",
+        )(aux_coords)
+        outputs.append(aux_coords)
+
+    if aux_head_type == "local_offset":
+        # Spatially-aware local offset head branched from the 112x112 decoder
+        # tensor x (before the per-pixel heatmap heads).  Produces per-pixel
+        # dx/dy offsets in tanh range [-1, 1] for both center and tip keypoints.
+        # Output channels: [center_dx, center_dy, tip_dx, tip_dy].
+        aux_offset = layers.Conv2D(
+            32,
+            3,
+            padding="same",
+            activation="relu",
+            kernel_initializer="he_normal",
+            name="aux_offset_conv_1",
+        )(x)
+        aux_offset = layers.Conv2D(
+            16,
+            3,
+            padding="same",
+            activation="relu",
+            kernel_initializer="he_normal",
+            name="aux_offset_conv_2",
+        )(aux_offset)
+        aux_offset_map = layers.Conv2D(
+            4,
+            1,
+            padding="same",
+            activation="tanh",
+            name="aux_offset_map",
+        )(aux_offset)
+        outputs.append(aux_offset_map)
+
     return keras.Model(
         inputs=inputs,
-        outputs=[center_heatmap, tip_heatmap, confidence],
+        outputs=outputs,
         name="mobilenetv2_geometry_heatmap_v4_112",
     )

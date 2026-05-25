@@ -25,6 +25,7 @@ from embedded_gauge_reading_tinyml.geometry_heatmap_v2_utils import (
     load_selected_calibration_candidate,
     select_examples_from_split,
 )
+from embedded_gauge_reading_tinyml.gauge_geometry import angle_degrees_from_center_to_tip
 from embedded_gauge_reading_tinyml.geometry_prediction_guardrails import (
     GeometryDecodeMethod,
     GeometryDecodedPrediction,
@@ -32,6 +33,10 @@ from embedded_gauge_reading_tinyml.geometry_prediction_guardrails import (
     GeometryGuardrailThresholds,
     decode_heatmap_geometry_prediction,
     apply_geometry_guardrails,
+)
+from embedded_gauge_reading_tinyml.geometry_temperature_calibration import (
+    CalibrationCandidate,
+    predict_temperature_from_candidate,
 )
 
 
@@ -159,8 +164,24 @@ def decode_and_guard(
     *,
     decode_method: GeometryDecodeMethod = "softargmax",
     window_size: int = 3,
+    aux_coords: np.ndarray | None = None,
+    aux_offset_map: np.ndarray | None = None,
+    offset_scale_px: float = 8.0,
 ) -> tuple[GeometryDecodedPrediction, GeometryGuardrailResult]:
-    """Decode one sample and immediately apply guardrails."""
+    """Decode one sample and immediately apply guardrails.
+
+    When aux_coords (4-element array [cx_norm, cy_norm, tx_norm, ty_norm])
+    is provided, the auxiliary coordinates override the heatmap-decoded
+    coordinates for geometry/angle/temperature prediction.  Heatmaps are
+    still decoded for guardrail quality features (peak, spread, entropy).
+
+    When aux_offset_map (112x112x4 array with channels
+    [center_dx, center_dy, tip_dx, tip_dy]) is provided, the decoded
+    heatmap coordinates are refined by reading per-pixel offsets and
+    adding them.  offset_scale_px maps tanh [-1,1] to heatmap pixels.
+    """
+
+    import dataclasses
 
     decoded = decode_heatmap_geometry_prediction(
         sample,
@@ -171,5 +192,104 @@ def decode_and_guard(
         decode_method=decode_method,
         window_size=window_size,
     )
+
+    if aux_offset_map is not None:
+        decoded = _apply_offset_map_correction(
+            decoded, aux_offset_map, offset_scale_px, calibration_candidate,
+            true_temperature_c=sample.metadata["temperature_c"],
+        )
+
+    if aux_coords is not None:
+        cx_norm = float(aux_coords[0])
+        cy_norm = float(aux_coords[1])
+        tx_norm = float(aux_coords[2])
+        ty_norm = float(aux_coords[3])
+
+        predicted_center_x_224 = cx_norm * 223.0
+        predicted_center_y_224 = cy_norm * 223.0
+        predicted_tip_x_224 = tx_norm * 223.0
+        predicted_tip_y_224 = ty_norm * 223.0
+
+        predicted_angle_degrees = angle_degrees_from_center_to_tip(
+            predicted_center_x_224, predicted_center_y_224,
+            predicted_tip_x_224, predicted_tip_y_224,
+        )
+        predicted_temperature_c_calibrated = predict_temperature_from_candidate(
+            predicted_angle_degrees, calibration_candidate,
+        )
+
+        decoded = dataclasses.replace(
+            decoded,
+            predicted_center_x_224=predicted_center_x_224,
+            predicted_center_y_224=predicted_center_y_224,
+            predicted_tip_x_224=predicted_tip_x_224,
+            predicted_tip_y_224=predicted_tip_y_224,
+            predicted_angle_degrees=float(predicted_angle_degrees),
+            predicted_temperature_c_calibrated=float(predicted_temperature_c_calibrated),
+            absolute_error_c_calibrated=float(
+                abs(predicted_temperature_c_calibrated - float(sample.metadata["temperature_c"]))
+            ),
+        )
+
     guarded = apply_geometry_guardrails(decoded, thresholds)
     return decoded, guarded
+
+
+def _apply_offset_map_correction(
+    decoded: Any,
+    aux_offset_map: np.ndarray,
+    offset_scale_px: float,
+    calibration_candidate: Any,
+    *,
+    true_temperature_c: float = 0.0,
+) -> Any:
+    """Refine heatmap-decoded coords using the local offset map.
+
+    Reads per-pixel dx/dy offsets at the rounded heatmap-decoded position
+    and adds them to get corrected 224-space coordinates.
+    """
+    import dataclasses
+
+    hw = aux_offset_map.shape[0]  # 112
+
+    # Convert 224-space decoded coords to heatmap pixel space
+    scale = 224.0 / float(hw)
+    cx_h = decoded.predicted_center_x_224 / scale
+    cy_h = decoded.predicted_center_y_224 / scale
+    tx_h = decoded.predicted_tip_x_224 / scale
+    ty_h = decoded.predicted_tip_y_224 / scale
+
+    # Round to nearest pixel for offset lookup
+    col_c = int(np.clip(np.round(cx_h), 0, hw - 1))
+    row_c = int(np.clip(np.round(cy_h), 0, hw - 1))
+    col_t = int(np.clip(np.round(tx_h), 0, hw - 1))
+    row_t = int(np.clip(np.round(ty_h), 0, hw - 1))
+
+    # Read offsets: channels are [center_dx, center_dy, tip_dx, tip_dy]
+    dx_c = float(aux_offset_map[row_c, col_c, 0]) * offset_scale_px
+    dy_c = float(aux_offset_map[row_c, col_c, 1]) * offset_scale_px
+    dx_t = float(aux_offset_map[row_t, col_t, 2]) * offset_scale_px
+    dy_t = float(aux_offset_map[row_t, col_t, 3]) * offset_scale_px
+
+    # Apply correction in 112-space, then scale to 224
+    corrected_center_x_224 = (cx_h + dx_c) * scale
+    corrected_center_y_224 = (cy_h + dy_c) * scale
+    corrected_tip_x_224 = (tx_h + dx_t) * scale
+    corrected_tip_y_224 = (ty_h + dy_t) * scale
+
+    predicted_angle = angle_degrees_from_center_to_tip(
+        corrected_center_x_224, corrected_center_y_224,
+        corrected_tip_x_224, corrected_tip_y_224,
+    )
+    predicted_temp = predict_temperature_from_candidate(predicted_angle, calibration_candidate)
+
+    return dataclasses.replace(
+        decoded,
+        predicted_center_x_224=corrected_center_x_224,
+        predicted_center_y_224=corrected_center_y_224,
+        predicted_tip_x_224=corrected_tip_x_224,
+        predicted_tip_y_224=corrected_tip_y_224,
+        predicted_angle_degrees=float(predicted_angle),
+        predicted_temperature_c_calibrated=float(predicted_temp),
+        absolute_error_c_calibrated=float(abs(predicted_temp - true_temperature_c)),
+    )

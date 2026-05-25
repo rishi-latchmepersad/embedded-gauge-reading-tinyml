@@ -16,15 +16,19 @@ import tensorflow as tf
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from embedded_gauge_reading_tinyml.geometry_heatmap_debug_utils import load_clean_geometry_examples
-from embedded_gauge_reading_tinyml.geometry_heatmap_tflite_utils import load_geometry_heatmap_keras_model, summarize_tflite_contract
+from embedded_gauge_reading_tinyml.geometry_heatmap_tflite_utils import (
+    load_geometry_heatmap_keras_model,
+    load_tflite_model,
+    summarize_tflite_contract,
+)
 from embedded_gauge_reading_tinyml.geometry_heatmap_v2_utils import load_heatmap_sample, sample_jitter_params, select_examples_from_split
 
 
 SELECTED_PREPROCESSING_MODE = "python_training_rgb_bilinear"
-DEFAULT_MODEL_PATH = Path("ml/artifacts/training/geometry_heatmap_v4_112_quant_native/best_model.keras")
+DEFAULT_MODEL_PATH = Path("ml/artifacts/training/geometry_heatmap_v4_112_quant_native_30epoch_smoke/model_v4_112.keras")
 DEFAULT_MANIFEST_PATH = Path("ml/data/geometry_reader_manifest_v2_clean.csv")
 DEFAULT_CALIBRATION_PATH = Path("ml/artifacts/training/inner_dial_angle_calibration_v1/calibration_candidates.json")
-DEFAULT_THRESHOLDS_PATH = Path("ml/artifacts/training/geometry_heatmap_v2_board_replay/selected_board_guardrail_thresholds.json")
+DEFAULT_THRESHOLDS_PATH = Path("ml/artifacts/training/geometry_heatmap_v4_112_quant_native/v4_112_guardrail_thresholds.json")
 DEFAULT_DECODER_PATH = Path("ml/artifacts/deployment/geometry_heatmap_v2_tflite_v2/selected_decode_method_corrected.json")
 DEFAULT_OUTPUT_DIR = Path("ml/artifacts/deployment/geometry_heatmap_v4_112_tflite")
 
@@ -325,6 +329,43 @@ def main() -> None:
     float32_contract = summarize_tflite_contract(float32_path)
     int8_contract = summarize_tflite_contract(int8_path)
 
+    num_outputs = len(model.outputs)
+    keras_output_names = [str(name) for name in model.output_names]
+
+    float32_bundle = load_tflite_model(float32_path)
+    keras_index_by_tensor_name: dict[str, int] = {}
+    for tensor_index, keras_name in enumerate(keras_output_names):
+        keras_index_by_tensor_name[keras_name] = tensor_index
+
+    raw_tensor_names: list[str] = []
+    for detail in float32_bundle.output_details:
+        name = str(detail.get("name", ""))
+        raw_tensor_names.append(name)
+
+    output_details_index_by_keras_index: dict[int, int] = {}
+    for raw_detail_index, raw_name in enumerate(raw_tensor_names):
+        suffix = raw_name.rsplit(":", maxsplit=1)[-1] if ":" in raw_name else ""
+        if suffix.isdigit():
+            keras_index = int(suffix)
+        else:
+            keras_index = raw_detail_index
+        output_details_index_by_keras_index[keras_index] = raw_detail_index
+
+    semantic_output_order_indices = [
+        output_details_index_by_keras_index[i] for i in range(num_outputs)
+    ]
+    if num_outputs == 4:
+        # Auto-detect aux head type from output names.
+        fourth_name = keras_output_names[3] if len(keras_output_names) > 3 else ""
+        if "aux_offset_map" in fourth_name:
+            semantic_output_names = ["center_heatmap", "tip_heatmap", "confidence", "aux_offset_map"]
+        else:
+            semantic_output_names = ["center_heatmap", "tip_heatmap", "confidence", "aux_coords"]
+    elif num_outputs == 3:
+        semantic_output_names = ["center_heatmap", "tip_heatmap", "confidence"]
+    else:
+        raise RuntimeError(f"Unexpected number of outputs: {num_outputs}")
+
     config: dict[str, Any] = {
         "source_model_path": str(model_path),
         "manifest_path": str(manifest_path),
@@ -351,8 +392,8 @@ def main() -> None:
         "float32_contract": float32_contract,
         "int8_contract": int8_contract,
         "decoder": {"decode_method": decode_method, "window_size": window_size},
-        "semantic_output_order_indices": [1, 0, 2],
-        "semantic_output_names": ["center_heatmap", "tip_heatmap", "confidence"],
+        "semantic_output_order_indices": semantic_output_order_indices,
+        "semantic_output_names": semantic_output_names,
         "notes": [
             "The representative dataset is train-only and includes identity plus mild-jitter board crops.",
             "The dataset is stratified by temperature bins to improve quantization coverage.",
@@ -366,8 +407,8 @@ def main() -> None:
         json.dumps(
             {
                 "decoder": {"decode_method": decode_method, "window_size": window_size},
-                "semantic_output_order_indices": [1, 0, 2],
-                "semantic_output_names": ["center_heatmap", "tip_heatmap", "confidence"],
+                "semantic_output_order_indices": semantic_output_order_indices,
+                "semantic_output_names": semantic_output_names,
                 "float32_contract": float32_contract,
                 "int8_contract": int8_contract,
             },

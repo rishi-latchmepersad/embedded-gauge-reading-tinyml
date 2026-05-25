@@ -6,6 +6,32 @@ Keep this file short, and put detailed notes in the topical files below.
 - The target for reading is the inner dial of the gauge, as that is the one calibrated for Celsius (C).
 - Direct source-space crop-box experiments now use the compact `compact_source_crop_box` family with `source_crop_box` supervision and the rectified crop-box CSVs via `--precomputed-crop-boxes`; the V28 replay helper now decodes `source_crop_box` outputs directly.
 
+## 2026-05-24 Phase 11D: Auxiliary Coordinate Head (Smoke Test)
+
+- **Architecture**: Added `include_aux_coords=True` to `build_mobilenetv2_geometry_heatmap_v4_112()`. Adds Dense(64, relu) → Dense(4, sigmoid) head branching from the same `geometry_confidence_gap` pooled features. Outputs `[cx_norm, cy_norm, tx_norm, ty_norm]`.
+- **Training**: 5-epoch smoke (3 warmup + 2 frozen) from the 30-epoch quant-native checkpoint. `aux_coord_weight=0.1`. Loss stabilized at ~0.26 val MSE on normalized coords.
+- **Export**: 4-output TFLite auto-detected. Semantic output order auto-mapped from TFLite tensor names (`StatefulPartitionedCall_1:N` → Keras output index N). Correct mapping: `[2, 0, 3, 1]`.
+- **Eval results (val, heatmap-only decode)**:
+  - Keras: accepted MAE 3.22 C, 80.85% acceptance, worst 9.64 C
+  - INT8: accepted MAE 3.87 C, 70.21% acceptance, temp drift 1.89 C mean, tip drift 12.21 px
+  - Baseline (08_tip_focus): Keras 3.10 C, INT8 temp drift 1.84 C
+- **Decision**: INT8 temp drift 1.89 C still above 1.0 C gate. Aux head needs longer training or higher weight. Heatmap-based decode path confirmed working for 4-output models.
+- **Key lessons**:
+  - TFLite converter reorders outputs differently from Keras `model.outputs` order. Must auto-detect from tensor name suffixes.
+  - The aux_coords override in `decode_and_guard` must be opt-in; poorly-trained aux coords worse than heatmap decode.
+  - Eval script `_as_output_dict` must handle both 3 and 4 output cases (list unpacking with `*extra`).
+
+## 2026-05-24 Phase 11: Anti-Collapse Training Changes
+
+- **Problem**: QAT fine-tuning (Phase 10F) collapsed to all-zero heatmaps because MSE on sparse heatmaps provides weak gradient against all-zero solutions under quantization noise.
+- **Fix**: Added four anti-collapse mechanisms to `train_geometry_heatmap_v4_112_quant_native.py`:
+  1. **Peak-shaping loss** (`peak_shape_center_weight=0.1`, `peak_shape_tip_weight=0.2`, `peak_target=0.3`): quadratic penalty when heatmap max falls below target, directly discouraging all-zero collapse.
+  2. **Confidence floor loss** (`confidence_floor_weight=0.05`, `confidence_floor=0.5`): quadratic penalty when confidence drops below 0.5.
+  3. **Warmup LR schedule** (`warmup_epochs=5`, `start_lr_fraction=0.01`): linear ramp from 1% to target LR over first N epochs.
+  4. **Early-collapse detection** (`peak_threshold=0.05`, `patience=3`): aborts training if both heatmap peaks stay below 0.05 for 3 consecutive epochs.
+- All new params exposed via CLI args; saved to summary.json and config.json.
+- Next: Run bounded experiment matrix on `val` to tune loss weights, then freeze INT8 champion.
+
 ## 2026-05-22 Geometry Heatmap Quantization Drift
 
 - The current INT8 drift autopsy points at tip heatmap flattening/spread growth plus softargmax sensitivity, not tensor-order or dequantization issues.
@@ -1779,3 +1805,58 @@ pu_driver.py.
   - QAT int8 export completed
   - five-sample replay smoke completed
 - Keep the corrected decoder locked to `softargmax` with `window_size=3`.
+
+## 2026-05-23 Geometry Heatmap v4 112 — Phase 10C/10D Controlled Continuation
+
+### Phase 10C: Resume + Shadow Guards (20-epoch smoke)
+- Added `--resume-from` arg to training script (`train_geometry_heatmap_v4_112_quant_native.py`)
+- Added shadow spread guardrail evaluation (spread_45/55/65/disabled) via `_build_shadow_rows`
+- Discovered `restore_best_weights=True` in EarlyStopping reverts saved model when callback scoring produces NaN (temperature_delta_mean NaN due to reference-current acceptance mismatch). Fixed: `restore_best_weights=False`
+- Added `args.unfrozen_epochs > 0` guard to prevent AttributeError on `NoneType.best_summary`
+
+### Phase 10D: V4 Guardrails + 30-Epoch Training
+- Created `v4_112_guardrail_thresholds.json` with `max_heatmap_spread_px=55.0` (was 30.0 in V2)
+- V4 guardrail pass gate at epoch 30 (10 epochs of this run): accepted MAE 3.39 C ✓, acceptance 78.7% ✓, worst error 9.52 C ✓, >20C failures 0 ✓
+- **0 samples with >10°C error under spread=55** at epoch 30 (was 24 in 20-epoch run) — model significantly improved
+- Tip MAE 26.71 px, angle MAE 12.22° — both still dropping (not converged)
+- Decision: **A — Proceed to Export + INT8 Quantization** — model is production-worthy now
+- temperature_delta_mean stays NaN because reference model (V3 source) vs current model have zero common accepted samples. Only affects monitoring, not model quality.
+
+### Key Files Created
+- `ml/artifacts/training/geometry_heatmap_v4_112_quant_native_30epoch_smoke/model_v4_112.keras` — final model (epoch 10 of this run)
+- `ml/artifacts/training/geometry_heatmap_v4_112_quant_native/v4_112_guardrail_thresholds.json`
+- `ml/reports/geometry_heatmap_v4_112_30epoch_controlled_smoke.md`
+- `ml/reports/geometry_heatmap_v4_112_30epoch_decision.md`
+- `ml/debug/geometry_heatmap_v4_112_30epoch_controlled_smoke/` — 70 overlay images
+- `ml/reports/geometry_heatmap_v4_112_spread_guard_diagnostics.md`
+- `ml/reports/geometry_heatmap_v4_112_epoch20_v4_guardrail_rescore.md`
+
+### Known Issues
+- **temperature_delta_mean NaN:** Reference model (V3 source) and current model have zero common accepted samples under V4 guardrails. Fix: initialize reference from the resumed checkpoint, not source model. Non-blocking for deployment.
+- **frozen_best.keras has stale weights:** `val_v4_replay_score` is NaN, so ReplayMetricCallback never updates best_score. The final `model_v4_112.keras` has correct epoch-10 weights.
+
+## 2026-05-24 Geometry Heatmap v4 112 — Phase 10F QAT Failure + FP32 Decision
+
+### Phase 10F: Representative-Dataset Sweep + QAT
+- **6-strategy rep dataset sweep completed**: All converge to drift ~2.3–2.7 C regardless of calibration composition. Drift is fundamental to INT8 quantization, not coverage.
+- **Best strategy (F - combined)**: MAE 3.76 C, acceptance 66.0%, drift 2.47 C — similar to vanilla PTQ.
+- Decision: **C — Pursue QAT** (bake quantization robustness into weights).
+
+### QAT Fine-Tuning (8 epochs × 200 steps)
+- Pipeline created: `qat_finetune_geometry_heatmap_v4_112.py` — bridges Keras v3 → tf_keras, applies `tfmot.quantize_model`, fine-tunes with jitter, exports INT8 TFLite.
+- **Weight transfer verified**: diff < 2e-6 between Keras v3 and tf_keras copies.
+- **QAT training converged**: loss 0.0215 → 0.0032, but model collapsed to near-zero heatmaps.
+
+### QAT Failure Root Cause
+- QAT wrapper introduces quantization noise. MSE loss on sparse heatmaps (112×112 with single Gaussian peak) provides weak gradient. Optimizer finds degenerate solution: all-zero heatmaps + saturated confidence (1.0).
+- **Both float32 and INT8 TFLite exports from trained QAT model produce garbage** — not an INT8 issue.
+- Untrained QAT-wrapped model works correctly. Training actively destroys performance.
+
+### Decision: Deploy FP32
+- **Phase 10E FP32 TFLite** (8.1 MB, zero drift vs Keras) is the final deployment artifact.
+- FP32 accepted MAE 3.39 C, acceptance 78.7% on validation split.
+- INT8 not viable for this model with current pipeline.
+- FP32 requires external QSPI flash or NPU DMA on STM32 N6 (8.1 MB > internal flash).
+- Report: `ml/reports/geometry_heatmap_v4_112_qat_decision.md`
+- Sweep report: `ml/reports/geometry_heatmap_v4_112_int8_rep_sweep.md`
+- Decision report: `ml/reports/geometry_heatmap_v4_112_int8_rep_sweep_decision.md`
