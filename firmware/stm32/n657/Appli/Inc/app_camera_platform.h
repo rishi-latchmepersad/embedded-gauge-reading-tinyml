@@ -31,6 +31,7 @@ bool CameraPlatform_SeedImx335ExposureGain(void);
 bool CameraPlatform_AdjustImx335ExposureGain(bool brighten);
 bool CameraPlatform_EnableImx335AutoExposure(void);
 bool CameraPlatform_DisableImx335AutoExposure(void);
+bool CameraPlatform_AeSettleAndLock(void);
 bool CameraPlatform_LockImx335WhiteBalance(uint32_t ref_color_temp);
 bool CameraPlatform_LogImx335AutoExposureState(const char *reason);
 void CameraPlatform_ReapplyImx335TestPattern(void);

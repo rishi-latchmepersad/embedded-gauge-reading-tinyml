@@ -22,6 +22,7 @@
 #include "app_inference_calibration.h"
 #include "app_inference_log_utils.h"
 #include "app_gauge_geometry.h"
+#include "app_inner_celsius_mask.h"
 #include "ina219_power.h"
 #include "inference_metrics.h"
 #define LL_ATON_PLATFORM LL_ATON_PLAT_STM32N6
@@ -34,6 +35,16 @@
 #include "stm32n6xx_nucleo_xspi.h"
 #include "npu_cache.h"
 #include "stm32n6xx_hal.h"
+#include "ai_network_tip_focus_v4_112_int8.h"
+
+/*
+ * The STM32N6 ATON runtime library expects this wait-mask state symbol when
+ * it is built in debug mode. We provide it here so the rebuilt runtime object
+ * can stay in release mode and still link cleanly with the rest of the app.
+ */
+#ifndef NDEBUG
+uint32_t volatile __ll_current_wait_mask = 0U;
+#endif
 
 /*
  * Keep the very noisy tensor and patch dumps behind a toggle so the normal
@@ -42,6 +53,11 @@
 #ifndef APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 #define APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS 0
 #endif
+#ifndef APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
+#define APP_AI_ENABLE_XSPI2_VERBOSE_LOGS 0U
+#endif
+#undef APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
+#define APP_AI_ENABLE_XSPI2_VERBOSE_LOGS 0U
 #ifndef APP_AI_ENABLE_RUNTIME_METRICS
 #define APP_AI_ENABLE_RUNTIME_METRICS 0U
 #endif
@@ -51,11 +67,24 @@
 #ifndef APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
 #define APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS 0U
 #endif
-/* The rectifier fallback has been the source of live hangs on this board, so
- * keep it available for offline experimentation but route the live cascade to
- * the fixed training crop instead. */
+/* The lower inset / dark-blob distractor is now a known live failure mode, so
+ * keep the inner-Celsius mask on by default unless we explicitly disable it. */
+#ifndef APP_AI_ENABLE_INNER_CELSIUS_MASK
+#define APP_AI_ENABLE_INNER_CELSIUS_MASK 1U
+#endif
+/* The rectifier is now our preferred movable-camera crop stage.
+ * Keep the legacy fallback path available for experiments, but do not route
+ * the live tip-focus cascade through the float-input source-crop-box stage. */
 #ifndef APP_AI_ENABLE_RECTIFIER_FALLBACK
 #define APP_AI_ENABLE_RECTIFIER_FALLBACK 0U
+#endif
+/* The tip-focus model was trained on pre-cropped 112x112 images. At 
+ * inference time, we need to crop from the 224x224 capture. The rectifier
+ * is an optional NPU-based localizer. Set this to 0 to skip the rectifier
+ * and use the CPU luma heuristic directly, which matches what the baseline
+ * uses and avoids the NPU rectifier model dependency. */
+#ifndef APP_AI_ENABLE_TIP_FOCUS_RECTIFIER
+#define APP_AI_ENABLE_TIP_FOCUS_RECTIFIER 0U
 #endif
 /* The raw model output has been more accurate than the smoothed board value on
  * the current captures, so keep burst smoothing off unless we explicitly want
@@ -121,10 +150,16 @@
 #define APP_AI_GAUGE_CROP_CENTER_Y_BIAS_RATIO 0.11f
 #define APP_AI_GAUGE_CROP_CENTER_Y_BIAS_MIN_PIXELS 8U
 #define APP_AI_GAUGE_CROP_CENTER_Y_BIAS_MAX_PIXELS 18U
-/* The current close-up board captures drift too far downward with the
- * adaptive rectifier and miss the needle on low temperatures. Use the stable
- * training crop on-device until we retrain on the closer framing. */
-#define APP_AI_USE_ADAPTIVE_GAUGE_CROP 0U
+/* Prefer the int8-native rectifier localizer for movable-camera framing.
+ * Keep the CPU-side luma heuristic as a fallback when the rectifier fails. */
+#ifndef APP_AI_ENABLE_TIP_FOCUS_SOURCE_CROP_BOX_STAGE
+#define APP_AI_ENABLE_TIP_FOCUS_SOURCE_CROP_BOX_STAGE 0U
+#endif
+/* Use a lightweight CPU-side luma heuristic to locate the gauge dial face
+ * when the model-driven localizer is unavailable. Replaces the OBB NPU model
+ * which had a relocation table conflict (tip-focus reloc was used for OBB,
+ * causing MemManage fault). */
+#define APP_AI_USE_ADAPTIVE_GAUGE_CROP 1U
 /* Match the training/replay preprocessing again by keeping the scalar path on
  * the RGB bilinear resize branch. The earlier hard fault was a memory-layout
  * issue, not a problem with this branch itself. */
@@ -273,6 +308,22 @@
  * Give the loader a longer window so we do not give up just before the stack
  * settles. */
 #define APP_AI_FILEX_MEDIA_READY_TIMEOUT_MS 180000U
+/* Tip-focus geometry heatmap calibration and guardrail constants.
+ * Maps center->tip angle to temperature via robust linear regression. */
+#define APP_AI_TIP_FOCUS_COLD_ANGLE_DEG     135.0f
+#define APP_AI_TIP_FOCUS_SLOPE              0.3119f
+#define APP_AI_TIP_FOCUS_INTERCEPT          (-33.14f)
+#define APP_AI_TIP_FOCUS_SWEEP_DEG          270.0f
+#define APP_AI_TIP_FOCUS_HEATMAP_SIZE       112U
+#define APP_AI_TIP_FOCUS_SOFTARGMAX_WINDOW  3U
+#define APP_AI_TIP_FOCUS_CONFIDENCE_FLOOR   0.40f
+#define APP_AI_TIP_FOCUS_TEMP_MIN_C         (-35.0f)
+#define APP_AI_TIP_FOCUS_TEMP_MAX_C         55.0f
+/* Median smoothing ring buffer for published tip-focus temperature. */
+#define APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE 3U
+#define APP_AI_TIP_FOCUS_MAX_OUTLIER_DELTA_C  5.0f
+#define APP_AI_TIP_FOCUS_OUTLIER_RESET_STREAK 3U
+#define APP_AI_TIP_FOCUS_MAX_INVALID_FRAMES   10U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -294,6 +345,13 @@ static bool app_ai_npu_hw_initialized = false;
 static bool app_ai_xspi2_initialized = false;
 static bool app_ai_xspi2_mm_enabled = false;
 static const struct AppAI_ModelStageSpec *app_ai_loaded_xspi2_stage = NULL;
+static float app_ai_tip_focus_median_buffer[APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE] = {0.0f};
+static size_t app_ai_tip_focus_median_count = 0U;
+static size_t app_ai_tip_focus_median_index = 0U;
+static float app_ai_tip_focus_last_published = 0.0f;
+static bool app_ai_tip_focus_last_published_valid = false;
+static uint32_t app_ai_tip_focus_consecutive_invalid = 0U;
+static uint32_t app_ai_tip_focus_outlier_streak = 0U;
 static bool app_ai_forced_crop_active = false;
 static size_t app_ai_forced_crop_x_min = 0U;
 static size_t app_ai_forced_crop_y_min = 0U;
@@ -320,11 +378,34 @@ uint8_t _mem_pool_xSPI2_mobilenetv2_obb_longterm[32U] = {
 	0U,
 };
 
-/* Source-crop-box model pool (mobilenetv2_source_crop_box_v1_stripped_int8). */
-__attribute__((section(".xspi2_source_crop_box_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
-uint8_t _mem_pool_xSPI2_mobilenetv2_source_crop_box_v1_stripped_int8[32U] = {
-	0U,
-};
+/* Source-crop-box model pool (mobilenetv2_source_crop_box_v1_stripped_int8). */
+
+__attribute__((section(".xspi2_source_crop_box_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
+
+uint8_t _mem_pool_xSPI2_mobilenetv2_source_crop_box_v1_stripped_int8[32U] = {
+
+	0U,
+
+};
+
+/* Tip-focus geometry model pool.  The generated network (via
+ * LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(Default)) references
+ * _mem_pool_xSPI2_Default, and this 32-byte placeholder keeps that xSPI2
+ * symbol alive at the address where the NPU weight blob
+ * (network_atonbuf.xSPI2.raw) is flashed (0x70400000).
+ *
+ * IMPORTANT: The actual weights data (2.2MB) is NOT stored in this array.
+ * The data lives in xSPI2 flash at 0x70400000, and must be flashed using
+ * flash_boot.bat before running inference. This 32-byte symbol is just a
+ * linker marker that gets placed at 0x70400000 by the .xspi2_tip_focus_pool
+ * section. When the NPU accesses weights, it reads from xSPI2 flash through
+ * the memory-mapped window (0x70000000+), not from this RAM array.
+ *
+ * If you see a HardFault at address 0x8D or similar during inference, it
+ * means the xSPI2 flash was not programmed. Run flash_boot.bat to flash
+ * network_atonbuf.xSPI2.raw to 0x70400000. */
+__attribute__((section(".xspi2_tip_focus_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
+uint8_t _mem_pool_xSPI2_Default[32U] = { 0U, };
 static uint8_t app_ai_xspi2_program_buffer[APP_AI_XSPI2_PROGRAM_CHUNK_BYTES];
 __attribute__((aligned(APP_AI_CACHE_LINE_BYTES)))
 static uint8_t app_ai_scalar_row_scratch[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL];
@@ -345,79 +426,24 @@ volatile size_t app_ai_scalar_preprocess_last_row = (size_t)SIZE_MAX;
  *     d=open('st_ai_output/atonbuf.xSPI2.raw','rb').read()
  *     print('start:', bytes(d[:16]).hex())
  *     print('tail: ', bytes(d[-16:]).hex())" */
+/* Scalar model: atonbuf.xSPI2.raw (66,081 bytes) flashed at 0x70200000. */
 static const uint8_t app_ai_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0xD0U,
-	0xFBU,
-	0xD7U,
-	0x0CU,
-	0xBFU,
-	0xAFU,
-	0xEEU,
-	0x1AU,
-	0xFAU,
-	0x40U,
-	0xD5U,
-	0x63U,
-	0xE2U,
-	0x54U,
-	0xD8U,
-	0x64U,
+	0xD0U, 0xFBU, 0xD7U, 0x0CU, 0xBFU, 0xAFU, 0xEEU, 0x1AU,
+	0xFAU, 0x40U, 0xD5U, 0x63U, 0xE2U, 0x54U, 0xD8U, 0x64U,
 };
 static const uint8_t app_ai_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x83U,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x83U,
 };
 /* Rectifier v3 xSPI2 signatures used when the board boots with the rectifier
- * blob already flashed at 0x70200000. */
+ * blob already flashed at 0x70200000. Size: 121,217 bytes. */
 static const uint8_t app_ai_rectifier_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0x0FU,
-	0x11U,
-	0xF8U,
-	0x10U,
-	0xD0U,
-	0xD8U,
-	0x0EU,
-	0x28U,
-	0x99U,
-	0xCDU,
-	0x98U,
-	0x7DU,
-	0xBCU,
-	0x43U,
-	0x5EU,
-	0xF2U,
+	0x0FU, 0x11U, 0xF8U, 0x10U, 0xD0U, 0xD8U, 0x0EU, 0x28U,
+	0x99U, 0xCEU, 0x98U, 0x7DU, 0xBCU, 0x42U, 0x5EU, 0xF2U,
 };
 static const uint8_t app_ai_rectifier_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x80U,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x80U,
 };
 /* prodv0.3 OBB xSPI2 signatures. */
 static const uint8_t app_ai_obb_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
@@ -457,14 +483,24 @@ static const uint8_t app_ai_obb_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] =
 	0x7FU,
 };
 
-/* Source-crop-box xSPI2 signatures (placeholders - update after first flash). */
+/* Source-crop-box xSPI2 signatures for atonbuf.source_crop_box.xSPI2.raw. */
 static const uint8_t app_ai_source_crop_box_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
-	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+	0xF2U, 0x17U, 0x29U, 0xE2U, 0xDCU, 0xEBU, 0xECU, 0x04U,
+	0x09U, 0x01U, 0x35U, 0xEBU, 0x14U, 0xDEU, 0x0FU, 0x02U,
 };
 static const uint8_t app_ai_source_crop_box_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x80U,
+};
+/* Tip-focus geometry model xSPI2 signatures for network_atonbuf.xSPI2.raw.
+ * Flashed to 0x70400000. Size: 2,201,505 bytes. */
+static const uint8_t app_ai_tip_focus_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
+	0x04U, 0x2FU, 0x1FU, 0xF2U, 0x62U, 0xE7U, 0x3EU, 0xFDU,
+	0x0AU, 0x1EU, 0xF4U, 0x32U, 0xD4U, 0x9AU, 0xFEU, 0xC2U,
+};
+static const uint8_t app_ai_tip_focus_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x80U,
 };
 /* Per-stage programmed sizes. Set during provisioning and used by the verify
  * functions for the tail probe offset. Keeping them separate prevents the
@@ -474,6 +510,7 @@ static ULONG app_ai_scalar_programmed_size = 0UL;
 static ULONG app_ai_rectifier_programmed_size = 0UL;
 static ULONG app_ai_obb_programmed_size = 0UL;
 static ULONG app_ai_source_crop_box_programmed_size = 0UL;
+static ULONG app_ai_tip_focus_programmed_size = 0UL;
 /* Legacy alias kept so existing references still compile; points to the scalar
  * size which was the only stage before the rectifier was added. */
 static ULONG app_ai_xspi2_programmed_size = 0UL;
@@ -493,6 +530,9 @@ static bool app_ai_obb_sig_valid = false;
 static uint8_t app_ai_source_crop_box_sig_start[APP_AI_XSPI2_PROBE_BYTES] = {0U};
 static uint8_t app_ai_source_crop_box_sig_tail[APP_AI_XSPI2_PROBE_BYTES] = {0U};
 static bool app_ai_source_crop_box_sig_valid = false;
+static uint8_t app_ai_tip_focus_sig_start[APP_AI_XSPI2_PROBE_BYTES] = {0U};
+static uint8_t app_ai_tip_focus_sig_tail[APP_AI_XSPI2_PROBE_BYTES] = {0U};
+static bool app_ai_tip_focus_sig_valid = false;
 
 /* Declare the generated NN instance locally so the dry-run helper can run the
  * AtoNN runtime on the exact network produced by Cube.AI. */
@@ -593,6 +633,21 @@ static const AppAI_ModelStageSpec app_ai_source_crop_box_stage = {
 	.xspi2_chip_offset = APP_AI_XSPI2_SOURCE_CROP_BOX_CHIP_OFFSET,
 	.xspi2_base_addr = APP_AI_XSPI2_SOURCE_CROP_BOX_BASE_ADDR,
 };
+
+static bool AppAI_ShouldLogStageDiagnostics(
+	const AppAI_ModelStageSpec *stage)
+{
+#if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
+	if (stage == &app_ai_scalar_stage)
+	{
+		return false;
+	}
+#else
+	(void)stage;
+#endif
+	return true;
+}
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -683,6 +738,14 @@ static void AppAI_LogObbResult(
 static int AppAI_ApplyCacheRange(uint32_t start_addr, uint32_t end_addr,
 								 bool clean, bool invalidate);
 static uint32_t AppAI_GrayToFloatBits(uint8_t gray);
+static bool AppAI_SoftArgmaxGlobal(const int8_t *heatmap, int32_t size,
+	float *x_out, float *y_out);
+static void AppAI_TipFocus_ResetMedianHistory(float seed_value);
+static float AppAI_TipFocus_MedianFilter(float new_value);
+static void AppAI_BlankTipFocusLowerInset(int8_t *input, size_t width,
+	size_t height);
+static void AppAI_FormatFixedFloat(char *dst, size_t dst_len, float value,
+	unsigned decimals);
 
 static bool __attribute__((noinline)) AppAI_PreprocessScalarRow(
 	const uint8_t *frame_bytes, size_t frame_size, size_t source_width,
@@ -792,6 +855,12 @@ int mcu_cache_invalidate_range(uint32_t start_addr, uint32_t end_addr)
 	return AppAI_ApplyCacheRange(start_addr, end_addr, false, true);
 }
 
+int mcu_cache_clean_invalidate_range(uint32_t start_addr, uint32_t end_addr)
+{
+	/* ST's ll_aton cache helper expects the combined maintenance hook too. */
+	return AppAI_ApplyCacheRange(start_addr, end_addr, true, true);
+}
+
 static bool AppAI_EnsureNpuHardwareReady(void)
 {
 	if (app_ai_npu_hw_initialized)
@@ -886,30 +955,42 @@ static bool AppAI_ReconfigureXspi2ForRuntime(void)
 	 * is needed again after this reconfigure. */
 	app_ai_xspi2_initialized = false;
 	app_ai_xspi2_mm_enabled = false;
+#if APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
 	(void)DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: disable MM start.\r\n");
+#endif
 	(void)BSP_XSPI_NOR_DisableMemoryMappedMode(0U);
+#if APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
 	(void)DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: disable MM OK.\r\n");
 	(void)DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: deinit start.\r\n");
+#endif
 	(void)BSP_XSPI_NOR_DeInit(0U);
+#if APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
 	(void)DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: deinit OK.\r\n");
+#endif
 
 	periph_clk.PeriphClockSelection = RCC_PERIPHCLK_XSPI2;
 	periph_clk.Xspi2ClockSelection = RCC_XSPI2CLKSOURCE_IC3;
+#if APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
 	(void)DebugConsole_WriteString(
 		"[AI] xSPI2 runtime reconfigure: clock config start.\r\n");
+#endif
 	if (HAL_RCCEx_PeriphCLKConfig(&periph_clk) != HAL_OK)
 	{
 		DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: clock config failed.\r\n");
 		return false;
 	}
+#if APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
 	(void)DebugConsole_WriteString(
 		"[AI] xSPI2 runtime reconfigure: clock config OK.\r\n");
+#endif
 
 	/* Ensure the xSPI2 clock is enabled after configuration change.
 	 * The deinit may have disabled the clock, and the new clock source
 	 * won't be active until the peripheral clock enable is asserted. */
 	XSPI_CLK_ENABLE();
+#if APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
 	(void)DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: clock enable OK.\r\n");
+#endif
 
 	flash.InterfaceMode = BSP_XSPI_NOR_OPI_MODE;
 	/* Keep the runtime in STR mode for now. The board already initializes and
@@ -917,7 +998,9 @@ static bool AppAI_ReconfigureXspi2ForRuntime(void)
 	 * path was failing during BSP_XSPI_NOR_Init() with -5. We only need the
 	 * mapped window to be valid for the stage runtime. */
 	flash.TransferRate = BSP_XSPI_NOR_STR_TRANSFER;
+#if APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
 	(void)DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: init start.\r\n");
+#endif
 	bsp_status = BSP_XSPI_NOR_Init(0U, &flash);
 	if (bsp_status != BSP_ERROR_NONE)
 	{
@@ -928,7 +1011,9 @@ static bool AppAI_ReconfigureXspi2ForRuntime(void)
 		DebugConsole_WriteString(msg);
 		return false;
 	}
+#if APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
 	(void)DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: init OK.\r\n");
+#endif
 
 	/* Leave the peripheral in indirect mode so callers that need to probe flash
 	 * via BSP_XSPI_NOR_Read can do so immediately.  Callers that need the
@@ -939,7 +1024,9 @@ static bool AppAI_ReconfigureXspi2ForRuntime(void)
 
 static bool AppAI_Xspi2EnableMemoryMappedMode(void)
 {
+#if APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
 	(void)DebugConsole_WriteString("[AI] xSPI2 enable MM start.\r\n");
+#endif
 	if (BSP_XSPI_NOR_EnableMemoryMappedMode(0U) != BSP_ERROR_NONE)
 	{
 		app_ai_xspi2_mm_enabled = false;
@@ -947,7 +1034,9 @@ static bool AppAI_Xspi2EnableMemoryMappedMode(void)
 		return false;
 	}
 	app_ai_xspi2_mm_enabled = true;
+#if APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
 	(void)DebugConsole_WriteString("[AI] xSPI2 enable MM OK.\r\n");
+#endif
 	return true;
 }
 
@@ -2945,7 +3034,9 @@ static bool AppAI_EnsureXspi2ModelImageReadyForStage(
 	/* Each stage now has its own flash region, so we can verify whether the
 	 * stage's bytes are already present without disturbing the other stage.
 	 * Switch to indirect mode first (needed for BSP_XSPI_NOR_Read). */
+#if APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
 	DebugConsole_WriteString("[AI] xSPI2 stage reconfigure start.\r\n");
+#endif
 	if (!AppAI_ReconfigureXspi2ForRuntime())
 	{
 		DebugConsole_WriteString("[AI] xSPI2 stage reconfigure FAILED.\r\n");
@@ -2954,7 +3045,9 @@ static bool AppAI_EnsureXspi2ModelImageReadyForStage(
 	/* Any reconfigure invalidates the previously loaded stage/MM state until
 	 * this function verifies and re-enables mapped mode for the target stage. */
 	app_ai_loaded_xspi2_stage = NULL;
+#if APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
 	DebugConsole_WriteString("[AI] xSPI2 stage reconfigure OK.\r\n");
+#endif
 
 	if (!AppAI_Xspi2ModelImageMatchesMappedFlashForStage(stage))
 	{
@@ -3004,7 +3097,10 @@ static bool AppAI_EnsureXspi2ModelImageReadyForStage(
 		}
 	}
 
-	DebugConsole_WriteString("[AI] xSPI2 stage image already present.\r\n");
+	if (AppAI_ShouldLogStageDiagnostics(stage))
+	{
+		DebugConsole_WriteString("[AI] xSPI2 stage image already present.\r\n");
+	}
 
 	/* Reprovision can already leave xSPI2 in memory-mapped mode for this
 	 * stage. Avoid a second enable call in that case, which has been
@@ -3026,17 +3122,26 @@ static bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage)
 		return false;
 	}
 
-	DebugConsole_WriteString("[AI] Stage runtime ready start.\r\n");
-	DebugConsole_Printf("[AI] Stage label: %s\r\n",
-						(stage->stage_label != NULL) ? stage->stage_label : "(unnamed)");
+	if (AppAI_ShouldLogStageDiagnostics(stage))
+	{
+		DebugConsole_WriteString("[AI] Stage runtime ready start.\r\n");
+		DebugConsole_Printf("[AI] Stage label: %s\r\n",
+					(stage->stage_label != NULL) ? stage->stage_label : "(unnamed)");
+	}
 	if (!AppAI_EnsureXspi2ModelImageReadyForStage(stage))
 	{
-		DebugConsole_WriteString(
-			"[AI] Stage runtime ready failed during xSPI2 setup.\r\n");
+		if (AppAI_ShouldLogStageDiagnostics(stage))
+		{
+			DebugConsole_WriteString(
+				"[AI] Stage runtime ready failed during xSPI2 setup.\r\n");
+		}
 		return false;
 	}
 
-	DebugConsole_WriteString("[AI] Stage network init start.\r\n");
+	if (AppAI_ShouldLogStageDiagnostics(stage))
+	{
+		DebugConsole_WriteString("[AI] Stage network init start.\r\n");
+	}
 	if ((stage->network_init_fn == NULL) || !stage->network_init_fn())
 	{
 		AppAI_LogInitFailure(stage->stage_label);
@@ -3044,16 +3149,25 @@ static bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage)
 	}
 
 	LL_ATON_RT_Init_Network(stage->nn_instance);
-	DebugConsole_WriteString("[AI] Stage network init OK.\r\n");
+	if (AppAI_ShouldLogStageDiagnostics(stage))
+	{
+		DebugConsole_WriteString("[AI] Stage network init OK.\r\n");
+	}
 
-	DebugConsole_WriteString("[AI] Stage inference init start.\r\n");
+	if (AppAI_ShouldLogStageDiagnostics(stage))
+	{
+		DebugConsole_WriteString("[AI] Stage inference init start.\r\n");
+	}
 	if ((stage->inference_init_fn == NULL) || !stage->inference_init_fn())
 	{
 		AppAI_LogInitFailure(stage->stage_label);
 		return false;
 	}
 
-	DebugConsole_WriteString("[AI] Stage inference init OK.\r\n");
+	if (AppAI_ShouldLogStageDiagnostics(stage))
+	{
+		DebugConsole_WriteString("[AI] Stage inference init OK.\r\n");
+	}
 	return true;
 }
 
@@ -4188,7 +4302,10 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		return false;
 	}
 
-	(void)DebugConsole_WriteString("[AI] Stage inference request.\r\n");
+	if (AppAI_ShouldLogStageDiagnostics(stage))
+	{
+		(void)DebugConsole_WriteString("[AI] Stage inference request.\r\n");
+	}
 	if (!AppAI_EnsureStageRuntimeReady(stage))
 	{
 		(void)DebugConsole_WriteString(
@@ -4208,12 +4325,13 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	input_ptr = (float *)input_bytes_ptr;
 	input_len_bytes = (size_t)LL_Buffer_len(input_info);
 	input_float_count = input_len_bytes / sizeof(float);
+	const bool emit_stage_diagnostics = AppAI_ShouldLogStageDiagnostics(stage);
 	if (input_bytes_ptr == NULL)
 	{
 		AppAI_ClearForcedCrop();
 		return false;
 	}
-	if (stage == &app_ai_scalar_stage)
+	if (emit_stage_diagnostics && (stage == &app_ai_scalar_stage))
 	{
 		DebugConsole_Printf(
 			"[AI] Scalar input contract: name=%s addr=%p len=%lu nbits=%lu qu=%lu Qm=%lu Qn=%lu\r\n",
@@ -4288,7 +4406,10 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	}
 #endif
 
-	(void)DebugConsole_WriteString("[AI] Stage preprocess OK.\r\n");
+	if (emit_stage_diagnostics)
+	{
+		(void)DebugConsole_WriteString("[AI] Stage preprocess OK.\r\n");
+	}
 
 #if APP_AI_BYPASS_SCALAR_INFERENCE
 	if (stage == &app_ai_scalar_stage)
@@ -4325,12 +4446,17 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 							 (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS / 2U, 2U);
 	}
 
-	AppAI_LogBufferPreview("Stage input", input_info);
-
-	(void)DebugConsole_WriteString("[AI] Stage input cache clean start.\r\n");
+	if (emit_stage_diagnostics)
+	{
+		AppAI_LogBufferPreview("Stage input", input_info);
+		(void)DebugConsole_WriteString("[AI] Stage input cache clean start.\r\n");
+	}
 	(void)mcu_cache_clean_range((uint32_t)(uintptr_t)input_ptr,
 								(uint32_t)((uintptr_t)input_ptr + input_len_bytes));
-	(void)DebugConsole_WriteString("[AI] Stage input cache clean OK.\r\n");
+	if (emit_stage_diagnostics)
+	{
+		(void)DebugConsole_WriteString("[AI] Stage input cache clean OK.\r\n");
+	}
 
 	/* Keep network reset opt-in. For this scalar package, forcing reset before
 	 * every run can leave the output tensor in a constant invalid state even
@@ -4338,14 +4464,23 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	const bool force_reset_stage = (APP_AI_RESET_NETWORK_EACH_INFERENCE != 0);
 	if (force_reset_stage)
 	{
-		(void)DebugConsole_WriteString("[AI] Stage network reset start.\r\n");
+		if (emit_stage_diagnostics)
+		{
+			(void)DebugConsole_WriteString("[AI] Stage network reset start.\r\n");
+		}
 		LL_ATON_RT_Reset_Network(stage->nn_instance);
-		(void)DebugConsole_WriteString("[AI] Stage network reset OK.\r\n");
+		if (emit_stage_diagnostics)
+		{
+			(void)DebugConsole_WriteString("[AI] Stage network reset OK.\r\n");
+		}
 	}
 	else
 	{
-		(void)DebugConsole_WriteString(
-			"[AI] Stage network reset skipped (one-shot runtime).\r\n");
+		if (emit_stage_diagnostics)
+		{
+			(void)DebugConsole_WriteString(
+				"[AI] Stage network reset skipped (one-shot runtime).\r\n");
+		}
 	}
 
 #if APP_AI_ENABLE_RUNTIME_METRICS
@@ -4353,7 +4488,7 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	Metrics_StartInference("CNN");
 #endif
 
-	if ((stage == &app_ai_scalar_stage) && (LL_Buffer_addr_start(output_info) != NULL) &&
+	if (emit_stage_diagnostics && (stage == &app_ai_scalar_stage) && (LL_Buffer_addr_start(output_info) != NULL) &&
 		(LL_Buffer_len(output_info) >= sizeof(uint32_t)))
 	{
 		uint32_t pre_output_bits = 0U;
@@ -4369,7 +4504,10 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 			(unsigned long)LL_Buffer_len(output_info));
 	}
 
-	(void)DebugConsole_WriteString("[AI] Stage inference run start.\r\n");
+	if (emit_stage_diagnostics)
+	{
+		(void)DebugConsole_WriteString("[AI] Stage inference run start.\r\n");
+	}
 	bool mid_logged = false;
 	for (uint32_t epoch_step = 0U;; ++epoch_step)
 	{
@@ -4395,12 +4533,13 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		{
 			LL_ATON_OSAL_WFE();
 		}
-		else
-		{
-			tx_thread_relinquish();
-		}
+		/* LL_ATON_RT_NO_WFE means the next epoch can start immediately, so
+		 * keep the loop tight here and do not yield the thread. */
 	}
-	(void)DebugConsole_WriteString("[AI] Stage inference run OK.\r\n");
+	if (emit_stage_diagnostics)
+	{
+		(void)DebugConsole_WriteString("[AI] Stage inference run OK.\r\n");
+	}
 
 #if APP_AI_ENABLE_RUNTIME_METRICS
 	/* Log post-inference power (peak during NPU activity) */
@@ -4428,8 +4567,11 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	(void)mcu_cache_invalidate_range((uint32_t)(uintptr_t)output_ptr,
 									 (uint32_t)((uintptr_t)output_ptr + output_len_bytes));
 
-	AppAI_LogBufferPreview("Stage output", output_info);
-	AppAI_LogScalarInternalOutputProbe(stage, output_info);
+	if (emit_stage_diagnostics)
+	{
+		AppAI_LogBufferPreview("Stage output", output_info);
+		AppAI_LogScalarInternalOutputProbe(stage, output_info);
+	}
 
 	/* Log raw output bytes immediately after cache invalidate so we can tell
 	 * whether the inference engine populated the buffer at all. */
@@ -4438,7 +4580,9 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		const size_t on = (output_len_bytes < 16U) ? output_len_bytes : 16U;
 		char olog[128];
 #if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
-		(void)DebugConsole_Snprintf(olog, sizeof(olog),
+		if (emit_stage_diagnostics)
+		{
+			(void)DebugConsole_Snprintf(olog, sizeof(olog),
 					   "[AI] %s out addr=%p len=%lu bytes=[%02X%02X%02X%02X%02X%02X%02X%02X"
 					   "%02X%02X%02X%02X%02X%02X%02X%02X]\r\n",
 					   stage->stage_label, (const void *)output_ptr,
@@ -4451,7 +4595,8 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 					   (on > 10U) ? ob[10] : 0U, (on > 11U) ? ob[11] : 0U,
 					   (on > 12U) ? ob[12] : 0U, (on > 13U) ? ob[13] : 0U,
 					   (on > 14U) ? ob[14] : 0U, (on > 15U) ? ob[15] : 0U);
-		(void)DebugConsole_WriteString(olog);
+			(void)DebugConsole_WriteString(olog);
+		}
 #endif
 	}
 
@@ -4459,7 +4604,7 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	 * internal buffer info pointers will become stale after reconfigure.
 	 * V28 polar-vote model: decode 224 int8 logits via circular softmax.
 	 * Fallback: single-scalar quantized decode for rectifier/OBB stages. */
-	if ((stage == &app_ai_scalar_stage) &&
+	if (emit_stage_diagnostics && (stage == &app_ai_scalar_stage) &&
 		AppAI_DecodeCircularVoteFromOutput(
 			output_ptr,
 			output_len_bytes,
@@ -4470,7 +4615,7 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 			(unsigned long)APP_AI_POLAR_VOTE_BINS);
 	}
 #if !defined(APP_AI_DISABLE_LEGACY_TOPK_DECODE)
-	else if ((stage == &app_ai_scalar_stage) &&
+	else if (emit_stage_diagnostics && (stage == &app_ai_scalar_stage) &&
 			 AppAI_DecodeScalarTopKExpectationFromOutput(
 				 output_info,
 				 output_ptr,
@@ -4487,7 +4632,7 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 							: (output_len_bytes / sizeof(float))));
 	}
 #endif /* !APP_AI_DISABLE_LEGACY_TOPK_DECODE */
-	else if (output_info->nbits <= 8U)
+	else if (emit_stage_diagnostics && (output_info->nbits <= 8U))
 	{
 		float scale_value = 1.0f;
 		int16_t zero_point = 0;
@@ -4514,10 +4659,10 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 
 		output_value = ((float)q_value - (float)zero_point) * scale_value;
 		(void)DebugConsole_Snprintf(decode_line, sizeof(decode_line),
-					   "[AI] Stage output quantized decode: q=%ld zp=%ld nbits=%lu qu=%lu\r\n",
-					   (long)q_value, (long)zero_point,
-					   (unsigned long)output_info->nbits,
-					   (unsigned long)output_info->Qunsigned);
+				   "[AI] Stage output quantized decode: q=%ld zp=%ld nbits=%lu qu=%lu\r\n",
+				   (long)q_value, (long)zero_point,
+				   (unsigned long)output_info->nbits,
+				   (unsigned long)output_info->Qunsigned);
 		(void)DebugConsole_WriteString(decode_line);
 	}
 	else
@@ -4534,7 +4679,7 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		*output_value_out = output_value;
 	}
 	/* Guard scalar runtime handoff against corrupted tensor outputs. */
-	if (stage == &app_ai_scalar_stage)
+	if (emit_stage_diagnostics && (stage == &app_ai_scalar_stage))
 	{
 		if (!AppAI_IsFiniteFloat(output_value))
 		{
@@ -4653,7 +4798,26 @@ bool App_AI_Model_Init(void)
 	AppAI_ResetInferenceBurstHistory();
 #endif
 	DebugConsole_Printf("[AI] Model runtime init OK.\r\n");
+	DebugConsole_Printf("[AI][TIP_FOCUS] compiled, enable=%u\r\n", (unsigned)APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE);
 	return true;
+}
+
+/* Log the live r9 value at a few dry-run checkpoints. The ST resize helper
+ * uses r9 as its ai_array base, so this lets us pinpoint the first caller
+ * that hands it a bad register value without disturbing the state. */
+static void AppAI_LogR9(const char *label)
+{
+	uintptr_t r9_before = 0U;
+
+	if (label == NULL)
+	{
+		return;
+	}
+
+	__asm volatile("mov %0, r9" : "=r"(r9_before));
+	DebugConsole_Printf("[AI][DRY_RUN][R9] %s=%p\r\n",
+						label, (const void *)r9_before);
+	__asm volatile("mov r9, %0" : : "r"(r9_before) : "r9");
 }
 
 #if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
@@ -4872,39 +5036,9 @@ static void AppAI_LogFloatApprox(const char *label, float value)
 }
 #endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
 
-/**
- * @brief Log the raw inference value and the calibrated board-facing value.
- *
- * This trace stays in the board UART log so we can tell whether a miss comes
- * from the network itself or from the postprocess calibration.
- */
 static float AppAI_TraceAndApplyInferenceCalibration(float raw_value)
 {
-	char line[96] = {0};
-	/* Use local string copies to prevent pointer corruption from xSPI2 reconfiguration */
-	static const char prefix_before[] = "[AI] Model output before calibration: ";
-	static const char prefix_after[] = "[AI] Model output after calibration: ";
-	static const char prefix_delta[] = "[AI] Calibration delta: ";
-	const float calibrated_value = AppInferenceCalibration_Apply(raw_value);
-
-	AppInferenceLog_FormatFloatMicros(line, sizeof(line), prefix_before, raw_value);
-	DebugConsole_WriteString(line);
-	AppInferenceLog_FormatFloatMicros(line, sizeof(line), prefix_after, calibrated_value);
-	DebugConsole_WriteString(line);
-
-	if (AppAI_IsFiniteFloat(raw_value) && AppAI_IsFiniteFloat(calibrated_value))
-	{
-		AppInferenceLog_FormatFloatMicros(line, sizeof(line), prefix_delta,
-										  calibrated_value - raw_value);
-		DebugConsole_WriteString(line);
-	}
-	else
-	{
-		DebugConsole_WriteString(
-			"[AI] Calibration delta: unavailable (non-finite input or output)\r\n");
-	}
-
-	return calibrated_value;
+	return AppInferenceCalibration_Apply(raw_value);
 }
 
 #if APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
@@ -4922,35 +5056,12 @@ static void AppAI_ResetInferenceBurstHistory(void)
 
 static bool AppAI_RuntimeInitStepwise(void)
 {
-	uint32_t t = 0U;
-
-	/* Let the vendor runtime perform the low-level ATON bring-up and version
-	 * compatibility checks. Our wrapper only handles the OSAL and IRQ setup. */
+	/* Let the vendor runtime perform the low-level ATON bring-up, OSAL setup,
+	 * and IRQ wiring once ThreadX is alive. That matches the generated NPU
+	 * sample flow more closely than open-coding the pieces by hand. */
 	(void)DebugConsole_WriteString("[AI] ATON runtime init start.\r\n");
-	if (LL_ATON_Init() != LL_ATON_OK)
-	{
-		(void)DebugConsole_WriteString(
-			"[AI] ATON runtime init failed in LL_ATON_Init().\r\n");
-		return false;
-	}
-
-	ATON_DISABLE_CLR_CONFCLR(INTCTRL, 0);
-	ATON_INTCTRL_STD_INTORMSK_SET(ATON_STRENG_INT_MASK(ATON_STRENG_NUM, 0, 0));
-	ATON_INTCTRL_STD_INTANDMSK_SET(0xFFFFFFFFU);
-#if (ATON_INT_NR > 32)
-	ATON_INTCTRL_STD_INTORMSK_H_SET(0xFFFFFFFFU);
-	ATON_INTCTRL_STD_INTANDMSK_H_SET(0xFFFFFFFFU);
-#endif
-	ATON_ENABLE(INTCTRL, 0);
-
-	LL_ATON_OSAL_INIT();
-
-	LL_ATON_OSAL_DISABLE_IRQ(0U);
-	LL_ATON_OSAL_DISABLE_IRQ(1U);
-	LL_ATON_OSAL_DISABLE_IRQ(2U);
-	LL_ATON_OSAL_DISABLE_IRQ(3U);
-
-	LL_ATON_OSAL_ENABLE_IRQ(ATON_STD_IRQ_LINE);
+	LL_ATON_RT_SetRuntimeCallback(NULL);
+	LL_ATON_RT_RuntimeInit();
 	(void)DebugConsole_WriteString("[AI] ATON runtime init OK.\r\n");
 	return true;
 }
@@ -5008,8 +5119,12 @@ static void AppAI_ConfigureNpuAccessControl(void)
 static void AppAI_EnableNpuMemoryAndCaches(void)
 {
 	/* Mirror the ST NPU examples so the memory fabric is actually usable by
-	 * the runtime before the first ATON init call runs. */
-	RCC->MEMENR |= RCC_MEMENR_AXISRAM3EN | RCC_MEMENR_AXISRAM4EN | RCC_MEMENR_AXISRAM5EN | RCC_MEMENR_AXISRAM6EN | RCC_MEMENR_CACHEAXIRAMEN;
+	 * the runtime before the first ATON init call runs.  Enable ALL AXI SRAM
+	 * banks that the ATON virtual memory pool (pool 11, spanning
+	 * AXISRAM2-6) might touch.  Without AXISRAM2 the NPU's AXI master can
+	 * fault at 0x00018800 when the runtime maps an activation buffer into
+	 * the unmapped region. */
+	RCC->MEMENR |= RCC_MEMENR_AXISRAM2EN | RCC_MEMENR_AXISRAM3EN | RCC_MEMENR_AXISRAM4EN | RCC_MEMENR_AXISRAM5EN | RCC_MEMENR_AXISRAM6EN | RCC_MEMENR_CACHEAXIRAMEN;
 
 	RAMCFG_SRAM2_AXI->CR &= ~RAMCFG_CR_SRAMSD;
 	RAMCFG_SRAM3_AXI->CR &= ~RAMCFG_CR_SRAMSD;
@@ -5192,6 +5307,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	AppAI_SourceCropBox source_crop_box = {0.0f, 0.0f, 0.0f, 0.0f};
 
 	(void)DebugConsole_WriteString("[AI] Dry-run entry.\r\n");
+	AppAI_LogR9("entry");
 	if ((frame_bytes == NULL) || (frame_size < (size_t)APP_AI_CAPTURE_FRAME_BYTES))
 	{
 		(void)DebugConsole_WriteString("[AI] Dry-run entry aborted: invalid frame buffer.\r\n");
@@ -5206,6 +5322,350 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		(void)DebugConsole_WriteString("[AI] Dry-run entry aborted during model init.\r\n");
 		return false;
 	}
+	AppAI_LogR9("post_model_init");
+
+#if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
+	/* =================================================================
+	 * Tip-focus geometry heatmap: primary inference path.
+	 * Preprocess YUV422 -> int8 RGB, run tip-focus model, decode
+	 * heatmaps with local softargmax, calibrate angle->temperature,
+	 * apply guardrails and median smoothing, then publish.
+	 * Scalar inference runs below for diagnostic logging only.
+	 * ================================================================= */
+	{
+		const uint32_t tf_fw = APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+		const uint32_t tf_fh = APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+		int8_t *tf_input = NULL;
+		const int8_t *tf_center_hm = NULL;
+		const int8_t *tf_tip_hm = NULL;
+		int8_t tf_conf_raw = 0;
+		float tf_confidence = 0.0f;
+		float tf_cx = NAN, tf_cy = NAN;
+		float tf_tx = NAN, tf_ty = NAN;
+		float tf_angle_deg = NAN;
+		float tf_cw_dist = NAN;
+		float tf_temperature = NAN;
+		float tf_smoothed = 0.0f;
+		bool tf_accepted = false;
+
+		do /* one-shot try block */
+		{
+			if (!AppAI_TipFocus_Init())
+			{
+				DebugConsole_WriteString("[AI][TIP_FOCUS] Init failed.\r\n");
+				break;
+			}
+			AppAI_LogR9("post_tip_focus_init");
+
+			tf_input = AppAI_TipFocus_GetInputBuffer();
+			if (tf_input == NULL)
+			{
+				DebugConsole_WriteString("[AI][TIP_FOCUS] Input buffer unavailable after init.\r\n");
+				break;
+			}
+
+			/* Use the rectifier localizer first so the crop can move with the
+			 * camera. If that model cannot produce a plausible box, fall back to
+			 * the older CPU luma heuristic and then the fixed training crop as a
+			 * last resort.
+			 *
+			 * NOTE: The tip-focus model was trained on pre-cropped 112x112 images.
+			 * The rectifier is an optional deployment aid. Set
+			 * APP_AI_ENABLE_TIP_FOCUS_RECTIFIER=0 to skip it and use the fixed
+			 * training crop directly, matching the training pipeline. */
+			{
+				bool crop_selected = false;
+
+#if APP_AI_ENABLE_TIP_FOCUS_RECTIFIER
+				{
+					const float margin = 0.10f;
+					const size_t frame_w = (size_t)tf_fw;
+					const size_t frame_h = (size_t)tf_fh;
+					const LL_Buffer_InfoTypeDef *rectifier_output_info = NULL;
+					AppAI_RectifierBox rectifier_box = {0.0f, 0.0f, 0.0f, 0.0f};
+
+					DebugConsole_WriteString(
+						"[AI][TIP_FOCUS] Running rectifier localizer...\r\n");
+					if (AppAI_RunStageInference(
+							&app_ai_rectifier_stage, safe_frame_bytes, frame_size,
+							&full_frame_crop, &rectifier_output_info,
+							&rectifier_output_value) &&
+						AppAI_DecodeRectifierCropBox(rectifier_output_info,
+									 &scalar_crop, &rectifier_box))
+					{
+						const float cx =
+							(float)scalar_crop.x_min + (float)scalar_crop.width * 0.5f;
+						const float cy =
+							(float)scalar_crop.y_min + (float)scalar_crop.height * 0.5f;
+						const float expand_w =
+							(float)scalar_crop.width * (1.0f + margin);
+						const float expand_h =
+							(float)scalar_crop.height * (1.0f + margin);
+						float new_x = cx - expand_w * 0.5f;
+						float new_y = cy - expand_h * 0.5f;
+						float new_w = expand_w;
+						float new_h = expand_h;
+
+						AppAI_LogRectifierResult(rectifier_output_info,
+									 &rectifier_box);
+
+						if (new_x < 0.0f)
+						{
+							new_w += new_x;
+							new_x = 0.0f;
+						}
+						if (new_y < 0.0f)
+						{
+							new_h += new_y;
+							new_y = 0.0f;
+						}
+						if ((new_x + new_w) > (float)frame_w)
+						{
+							new_w = (float)frame_w - new_x;
+						}
+						if ((new_y + new_h) > (float)frame_h)
+						{
+							new_h = (float)frame_h - new_y;
+						}
+						if (new_w < 1.0f)
+						{
+							new_w = 1.0f;
+						}
+						if (new_h < 1.0f)
+						{
+							new_h = 1.0f;
+						}
+
+						scalar_crop.x_min = (size_t)floorf(new_x);
+						scalar_crop.y_min = (size_t)floorf(new_y);
+						scalar_crop.width = (size_t)floorf(new_w);
+						scalar_crop.height = (size_t)floorf(new_h);
+
+						AppAI_SetForcedCrop("rectifier", scalar_crop.x_min,
+											scalar_crop.y_min, scalar_crop.width,
+											scalar_crop.height);
+						DebugConsole_Printf(
+							"[AI][TIP_FOCUS] Rectifier adaptive crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+							(unsigned long)scalar_crop.x_min,
+							(unsigned long)scalar_crop.y_min,
+							(unsigned long)scalar_crop.width,
+							(unsigned long)scalar_crop.height);
+						crop_selected = true;
+					}
+					else
+					{
+						DebugConsole_WriteString(
+							"[AI][TIP_FOCUS] Rectifier localizer failed; falling back to CPU luma heuristic.\r\n");
+					}
+				}
+#else
+				DebugConsole_WriteString(
+					"[AI][TIP_FOCUS] Rectifier disabled; using CPU luma heuristic.\r\n");
+#endif
+
+				/* Use the fixed training crop for tip-focus, matching the
+				 * offline training pipeline.  The heatmap model learns its own
+				 * spatial attention, so the adaptive luma heuristic is not
+				 * needed here. */
+				AppAI_SetForcedCrop("training",
+									fixed_training_crop.x_min,
+									fixed_training_crop.y_min,
+									fixed_training_crop.width,
+									fixed_training_crop.height);
+				DebugConsole_Printf(
+					"[AI][TIP_FOCUS] Fixed training crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+					(unsigned long)fixed_training_crop.x_min,
+					(unsigned long)fixed_training_crop.y_min,
+					(unsigned long)fixed_training_crop.width,
+					(unsigned long)fixed_training_crop.height);
+				AppAI_LogR9("post_crop_select");
+
+				/* Preprocess the frame through the training-aligned pipeline
+				 * that applies the forced (or fallback) crop, resize-with-pad,
+				 * and int8 quantisation. */
+				{
+					const LL_Buffer_InfoTypeDef *tf_input_info =
+						(const LL_Buffer_InfoTypeDef *)AppAI_TipFocus_GetInputBufferInfo();
+					const size_t required_bytes = (size_t)tf_fw * (size_t)tf_fh * 3U;
+
+					DebugConsole_WriteString("[AI][TIP_FOCUS] Preprocessing YUV422 -> int8 RGB (crop + resize)...\r\n");
+					if (!AppAI_PreprocessYuv422FrameToInt8Input(
+							safe_frame_bytes, frame_size,
+							(uint8_t *)tf_input, required_bytes,
+							tf_input_info))
+					{
+						AppAI_ClearForcedCrop();
+						DebugConsole_WriteString("[AI][TIP_FOCUS] Preprocessing failed.\r\n");
+						break;
+					}
+				}
+				AppAI_LogR9("post_preprocess");
+
+				AppAI_ClearForcedCrop();
+
+#if APP_AI_ENABLE_INNER_CELSIUS_MASK
+				DebugConsole_WriteString("[AI][INNER_CELSIUS_MASK] Applying mask...\r\n");
+				/* The mask was designed for 224x224 image space, but the
+				 * tip-focus model input is 112x112.  Derive the actual model
+				 * input dimension from the buffer info and scale the mask
+				 * geometry accordingly. */
+				{
+					const LL_Buffer_InfoTypeDef *tf_input_info_mask =
+						(const LL_Buffer_InfoTypeDef *)AppAI_TipFocus_GetInputBufferInfo();
+					const size_t tf_input_bytes = (size_t)LL_Buffer_len(tf_input_info_mask);
+					const size_t tf_input_dim = (size_t)(sqrtf((float)tf_input_bytes / 3.0f) + 0.5f);
+					AppInnerCelsiusMask_Apply(tf_input, tf_input_dim, tf_input_dim);
+				}
+#endif /* APP_AI_ENABLE_INNER_CELSIUS_MASK */
+				AppAI_LogR9("post_mask");
+			}
+
+			/* Run tip-focus inference */
+			DebugConsole_WriteString("[AI][TIP_FOCUS] Running inference...\r\n");
+			AppAI_LogR9("post_inference_console");
+			if (!AppAI_TipFocus_Run())
+			{
+				DebugConsole_Printf("[AI][TIP_FOCUS] Inference run failed.\r\n");
+				break;
+			}
+
+			/* Dequantize confidence and apply cheap pre-guardrail gate */
+			tf_conf_raw = AppAI_TipFocus_GetConfidenceRaw();
+			tf_confidence = ((float)tf_conf_raw + 128.0f) * 0.00390625f;
+			if (tf_confidence < APP_AI_TIP_FOCUS_CONFIDENCE_FLOOR)
+			{
+				DebugConsole_Printf("[AI][TIP_FOCUS] Confidence %.3f < %.2f; rejecting.\r\n",
+					tf_confidence, APP_AI_TIP_FOCUS_CONFIDENCE_FLOOR);
+				break;
+			}
+
+			/* Softargmax decode (local window w=3) on center and tip heatmaps */
+			tf_center_hm = AppAI_TipFocus_GetCenterHeatmap();
+			tf_tip_hm    = AppAI_TipFocus_GetTipHeatmap();
+			if ((tf_center_hm == NULL) || (tf_tip_hm == NULL))
+			{
+				DebugConsole_WriteString("[AI][TIP_FOCUS] Heatmap pointers NULL.\r\n");
+				break;
+			}
+
+			if (!AppAI_SoftArgmaxGlobal(tf_center_hm, (int32_t)APP_AI_TIP_FOCUS_HEATMAP_SIZE,
+					&tf_cx, &tf_cy))
+			{
+				DebugConsole_WriteString("[AI][TIP_FOCUS] Center softargmax failed.\r\n");
+				break;
+			}
+			if (!AppAI_SoftArgmaxGlobal(tf_tip_hm, (int32_t)APP_AI_TIP_FOCUS_HEATMAP_SIZE,
+					&tf_tx, &tf_ty))
+			{
+				DebugConsole_WriteString("[AI][TIP_FOCUS] Tip softargmax failed.\r\n");
+				break;
+			}
+
+			/* Compute angle (degrees, 0=3-o'clock, CW) from center -> tip vector */
+			const float tf_dx = tf_tx - tf_cx;
+			const float tf_dy = tf_ty - tf_cy;
+			if ((fabsf(tf_dx) < 0.001f) && (fabsf(tf_dy) < 0.001f))
+			{
+				break;
+			}
+
+			tf_angle_deg = atan2f(tf_dy, tf_dx) * 180.0f / 3.14159265f;
+			if (tf_angle_deg < 0.0f) { tf_angle_deg += 360.0f; }
+
+			/* Calibrate: CW distance from cold reference -> temperature */
+			if (tf_angle_deg >= APP_AI_TIP_FOCUS_COLD_ANGLE_DEG)
+			{
+				tf_cw_dist = tf_angle_deg - APP_AI_TIP_FOCUS_COLD_ANGLE_DEG;
+			}
+			else
+			{
+				tf_cw_dist = tf_angle_deg + 360.0f - APP_AI_TIP_FOCUS_COLD_ANGLE_DEG;
+			}
+
+			if ((tf_cw_dist < 0.0f) || (tf_cw_dist > APP_AI_TIP_FOCUS_SWEEP_DEG))
+			{
+				break;
+			}
+
+			tf_temperature = APP_AI_TIP_FOCUS_SLOPE * tf_cw_dist + APP_AI_TIP_FOCUS_INTERCEPT;
+
+			if ((tf_temperature < APP_AI_TIP_FOCUS_TEMP_MIN_C) || (tf_temperature > APP_AI_TIP_FOCUS_TEMP_MAX_C))
+			{
+				break;
+			}
+
+			/* All guardrails passed: median-smooth and publish */
+			tf_smoothed = AppAI_TipFocus_MedianFilter(tf_temperature);
+			app_ai_last_inference_value = tf_smoothed;
+			app_ai_last_inference_valid = true;
+			app_ai_tip_focus_consecutive_invalid = 0U;
+			app_ai_tip_focus_last_published = tf_smoothed;
+			app_ai_tip_focus_last_published_valid = true;
+			tf_accepted = true;
+
+		} while (0);
+
+		if (!tf_accepted)
+		{
+			app_ai_tip_focus_consecutive_invalid++;
+		}
+
+		{
+			const char *tf_result_label;
+			if (tf_accepted)
+			{
+				tf_result_label = "ACCEPT";
+			}
+			else if (app_ai_tip_focus_consecutive_invalid >= APP_AI_TIP_FOCUS_MAX_INVALID_FRAMES)
+			{
+				tf_result_label = "STALE";
+			}
+			else
+			{
+				tf_result_label = "HELD";
+			}
+
+			if (!tf_accepted)
+			{
+				/* Do not publish a held frame as a fresh inference result.
+				 * Keep the last published value for internal smoothing, but
+				 * force the shared result invalid so callers do not mistake a
+				 * stale hold for a new reading. */
+				app_ai_last_inference_value = app_ai_tip_focus_last_published;
+				app_ai_last_inference_valid = false;
+			}
+
+			{
+				char tf_status[128];
+				char tf_cx_text[24];
+				char tf_cy_text[24];
+				char tf_tx_text[24];
+				char tf_ty_text[24];
+				char tf_conf_text[24];
+				char tf_angle_text[24];
+				char tf_temp_text[24];
+
+				AppAI_FormatFixedFloat(tf_conf_text, sizeof(tf_conf_text),
+					tf_confidence, 3U);
+				AppAI_FormatFixedFloat(tf_cx_text, sizeof(tf_cx_text), tf_cx, 1U);
+				AppAI_FormatFixedFloat(tf_cy_text, sizeof(tf_cy_text), tf_cy, 1U);
+				AppAI_FormatFixedFloat(tf_tx_text, sizeof(tf_tx_text), tf_tx, 1U);
+				AppAI_FormatFixedFloat(tf_ty_text, sizeof(tf_ty_text), tf_ty, 1U);
+				AppAI_FormatFixedFloat(tf_angle_text, sizeof(tf_angle_text),
+					tf_angle_deg, 1U);
+				AppAI_FormatFixedFloat(tf_temp_text, sizeof(tf_temp_text),
+					tf_temperature, 1U);
+				(void)DebugConsole_Snprintf(tf_status, sizeof(tf_status),
+					"[AI][TIP_FOCUS] STATUS: conf=%s center=(%s,%s) tip=(%s,%s) angle=%s temp=%s result=%s\r\n",
+					tf_conf_text, tf_cx_text, tf_cy_text, tf_tx_text, tf_ty_text,
+					tf_angle_text, tf_temp_text, tf_result_label);
+				(void)DebugConsole_WriteString(tf_status);
+			}
+		}
+	}
+	/* Tip-focus is the primary path; skip the legacy scalar cascade entirely. */
+	return true;
+#endif /* APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE */
 
 #if APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
 	(void)DebugConsole_WriteString(
@@ -5235,9 +5695,15 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	else
 #endif
 	{
-		(void)DebugConsole_WriteString(
+	#if APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
+	(void)DebugConsole_WriteString(
 			"[AI] Source-crop-box stage or decode failed; trying rectifier fallback.\r\n");
+#else
+	(void)DebugConsole_WriteString(
+			"[AI] Source-crop-box skipped (disabled); trying rectifier fallback.\r\n");
+#endif
 
+	#if APP_AI_ENABLE_RECTIFIER_FALLBACK
 		(void)DebugConsole_WriteString(
 			"[AI] Dry-run model init OK; launching rectifier stage.\r\n");
 
@@ -5246,56 +5712,66 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 								&rectifier_output_value) &&
 			AppAI_DecodeRectifierCropBox(rectifier_output_info, &scalar_crop,
 								 &rectifier_box))
-	{
-		AppAI_LogRectifierResult(rectifier_output_info, &rectifier_box);
-		DebugConsole_Printf(
-			"[AI] Rectifier crop: x=%lu y=%lu w=%lu h=%lu\r\n",
-			(unsigned long)scalar_crop.x_min,
-			(unsigned long)scalar_crop.y_min,
-			(unsigned long)scalar_crop.width,
-			(unsigned long)scalar_crop.height);
-		DebugConsole_Printf(
-			"[AI] Scalar stage using rectifier crop: x=%lu y=%lu w=%lu h=%lu\r\n",
-			(unsigned long)scalar_crop.x_min,
-			(unsigned long)scalar_crop.y_min,
-			(unsigned long)scalar_crop.width,
-			(unsigned long)scalar_crop.height);
-		scalar_crop_from_rectifier = true;
-	}
-	else
-	{
-		(void)DebugConsole_WriteString(
-			"[AI] Rectifier stage or decode failed; trying OBB fallback.\r\n");
-
-#if APP_AI_ENABLE_OBB_STAGE != 0U
-		(void)DebugConsole_WriteString("[AI] Dry-run model init OK; launching OBB fallback stage.\r\n");
-
-		if (AppAI_RunStageInference(&app_ai_obb_stage, safe_frame_bytes, frame_size,
-									&full_frame_crop, &obb_output_info, &obb_output_value) &&
-			AppAI_DecodeObbCropBox(obb_output_info, &scalar_crop, &obb_box))
 		{
-			AppAI_LogObbResult(obb_output_info, &obb_box);
+			AppAI_LogRectifierResult(rectifier_output_info, &rectifier_box);
 			DebugConsole_Printf(
-				"[AI] OBB fallback crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+				"[AI] Rectifier crop: x=%lu y=%lu w=%lu h=%lu\r\n",
 				(unsigned long)scalar_crop.x_min,
 				(unsigned long)scalar_crop.y_min,
 				(unsigned long)scalar_crop.width,
 				(unsigned long)scalar_crop.height);
+	#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 			DebugConsole_Printf(
-				"[AI] Scalar stage using OBB fallback crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+				"[AI] Scalar stage using rectifier crop: x=%lu y=%lu w=%lu h=%lu\r\n",
 				(unsigned long)scalar_crop.x_min,
 				(unsigned long)scalar_crop.y_min,
 				(unsigned long)scalar_crop.width,
 				(unsigned long)scalar_crop.height);
-			scalar_crop_from_obb = true;
+	#endif
+			scalar_crop_from_rectifier = true;
 		}
 		else
-#endif
+	#endif
 		{
+	#if APP_AI_ENABLE_RECTIFIER_FALLBACK
 			(void)DebugConsole_WriteString(
-				"[AI] OBB fallback failed; using fixed training crop.\r\n");
+				"[AI] Rectifier stage or decode failed; trying OBB fallback.\r\n");
+	#else
+			(void)DebugConsole_WriteString(
+				"[AI] Rectifier fallback disabled; trying OBB fallback.\r\n");
+	#endif
+
+	#if APP_AI_ENABLE_OBB_STAGE != 0U
+			(void)DebugConsole_WriteString("[AI] Dry-run model init OK; launching OBB fallback stage.\r\n");
+
+			if (AppAI_RunStageInference(&app_ai_obb_stage, safe_frame_bytes, frame_size,
+									&full_frame_crop, &obb_output_info, &obb_output_value) &&
+				AppAI_DecodeObbCropBox(obb_output_info, &scalar_crop, &obb_box))
+			{
+				AppAI_LogObbResult(obb_output_info, &obb_box);
+				DebugConsole_Printf(
+					"[AI] OBB fallback crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+					(unsigned long)scalar_crop.x_min,
+					(unsigned long)scalar_crop.y_min,
+					(unsigned long)scalar_crop.width,
+					(unsigned long)scalar_crop.height);
+	#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
+				DebugConsole_Printf(
+					"[AI] Scalar stage using OBB fallback crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+					(unsigned long)scalar_crop.x_min,
+					(unsigned long)scalar_crop.y_min,
+					(unsigned long)scalar_crop.width,
+					(unsigned long)scalar_crop.height);
+	#endif
+				scalar_crop_from_obb = true;
+			}
+			else
+	#endif
+			{
+				(void)DebugConsole_WriteString(
+					"[AI] OBB fallback failed; using fixed training crop.\r\n");
+			}
 		}
-	}
 
 	}
 	if (!scalar_crop_from_rectifier && !scalar_crop_from_obb && !scalar_crop_from_source_crop_box)
@@ -5307,12 +5783,14 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 			(unsigned long)scalar_crop.y_min,
 			(unsigned long)scalar_crop.width,
 			(unsigned long)scalar_crop.height);
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 		DebugConsole_Printf(
 			"[AI] Scalar stage using fixed training crop: x=%lu y=%lu w=%lu h=%lu\r\n",
 			(unsigned long)scalar_crop.x_min,
 			(unsigned long)scalar_crop.y_min,
 			(unsigned long)scalar_crop.width,
 			(unsigned long)scalar_crop.height);
+#endif
 	}
 
 #if APP_AI_BYPASS_SCALAR_STAGE_BEFORE_PREPROCESS
@@ -5343,44 +5821,60 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 #if APP_AI_BYPASS_SCALAR_INFERENCE
 	if (scalar_crop_from_rectifier)
 	{
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 		(void)DebugConsole_WriteString(
 			"[AI] Scalar handoff active; rectifier-crop preprocess-only mode enabled.\r\n");
+#endif
 	}
 	else if (scalar_crop_from_obb)
 	{
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 		(void)DebugConsole_WriteString(
 			"[AI] Scalar handoff active; OBB fallback preprocess-only mode enabled.\r\n");
+#endif
 	}
 	else if (scalar_crop_from_source_crop_box)
 	{
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 		(void)DebugConsole_WriteString(
 			"[AI] Scalar handoff active; source-crop-box preprocess-only mode enabled.\r\n");
+#endif
 	}
 	else
 	{
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 		(void)DebugConsole_WriteString(
 			"[AI] Scalar handoff active; preprocess-only mode enabled.\r\n");
+#endif
 	}
 #else
 	if (scalar_crop_from_rectifier)
 	{
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 		(void)DebugConsole_WriteString(
 			"[AI] Scalar handoff active; rectifier-crop scalar inference enabled.\r\n");
+#endif
 	}
 	else if (scalar_crop_from_obb)
 	{
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 		(void)DebugConsole_WriteString(
 			"[AI] Scalar handoff active; OBB fallback scalar inference enabled.\r\n");
+#endif
 	}
 	else if (scalar_crop_from_source_crop_box)
 	{
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 		(void)DebugConsole_WriteString(
 			"[AI] Scalar handoff active; source-crop-box crop scalar inference enabled.\r\n");
+#endif
 	}
 	else
 	{
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 		(void)DebugConsole_WriteString(
 			"[AI] Scalar handoff active; full scalar inference enabled.\r\n");
+#endif
 	}
 #endif
 	if (!AppAI_RunStageInference(&app_ai_scalar_stage, safe_frame_bytes, frame_size,
@@ -5390,18 +5884,13 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		return false;
 	}
 
-	/* Log the inference result immediately after inference, before xSPI2
-	 * reconfiguration for the next stage. */
-	{
-		char cached_output_line[96];
-		AppInferenceLog_FormatFloatMicros(
-			cached_output_line, sizeof(cached_output_line),
-			"[AI] Model output (cached): ", scalar_output_value);
-		DebugConsole_WriteString(cached_output_line);
-	}
+#if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
+	(void)scalar_output_value;
+#else
 	app_ai_last_inference_value =
 		AppAI_TraceAndApplyInferenceCalibration(scalar_output_value);
 	app_ai_last_inference_valid = true;
+#endif
 
 	return true;
 #endif
@@ -5486,93 +5975,8 @@ static void AppAI_LogScalarInternalOutputProbe(
 	const AppAI_ModelStageSpec *stage,
 	const LL_Buffer_InfoTypeDef *stage_output_info)
 {
-	static const char *const raw_head_names[] = {
-		"Quantize_261_out_0",
-		"Quantize_390_out_0",
-		"Input_28_out_0",
-		"Gemm_271_out_0",
-		"Gemm_out_0",
-		"Identity_out_0",
-	};
-	const LL_Buffer_InfoTypeDef *internal_buffers = NULL;
-	const LL_Buffer_InfoTypeDef *raw_head_info = NULL;
-	static bool internal_name_dump_done = false;
-
-	/* Keep this probe specific to the scalar model so we can confirm whether
-	 * the runtime is updating the raw head tensor when final output is stale. */
-	if ((stage == NULL) || (stage != &app_ai_scalar_stage))
-	{
-		return;
-	}
-
-	internal_buffers =
-		LL_ATON_Internal_Buffers_Info_polar_vote_circular_v28_int8();
-	if ((internal_buffers != NULL) && !internal_name_dump_done)
-	{
-		size_t entry_index = 0U;
-		for (const LL_Buffer_InfoTypeDef *entry = internal_buffers;
-			 (entry->name != NULL) && (entry_index < 48U);
-			 ++entry, ++entry_index)
-		{
-			DebugConsole_Printf(
-				"[AI] Scalar internal[%lu]: name=%s len=%lu nbits=%lu\r\n",
-				(unsigned long)entry_index,
-				entry->name,
-				(unsigned long)LL_Buffer_len(entry),
-				(unsigned long)entry->nbits);
-		}
-		internal_name_dump_done = true;
-	}
-
-	raw_head_info = AppAI_FindFirstBufferInfoByNames(
-		internal_buffers,
-		raw_head_names,
-		sizeof(raw_head_names) / sizeof(raw_head_names[0]));
-
-	if ((raw_head_info != NULL) && (LL_Buffer_addr_start(raw_head_info) != NULL) &&
-		(LL_Buffer_len(raw_head_info) > 0U))
-	{
-		const uint8_t *raw_head_ptr =
-			(const uint8_t *)LL_Buffer_addr_start(raw_head_info);
-		const size_t raw_head_len = (size_t)LL_Buffer_len(raw_head_info);
-		const size_t raw_dump_len = (raw_head_len < 8U) ? raw_head_len : 8U;
-
-		(void)mcu_cache_invalidate_range((uint32_t)(uintptr_t)raw_head_ptr,
-										 (uint32_t)((uintptr_t)raw_head_ptr + raw_head_len));
-		DebugConsole_Printf(
-			"[AI] Scalar raw-head: name=%s len=%lu q0=%d bytes=[%02X %02X %02X %02X %02X %02X %02X %02X]\r\n",
-			(raw_head_info->name != NULL) ? raw_head_info->name : "(unnamed)",
-			(unsigned long)raw_head_len,
-			(int)(*(const int8_t *)raw_head_ptr),
-			(raw_dump_len > 0U) ? raw_head_ptr[0] : 0U,
-			(raw_dump_len > 1U) ? raw_head_ptr[1] : 0U,
-			(raw_dump_len > 2U) ? raw_head_ptr[2] : 0U,
-			(raw_dump_len > 3U) ? raw_head_ptr[3] : 0U,
-			(raw_dump_len > 4U) ? raw_head_ptr[4] : 0U,
-			(raw_dump_len > 5U) ? raw_head_ptr[5] : 0U,
-			(raw_dump_len > 6U) ? raw_head_ptr[6] : 0U,
-			(raw_dump_len > 7U) ? raw_head_ptr[7] : 0U);
-	}
-	else
-	{
-		(void)DebugConsole_WriteString(
-			"[AI] Scalar raw-head probe unavailable.\r\n");
-	}
-
-	if ((stage_output_info != NULL) &&
-		(LL_Buffer_addr_start(stage_output_info) != NULL) &&
-		(LL_Buffer_len(stage_output_info) >= 4U))
-	{
-		const uint8_t *out_ptr =
-			(const uint8_t *)LL_Buffer_addr_start(stage_output_info);
-		const size_t out_len = (size_t)LL_Buffer_len(stage_output_info);
-
-		DebugConsole_Printf(
-			"[AI] Scalar final-out: name=%s len=%lu bytes=[%02X %02X %02X %02X]\r\n",
-			(stage_output_info->name != NULL) ? stage_output_info->name : "(unnamed)",
-			(unsigned long)out_len,
-			out_ptr[0], out_ptr[1], out_ptr[2], out_ptr[3]);
-	}
+	(void)stage;
+	(void)stage_output_info;
 }
 
 #if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
@@ -8108,6 +8512,88 @@ static void AppAI_ReadRgbFromYuv422Pixel(const uint8_t *frame_bytes,
 	}
 }
 
+static void AppAI_BlankTipFocusLowerInset(int8_t *input, size_t width,
+	size_t height)
+{
+	if ((input == NULL) || (width == 0U) || (height == 0U))
+	{
+		return;
+	}
+
+	/* Blank the lower inset gauge and the dark blob in the lower center so the
+	 * CNN has to pay attention to the main dial. */
+	const int32_t mask_center_x = 112;
+	const int32_t mask_center_y = 150;
+	const int32_t mask_radius_x = 54;
+	const int32_t mask_radius_y = 42;
+	const int64_t radius_x_sq = (int64_t)mask_radius_x * (int64_t)mask_radius_x;
+	const int64_t radius_y_sq = (int64_t)mask_radius_y * (int64_t)mask_radius_y;
+	const int64_t ellipse_limit = radius_x_sq * radius_y_sq;
+
+	for (size_t py = 0U; py < height; ++py)
+	{
+		const int64_t dy = (int64_t)(int32_t)py - (int64_t)mask_center_y;
+		const int64_t dy_term = dy * dy * radius_x_sq;
+
+		for (size_t px = 0U; px < width; ++px)
+		{
+			const int64_t dx = (int64_t)(int32_t)px - (int64_t)mask_center_x;
+			const int64_t dx_term = dx * dx * radius_y_sq;
+
+			if ((dx_term + dy_term) <= ellipse_limit)
+			{
+				const size_t idx = (py * width + px) * 3U;
+				input[idx] = 0;
+				input[idx + 1U] = 0;
+				input[idx + 2U] = 0;
+			}
+		}
+	}
+}
+
+static void AppAI_FormatFixedFloat(char *dst, size_t dst_len, float value,
+	unsigned decimals)
+{
+	if ((dst == NULL) || (dst_len == 0U))
+	{
+		return;
+	}
+
+	if (!isfinite(value))
+	{
+		(void)DebugConsole_Snprintf(dst, dst_len, "NaN");
+		return;
+	}
+
+	const bool negative = (value < 0.0f);
+	const double magnitude = negative ? -(double)value : (double)value;
+	unsigned long whole = (unsigned long)magnitude;
+	double fraction = magnitude - (double)whole;
+	unsigned long scale = 1UL;
+
+	for (unsigned i = 0U; i < decimals; ++i)
+	{
+		scale *= 10UL;
+	}
+
+	unsigned long scaled = (unsigned long)(fraction * (double)scale + 0.5);
+	if (scaled >= scale)
+	{
+		scaled = 0UL;
+		whole += 1UL;
+	}
+
+	if (decimals == 0U)
+	{
+		(void)DebugConsole_Snprintf(dst, dst_len, "%s%lu",
+			negative ? "-" : "", whole);
+		return;
+	}
+
+	(void)DebugConsole_Snprintf(dst, dst_len, "%s%lu.%0*lu",
+		negative ? "-" : "", whole, (int)decimals, scaled);
+}
+
 static void AppAI_ReadRgbFromYuv422Bilinear(const uint8_t *frame_bytes,
 											size_t frame_size_bytes,
 											size_t frame_width_pixels,
@@ -8404,6 +8890,171 @@ static uint8_t AppAI_FindHistogramPercentile(const uint32_t *histogram,
 	return (uint8_t)(histogram_len - 1U);
 }
 
+/**
+ * @brief Global softargmax on an int8 heatmap.
+ *
+ * Matches the Python training decode: softargmax_2d() which computes
+ * the global weighted centroid over the entire heatmap.
+ *
+ * Formula: normalized = heatmap / sum(heatmap)
+ *          expected_x = sum(normalized * x_coords)
+ *          expected_y = sum(normalized * y_coords)
+ *
+ * Returns false if the heatmap has no positive activations.
+ */
+static bool AppAI_SoftArgmaxGlobal(const int8_t *heatmap, int32_t size,
+	float *x_out, float *y_out)
+{
+	if ((heatmap == NULL) || (x_out == NULL) || (y_out == NULL) || (size <= 0))
+	{
+		return false;
+	}
+
+	/* First pass: compute global max for numerical stability, then sum */
+	float global_max = -128.0f;
+	for (int32_t i = 0; i < size * size; i++)
+	{
+		const float val = (float)heatmap[i];
+		if (val > global_max) { global_max = val; }
+	}
+
+	/* Second pass: compute exp(heatmap - global_max) and accumulate */
+	float total_weight = 0.0f;
+	float sum_x = 0.0f;
+	float sum_y = 0.0f;
+
+	for (int32_t py = 0; py < size; py++)
+	{
+		for (int32_t px = 0; px < size; px++)
+		{
+			const float v = (float)heatmap[py * size + px] - global_max;
+			const float e = expf(v);
+			total_weight += e;
+			sum_x += e * (float)px;
+			sum_y += e * (float)py;
+		}
+	}
+
+	if (total_weight < 1e-6f)
+	{
+		return false;
+	}
+
+	*x_out = sum_x / total_weight;
+	*y_out = sum_y / total_weight;
+	return true;
+}
+
+/**
+ * @brief Reset the tip-focus median history to a fresh seed value.
+ *
+ * When the reading has drifted far from the last published value for several
+ * consecutive frames, the historical median needs a hard re-seed so the live
+ * value can catch up instead of being pinned forever by an old stable state.
+ */
+static void AppAI_TipFocus_ResetMedianHistory(float seed_value)
+{
+	size_t i;
+
+	for (i = 0U; i < APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE; i++)
+	{
+		app_ai_tip_focus_median_buffer[i] = seed_value;
+	}
+
+	app_ai_tip_focus_median_count = APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE;
+	app_ai_tip_focus_median_index = 0U;
+	app_ai_tip_focus_last_published = seed_value;
+	app_ai_tip_focus_last_published_valid = true;
+	app_ai_tip_focus_outlier_streak = 0U;
+}
+
+/**
+ * @brief 3-sample median filter with outlier rejection.
+ *
+ * Maintains a ring buffer of accepted tip-focus temperatures.  If the new
+ * value deviates from the current median by more than the outlier threshold,
+ * it is rejected and the last published value is returned unchanged.
+ */
+static float AppAI_TipFocus_MedianFilter(float new_value)
+{
+	/* If no buffer history yet, initialise with the first value */
+	if (app_ai_tip_focus_median_count < APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE)
+	{
+		app_ai_tip_focus_median_buffer[app_ai_tip_focus_median_count] = new_value;
+		app_ai_tip_focus_median_count++;
+		app_ai_tip_focus_last_published = new_value;
+		app_ai_tip_focus_outlier_streak = 0U;
+		return new_value;
+	}
+
+	/* Compute current median */
+	float sorted[APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE];
+	(void)memcpy(sorted, app_ai_tip_focus_median_buffer, sizeof(sorted));
+	/* Simple bubble sort for 3 elements */
+	for (size_t i = 0U; i < APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE; i++)
+	{
+		for (size_t j = i + 1U; j < APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE; j++)
+		{
+			if (sorted[i] > sorted[j])
+			{
+				const float tmp = sorted[i];
+				sorted[i] = sorted[j];
+				sorted[j] = tmp;
+			}
+		}
+	}
+	const float median = sorted[APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE / 2U];
+
+	/* Outlier rejection: if new value is too far from median, hold last published */
+	const float delta = (new_value > median) ? (new_value - median) : (median - new_value);
+	if (delta > APP_AI_TIP_FOCUS_MAX_OUTLIER_DELTA_C)
+	{
+		app_ai_tip_focus_outlier_streak++;
+		if (app_ai_tip_focus_outlier_streak >= APP_AI_TIP_FOCUS_OUTLIER_RESET_STREAK)
+		{
+			DebugConsole_Printf(
+				"[AI][TIP_FOCUS] Outlier %.2f C delta=%.2f > %.1f; re-seeding median with %.2f\r\n",
+				new_value, delta, APP_AI_TIP_FOCUS_MAX_OUTLIER_DELTA_C,
+				new_value);
+			AppAI_TipFocus_ResetMedianHistory(new_value);
+			return new_value;
+		}
+
+		DebugConsole_Printf(
+			"[AI][TIP_FOCUS] Outlier %.2f C delta=%.2f > %.1f; holding %.2f (streak=%lu/%u)\r\n",
+			new_value, delta, APP_AI_TIP_FOCUS_MAX_OUTLIER_DELTA_C,
+			app_ai_tip_focus_last_published,
+			(unsigned long)app_ai_tip_focus_outlier_streak,
+			(unsigned)APP_AI_TIP_FOCUS_OUTLIER_RESET_STREAK);
+		return app_ai_tip_focus_last_published;
+	}
+
+	app_ai_tip_focus_outlier_streak = 0U;
+
+	/* Insert new value into ring buffer */
+	app_ai_tip_focus_median_buffer[app_ai_tip_focus_median_index] = new_value;
+	app_ai_tip_focus_median_index = (app_ai_tip_focus_median_index + 1U)
+		% APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE;
+
+	/* Recompute median after insertion */
+	(void)memcpy(sorted, app_ai_tip_focus_median_buffer, sizeof(sorted));
+	for (size_t i = 0U; i < APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE; i++)
+	{
+		for (size_t j = i + 1U; j < APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE; j++)
+		{
+			if (sorted[i] > sorted[j])
+			{
+				const float tmp = sorted[i];
+				sorted[i] = sorted[j];
+				sorted[j] = tmp;
+			}
+		}
+	}
+	const float new_median = sorted[APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE / 2U];
+	app_ai_tip_focus_last_published = new_median;
+	return new_median;
+}
+
 bool App_AI_GetLastInferenceResult(float *value_out)
 {
 	if (value_out == NULL)
@@ -8423,6 +9074,192 @@ bool App_AI_GetLastInferenceResult(float *value_out)
 		return false;
 	}
 	*value_out = app_ai_last_inference_value;
+	return true;
+}
+
+/**
+ * @brief Verify that the rectifier weights have been flashed to xSPI2.
+ * @retval true xSPI2 flash contains valid rectifier weights.
+ * @retval false xSPI2 flash is empty or corrupted - run flash_boot.bat.
+ */
+bool AppAI_VerifyRectifierWeights(void)
+{
+	uint8_t actual_start[APP_AI_XSPI2_PROBE_BYTES] = {0U};
+	int32_t read_status;
+	size_t i;
+	bool match;
+
+	/* Ensure xSPI2 is initialized before probing. */
+	if (!app_ai_xspi2_initialized)
+	{
+		if (!AppAI_ReconfigureXspi2ForRuntime())
+		{
+			DebugConsole_WriteString(
+				"[AI][RECTIFIER] xSPI2 reconfigure for verification failed.\r\n");
+			return false;
+		}
+	}
+
+	/* Read the first 16 bytes from xSPI2 flash at 0x70600000.
+	 * The chip offset for rectifier is 0x70600000 - 0x70000000 = 0x600000. */
+	const uint32_t rectifier_chip_offset = 0x00600000U;
+
+	read_status = BSP_XSPI_NOR_Read(0U, actual_start,
+									rectifier_chip_offset,
+									APP_AI_XSPI2_PROBE_BYTES);
+	if (read_status != BSP_ERROR_NONE)
+	{
+		DebugConsole_Printf(
+			"[AI][RECTIFIER] xSPI2 read failed: status=%ld\r\n",
+			(long)read_status);
+		return false;
+	}
+
+	/* Compare against expected signature. */
+	match = true;
+	for (i = 0U; i < APP_AI_XSPI2_PROBE_BYTES; i++)
+	{
+		if (actual_start[i] != app_ai_rectifier_xspi2_signature_start[i])
+		{
+			match = false;
+			break;
+		}
+	}
+
+	if (!match)
+	{
+		DebugConsole_WriteString(
+			"[AI][RECTIFIER] xSPI2 flash signature mismatch!\r\n");
+		DebugConsole_WriteString(
+			"[AI][RECTIFIER] Expected: ");
+		for (i = 0U; i < APP_AI_XSPI2_PROBE_BYTES; i++)
+		{
+			DebugConsole_Printf("%02X", app_ai_rectifier_xspi2_signature_start[i]);
+		}
+		DebugConsole_WriteString("\r\n[AI][RECTIFIER] Actual:   ");
+		for (i = 0U; i < APP_AI_XSPI2_PROBE_BYTES; i++)
+		{
+			DebugConsole_Printf("%02X", actual_start[i]);
+		}
+		DebugConsole_WriteString("\r\n");
+		DebugConsole_WriteString(
+			"[AI][RECTIFIER] CRITICAL: Run flash_boot.bat to flash atonbuf.rectifier.xSPI2.raw\r\n");
+		DebugConsole_WriteString(
+			"[AI][RECTIFIER] to 0x70600000 before running inference.\r\n");
+		return false;
+	}
+
+	DebugConsole_WriteString(
+		"[AI][RECTIFIER] xSPI2 weights signature OK.\r\n");
+	return true;
+}
+
+/**
+ * @brief Verify that the tip-focus weights have been flashed to xSPI2.
+ * @retval true xSPI2 flash contains valid tip-focus weights.
+ * @retval false xSPI2 flash is empty or corrupted - run flash_boot.bat.
+ */
+bool AppAI_VerifyTipFocusWeights(void)
+{
+	uint8_t actual_start[APP_AI_XSPI2_PROBE_BYTES] = {0U};
+	int32_t read_status;
+	size_t i;
+	bool match;
+
+	/* Ensure xSPI2 is initialized before probing. */
+	if (!app_ai_xspi2_initialized)
+	{
+		if (!AppAI_ReconfigureXspi2ForRuntime())
+		{
+			DebugConsole_WriteString(
+				"[AI][TIP_FOCUS] xSPI2 reconfigure for verification failed.\r\n");
+			return false;
+		}
+	}
+
+	/* Read the first 16 bytes from xSPI2 flash at 0x70400000.
+	 * The chip offset for tip-focus is 0x70400000 - 0x70000000 = 0x400000. */
+	const uint32_t tip_focus_chip_offset = 0x00400000U;
+
+	read_status = BSP_XSPI_NOR_Read(0U, actual_start,
+									tip_focus_chip_offset,
+									APP_AI_XSPI2_PROBE_BYTES);
+	if (read_status != BSP_ERROR_NONE)
+	{
+		DebugConsole_Printf(
+			"[AI][TIP_FOCUS] xSPI2 read failed: status=%ld\r\n",
+			(long)read_status);
+		return false;
+	}
+
+	/* Compare against expected signature. */
+	match = true;
+	for (i = 0U; i < APP_AI_XSPI2_PROBE_BYTES; i++)
+	{
+		if (actual_start[i] != app_ai_tip_focus_xspi2_signature_start[i])
+		{
+			match = false;
+			break;
+		}
+	}
+
+	if (!match)
+	{
+		DebugConsole_WriteString(
+			"[AI][TIP_FOCUS] xSPI2 flash signature mismatch!\r\n");
+		DebugConsole_WriteString(
+			"[AI][TIP_FOCUS] Expected: ");
+		for (i = 0U; i < APP_AI_XSPI2_PROBE_BYTES; i++)
+		{
+			DebugConsole_Printf("%02X", app_ai_tip_focus_xspi2_signature_start[i]);
+		}
+		DebugConsole_WriteString("\r\n[AI][TIP_FOCUS] Actual:   ");
+		for (i = 0U; i < APP_AI_XSPI2_PROBE_BYTES; i++)
+		{
+			DebugConsole_Printf("%02X", actual_start[i]);
+		}
+		DebugConsole_WriteString("\r\n");
+		DebugConsole_WriteString(
+			"[AI][TIP_FOCUS] CRITICAL: Run flash_boot.bat to flash atonbuf.tip_focus.xSPI2.raw\r\n");
+		DebugConsole_WriteString(
+			"[AI][TIP_FOCUS] to 0x70400000 before running inference.\r\n");
+		return false;
+	}
+
+	DebugConsole_WriteString(
+		"[AI][TIP_FOCUS] xSPI2 weights signature OK.\r\n");
+	return true;
+}
+
+bool AppAI_Xspi2EnsureMemoryMappedMode(void)
+{
+	/* Fast-path: if xSPI2 is already in memory-mapped mode, skip directly. */
+	if (app_ai_xspi2_mm_enabled)
+	{
+		return true;
+	}
+
+	/* Before enabling MM mode, make sure the xSPI2 peripheral is initialized
+	 * and the flash is accessible.  If the peripheral was left de-inited by a
+	 * prior stage, re-init it first. */
+	if (!app_ai_xspi2_initialized)
+	{
+		if (!AppAI_ReconfigureXspi2ForRuntime())
+		{
+			(void)DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure failed.\r\n");
+			return false;
+		}
+	}
+
+	if (!AppAI_Xspi2EnableMemoryMappedMode())
+	{
+		return false;
+	}
+
+	/* Ensure the memory-mapped window is visible to all bus masters before
+	 * the NPU starts reading weight data from xSPI2 flash. */
+	__DSB();
+	__ISB();
 	return true;
 }
 

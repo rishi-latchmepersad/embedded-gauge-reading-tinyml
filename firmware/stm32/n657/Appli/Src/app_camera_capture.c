@@ -741,6 +741,12 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 				"[CAMERA][CAPTURE] FileX media not ready yet; this capture will skip SD save.\r\n");
 	}
 
+	/* Before the first capture attempt, let AE hardware settle then lock
+	 * so the manual brightness-gate nudges start from a stable baseline. */
+	if ((capture_attempt == 0U) && camera_capture_use_cmw_pipeline) {
+		(void)CameraPlatform_AeSettleAndLock();
+	}
+
 	for (capture_attempt = 0U; capture_attempt < max_capture_attempts;
 			capture_attempt++) {
 		if (capture_attempt > 0U) {

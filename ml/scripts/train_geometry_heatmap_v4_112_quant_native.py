@@ -92,6 +92,7 @@ LOSS_WEIGHTS = {
     "confidence_floor": 0.05,
     "aux_coord": 0.1,
     "local_offset": 0.5,
+    "axis_simcc": 1.0,
 }
 
 NOISE_RAMP_START_STDDEV: float = 0.001
@@ -110,6 +111,10 @@ LOCAL_OFFSET_LOSS_WEIGHT_DEFAULT: float = 0.5
 LOCAL_OFFSET_SCALE_PX_DEFAULT: float = 8.0
 LOCAL_OFFSET_SIGMA_PX_DEFAULT: float = 4.0
 LOCAL_OFFSET_TIP_WEIGHT_DEFAULT: float = 1.0
+
+AXIS_SIMCC_SIGMA_BINS_DEFAULT: float = 4.0
+AXIS_SIMCC_LOSS_WEIGHT_DEFAULT: float = 1.0
+AXIS_SIMCC_TIP_WEIGHT_DEFAULT: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -210,6 +215,8 @@ def _as_output_dict(outputs: Any) -> dict[str, tf.Tensor]:
             result["aux_coords"] = tf.cast(outputs["aux_coords"], tf.float32)
         if "aux_offset_map" in outputs:
             result["aux_offset_map"] = tf.cast(outputs["aux_offset_map"], tf.float32)
+        if "axis_logits" in outputs:
+            result["axis_logits"] = tf.cast(outputs["axis_logits"], tf.float32)
         return result
     center_heatmap, tip_heatmap, confidence, *extra = outputs
     result = {
@@ -218,12 +225,15 @@ def _as_output_dict(outputs: Any) -> dict[str, tf.Tensor]:
         "confidence": tf.cast(confidence, tf.float32),
     }
     if extra:
-        # Detect aux output type by static rank: aux_offset_map has rank 4
-        # (batch, H, W, 4) while aux_coords has rank 2 (batch, 4).
         extra_tensor = extra[0]
         extra_rank = extra_tensor.shape.rank
-        if extra_rank is not None and extra_rank >= 3:
-            result["aux_offset_map"] = tf.cast(extra_tensor, tf.float32)
+        if extra_rank is not None:
+            if extra_rank == 3:
+                result["axis_logits"] = tf.cast(extra_tensor, tf.float32)
+            elif extra_rank >= 4:
+                result["aux_offset_map"] = tf.cast(extra_tensor, tf.float32)
+            else:
+                result["aux_coords"] = tf.cast(extra_tensor, tf.float32)
         else:
             result["aux_coords"] = tf.cast(extra_tensor, tf.float32)
     return result
@@ -443,12 +453,54 @@ def _make_local_offset_targets(
     return aux_offset_map, center_weight_mask, tip_weight_mask
 
 
+def _make_axis_simcc_targets(
+    center_x_224: np.ndarray,
+    center_y_224: np.ndarray,
+    tip_x_224: np.ndarray,
+    tip_y_224: np.ndarray,
+    *,
+    num_bins: int = 112,
+    sigma_bins: float = 4.0,
+) -> np.ndarray:
+    """Generate 1D Gaussian soft targets for axis_simcc logit head.
+
+    Returns (batch, 4, num_bins) with soft targets summing to 1 along axis 2.
+    Order: [center_x, center_y, tip_x, tip_y].
+    """
+    batch_size = len(center_x_224)
+    # Convert 224-pixel coords to bin indices: bin = coord * (num_bins-1) / 223
+    scale = (num_bins - 1) / 223.0
+    coords = np.stack([
+        center_x_224 * scale,  # (batch,)
+        center_y_224 * scale,
+        tip_x_224 * scale,
+        tip_y_224 * scale,
+    ], axis=1)  # (batch, 4)
+
+    bins = np.arange(num_bins, dtype=np.float32)  # (num_bins,)
+    coords = coords[:, :, np.newaxis]  # (batch, 4, 1)
+    bins = bins[np.newaxis, np.newaxis, :]  # (1, 1, num_bins)
+
+    neg_two_sigma2 = -2.0 * sigma_bins * sigma_bins
+    sq_dist = (bins - coords) ** 2
+    targets = np.exp(sq_dist / neg_two_sigma2)  # (batch, 4, num_bins)
+
+    # Normalize to soft targets summing to 1
+    targets_sum = targets.sum(axis=2, keepdims=True)
+    targets_sum = np.maximum(targets_sum, 1e-8)
+    targets = targets / targets_sum
+
+    return targets.astype(np.float32)
+
+
 def _build_targets(
     samples: list[HeatmapSample],
     *,
     include_local_offset_map: bool = False,
     local_offset_scale_px: float = LOCAL_OFFSET_SCALE_PX_DEFAULT,
     local_offset_sigma_px: float = LOCAL_OFFSET_SIGMA_PX_DEFAULT,
+    include_axis_simcc_targets: bool = False,
+    axis_simcc_sigma_bins: float = AXIS_SIMCC_SIGMA_BINS_DEFAULT,
 ) -> dict[str, np.ndarray]:
     """Build the full supervision dictionary for one split."""
 
@@ -496,6 +548,16 @@ def _build_targets(
         targets["aux_offset_center_weight"] = center_w
         targets["aux_offset_tip_weight"] = tip_w
 
+    if include_axis_simcc_targets:
+        targets["axis_logits_target"] = _make_axis_simcc_targets(
+            center_x_224.squeeze(axis=-1),
+            center_y_224.squeeze(axis=-1),
+            tip_x_224.squeeze(axis=-1),
+            tip_y_224.squeeze(axis=-1),
+            num_bins=112,
+            sigma_bins=axis_simcc_sigma_bins,
+        )
+
     return targets
 
 
@@ -514,6 +576,9 @@ class GeometryV3Sequence(keras.utils.Sequence):
         include_local_offset_map: bool = False,
         local_offset_scale_px: float = LOCAL_OFFSET_SCALE_PX_DEFAULT,
         local_offset_sigma_px: float = LOCAL_OFFSET_SIGMA_PX_DEFAULT,
+        include_axis_simcc_targets: bool = False,
+        axis_simcc_sigma_bins: float = AXIS_SIMCC_SIGMA_BINS_DEFAULT,
+        inner_celsius_mask: bool = False,
     ) -> None:
         self.examples = list(examples)
         self.base_path = base_path
@@ -524,6 +589,9 @@ class GeometryV3Sequence(keras.utils.Sequence):
         self.include_local_offset_map = include_local_offset_map
         self.local_offset_scale_px = float(local_offset_scale_px)
         self.local_offset_sigma_px = float(local_offset_sigma_px)
+        self.include_axis_simcc_targets = include_axis_simcc_targets
+        self.axis_simcc_sigma_bins = float(axis_simcc_sigma_bins)
+        self.inner_celsius_mask = bool(inner_celsius_mask)
         self.indices = np.arange(len(self.examples))
         self.epoch = 0
 
@@ -576,6 +644,7 @@ class GeometryV3Sequence(keras.utils.Sequence):
                 heatmap_size=self.heatmap_size,
                 sigma_pixels=self.sigma_pixels,
                 jitter=jitter,
+                inner_celsius_mask=self.inner_celsius_mask,
             )
             batch_x.append(sample.crop_image.astype(np.float32))
             batch_center.append(sample.center_heatmap.astype(np.float32)[..., np.newaxis])
@@ -634,6 +703,17 @@ class GeometryV3Sequence(keras.utils.Sequence):
             y["aux_offset_map"] = offset_map
             y["aux_offset_center_weight"] = center_w
             y["aux_offset_tip_weight"] = tip_w
+
+        if self.include_axis_simcc_targets:
+            center_x_arr = np.stack(batch_center_x, axis=0).squeeze(axis=-1)
+            center_y_arr = np.stack(batch_center_y, axis=0).squeeze(axis=-1)
+            tip_x_arr = np.stack(batch_tip_x, axis=0).squeeze(axis=-1)
+            tip_y_arr = np.stack(batch_tip_y, axis=0).squeeze(axis=-1)
+            y["axis_logits_target"] = _make_axis_simcc_targets(
+                center_x_arr, center_y_arr, tip_x_arr, tip_y_arr,
+                num_bins=self.heatmap_size,
+                sigma_bins=self.axis_simcc_sigma_bins,
+            )
 
         return x, y
 
@@ -1102,6 +1182,26 @@ def _weighted_local_offset_loss(
     return center_loss + tip_loss
 
 
+def _axis_simcc_logit_loss(
+    axis_logits: tf.Tensor,
+    axis_targets: tf.Tensor,
+    *,
+    tip_weight: float = 2.0,
+) -> tf.Tensor:
+    """Softmax cross-entropy loss for axis_simcc logit head.
+
+    axis_logits: (batch, 4, 112) with [center_x, center_y, tip_x, tip_y].
+    axis_targets: (batch, 4, 112) soft Gaussian targets summing to 1.
+    tip_weight: multiplier for tip axis loss vs center axis loss.
+    """
+    log_probs = tf.nn.log_softmax(axis_logits, axis=-1)  # (batch, 4, 112)
+    ce = -tf.reduce_sum(axis_targets * log_probs, axis=-1)  # (batch, 4)
+
+    center_loss = tf.reduce_mean(ce[:, :2])  # center_x + center_y
+    tip_loss = tf.reduce_mean(ce[:, 2:]) * tip_weight  # tip_x + tip_y
+    return center_loss + tip_loss
+
+
 class GeometryV3QuantNativeModel(keras.Model):
     """Wrap the base heatmap model with quantization-native training losses."""
 
@@ -1133,6 +1233,9 @@ class GeometryV3QuantNativeModel(keras.Model):
         local_offset_scale_px: float = LOCAL_OFFSET_SCALE_PX_DEFAULT,
         local_offset_sigma_px: float = LOCAL_OFFSET_SIGMA_PX_DEFAULT,
         local_offset_tip_weight: float = LOCAL_OFFSET_TIP_WEIGHT_DEFAULT,
+        axis_simcc_loss_weight: float = AXIS_SIMCC_LOSS_WEIGHT_DEFAULT,
+        axis_simcc_sigma_bins: float = AXIS_SIMCC_SIGMA_BINS_DEFAULT,
+        axis_simcc_tip_weight: float = AXIS_SIMCC_TIP_WEIGHT_DEFAULT,
     ) -> None:
         super().__init__(name="geometry_heatmap_v4_112_quant_native_model")
         self.base_model = base_model
@@ -1160,6 +1263,9 @@ class GeometryV3QuantNativeModel(keras.Model):
         self.local_offset_scale_px = float(local_offset_scale_px)
         self.local_offset_sigma_px = float(local_offset_sigma_px)
         self.local_offset_tip_weight = float(local_offset_tip_weight)
+        self.axis_simcc_loss_weight = float(axis_simcc_loss_weight)
+        self.axis_simcc_sigma_bins = float(axis_simcc_sigma_bins)
+        self.axis_simcc_tip_weight = float(axis_simcc_tip_weight)
         self._temperature_slope = float(calibration_candidate.params.get("slope", 0.3118859767261175))
         self._temperature_intercept = float(calibration_candidate.params.get("intercept", -33.14101213857672))
         self._cold_angle_degrees = float(calibration_candidate.params.get("cold_angle_degrees", 135.0))
@@ -1288,6 +1394,16 @@ class GeometryV3QuantNativeModel(keras.Model):
         else:
             local_offset_loss = tf.constant(0.0, dtype=tf.float32)
 
+        # Axis simcc loss: softmax cross-entropy against 1D Gaussian targets.
+        if "axis_logits" in pred and "axis_logits_target" in y:
+            axis_simcc_loss = _axis_simcc_logit_loss(
+                pred["axis_logits"],
+                tf.cast(y["axis_logits_target"], tf.float32),
+                tip_weight=self.axis_simcc_tip_weight,
+            )
+        else:
+            axis_simcc_loss = tf.constant(0.0, dtype=tf.float32)
+
         reference = _as_output_dict(self.reference_model(x, training=False))
         distillation_loss = self._distillation_loss(pred, reference)
         total_loss = (
@@ -1303,6 +1419,7 @@ class GeometryV3QuantNativeModel(keras.Model):
             + self.confidence_floor_weight * confidence_floor_loss
             + self.aux_coord_weight * aux_coord_loss
             + self.local_offset_loss_weight * local_offset_loss
+            + self.axis_simcc_loss_weight * axis_simcc_loss
             + self.distillation_weight * distillation_loss
         )
 
@@ -1317,6 +1434,7 @@ class GeometryV3QuantNativeModel(keras.Model):
             "confidence_loss": confidence_loss,
             "aux_coord_loss": aux_coord_loss,
             "local_offset_loss": local_offset_loss,
+            "axis_simcc_loss": axis_simcc_loss,
             "peak_shape_center_loss": peak_shape_center_loss,
             "peak_shape_tip_loss": peak_shape_tip_loss,
             "confidence_floor_loss": confidence_floor_loss,
@@ -1691,6 +1809,7 @@ def _build_model_from_mode(
     include_aux_coords: bool = False,
     aux_head_size: str = "small",
     aux_head_type: str = "none",
+    backbone_alpha: float = 0.35,
 ) -> keras.Model:
     """Load a source checkpoint, build a fresh ImageNet model, or resume from a v4 checkpoint."""
 
@@ -1701,14 +1820,16 @@ def _build_model_from_mode(
     if mode == "source_model":
         source_model = load_geometry_heatmap_keras_model(model_path)
         target_model = build_mobilenetv2_geometry_heatmap_v4_112(
-            backbone_frozen=True, include_aux_coords=include_aux_coords,
+            alpha=backbone_alpha, backbone_frozen=True,
+            include_aux_coords=include_aux_coords,
             aux_head_size=aux_head_size, aux_head_type=aux_head_type,
         )
         _transfer_matching_layer_weights(source_model, target_model)
         return target_model
     if mode == "imagenet":
         return build_mobilenetv2_geometry_heatmap_v4_112(
-            backbone_frozen=True, include_aux_coords=include_aux_coords,
+            alpha=backbone_alpha, backbone_frozen=True,
+            include_aux_coords=include_aux_coords,
             aux_head_size=aux_head_size, aux_head_type=aux_head_type,
         )
     raise ValueError(f"Unknown initialization mode: {mode}")
@@ -1756,8 +1877,10 @@ def main() -> None:
     parser.add_argument("--aux-coord-weight", type=float, default=LOSS_WEIGHTS["aux_coord"], help="Weight for auxiliary coordinate loss")
     parser.add_argument("--aux-head-size", type=str, choices=("small", "large"), default="small", help="Aux head capacity: small=Dense(64), large=Dense(128)->Dense(64)")
     parser.add_argument("--aux-loss-type", type=str, choices=("mse", "huber"), default="mse", help="Aux coordinate loss type")
-    parser.add_argument("--aux-head-type", type=str, choices=("none", "gap", "local_offset"), default="none",
-                        help="Aux head type: none, gap (GAP-based coords), or local_offset (spatial offset map)")
+    parser.add_argument("--aux-head-type", type=str, choices=("none", "gap", "local_offset", "axis_simcc"), default="none",
+                        help="Aux head type: none, gap (GAP-based coords), local_offset (spatial offset map), or axis_simcc (1D axis logits)")
+    parser.add_argument("--backbone-alpha", type=float, default=0.35,
+                        help="MobileNetV2 width multiplier (default 0.35; 0.5 for larger backbone)")
     parser.add_argument("--local-offset-loss-weight", type=float, default=LOCAL_OFFSET_LOSS_WEIGHT_DEFAULT,
                         help="Weight for local offset map loss")
     parser.add_argument("--local-offset-scale-px", type=float, default=LOCAL_OFFSET_SCALE_PX_DEFAULT,
@@ -1766,6 +1889,14 @@ def main() -> None:
                         help="Gaussian sigma in heatmap pixels for offset loss weighting")
     parser.add_argument("--local-offset-tip-weight", type=float, default=LOCAL_OFFSET_TIP_WEIGHT_DEFAULT,
                         help="Multiplier for tip offset loss relative to center")
+    parser.add_argument("--axis-simcc-loss-weight", type=float, default=AXIS_SIMCC_LOSS_WEIGHT_DEFAULT,
+                        help="Weight for axis_simcc logit loss")
+    parser.add_argument("--axis-simcc-sigma-bins", type=float, default=AXIS_SIMCC_SIGMA_BINS_DEFAULT,
+                        help="Gaussian sigma in 112-bin space for axis soft targets")
+    parser.add_argument("--axis-simcc-tip-weight", type=float, default=AXIS_SIMCC_TIP_WEIGHT_DEFAULT,
+                        help="Multiplier for tip axis loss vs center axis loss")
+    parser.add_argument("--inner-celsius-mask", action="store_true",
+                        help="Apply inner-Celsius-only mask after crop+resize to exclude outer distractors")
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parent.parent.parent
@@ -1785,6 +1916,7 @@ def main() -> None:
         raise RuntimeError(f"Expected corrected decoder softargmax w3, found {decode_method} w{window_size}.")
 
     include_local_offset = args.aux_head_type == "local_offset"
+    include_axis_simcc = args.aux_head_type == "axis_simcc"
 
     calibration_candidate, calibration_json = load_selected_calibration_candidate(calibration_json_path)
     with thresholds_path.open("r", encoding="utf-8") as handle:
@@ -1818,6 +1950,9 @@ def main() -> None:
         include_local_offset_map=include_local_offset,
         local_offset_scale_px=args.local_offset_scale_px,
         local_offset_sigma_px=args.local_offset_sigma_px,
+        include_axis_simcc_targets=include_axis_simcc,
+        axis_simcc_sigma_bins=args.axis_simcc_sigma_bins,
+        inner_celsius_mask=args.inner_celsius_mask,
     )
     val_samples = load_split_samples(
         manifest_path,
@@ -1827,6 +1962,7 @@ def main() -> None:
         input_size=224,
         heatmap_size=args.heatmap_size,
         sigma_pixels=args.sigma_pixels,
+        inner_celsius_mask=args.inner_celsius_mask,
     ).samples
     val_x = np.stack([sample.crop_image for sample in val_samples], axis=0).astype(np.float32)
     val_y = _build_targets(
@@ -1834,6 +1970,8 @@ def main() -> None:
         include_local_offset_map=include_local_offset,
         local_offset_scale_px=args.local_offset_scale_px,
         local_offset_sigma_px=args.local_offset_sigma_px,
+        include_axis_simcc_targets=include_axis_simcc,
+        axis_simcc_sigma_bins=args.axis_simcc_sigma_bins,
     )
 
     if args.debug_canonical_validation_contract:
@@ -1890,12 +2028,12 @@ def main() -> None:
     base_model = _build_model_from_mode(
         mode=args.initialization_mode, model_path=model_path, resume_from=args.resume_from,
         include_aux_coords=args.include_aux_coords, aux_head_size=args.aux_head_size,
-        aux_head_type=args.aux_head_type,
+        aux_head_type=args.aux_head_type, backbone_alpha=args.backbone_alpha,
     )
     reference_model = _build_model_from_mode(
         mode=args.initialization_mode, model_path=model_path,
         include_aux_coords=args.include_aux_coords, aux_head_size=args.aux_head_size,
-        aux_head_type=args.aux_head_type,
+        aux_head_type=args.aux_head_type, backbone_alpha=args.backbone_alpha,
     )
     reference_model.trainable = False
 
@@ -1925,6 +2063,9 @@ def main() -> None:
         local_offset_scale_px=args.local_offset_scale_px,
         local_offset_sigma_px=args.local_offset_sigma_px,
         local_offset_tip_weight=args.local_offset_tip_weight,
+        axis_simcc_loss_weight=args.axis_simcc_loss_weight,
+        axis_simcc_sigma_bins=args.axis_simcc_sigma_bins,
+        axis_simcc_tip_weight=args.axis_simcc_tip_weight,
     )
     _set_backbone_trainability(base_model, trainable_last_block=False)
 

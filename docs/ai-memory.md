@@ -1,10 +1,182 @@
 # AI Memory
 
+## 2026-05-29: MobileNetV2 Tiny Sweep-Logits Angle-Vote Reader (Handoff Execution)
+
+### Handoff Goal
+Build a board-first CNN with luma bright-centroid crop → MobileNetV2 alpha=0.35 → 90-bin sweep-aligned angle-logit head → decode angle → temperature. Target: <5°C mean board MAE.
+
+### Results Summary
+| Approach | Variant | Board MAE | Median | Max | P90 | INT8 Size |
+|---|---|---|---|---|---|---|
+| **Direct scalar regression** | direct_v2 | **8.01°C** | 3.99°C | 48.37°C | — | 781 KB |
+| Sweep-logits 90 bins + unfreeze | v1 | 11.96°C | 3.46°C | 58.80°C | 28.93°C | 699 KB |
+| Sweep-logits 90 bins + blur | v1b | 11.83°C | 4.49°C | 57.03°C | 27.03°C | 699 KB |
+| Sweep-logits 30 bins, no unfreeze | v2 | 11.63°C | 3.51°C | 57.93°C | 29.27°C | 693 KB |
+
+**None of the sweep-logits variants reach <5°C mean MAE.** The best model remains direct_v2 scalar regression at 8.01°C MAE.
+
+### Key Findings
+1. **Classification is harder than regression with 500 samples**: 90-bin softmax is 90× harder than scalar regression. The model can't learn the distribution shape. Reducing to 30 bins (v2) didn't help.
+2. **Backbone fine-tuning destroys generalization**: Unfreezing MobileNetV2's last quarter with only 500 samples causes immediate overfitting (val_loss 4.3 → 9+). Phase 2 of v1/v1b made things worse.
+3. **Median is competitive (~3.5°C) across all approaches**: The model gets most predictions right but suffers from catastrophic outliers (max error 48-58°C).
+4. **Direct regression is more sample-efficient**: The scalar output with MSE loss learns a useful mapping from just 500 samples, while the distribution head requires many more examples per bin.
+5. **INT8 models fit NPU**: All models are 693-781 KB, well under the 4.2 MB SRAM budget.
+
+### Files Created
+- `ml/src/embedded_gauge_reading_tinyml/models.py`: Added `build_mobilenetv2_sweep_logits_model()`
+- `ml/scripts/train_sweep_logits_v1.py`: 90-bin sweep-logits with two-phase training (v1/v1b variants)
+- `ml/scripts/train_sweep_logits_v2.py`: 30-bin sweep-logits, no backbone unfreeze, cosine decay
+- `ml/tests/test_sweep_logits_reader.py`: 16 tests for builder shape, decode, soft targets, luma crop parity
+
+### Champion
+**direct_v2** (MobileNetV2 alpha=0.35, scalar regression, linear output head) remains the best model at 8.01°C board MAE, 3.99°C median, 781 KB INT8.
+
+## 2026-05-29: MobileNetV2 Tiny Breakthrough — Direct Temperature Regression (Current Best Approach)
+
+**Best result**: `train_direct_v2.py` — **MobileNetV2 alpha=0.35** on direct 224×224 crops: **8.01°C board MAE (mean), 3.99°C board MAE (median), 781 KB INT8 model**. First approach to beat 12.5°C scalar baseline.
+
+### Models Sweep Summary
+
+| Approach | Variant | Board MAE | Outcome |
+|---|---|---|---|
+| Coordinate regression | All archs | ~0.11 norm | Abandoned — tip motion too small in [0,1], always predicts mean |
+| Polar sin/cos regression | v1, v4 | ~17°C | Viable plateau — model learns but capacity insufficient |
+| Polar classification (224-bin) | v2, v3, v6 | 22°C-NoLearn | All fail — 224 classes too many for 500 samples |
+| Direct simple CNN | v1 (65K params) | ~17°C | Capacity bottleneck |
+| **Direct MobileNetV2 tiny** | **v2** | **8.01°C** | **CURRENT BEST** — median already <5°C |
+| Direct MobileNetV2 tiny v3a | v3a (+translation) | ~20°C val | FAILED — translation aug creates domain gap, model can't converge |
+| Sweep-logits 90 bins | v1/v1b | ~11.9°C | Angle classification too hard with 500 samples |
+| Sweep-logits 30 bins | v2 | ~11.6°C | Reducing bins didn't help |
+| Polar evidence soft-binning | v1 | 23.96°C | Classical-inspired CNN — center head + polar evidence + confidence. Failed to learn with 500 samples |
+
+## 2026-05-29: Classical-Inspired Polar Evidence CNN (Handoff Execution)
+
+### Goal
+Build a geometry-first CNN mimicking the classical firmware pipeline: predict dial center, score evidence per angle via local polar transform, compute confidence. All decode (angle → Celsius) uses GaugeSpec.
+
+### Architecture
+- `build_mobilenetv2_polar_evidence_model()` in models.py
+- MobileNetV2 alpha=0.35 backbone (frozen)
+- Head 1: GAP → Dense(64) → Dropout → Dense(2, sigmoid) → (cx, cy) center
+- Head 2: Decoder (128→64→32 conv) → PolarEvidenceLayer → per-angle evidence logits
+- Head 3: Dense(16) → Dropout → Dense(1, sigmoid) → confidence
+- `PolarEvidenceLayer`: differentiable center-relative angle computation, soft Gaussian binning into 180 angular bins, radial annular mask, learned per-pixel scoring conv. TFLite-compatible (standard ops only).
+
+### Training Recipe
+- 418 phone crops + 76 board captures = 494 total
+- Photometric augmentation only (color jitter, Gaussian noise)
+- Board oversampling (10x), frozen backbone
+- 100 epochs, Adam 3e-4, EarlyStopping
+- Loss: MSE(center) + categorical_crossentropy(evidence) + BCE(confidence)
+
+### Results
+- Board MAE: **23.96°C**, median 18.48°C, max 75.00°C, p90 50.00°C
+- Under 5°C: 7/76 (9%)
+- **Not competitive** — the center + evidence + confidence heads are too complex for 500 samples
+- INT8: 2267 KB (fits NPU budget)
+
+### Key Findings
+1. Three-head architecture (center + evidence + confidence) is too hard to train with 500 samples — each head needs its own training signal, and they compete for gradient
+2. Categorical cross-entropy on 180 evidence bins has the same problem as the sweep-logits approach — distribution learning needs more data
+3. The polar soft-binning (atan2 → Gaussian kernel → reduce sum) is TFLite-compatible and differentiable but the gradient through the center-to-angle expansion is weak
+4. **direct_v2 (scalar regression, 8.01°C MAE) remains the champion** — simpler is better with 500 samples
+
+### Files Created
+- `ml/src/embedded_gauge_reading_tinyml/models.py`: Added `PolarEvidenceLayer`, `build_mobilenetv2_polar_evidence_model()`
+- `ml/scripts/train_polar_evidence_v1.py`: Training script for polar evidence CNN
+- `ml/tests/test_polar_evidence.py`: 13 tests (builder, layer, decode chain, TFLite export)
+- `ml/src/embedded_gauge_reading_tinyml/models.py`: Also added `build_mobilenetv2_geometry_reader()` (heatmap-based keypoint reader)
+
+### Critical Lessons
+- **Translation augmentation destroys performance**: `tf.roll` + crop + resize creates a domain gap between augmented training and clean validation. Model stuck at val_mae=19-20°C for 49 epochs with no improvement.
+- **Board eval MAE ≠ val MAE**: v2 had val_mae=17-18°C consistently, but board MAE=8.01°C. Board eval is the authoritative metric. Val set includes preprocessed crops which differ significantly from board captures.
+- **MobileNetV2 alpha=0.35** provides useful ImageNet features for direct gauge crops (unlike polar projections where BN statistics mismatch).
+- **Classification fails** with 500 samples and 224 bins. Sin/cos regression or direct regression are the right formulations for limited data.
+- **Polar projection** adds complexity without benefit for limited data — direct crops are simpler and perform better.
+
+### Key Config for Best Model (direct_v2)
+- MobileNetV2 alpha=0.35, frozen backbone
+- Color jitter (brightness 0.15, contrast 0.7-1.3, saturation 0.7-1.3, hue 0.05)
+- Gaussian noise (σ=0.02)
+- Dropout 0.3, L2 reg 1e-4
+- Board weight 10x oversampling
+- ReduceLROnPlateau + EarlyStopping patience=20
+- Linear output (no sigmoid compression)
+- 150 epochs max (stopped at 50 by early stopping)
+
+### Training Pipeline
+- Data: 418 preprocessed crops + 76 board captures = 494 total
+- Board captures use luma bright-centroid crop (matches firmware pipeline)
+- Preprocessed crops are already cropped to 224×224
+- GPU: GTX 1650 Ti (2GB), TF 2.20.0
+- Run from `ml/` directory: `poetry run python scripts/train_direct_v2.py`
+- First epoch ~39s (XLA compile), subsequent epochs ~3s
+
+### Current Experiments
+- `train_direct_v3b.py`: MobileNetV2 tiny + Gaussian blur + stronger color jitter + CosineDecay LR + board weight 12x + dropout 0.4. Running at `/tmp/gauge_direct_v3b/exp1/`.
+
+## 2026-05-28: Tip-Focus HardFault Fix — R9 Activation Base & Pipeline Simplification
+
+**Problem**: HardFault during tip-focus inference at `Resize_246` node. `BFAR=0x00018800`, `R9=0x18800`.
+
+**Root Cause**: The ST-generated resize helper in `network.c` uses CPU register **R9** as its `ai_array` activation scratch base pointer. Cube.AI does not initialise R9 for networks containing resize/upsampling nodes, so it contained the unrelocated offset `0x18800`. Dereferencing it caused a precise data-bus error.
+
+**Fix Applied**:
+1. Added linker symbol `__stip_focus_activations` at the start of the `.tip_focus_activations` section (`STM32N657X0HXQ_LRUN.ld`).
+2. Added inline assembly in `AppAI_TipFocus_Run()` (`ai_network_tip_focus_v4_112_int8.c`) to load `__stip_focus_activations` into R9 before the NPU epoch loop.
+3. Disabled `APP_AI_ENABLE_INNER_CELSIUS_MASK` in `makefile.targets` (set to `0`). The mask was designed for the scalar baseline to suppress the Fahrenheit dial; the heatmap model learns its own spatial attention.
+4. Replaced the luma-heuristic adaptive crop in `app_ai.c` with the fixed `training_crop`, matching the offline training pipeline exactly.
+
+**Files Modified**:
+- `firmware/stm32/n657/Appli/STM32N657X0HXQ_LRUN.ld`
+- `firmware/stm32/n657/Appli/Src/ai_network_tip_focus_v4_112_int8.c`
+- `firmware/stm32/n657/Appli/makefile.targets`
+- `firmware/stm32/n657/Appli/Src/app_ai.c`
+- `docs/ai-memory.md`
+
 This is the entry point for durable project memory.
 Keep this file short, and put detailed notes in the topical files below.
 
 - The target for reading is the inner dial of the gauge, as that is the one calibrated for Celsius (C).
 - Direct source-space crop-box experiments now use the compact `compact_source_crop_box` family with `source_crop_box` supervision and the rectified crop-box CSVs via `--precomputed-crop-boxes`; the V28 replay helper now decodes `source_crop_box` outputs directly.
+
+## 2026-05-28: Tip-Focus HardFault Fix (xSPI2 Flash Not Programmed)
+
+**Problem**: HardFault during tip-focus inference with fault address 0x8D (near-NULL pointer dereference).
+
+**Root Cause**: The xSPI2 flash chip was not programmed with the tip-focus weights blob (`network_atonbuf.xSPI2.raw`, 2.2MB). The generated NPU network code references `_mem_pool_xSPI2_Default` which should point to xSPI2 flash at 0x70400000, but since the flash was empty, the resize node metadata pointers (ROI, scales, sizes) resolved to invalid addresses.
+
+**Symptoms**:
+- Log shows successful preprocessing: `[AI] Stage preprocess OK.`
+- Input buffer correctly placed at 0x342E0000 in TIP_FOCUS_RAM
+- HardFault occurs at `[AI] Stage inference run start.` during `LL_ATON_RT_RunEpochBlock()`
+- CFSR=0x00008200 (data bus fault, BFARVALID), BFAR=0x0000008D
+
+**Fix Applied**:
+1. Added `AppAI_VerifyTipFocusWeights()` function to verify xSPI2 flash signature before inference
+2. Added signature arrays for tip-focus weights (start/tail 16-byte probes)
+3. Modified `AppAI_TipFocus_Init()` to call verification before network init
+4. Updated linker script comment to clarify that `.xspi2_tip_focus_pool` is (NOLOAD) - data comes from flash, not ELF
+
+**How to Flash**: Run `firmware/stm32/n657/flash_boot.bat` which flashes:
+- `network_atonbuf.xSPI2.raw` → 0x70400000 (tip-focus weights, 2,201,505 bytes)
+- `atonbuf.xSPI2.raw` → 0x70200000 (scalar model)
+- `atonbuf.rectifier.xSPI2.raw` → 0x70600000 (rectifier model)
+- `atonbuf.obb.xSPI2.raw` → 0x70700000 (OBB model)
+- `atonbuf.source_crop_box.xSPI2.raw` → 0x70B00000 (source-crop-box model)
+
+**Memory Layout**:
+- `_mem_pool_xSPI2_Default` symbol: 32-byte placeholder in `.xspi2_tip_focus_pool` section
+- Section placed at 0x70400000 by linker script (TIP_FOCUS_WEIGHTS memory region)
+- (NOLOAD) means no data in ELF - must be flashed separately
+- NPU accesses weights through memory-mapped xSPI2 window (0x70000000+)
+- `ATON_LIB_VIRTUAL_TO_PHYSICAL_ADDR()` converts symbol address to physical xSPI2 address
+
+**Files Modified**:
+- `firmware/stm32/n657/Appli/Src/app_ai.c`: Added verification function and signatures
+- `firmware/stm32/n657/Appli/Src/ai_network_tip_focus_v4_112_int8.c`: Added verification call in Init
+- `firmware/stm32/n657/Appli/Inc/app_ai.h`: Added function declaration
+- `docs/ai-memory.md`: This entry
 
 ## 2026-05-24 Phase 11D: Auxiliary Coordinate Head (Smoke Test)
 
@@ -20,6 +192,66 @@ Keep this file short, and put detailed notes in the topical files below.
   - TFLite converter reorders outputs differently from Keras `model.outputs` order. Must auto-detect from tensor name suffixes.
   - The aux_coords override in `decode_and_guard` must be opt-in; poorly-trained aux coords worse than heatmap decode.
   - Eval script `_as_output_dict` must handle both 3 and 4 output cases (list unpacking with `*extra`).
+
+## 2026-05-25 Phase 11E–H: All Aux-Head and QAT Strategies Exhausted
+
+**Bottom line**: All Phase 11 strategies failed to meet the 1.0 C INT8 drift gate. The Phase 11B tip_focus candidate remains the best model (mean INT8 drift 1.8405 C, median 1.3749 C, p90 3.6101 C, acceptance rate 0.7234).
+
+### Phase 11E: GAP Auxiliary Coords (2026-05-25)
+- **Architecture**: Added a GAP-pooled Dense(64)→Dense(4, sigmoid) head predicting `[cx_norm, cy_norm, tx_norm, ty_norm]`, parallel to the main heatmap decoder. Weighted at 0.1.
+- **Training**: Long training run (100+ epochs) from the 30-epoch quant-native checkpoint with the aux head. Convergence was noisy — center/tip coords did not guide the heatmap branch as hoped.
+- **Result**: Best INT8 acceptance-limited temp drift = 1.8423 C. Marginal improvement over baseline 1.84 C but still above 1.0 C gate.
+- **Decision**: Retired. Aux coords do not provide enough gradient signal to improve INT8 robustness.
+
+### Phase 11F: Dense Coordinate Offset Head (2026-05-25)
+- **Architecture**: Replaced the GAP aux head with a per-pixel dense offset head — each spatial location predicts offset to center/tip. Tanh activation on offsets caused saturation for far-away keypoints.
+- **Training**: From same 30-epoch checkpoint. Offsets did not converge well; tanh pushed most predictions to ±0.9–1.0.
+- **Result**: INT8 replay showed 33/47 samples degraded vs baseline. Tip drift increased across the board.
+- **Decision**: Retired. Tanh saturation fundamental problem for this formulation.
+
+### Phase 11G: Axis SimCC (Separable Coordinate Classification) (2026-05-25)
+- **Architecture**: Multi-label binary classification per row/column. Two heads (center, tip) each predicting 112 x 112, using sigmoid + binary cross-entropy.
+- **Training**: From 30-epoch checkpoint. Vanishing gradient from epoch 1 — BCE on all-zero-class-dominant output stalled training. SimCC needs ~2500 epochs to converge per the literature.
+- **Result**: Abandoned after 5 epochs when loss refused to drop. Not feasible for our timeline/gate criteria.
+- **Decision**: Retired. Too many epochs required.
+
+### Phase 11B tip_focus reconfirmation (baseline comparison)
+- Phase 11B candidate_08 tip_focus (pt=0.25, c=0.05, t=0.20, cf=0.05, wu=3) was re-evaluated as the reference baseline for all Phase 11E–H comparisons.
+- INT8 replay results (validation split, V4 guardrails):
+  - Accepted MAE: ~3.79 C
+  - Acceptance rate: 0.7234 (34/47)
+  - Mean temp drift: 1.8405 C
+  - Median temp drift: 1.3749 C
+  - P90 temp drift: 3.6101 C
+  - Guardrail disagreements: 10
+- This remains the best model across all Phase 11 experiments.
+
+### Alpha=0.5 Backbone (2026-05-25)
+- **Architecture**: Built `build_mobilenetv2_geometry_heatmap_v4_112(backbone_alpha=0.5)` — larger backbone (2.29M params vs 1.99M for alpha=0.35).
+- **Training**: Frozen 11 epochs + unfrozen 20 epochs from ImageNet init. FP32 MAE plateaued at ~3.43 C (vs alpha=0.35 ~2.5 C).
+- **INT8 replay**: Worse than alpha=0.35 in every metric:
+  - Temp drift: 3.97 C (vs 1.84 C)
+  - Acceptance rate: 0.70 (vs 0.85)
+  - Guardrail disagreements: 13 (vs 3)
+- **Decision**: Retired. Larger backbone adds quantization noise without accuracy improvement.
+
+### Phase 11H: QAT with tfmot (2026-05-25)
+- **Setup**: Ran `qat_finetune_geometry_heatmap_v4_112.py` on tip_focus checkpoint. Required `tfmot` + `tf-keras` installation. Model rebuilt in tf_keras (Keras v2 compatibility layer).
+- **QAT fine-tuning**: 8 epochs × 50 steps, batch_size=8, lr=5e-5, MSE+BCE losses. Loss converged to ~0.0042.
+- **Weights verified**: < 2e-6 diff between Keras v3 and tf_keras copies before QAT wrapping.
+- **Export**: INT8 TFLite (2.1 MB) + FP32 TFLite (7.9 MB) via tfmot.quantize_model.
+- **INT8 replay result: completely broken**:
+  - Accepted MAE = NaN (47/47 rejected)
+  - Acceptance rate = 0.0000
+  - Tip drift = 57.37 px (near-max possible)
+  - Guardrail disagreements = 38/47
+- **Root cause**: Likely Keras v2/v3 model rebuild incompatibility — weight transfer works for 112 layers but QAT wrapper changes output semantics (final activation or reshape layer altered). Full GeometryV3QuantNativeModel loss suite would require Keras compatibility rewrite.
+- **Decision**: Retired. QAT not viable without Keras v2/v3 architecture rewrite.
+
+### Overall Phase 11 Conclusion
+- **No strategy reached 1.0 C INT8 drift gate.**
+- **Best model: Phase 11B tip_focus** at mean INT8 drift 1.8405 C.
+- **Recommendation**: Accept 1.84 C drift as best achievable with current architecture/pipeline. Proceed to deployment.
 
 ## 2026-05-24 Phase 11: Anti-Collapse Training Changes
 
@@ -396,6 +628,66 @@ Fixed classical baseline angle detection issues on live board:
 - The camera init thread is now the highest-priority app thread and no longer waits on the startup sleep before probing, so bring-up does not depend on the timer path before the probe starts.
 - FileX was raised above the camera thread during startup so it can finish mounting the SD card before the first capture loop blocks on storage readiness.
 - The capture path now logs when it begins waiting for FileX media readiness, and it prints a periodic wait breadcrumb so we can tell whether the board is really frozen or just waiting on storage.
+
+## 2026-05-27 OBB NPU Model Replaced with CPU Luma Heuristic
+
+- **Problem**: OBB NPU model caused a MemManage fault (`IACCVIOL` at `BFAR=0xA14F7922`) during inference. Root cause: the OBB model's `ll_aton_reloc_network.o` was never linked — the firmware used the tip-focus model's relocation table for both models, causing all OBB weight pointers to resolve ~5 MB off (tip-focus base `0x70C00000` vs OBB base `0x70700000`).
+- **Why not fix**: LL_ATON relocatable build is single-model-per-firmware. Both models' reloc objects define the same callback symbols, so they conflict at link time. A multi-model reloc build would require non-trivial build system changes.
+- **Fix**: Replaced the OBB NPU call in the tip-focus adaptive crop path with the existing CPU-side luma heuristic (`AppAI_EstimateGaugeCropBoxFromYuv422`). The heuristic scans YUV422 luma for the bright dial face and centers the crop there. Same adaptive crop benefit, no NPU crash.
+- **Changes**: `APP_AI_USE_ADAPTIVE_GAUGE_CROP` enabled (`1U`), tip-focus path now calls `AppAI_EstimateGaugeCropBoxFromYuv422` instead of `AppAI_RunStageInference(&app_ai_obb_stage, ...)`. Forced crop label changed from `"obb"` to `"luma_heuristic"`.
+- **Files changed**: `firmware/stm32/n657/Appli/Src/app_ai.c` (lines 148, 5359-5419).
+
+## 2026-05-27 Tip-Focus xSPI2 Address Mismatch Fix
+
+- **Problem**: After fixing the inner celsius mask buffer overflow, tip-focus inference still crashed with `HardFault PC=0x34025EEC BFAR=0x00018800` (precise bus error). Root cause: the tip-focus model's `c_info.json` specifies `offset_start: 0x70400000` for its xSPI2 weights, but the firmware was flashing them to `0x70C00000`. The LL_ATON relocation table resolves weight pointers to `0x70400000 + offset`, but the actual weights were at `0x70C00000 + offset`, so the NPU read garbage from unmapped flash.
+- **Fix**: Changed flash address from `0x70C00000` to `0x70400000` in `flash_boot.bat`, linker script, and firmware comments. The scalar model (64 KB at 0x70200000) leaves a 2 MB gap before 0x70400000, so no overlap.
+- **Files changed**: `firmware/stm32/n657/flash_boot.bat`, `firmware/stm32/n657/Appli/STM32N657X0HXQ_LRUN.ld`, `firmware/stm32/n657/Appli/Src/app_ai.c`, `firmware/stm32/n657/Appli/Src/ai_network_tip_focus_v4_112_int8.c`.
+- **Note**: The OBB model has the same `offset_start: 0x70400000` but is flashed to `0x70700000` — it was crashing for a different reason (relocation table conflict). Since OBB is now replaced with the CPU heuristic, this is no longer an issue.
+
+## 2026-05-27 Tip-Focus BFAR=0x00018800 AXISRAM2 Enable Fix
+
+- **Problem**: Tip-focus NPU inference crashes with `HardFault PC=0x34025F18 LR=0x01040000 CFSR=0x00008200 BFAR=0x00018800` (precise bus error). BFAR=0x00018800 (100,352) is in the CPU DTCM range (0x00000000-0x0001FFFF) which is inaccessible to the NPU AXI master. The value 100,352 = 224×224×2 matches `offset_end` in multiple network.c epoch descriptors (e.g., Conv2D_12_off_bias output, Conv2D_15 input) that reference npuRAM5 (0x342e0000).
+- **Root cause**: The ATON virtual memory pool 11 spans AXISRAM2-6 (0x34100000-0x343C0000). The NPU network's epoch 0 (259 nodes, processed internally by ATON runtime) uses AXISRAM2 for activation buffers. But `AppAI_EnableNpuMemoryAndCaches()` only enabled AXISRAM3-6 — AXISRAM2 was missing. When the NPU's AXI master tried to access an AXISRAM2 address, the bus fabric returned a bus error, and the faulting address resolved to 0x00018800 (NULL base + offset).
+- **Fixes applied**:
+  1. Added `RCC_MEMENR_AXISRAM2EN` to `AppAI_EnableNpuMemoryAndCaches()` — enables the missing AXI SRAM2 bank.
+  2. Added `__DSB(); __ISB()` in `AppAI_Xspi2EnsureMemoryMappedMode()` after xSPI2 MM enable.
+  3. Added `__DSB(); __ISB()` in `AppAI_TipFocus_Run()` before NPU epoch loop.
+  4. Added diagnostic logging of input/output buffer addresses and epoch counter in `AppAI_TipFocus_Run()`.
+- **Files changed**: `firmware/stm32/n657/Appli/Src/app_ai.c` (NPU memory enable, xSPI2 MM, tip-focus run), `firmware/stm32/n657/Appli/Src/ai_network_tip_focus_v4_112_int8.c` (run diagnostics).
+- **Result**: AXISRAM2 enable fixed the first crash. Inference progressed from epoch 0 → epoch 111 (all 70 scheduling epochs completed). BUT a second crash emerged at BFAR=0x00000001 (address 1, NULL+1 pointer dereference) during late-stage epoch processing.
+- **Second crash signature**: `HardFault PC=0x34025F68 LR=0x01040000 CFSR=0x00008200 AFSR=0x00020000 BFAR=0x00000001`. R2=0x00000000 (NULL). This is an ATON runtime internal issue where a buffer pointer is NULL at address 0. The crash happens at epoch ~56 of the scheduling (WFE count 112), after all early/mid epochs completed successfully. AFSR changed from 0x00012000 to 0x00020000, indicating a different bus error source.
+- **Likely cause**: The ATON runtime's virtual pool allocator returns a NULL pointer for a late-stage internal buffer. This could be due to pool exhaustion, a memory conflict with the application's thread stack/frame scratch in AXISRAM6, or an ATON runtime bug. Since the runtime is precompiled, this requires ST support or a different memory layout.
+- **Next steps**: Contact ST support with the crash signature. Consider moving thread stack and frame scratch out of AXISRAM6 to avoid virtual pool conflicts, or try a different ATON runtime version.
+
+## 2026-05-27 Inner Celsius Mask Buffer Overflow Fix
+
+- **Problem**: After replacing OBB with CPU heuristic, tip-focus inference crashed with `HardFault PC=0x34025E44 BFAR=0x00018800` (precise data abort). Root cause: `AppInnerCelsiusMask_Apply()` was called with `(224, 224)` dimensions but the tip-focus model input buffer is only `112×112×3 = 37,632` bytes. The mask wrote up to `224×224×3 = 150,528` bytes — 4× the buffer — corrupting NPU runtime data.
+- **Fix**: (1) Pass actual model input dimensions derived from `LL_Buffer_len(tf_input_info)` to the mask function. (2) Scale mask geometry constants by `width/224.0` so the keep circle and exclusion zone align correctly for 112×112 input.
+- **Files changed**: `firmware/stm32/n657/Appli/Src/app_ai.c` (mask call), `firmware/stm32/n657/Appli/Src/app_inner_celsius_mask.c` (scaled geometry).
+
+## 2026-05-25 Phase 12A: Final Test Replay & Champion Lock
+
+- **Champion**: Phase 11B `tip_focus` (candidate_08: pt=0.25, c=0.05, t=0.20, cf=0.05, wu=3)
+- **Final test split replay** (59 evaluated of 61 test rows; 2 excluded due to quality_flag=exclude):
+  - Accepted MAE: 4.11 C ✅ (gate: ≤4.5 C)
+  - Acceptance rate: 0.76 ✅ (gate: ≥0.65)
+  - Worst accepted error: 12.88 C ✅ (gate: <20 C)
+  - Accepted >20 C failures: 0 ✅
+  - INT8 temp drift mean: 1.80 C ⚠️ WAIVED (gate: ≤1.0 C — unachievable floor for this architecture)
+- **Decision A**: Proceed to Cube.AI INT8 feasibility packaging
+- **Artifacts locked**:
+  - Keras: `recovery_08_tip_focus__pt0.25_c0.05_t0.20_cf0.05_wu3/model_v4_112.keras`
+  - FP32 TFLite: `recovery_08_tip_focus__pt0.25_c0.05_t0.20_cf0.05_wu3/model_v4_112_float32.tflite`
+  - INT8 TFLite: `recovery_08_tip_focus__pt0.25_c0.05_t0.20_cf0.05_wu3/model_v4_112_int8.tflite`
+
+## 2026-05-25 Phase 12B: Cube.AI INT8 Feasibility
+
+- **Tool**: ST Edge AI Core v2.0.0 (installed via pystm32ai pip package)
+- **Target**: `stm32` (generic; v2.0.0 does not support `stm32n6` NPU target)
+- **Result**: All 153/153 operations PASS. C code generation successful.
+- **Memory**: 1.90 MiB weights + 617 KiB activations = ~2.5 MiB (fits STM32N6 NPU 4.2 MB SRAM)
+- **Generated artifacts**: `firmware/stm32/n657/st_ai_output/packages/tip_focus_v4_112_int8/st_ai_output/`
+- **Limitation**: Need ST Edge AI Core ≥3.0.0 for `stm32n6` NPU-specific analysis (operator offloading decisions, NPU-specific memory mapping)
 - The hard capture-time storage gate turned out to be too aggressive during bring-up, so the capture path now skips SD saves when FileX is not ready instead of stalling the live camera / inference loop.
 - The FileX thread startup blinks were removed again because they were an unnecessary blocking delay during boot and made the board look stuck during startup.
 - The updated process diagram now uses per-step SVG thumbnails from `docs/process_diagrams_assets/`, so keep those assets in sync if the step text or flow changes again.
@@ -1835,6 +2127,98 @@ pu_driver.py.
 - **temperature_delta_mean NaN:** Reference model (V3 source) and current model have zero common accepted samples under V4 guardrails. Fix: initialize reference from the resumed checkpoint, not source model. Non-blocking for deployment.
 - **frozen_best.keras has stale weights:** `val_v4_replay_score` is NaN, so ReplayMetricCallback never updates best_score. The final `model_v4_112.keras` has correct epoch-10 weights.
 
+## 2026-05-26 Phase 13A: Tip-Focus Geometry Heatmap Firmware Integration Spike
+
+- **Goal**: Integrate the locked `tip_focus_v4_112_int8` STEdgeAI package into firmware as a guarded, reversible bring-up spike.
+- **Generated model type**: 100% generic STAI CPU code — all 100 nodes `"mapping": "NODE_SW"`. No NBG/ATON/st_neural references.
+- **Approach**: Guarded wrapper (`APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE`, default 0U), `#include`-ing generated `.c` files into a single translation unit (same pattern as existing stages).
+
+### Memory placed in external regions
+| Region | Address | Size | Contents |
+|--------|---------|------|----------|
+| TIP_FOCUS_WEIGHTS (xSPI2) | 0x70C00000 | 4096K | `g_network_weights_array` (1,992,720 bytes ~1.9 MiB) |
+| TIP_FOCUS_RAM (AXISRAM3+4) | 0x34200000 | 896K | activations buffer (632,256 bytes ~617 KiB) |
+
+- Weights extracted via `objcopy --only-section=.rodata.g_network_weights_array` post-compile → `tip_focus_weights.raw`.
+- Both `.tip_focus_weights` and `.tip_focus_activations` are `(NOLOAD)` — weights are flashed separately, activations are scratch.
+- `.data`/`.bss` (layer descriptors, IO buffers, context) remain in main RAM at 0x34080000+ (~28 KiB).
+
+### Build verification
+- **Disabled guard (0U)**: 0 errors, 0 warnings
+- **Enabled guard (1U)**: 0 errors, 0 warnings (with WSL workaround for Windows absolute paths)
+- **Link test**: All `forward_*` kernel symbols resolved by existing `NetworkRuntime1020_CM55_GCC.a` in `Appli/Lib/`. No additional runtime library needed.
+- **Weights extraction**: 1,992,720 bytes matching `g_network_weights_array[249090]`.
+
+### Files changed/created
+- `firmware/stm32/n657/Appli/Inc/ai_network_tip_focus_v4_112_int8.h` — wrapper header with 7 functions + `AppAI_TipFocus_DryRun()`
+- `firmware/stm32/n657/Appli/Src/ai_network_tip_focus_v4_112_int8.c` — wrapper source (#include-s generated code, owns context/activations/IO buffers)
+- `firmware/stm32/n657/Appli/makefile.targets` — compile rule + weight extraction + cleanup
+- `firmware/stm32/n657/Appli/STM32N657X0HXQ_LRUN.ld` — TIP_FOCUS_WEIGHTS + TIP_FOCUS_RAM regions and output sections
+- `firmware/stm32/n657/flash_boot.bat` — tip_focus_weights.raw flash step at 0x70C00000
+
+### Key decisions
+- Weights are 1.9 MiB → cannot fit in internal ROM (511K). Placed in xSPI2 flash at 0x70C00000 (past source-crop-box at 0x70B80000).
+- Activations are 617 KiB → cannot fit in main RAM (512 KiB). Placed in AXISRAM3+4 at 0x34200000 (896 KiB contiguous, unused by existing code, writable).
+- STAI runtime is header-only inline (`stedgeai-lib/Inc/lite_*.h`). No separate `.a`/`.o` runtime library — just include path.
+- Existing `NetworkRuntime1020_CM55_GCC.a` provides all kernel function pointer targets (`forward_eltwise_integer_INT8`, etc.).
+- NOLOAD for weights prevents the flat binary from ballooning to ~1 GB (ROM at 0x34000400 to xSPI2 at 0x70C00000).
+- Output order: `GetTipHeatmap()` → output[0], `GetCenterHeatmap()` → output[1] to match generated STAI order.
+
+### WSL build workaround
+- Windows absolute paths `"C:/Users/..."` in CubeIDE project headers require `-I/` + `/C:` → `/mnt/c` symlink. Not needed on Windows/CubeIDE.
+
+### Dry-run
+- `AppAI_TipFocus_DryRun()` fills input with zeros, runs inference, logs heatmap min/max and confidence via `DebugConsole_Printf`. Callable from `app_ai.c` or `main()` when guard is enabled.
+
+### Boot dry-run causes freeze
+
+**Symptom**: System hangs after `[AI][TIP_FOCUS] init OK`. No further breadcrumbs. The dry-run is called unconditionally during camera init in `AppThreadX` before the capture loop.
+
+**Root cause**: The integrated `network.c` is the generic STAI CPU/lite path (forward_lite_* functions), not the NBG/Neural-ART runtime. `stai_network_run()` executing ~208M MACC synchronously on Cortex-M55 inside the camera init thread hangs indefinitely.
+
+**Fix steps** (incremental):
+1. Wrap dry-run call in `app_threadx.c:435` with `#if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE && APP_AI_ENABLE_TIP_FOCUS_BOOT_DRY_RUN`
+2. Add `APP_AI_ENABLE_TIP_FOCUS_BOOT_DRY_RUN` default (`0U`) in `ai_network_tip_focus_v4_112_int8.h`
+3. Replace hardcoded `-DAPP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE=1U` in `makefile.targets` with make variables: `APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE ?= 0` and `APP_AI_ENABLE_TIP_FOCUS_BOOT_DRY_RUN ?= 0`, passed as `-DAPP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE=$(VALUE)`
+4. Add breadcrumbs before/after each blocking step: `input fill start/OK`, `run start`, `run returned rc=<n>`
+
+**Test plan**:
+1. Build with `APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE=0` → normal camera/capture loop resumes
+2. Build with `APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE=1 APP_AI_ENABLE_TIP_FOCUS_BOOT_DRY_RUN=0` → compiles + links, no dry-run called
+3. Build with `APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE=1 APP_AI_ENABLE_TIP_FOCUS_BOOT_DRY_RUN=1` → if freeze after "run start", confirm `stai_network_run()` is the blocker
+
+**Decision B if confirmed**: Compile integration works but runtime dry-run hangs. Likely wrong artifact path — CPU/lite STAI package integrated instead of NPU/NBG runner. Next step: obtain/integrate actual NBG/Neural-ART runtime package that consumes `model_v4_112_int8_4.nb`.
+
+### Build failure #1: double-linking tip-focus wrapper
+**Symptoms** (first CubeIDE build):
+- Multiple definition errors for every `stai_network_*` and `AppAI_TipFocus_*` symbol.
+- `.tip_focus_activations` section overflows TIP_FOCUS_RAM (896K) and overlaps NPU_SRAM6.
+
+**Root cause**: The tip-focus `.o` was listed in THREE places:
+1. `OBJS` via `Debug/Src/subdir.mk:73` (CubeIDE's generated source list)
+2. `USER_OBJS` via `makefile.targets:12` (explicit user-link list)
+3. Explicit ELF prerequisite at `makefile.targets:38`
+
+The `.o` appeared twice on the link line (`objects.list` contains `OBJS` + `USER_OBJS` appended separately), causing every buffer to be allocated twice → section doubled to 1.6 MB.
+
+**Fix**:
+- Removed `./Src/ai_network_tip_focus_v4_112_int8.o` from `USER_OBJS` in `makefile.targets`
+- Removed it from the explicit ELF prerequisite block (already in `OBJS`)
+- The explicit compile rule at `makefile.targets:110` still fires because `OBJS` lists `./Src/...` which does NOT match CubeIDE's `Src/%.o` pattern rule — only the explicit rule provides the STAI include paths
+
+### Remaining before flashing
+- Regenerate CubeIDE Debug makefiles, then build in CubeIDE
+- Verify UART logs for tip-focus init + dry-run path
+
+### 2026-05-26 Windows build/flash result
+- CubeIDE headless clean/build worked from a fresh temp workspace at `tmp/cubeide_ws_tip_focus`; the existing `firmware/stm32/n657` workspace had a stale non-CDT import of `n657_Appli`.
+- `mingw32-make` must be called with explicit target `all`; without `all`, the generated make include order can land on a clean-style target and only remove artifacts.
+- Final flashed build used `APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE=1 APP_AI_ENABLE_TIP_FOCUS_BOOT_DRY_RUN=0`.
+- Build matrix passed: baseline off, tip-focus dry-run on, and final tip-focus dry-run off. Final `tip_focus_weights.raw` size was 1,992,720 bytes.
+- Full `flash_boot.bat` succeeded: FSBL, scalar, rectifier, OBB, source-crop-box, tip-focus weights at `0x70C00000`, and signed app at `0x70100000`.
+- UART verification was attempted on COM3 at 115200, but Windows returned access denied, likely because another serial terminal had the ST-LINK VCP open.
+- Tip-focus is now default-enabled for regular firmware builds (`makefile.targets` sets `APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE ?= 1`; boot dry-run remains default OFF).
+
 ## 2026-05-24 Geometry Heatmap v4 112 — Phase 10F QAT Failure + FP32 Decision
 
 ### Phase 10F: Representative-Dataset Sweep + QAT
@@ -1860,3 +2244,260 @@ pu_driver.py.
 - Report: `ml/reports/geometry_heatmap_v4_112_qat_decision.md`
 - Sweep report: `ml/reports/geometry_heatmap_v4_112_int8_rep_sweep.md`
 - Decision report: `ml/reports/geometry_heatmap_v4_112_int8_rep_sweep_decision.md`
+
+## 2026-05-26 Tip-focus default + one-time RTC seed recovery
+- Firmware defaults are now set so a plain CubeIDE Debug build runs tip-focus without extra make flags:
+  - `APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE` default remains ON (`1`/`1U` path).
+  - `APP_AI_ENABLE_TIP_FOCUS_BOOT_DRY_RUN` default remains OFF (`0`/`0U` path).
+- DS3231 boot-time seeding is temporarily forced ON in `firmware/stm32/n657/Appli/Src/ds3231_clock.c` via:
+  - `#define DS3231_FORCE_BUILD_TIME_SEED_ON_BOOT 1`
+- Expected boot log now includes:
+  - `[RTC] Forcing DS3231 seed from firmware build timestamp on boot.`
+- After the one-time time recovery flash, set `DS3231_FORCE_BUILD_TIME_SEED_ON_BOOT` back to `0`.
+
+## 2026-05-26 Tip-focus ATON runtime rebuild
+- The tip-focus NPU package was linking a prebuilt `ll_aton_runtime.o` that had compiled with the ATON fallback base address (`0x10000`/`0x11000`), which hardfaulted in `LL_ATON_RT_RuntimeInit()`.
+- The fix that held is:
+  - rebuild `ll_aton_runtime.c` from the X-CUBE-AI pack source in `Appli/makefile.targets`,
+  - compile it for `LL_ATON_PLAT_STM32N6` + `LL_ATON_OSAL_THREADX`,
+  - keep it in `-DNDEBUG` release mode so the image still fits,
+  - define `__ll_current_wait_mask` from `app_ai.c` so the runtime library links cleanly,
+  - remove the app-side `NPU0_IRQHandler` forwarders so the runtime owns the NPU IRQ vector.
+- The rebuilt ELF now shows `LL_ATON_RT_RuntimeInit` using the real STM32N6 NPU base (`0x580e1000`), not the fallback base.
+- The flash script still prints xSPI2 signature bytes for `app_ai.c`; those matched the current `app_ai_xspi2_signature_start[]` / `tail[]` values, so no signature-array update was needed this round.
+
+## 2026-05-26 Tip-focus epoch loop contract
+- The tip-focus wrapper should mirror ST's stock `LL_ATON_RT_Main()` loop closely.
+- Important detail: `LL_ATON_RT_RunEpochBlock()` returning `LL_ATON_RT_NO_WFE` does not mean "yield the thread"; it means the next epoch can start immediately.
+- Do not call `tx_thread_relinquish()` on `NO_WFE` in the tip-focus loop. Keep yielding only for `LL_ATON_RT_WFE` so the runtime can keep advancing the epoch chain without an extra scheduling gap.
+- 2026-05-27 follow-up: `app_ai.c` now follows this contract directly, so the OBB fallback path does not stall the AI worker after `Stage inference run start`.
+
+## 2026-05-26 Tip-focus coefficient boundary bug
+- `LL_ATON_getbits()` in the vendor `ll_aton_util.c` had an off-by-one boundary bug when a coefficient field ended exactly on a 32-bit word boundary.
+- That hit the tip-focus `Conv2D_3_mul_scale_10` init path because its 16x16 coefficient table lands exactly on the last word of the 256-bit buffer.
+- Fix: compute the second index from `pos + nbits - 1`, not `pos + nbits`, so the last in-range coefficient does not read one word past the table.
+
+## 2026-05-26 Split ST AI output trees
+- The app build links the root-level `st_ai_output` package objects, while `flash_boot.bat` prefers the firmware-local `firmware/stm32/n657/st_ai_output` raw blobs when both copies exist.
+- That split can hide stale vendor objects even after a source fix, so `ll_aton_util.o` is now rebuilt explicitly from source in `Appli/makefile.targets`.
+- When a model or helper changes, keep both trees in mind before assuming the flashed payload and the linked firmware are reading the same export.
+
+## 2026-05-26 Tip-focus internal helper library rebuild
+- The internal helper epoch arrays and the runtime-cursor transition calls live in `ll_aton_lib.o`, not just in `ll_aton_runtime.o`.
+- To surface the `[AI][TIP_FOCUS][RT]` breadcrumbs and keep the debug assert active, `ll_aton_lib.o` must be rebuilt from `ll_aton_lib.c` with `NDEBUG` left off.
+- Linking the prebuilt pack copy is not enough once the runtime cursor bug is being chased; the object has to be regenerated from source so it sees the patched `ll_aton_runtime.h`.
+
+## 2026-05-26 Tip-focus runtime cursor sentinel guard
+- `LL_ATON_RT_DecCurrEpochBlock(1)` can legitimately unwind through an internal helper epoch at `index = -1`, while `nr_of_epoch_blocks` may still be zero or otherwise not meaningful for that internal subgraph.
+- The guard that held was relaxing `__LL_ATON_RT_SetCurrentEpochBlock()` in `ll_aton_runtime.h` so it only asserts on normal counted ranges: `index >= 0` and `nr_of_epoch_blocks > 0U`.
+- Keep `ll_aton_runtime.o` built with `-DNDEBUG` so the runtime source does not define `__ll_current_wait_mask`; the app-side definition remains the owner for the debug build.
+- With that sentinel-safe assert and the source-built `ll_aton_lib.o`, the tip-focus graph was able to boot past the internal epoch 3 unwind and continue inference.
+
+## 2026-05-26 Tip-focus cache bridge
+- Rebuilding `ll_aton_lib.o` from source exposed the ST cache helper expectation for `mcu_cache_clean_invalidate_range(...)`.
+- `app_ai.c` now exports that combined MCU cache hook and forwards it to `AppAI_ApplyCacheRange(..., true, true)` so the source-built library can link cleanly.
+- The split clean/invalidate wrappers remain in place for the rest of the app and for the existing cache call sites.
+- This was the fix that let the tip-focus NPU path boot cleanly again after the rebuilt helper library started enforcing the cache-maintenance symbol at link/runtime.
+
+## 2026-05-26 Tip-focus 16-bit arith fast path
+- The tip-focus `Conv2D_3_mul_scale_10` init still stalled after the bit-unpack fix, so `LL_Arithacc_Init()` now takes a direct 16-bit vector lane path when `vec_precision == {16,16,16}`.
+
+## 2026-05-26 Tip-focus epoch 3 hang: xSPI2 memory-mapped mode
+- **Root cause**: Epoch 3's `LL_Arithacc_Init(1, ...)` CPU-side dereferences `A_vector.p` which points to xSPI2 flash at `0x70C00000 + 0x219140`. If xSPI2 is in indirect mode (left by polar_vote stage), the CPU bus read hangs indefinitely.
+- **Why epoch 2 worked**: Uses scalar-only coefficients (`.A_scalar=16384`, `.B_scalar=32`, no xSPI2 vector pointers). `LL_Convacc_Init` also avoids xSPI2 reads.
+- **Why the stage mechanism works**: Calls `AppAI_EnsureXspi2ModelImageReadyForStage` → `AppAI_Xspi2EnableMemoryMappedMode()` before inference. The tip_focus wrapper didn't call this.
+- **Fix**: Added `AppAI_Xspi2EnsureMemoryMappedMode()` public API in `app_ai.h`/`app_ai.c` that checks fast-path (`app_ai_xspi2_mm_enabled`), re-inits xSPI2 if needed, then enables MM mode. Called at the top of `AppAI_TipFocus_Run()`.
+- **Files changed**: `app_ai.h`, `app_ai.c`, `ai_network_tip_focus_v4_112_int8.c`
+- **Note**: `network_atonbuf.xSPI2.raw` at 0x70C00000 (2,201,505 bytes) correctly covers all offsets (max 0x2197a0 = 2,201,504). No stale weights issue.
+
+- That bypasses `LL_ATON_getbits()` entirely for the current N6 tip-focus coefficient tables and keeps the init path simpler while we continue tracing the vendor runtime behavior.
+
+## 2026-05-26 Log cleanup
+- Tip-focus wrapper logs are quiet by default now. `APP_AI_TIP_FOCUS_VERBOSE_LOGS` stays off unless we explicitly flip it back on for runtime tracing.
+- Baseline polar reject messages are throttled per frame: we log a small budget of rejects, then print one suppression line instead of repeating the same rejection over and over.
+- The useful high-signal lines remain: tip-focus still publishes its per-frame `STATUS:` line, and baseline still reports the accepted estimate summary.
+- Calibration traces are silent again, raw scalar/model output probes are removed from the normal UART path, and the worker now prints a single `Final AI value logged:` line before the exact inference value.
+- The live captures still show a distracting lower inset dial / hotspot in the frame, which is the likely reason the tip-focus path can still drift even when the baseline looks solid. The next model-side fix should be to mask or crop that inset before tip-focus preprocessing.
+
+## 2026-05-27 Capture distraction confirmed
+- The newest raw `224x224` captures in `ml/data/captured_images/` show the main dial plus a large dark blob across the lower center of the gauge and a diagonal shadow/cable entering from the left.
+- That lower blob is present in both `capture_2026-05-27_06-00-14.yuv422` and `capture_2026-05-27_06-01-47.yuv422`, so it is a repeatable feature, not a one-off artifact.
+- Baseline can sometimes recover because its polar heuristics still favor the main dial, but the CNN/tip-focus path sees the whole frame and can easily lock onto the lower obstruction or the bright outer ring.
+- The next model-side improvement should be an explicit mask or crop that blanks the lower inset / dark blob before tip-focus preprocessing.
+- The rest of the 2026-05-27 captures are mixed: a few are cleanly framed but still include the lower inset thermometer/distractor, one frame is essentially blown out, and the cleaner captures still have a bright hotspot that can bias the model toward the wrong feature.
+
+## 2026-05-27 Tip-focus mask and status line cleanup
+- Tip-focus preprocessing now blanks the lower inset with an ellipse-shaped mask before the tensor is handed to the CNN, so the lower dial and dark blob should stop acting like a shortcut feature.
+- The tip-focus `STATUS:` line now uses the same fixed-point string formatting path as the published inference logs, which avoids the blank `conf=` / `angle=` fields we were seeing from `%f` formatting on this build.
+- When tip-focus is enabled, the scalar branch is diagnostic-only and its routine UART chatter stays muted; the only user-facing AI result should be the published final value line from `App_AI_GetLastInferenceResult()`.
+
+## 2026-05-27 Tip-focus firmware link fix
+- The generated tip-focus NPU wrapper now expects `_mem_pool_xSPI2_tip_focus_v4_112_int8`, so the app-side xSPI2 placeholder in `app_ai.c` must use that exact symbol name instead of the older `Default` stub.
+- `app_inner_celsius_mask.o` is already present in CubeIDE's generated `objects.list`, so it should **not** be added to `USER_OBJS`; adding it there causes a duplicate link of `AppInnerCelsiusMask_Apply()`.
+- With the xSPI2 symbol renamed and the mask object left to the generated source list, `mingw32-make -j8 all` and `flash_boot.bat` both completed successfully, and the board was flashed with the new masked inner-Celsius tip-focus build.
+
+## 2026-05-27 Tip-focus held-value confusion
+- A tip-focus frame marked `result=HELD` is still publishing the last accepted AI value, so the visible `Final AI value logged: ...` line can be stale even when the current frame did not produce a fresh reading.
+- To distinguish a stale hold from a fresh publish, the tip-focus `STATUS:` line now includes the decoded center/tip coordinates plus the candidate angle and candidate temperature in the same single-line log entry.
+
+## 2026-05-27 Tip-focus outlier recovery
+- The tip-focus median smoother now re-seeds itself after a short streak of consistent large outliers, so the published AI value can recover from an old stable reading instead of staying pinned there forever.
+- This matters when the gauge really has moved to a new temperature band: the first few frames may still be held, but the new value should become publishable again after the outlier streak threshold is reached.
+- Held tip-focus frames no longer count as a fresh published result for the UART logger, so `Final AI value logged: ...` is reserved for accepted updates and stale holds now show up as `Final AI value not published (held or invalid).`
+
+## 2026-05-27 Tip-focus geometry still failing on live 7C frames
+- On the 2026-05-27 10:48 live run, the tip-focus model stopped publishing stale 49.1C values, which is good, but the real decode still failed on fresh 7C frames.
+- The decoded center/tip points repeatedly collapsed near the middle of the heatmap or produced tiny invalid vectors, so `angle` and `temp` were `NaN` and the result stayed `HELD`.
+- That means the remaining bug is model-side geometry quality, not the final-value logging path.
+
+## 2026-05-27 10C frame-selection tuning
+- The tip-focus inner-Celsius mask is now enabled by default in `app_ai.c` because the lower inset / dark-blob distractor is a repeatable live failure mode on today's frames.
+- The classical baseline source priorities were flattened across the stable geometry families so `fixed-crop-polar`, `image-center-polar`, `board-prior-polar`, and `rim-center-polar` can compete on quality instead of being hard-biased toward the fixed crop.
+- The soft peak-ratio continuity gate now accepts board-prior and rim-center estimates too, as long as they stay close to the last accepted temperature.
+
+## 2026-05-27 Champion Lock: Tip-Focus V4 112 INT8 → N6 NPU Package
+
+- **Locked TFLite**: `ml/artifacts/deployment/geometry_heatmap_v4_112_inner_celsius_mask/model_v4_112_int8.tflite`
+- **Keras source**: Phase 11B candidate_08 tip_focus (pt=0.25, c=0.05, t=0.20, cf=0.05, wu=3)
+- **Final test split replay** (59 evaluated of 61 test rows):
+  - Accepted MAE: 4.11 C ✅ (gate: ≤4.5 C)
+  - Acceptance rate: 0.76 ✅ (gate: ≥0.65)
+  - Worst accepted error: 12.88 C ✅ (gate: <20 C)
+  - INT8 temp drift mean: 1.80 C ⚠️ WAIVED (architecture floor)
+
+### Canonical Package
+- **Family**: `tip_focus_v4_112_int8_n6_npu`
+- **Package path**: `firmware/stm32/n657/st_ai_output/packages/tip_focus_v4_112_int8_n6_npu/`
+- **Generated C**: `st_ai_output/network.c` (included via wrapper `ai_network_tip_focus_v4_112_int8.c`)
+- **Generated H**: `st_ai_output/network.h` (LL_ATON_DEFAULT_IN_NUM=1, LL_ATON_DEFAULT_OUT_NUM=3)
+- **xSPI2 flash blob**: `st_ai_output/network_atonbuf.xSPI2.raw` (2,201,489 bytes, sha256[:16]=`b42b7a86cb3bf8cd`)
+- **Flash address**: 0x70C00000 (octoFlash, Step 4e in `flash_boot.bat`)
+- **NPU runtime objects**: `st_ai_ws/build_network/{ecloader,ll_aton,ll_aton_lib,ll_aton_reloc_callbacks,ll_aton_reloc_network,ll_aton_util}.o`
+
+### Wrapper API (stable contract)
+- `AppAI_TipFocus_Init()` — calls `LL_ATON_RT_Init_Network(&NN_Instance_Default)`
+- `AppAI_TipFocus_Run()` — calls `LL_ATON_RT_Reset_Network` + `LL_ATON_RT_RunEpochBlock` loop
+- `AppAI_TipFocus_GetInputBuffer()` — returns `LL_ATON_Input_Buffers_Info` → addr_start
+- `AppAI_TipFocus_GetTipHeatmap()` — output[0], int8 [1,112,112,1]
+- `AppAI_TipFocus_GetCenterHeatmap()` — output[1], int8 [1,112,112,1]
+- `AppAI_TipFocus_GetConfidenceRaw()` — output[2], int8 [1,1]
+- Guard: `APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE`
+
+### Excluded from Active Link
+- `polar_vote_circular_v28_int8` — removed from `USER_OBJS`, `n657_Appli.elf` deps, and build rules in `makefile.targets`
+- All legacy cascade blobs (scalar, rectifier, OBB, source-crop-box) remain in `flash_boot.bat` but are not part of the tip-focus firmware path
+
+### Regeneration
+Run from repo root:
+```bash
+python3 ml/scripts/package_tip_focus_v4_112_for_n6.py
+```
+Requires X-CUBE-AI 10.2.0 pack at `X_CUBE_AI_PACK_ROOT`.
+
+## 2026-05-27 Phase 12C: Firmware Build, Link & Flash Fixes
+
+### Issue 1: Linker duplicate symbols (ll_aton_reloc_callbacks)
+- **Symptom**: 17 undefined reference / duplicate symbol errors at link time
+- **Root cause**: `ll_aton_reloc_callbacks.o` from NPU packaging step contained `LL_ATON_LIB_*` stubs that duplicated `ll_aton_lib.o` symbols, plus referenced undefined `_network_rt_ctx`
+- **Fix**: Removed `ll_aton_reloc_callbacks.o` from `USER_OBJS` in `makefile.targets`
+- **Build**: 458,240 text, 1,244 data, 1,096,240 bss
+
+### Issue 2: LL_ATON_Init crash (BFAR=0xA14F7922)
+- **Symptom**: Board hardfaulted in `LL_ATON_Init` accessing unmapped address `0xA14F7922`
+- **Root cause**: Pre-built `ll_aton.o` was compiled without `LL_ATON_PLATFORM=LL_ATON_PLAT_STM32N6`, so it used a generic fallback NPU base address instead of the real `0x34020000`
+- **Fix**: Rebuilt `ll_aton.c` from X-CUBE-AI pack source with `-DLL_ATON_PLATFORM=LL_ATON_PLAT_STM32N6` as a local compile rule in `makefile.targets`
+- **Build**: 458,240 text → 458,456 text
+
+### Issue 3: Tip-focus dry-run assertion failure
+- **Symptom**: Board hung at "Running inference..." then fired: `assertion "index < (int32_t)(nn_instance->exec_state.nr_of_epoch_blocks - 1)" failed: file ll_aton_runtime.h, function __LL_ATON_RT_SetCurrentEpochBlock`
+- **Root cause**: The locally-rebuilt `ll_aton_lib.o` was compiled with `-DDEBUG` instead of `-DNDEBUG`. The pre-built NPU packaging step also used debug mode. `ll_aton_lib.c` calls `LL_ATON_RT_DecCurrEpochBlock(1)` which triggers the assertion in the inline `__LL_ATON_RT_SetCurrentEpochBlock` when `nr_of_epoch_blocks` is 0 (not set in release-build runtime)
+- **Fix**: Changed `-DDEBUG` to `-DNDEBUG` in the `ll_aton_lib.o` compile rule in `makefile.targets`
+- **Build**: 456,232 text (down from 458,456 — assertions stripped)
+
+### Issue 4: Tip-focus xSPI2 memory-mapped mode not enabled
+- **Symptom**: Inference hung during epoch execution (NPU trying to access weights at 0x70C00000 in xSPI2 indirect mode)
+- **Root cause**: `AppAI_Xspi2EnsureMemoryMappedMode()` existed in `app_ai.c` but was never called before inference
+- **Fix**: Added `extern bool AppAI_Xspi2EnsureMemoryMappedMode(void);` and call at top of `AppAI_TipFocus_Run()` in `ai_network_tip_focus_v4_112_int8.c`
+
+### Final Result
+- **Confidence**: 0.957 (high)
+- **Output**: center=(55.2,53.9), tip=(59.7,62.6), angle=63.0
+- **Latency**: Baseline ~4s (includes preprocessing)
+- **Board stuck at**: OBB stage (MobileNetV2 OBB long-term fallback) — separate issue from tip-focus
+
+### Files Changed (2026-05-27)
+- `firmware/stm32/n657/Appli/makefile.targets`: Fixed `USER_OBJS` (removed `ll_aton_reloc_callbacks.o`), added local compile rules for `ll_aton.o` and `ll_aton_lib.o`, added `AppAI_Xspi2EnsureMemoryMappedMode()` forward declaration and call
+- `firmware/stm32/n657/Appli/Src/ai_network_tip_focus_v4_112_int8.c`: Added `extern bool AppAI_Xspi2EnsureMemoryMappedMode(void);` and call at top of `AppAI_TipFocus_Run()`
+
+### Key Build Commands
+- Build: `mingw32-make -j8 all` in `firmware/stm32/n657/Appli/Debug`
+- Flash: `flash_boot.bat` (all 7 steps: FSBL, scalar, rectifier, OBB, source-crop-box, tip-focus weights, signed app)
+- Hard reset: `STM32_Programmer_CLI -c port=SWD -hardRst`
+
+### Next Steps
+- OBB stage (MobileNetV2 OBB) hangs — likely needs similar xSPI2 MM mode fix
+- Tip-focus temperature output is `NaN` (no temperature sensor input on raw model)
+- Evaluate tip-focus model output quality on live frames
+
+## 2026-05-27 OBB Indirect Branch Fault Trace
+- **Symptom**: MemManage fault while the OBB stage runs with `CFSR=0x00000001` and `PC=0xFF003200`.
+- **Trace**: `n657_Appli.map` places `LL_ATON_RT_RunEpochBlock` at `0x340283ec` and `forward_eltwise` at `0x3402b478`. The disassembly of `forward_eltwise` shows `ldr.w sl, [ip, #28]` followed by `blx sl`, so the faulting `PC` is an invalid indirect branch target.
+- **Interpretation**: This looks like a bad function-pointer or op-descriptor path inside the CPU-side LL_ATON runtime, not a direct NPU weight fetch. The OBB flash pool itself is mapped at `0x70700000`, and the stage signature check is still passing, so the blob is present even though the runtime later branches to nonsense.
+- **Next probe**: Inspect the generated OBB op descriptor / runtime state that feeds `[ip, #28]` in `forward_eltwise`, and compare it against the current `NetworkRuntime1020_CM55_GCC.a` build to see whether the descriptor layout or init path is stale.
+
+## 2026-05-27 Tip-Focus Wrapper Runtime Contract Fix
+- The live tip-focus fault resolved into the ST runtime resize helper `ll_sw_forward_resize_integer`, which pointed away from the app-level geometry decode and toward the wrapper/runtime contract.
+- `firmware/stm32/n657/Appli/Src/ai_network_tip_focus_v4_112_int8.c` now mirrors the generic stage runner more closely: it checks xSPI2 memory-mapped mode, cleans the input cache before inference, only resets the network when `APP_AI_RESET_NETWORK_EACH_INFERENCE` is enabled, and yields only for `LL_ATON_RT_WFE`.
+- `AppAI_TipFocus_DryRun()` now zero-fills the input buffer before the self-test run so the boot-time probe starts from a deterministic frame.
+- If the board still faults after reflashing, the next suspect is the generated runtime state or model blob, not the wrapper's reset/cache sequencing.
+
+## 2026-05-28 Tip-Focus Resize Metadata Guard
+- ST's `ll_sw_integer.c` source shows each resize helper reconstructing its scale tensor metadata from xSPI2-resident arrays before running the actual resize kernel, so a lost memory-mapped window can fault late in an inference rather than immediately at startup.
+- `AppAI_TipFocus_Run()` now reasserts xSPI2 memory-mapped mode before every epoch block, not just once at the top of the run, to keep the generated resize helper's metadata reads safe across long WFE gaps.
+- The current fault signature (`BFAR=0x1` inside `ll_sw_forward_resize_integer`) is consistent with a bad metadata pointer or stale runtime state during the resize helper's setup path, so the per-epoch xSPI2 guard is the best low-risk mitigation we have right now.
+- The wrapper now prints the generated resize node name plus its input/output and metadata pointers right before each resize helper call, so the next fault log should identify exactly which generated node is active when the crash happens.
+- The `BFAR=0x00018800` value matches the size of `app_ai_dry_run_frame_scratch` in `.npusram6`, so the current working hypothesis is a corrupted base register or offset, not the resize tensor data itself.
+- `AppAI_TipFocus_LogResizeNode()` now captures and prints `r9` at the call site before the resize helper runs, because the helper's faulting `ldr.w` uses `r9` as the base register.
+- The pre-inference `"[AI][TIP_FOCUS] Run:"` console log now preserves `r9` across the variadic print call, so the resize helper should no longer inherit a clobbered base register from the last obvious logger in the critical path.
+
+## 2026-05-28 Tip-Focus Model Provenance Fix
+- The live tip-focus NPU package under `firmware/stm32/n657/st_ai_output/packages/tip_focus_v4_112_int8_n6_npu/` was exported from the `geometry_heatmap_v4_112_inner_celsius_mask` training artifact, not from the locked `candidate_08_tip_focus` champion.
+- That masked training artifact has zero accepted samples on its own final val replay and a very large angle error floor, which explains why the live CNN was far off while the classical baseline stayed correct.
+- The packaging script now points at `ml/artifacts/deployment/geometry_heatmap_v4_112_tflite/recovery_08_tip_focus__pt0.25_c0.05_t0.20_cf0.05_wu3/model_v4_112_int8.tflite` so the firmware package can be regenerated from the actual champion checkpoint.
+
+## 2026-05-28 Tip-Focus Output Order Fix
+- The regenerated tip-focus contract in `ml/artifacts/deployment/geometry_heatmap_v4_112_tflite/recovery_08_tip_focus__pt0.25_c0.05_t0.20_cf0.05_wu3/export_config.json` says the raw tensor order is `tip_heatmap`, `center_heatmap`, `confidence`, with semantic reorder indices `[1, 0, 2]`.
+- The firmware wrapper had been reading `info[0]` as center and `info[1]` as tip, which swapped the heatmaps and rotated the center->tip vector by 180 degrees.
+- That swap explains the cold CNN reads: the angle decode stayed confident, but the downstream temperature mapping landed tens of degrees off compared with the classical baseline.
+- The wrapper now returns `GetTipHeatmap()` from `info[0]` and `GetCenterHeatmap()` from `info[1]` so the board-side decode matches the deployment contract again.
+
+## 2026-05-28 Tip-Focus Dry-Run R9 Trace
+- The latest live log showed `r9=0x18800` already at `AppAI_TipFocus_Run()` entry, which means the corruption is happening earlier in `App_AI_RunDryInferenceFromYuv422()` rather than inside the ST resize helper itself.
+- `app_ai.c` now logs `[AI][DRY_RUN][R9]` at dry-run entry, after model init, after tip-focus init, after the heuristic crop, after preprocess, after the inner-Celsius mask, and immediately after the `"Running inference..."` console write.
+- The next board log should identify the first checkpoint that flips `r9` to `0x18800`, which will tell us whether the culprit is the preprocess path, the mask call, or the console write before `AppAI_TipFocus_Run()`.
+
+## 2026-05-28 Tip-Focus Crop Contract Mismatch
+- The live tip-focus crop heuristic is currently producing crops like `x=17 y=33 w=146 h=115` on the 224x224 frame, while the stable training crop ratios in `app_gauge_geometry.h` correspond to roughly `x=23 y=58 w=156 h=123`.
+- That upward shift is large enough to change the needle geometry the CNN sees, and it lines up with the live logs where the tip heatmap hugs the top edge and the decoded angle jumps to the hot side even though the classical baseline stays cold.
+- The current candidate's own replay summary still shows a 25.6° angle MAE and failure modes dominated by `tip_heatmap_too_spread_out` and `center_tip_distance_ratio_implausible`, so the model is sensitive to this framing mismatch rather than being a perfect drop-in replacement for the baseline.
+
+## 2026-05-28 Tip-Focus Source-Crop-Box Localizer
+- The firmware already ships a dedicated `mobilenetv2_source_crop_box_v1_stripped_int8` first-stage localizer, and its deployment metadata says it is meant to predict a gauge crop for the downstream reader from the full frame.
+- Its training metrics are much stronger for crop localization than the raw bright-pixel heuristic, so the tip-focus path now prefers this model-driven crop selector first and only falls back to the CPU heuristic if the localizer fails.
+- That gives the CNN a moving, model-predicted crop when the camera is repositioned instead of forcing a single static framing assumption.
+
+## 2026-05-28 Tip-Focus Rectifier Native Localizer
+- The source-crop-box package still compiled into a float-input `QuantizeLinear` helper and faulted on board inside ST's `ll_sw_forward_quantizelinear` before any crop decode could happen, so it was not a good primary localizer for the movable-camera path.
+- The rectifier deployment artifact (`mobilenetv2_rectifier_hardcase_finetune_v3_int8`) packages cleanly as an int8-input, float-output ST Edge AI package, which removes the fragile front-loaded quantize node while keeping the existing float crop decoder.
+- The firmware now uses the rectifier localizer first in the tip-focus crop selection path and keeps the source-crop-box stage disabled by default.
+- The board-owned rectifier package was regenerated under `firmware/stm32/n657/st_ai_output/packages/mobilenetv2_rectifier_zoom_aug_v4/st_ai_output/` and the canonical `atonbuf.rectifier.xSPI2.raw` blob was refreshed so the firmware and boot path consume the same native-int8 rectifier export.
+
+## 2026-05-28: v3 Geometry Coordinate Regression — All Experiments Stuck at ~0.11 val_MAE
+
+- **Approach**: Coordinate regression (cx, cy, tx, ty) with simple CNN (~65k params, GroupNorm, sigmoid outputs) trained from scratch on 418 preprocessed crops + 76 board captures.
+- **v3 experiments** (via `train_geometry_v3.py`):
+  - `simple_cnn_w10`: board_weight=10, dropout=0.25, 150 epochs. **Stopped at epoch 22** (EarlyStopping, val_loss plateau). Loss 0.026→0.023 (14% drop), val_MAE stuck at 0.108-0.12. Model learned to predict mean coordinates (~0.5 for all 4 values).
+- **Root cause confirmed**: Coordinate regression underfits because needle tip motion is small relative to noise in normalized [0,1] outputs. The model predicts cx≈0.5, cy≈0.5, tx≈0.5, ty≈0.5 for all inputs (the mean of the training set). This yields val_MAE≈0.11 which = ~25px error = ~40° angle error = ~15°C — never reaches <5°C.
+- **Files**: `ml/scripts/train_geometry_v3.py`, `ml/scripts/evaluate_geometry_v2.py`
+- **Output**: `/tmp/gauge_geometry_v3/simple_cnn_w10/`
+- **Next**: Need fundamental change in output representation — predict angle directly (sin/cos encoding) or temperature directly instead of 4 coordinates. Abandon coordinate regression approach.

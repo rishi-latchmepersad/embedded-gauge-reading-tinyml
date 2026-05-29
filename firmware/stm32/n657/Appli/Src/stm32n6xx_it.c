@@ -480,31 +480,4 @@ void DCMIPP_IRQHandler(void)
   HAL_DCMIPP_IRQHandler(IT_GetActiveDcmippHandle());
 }
 
-/**
-  * @brief Forward the NPU interrupt lines into the ATON runtime handler.
-  *
-  * Cube's startup file exposes four NPU vectors. The runtime installs the
-  * ATON-standard handler, so we forward each vector to keep the completion
-  * path alive even if the active line changes.
-  */
-void NPU0_IRQHandler(void)
-{
-  CDNN0_IRQHandler();
-}
-
-void NPU1_IRQHandler(void)
-{
-  CDNN0_IRQHandler();
-}
-
-void NPU2_IRQHandler(void)
-{
-  CDNN0_IRQHandler();
-}
-
-void NPU3_IRQHandler(void)
-{
-  CDNN0_IRQHandler();
-}
-
 /* USER CODE END 1 */

@@ -357,7 +357,9 @@ def main() -> None:
     if num_outputs == 4:
         # Auto-detect aux head type from output names.
         fourth_name = keras_output_names[3] if len(keras_output_names) > 3 else ""
-        if "aux_offset_map" in fourth_name:
+        if "axis_logits" in fourth_name:
+            semantic_output_names = ["center_heatmap", "tip_heatmap", "confidence", "axis_logits"]
+        elif "aux_offset_map" in fourth_name:
             semantic_output_names = ["center_heatmap", "tip_heatmap", "confidence", "aux_offset_map"]
         else:
             semantic_output_names = ["center_heatmap", "tip_heatmap", "confidence", "aux_coords"]

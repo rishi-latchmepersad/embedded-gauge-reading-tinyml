@@ -17,6 +17,7 @@ extern "C" {
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "ai_network_tip_focus_v4_112_int8.h"
 
 /** @brief Path to the source-crop-box model image on xSPI2 flash. */
 #define APP_AI_SOURCE_CROP_BOX_XSPI2_MODEL_IMAGE_PATH \
@@ -38,7 +39,15 @@ typedef struct
 } AppAI_SourceCropBox;
 
 #ifndef APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
+/* Phase 13A tip-focus spike: auto-disable source-crop-box so a missing
+ * flash blob at 0x70B00000 does not block the tip-focus dry-run.
+ * The tip-focus guard may be supplied on the compiler command line
+ * (before this header is parsed), so #if defined() is safe here. */
+#if defined(APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE) && APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
+#define APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE 0U
+#else
 #define APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE 1U
+#endif
 #endif
 
 /**
@@ -67,6 +76,20 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		size_t frame_size);
 
 /**
+ * @brief Ensure xSPI2 flash is in memory-mapped mode for NPU weight access.
+ *
+ * The generated LL_ATON code dereferences _mem_pool_xSPI2_Default pointers
+ * to read coefficient vectors directly from xSPI2 flash.  If a prior stage
+ * left xSPI2 in indirect mode, those CPU-side reads will hang the bus.
+ *
+ * Call this before any inference that uses pool-7+xSPI2 weight data.
+ *
+ * @retval true when xSPI2 is in memory-mapped mode (or was already).
+ * @retval false when the MM-mode switch failed.
+ */
+bool AppAI_Xspi2EnsureMemoryMappedMode(void);
+
+/**
  * @brief Retrieve the most recent inference scalar result.
  *
  * @param[out] value_out Receives the last dequantized inference value.
@@ -74,6 +97,17 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
  * @retval false when no inference has completed yet or value_out is NULL.
  */
 bool App_AI_GetLastInferenceResult(float *value_out);
+
+/**
+ * @brief Verify that tip-focus weights are programmed in xSPI2 flash.
+ *
+ * Reads the signature bytes from xSPI2 at 0x70400000 and compares
+ * against the expected network_atonbuf.xSPI2.raw header.
+ *
+ * @retval true xSPI2 contains valid tip-focus weights.
+ * @retval false xSPI2 is empty or corrupted - run flash_boot.bat.
+ */
+bool AppAI_VerifyTipFocusWeights(void);
 
 #ifdef __cplusplus
 }

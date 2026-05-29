@@ -66,12 +66,12 @@ extern "C" {
  * 11:51. */
 #define CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD     100U
 #define CAMERA_CAPTURE_BRIGHTNESS_DARK_MAX_THRESHOLD      240U
-#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD   180U
+#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD   200U
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_PIXEL_LEVEL_THRESHOLD 220U
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_RATIO_PERCENT     50U
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_SOLID_MEAN_THRESHOLD 220U
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MIN_THRESHOLD     45U
-#define CAMERA_CAPTURE_BRIGHTNESS_RETRY_LIMIT              16U
+#define CAMERA_CAPTURE_BRIGHTNESS_RETRY_LIMIT              6U
 /* Multiplicative step: exposure multiplied/divided by 2 per nudge (1 stop).
  * Linear steps across the full sensor range (26–33333 µs) are too coarse at
  * low exposures — a 1/20-range step (1662 µs) straddled the entire acceptable
@@ -83,6 +83,8 @@ extern "C" {
 /* Capture crop is expressed directly in pixels/lines. */
 #define CAMERA_CAPTURE_CROP_HSTART_PIXELS   0U
 #define CAMERA_CAPTURE_CROP_VSTART_LINES    0U
+/* Time to let AE hardware converge before locking exposure/gain for capture. */
+#define CAMERA_CAPTURE_AE_SETTLE_DELAY_MS         500U
 /* Arm one CSI line/byte counter on VC0 so we can tell whether the receiver
  * is observing line progress even when the captured payload stays all zeros. */
 #define CAMERA_CAPTURE_CSI_LB_PROBE_COUNTER      DCMIPP_CSI_COUNTER0

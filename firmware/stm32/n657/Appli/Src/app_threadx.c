@@ -48,6 +48,7 @@
 #include "cmw_imx335.h"
 #include "cmw_utils.h"
 #include "imx335.h"
+#include "ai_network_tip_focus_v4_112_int8.h"
 #include "imx335_reg.h"
 
 /* USER CODE END Includes */
@@ -426,10 +427,14 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 				}
 			}
 
-			if (!App_AI_Model_Init()) {
+	if (!App_AI_Model_Init()) {
 				DebugConsole_Printf(
 					"[AI] Model runtime init failed; continuing without inference.\r\n");
 		}
+
+#if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE && APP_AI_ENABLE_TIP_FOCUS_BOOT_DRY_RUN
+		(void)AppAI_TipFocus_DryRun();
+#endif
 
 		BSP_LED_Off(LED_BLUE);
 		DebugConsole_Printf(

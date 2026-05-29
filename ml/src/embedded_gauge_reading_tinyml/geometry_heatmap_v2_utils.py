@@ -100,8 +100,21 @@ def load_heatmap_sample(
     sigma_pixels: float = 5.0,
     jitter: JitterParams | None = None,
     max_attempts: int = 25,
+    inner_celsius_mask: bool = False,
 ) -> HeatmapSample:
-    """Load one cropped image and its target heatmaps."""
+    """Load one cropped image and its target heatmaps.
+
+    Args:
+        example: Source geometry example with crop box and keypoints.
+        base_path: Root directory for source images.
+        input_size: Square pixel size after resize (default 224).
+        heatmap_size: Square size of the target heatmaps (default 56).
+        sigma_pixels: Gaussian sigma for target heatmaps.
+        jitter: Optional random crop jitter.
+        max_attempts: Max crop jitter retries.
+        inner_celsius_mask: If True, apply the shared inner-Celsius-only
+            mask after resize to exclude outer distractors.
+    """
 
     jitter = _identity_jitter() if jitter is None else jitter
     crop = create_jittered_crop(example, jitter)
@@ -115,6 +128,10 @@ def load_heatmap_sample(
         crop_box = (crop.crop_x1, crop.crop_y1, crop.crop_x2, crop.crop_y2)
         crop_image = image.convert("RGB").crop(crop_box).resize((input_size, input_size), Image.Resampling.LANCZOS)
         crop_array = np.asarray(crop_image, dtype=np.float32) / 255.0
+
+    if inner_celsius_mask:
+        from embedded_gauge_reading_tinyml.inner_celsius_mask import apply_inner_celsius_mask
+        crop_array = apply_inner_celsius_mask(crop_array)
 
     from embedded_gauge_reading_tinyml.heatmap_utils import HeatmapConfig, generate_center_tip_heatmaps
 
@@ -171,6 +188,7 @@ def load_heatmap_sample(
             crop.jitter_shift_x == 0 and crop.jitter_shift_y == 0 and crop.jitter_scale == 1.0 and crop.jitter_aspect == 1.0
         ),
         "jitter_attempts": int(attempts),
+        "inner_celsius_mask": bool(inner_celsius_mask),
     }
 
     return HeatmapSample(

@@ -308,8 +308,20 @@ def build_board_replay_sample(
     input_size: int = 224,
     heatmap_size: int = 56,
     sigma_pixels: float = 5.0,
+    inner_celsius_mask: bool = False,
 ) -> HeatmapSample:
-    """Build one model-ready board replay sample and its supervision heatmaps."""
+    """Build one model-ready board replay sample and its supervision heatmaps.
+
+    Args:
+        example: Source geometry example with crop box and keypoints.
+        base_path: Root directory for source images.
+        mode: Board replay preprocessing mode.
+        input_size: Square pixel size after resize (default 224).
+        heatmap_size: Square size of the target heatmaps.
+        sigma_pixels: Gaussian sigma for target heatmaps.
+        inner_celsius_mask: If True, apply the shared inner-Celsius-only
+            mask after resize to exclude outer distractors.
+    """
 
     image_path = base_path / Path(example.image_path)
     source_image, source_kind = load_board_replay_image(
@@ -329,6 +341,10 @@ def build_board_replay_sample(
         mode=mode,
         input_size=input_size,
     )
+
+    if inner_celsius_mask:
+        from embedded_gauge_reading_tinyml.inner_celsius_mask import apply_inner_celsius_mask
+        input_tensor = apply_inner_celsius_mask(input_tensor)
 
     from embedded_gauge_reading_tinyml.heatmap_utils import HeatmapConfig, generate_center_tip_heatmaps
 
@@ -355,6 +371,7 @@ def build_board_replay_sample(
             "input_size": int(input_size),
             "heatmap_size": int(heatmap_size),
             "sigma_pixels": float(sigma_pixels),
+            "inner_celsius_mask": bool(inner_celsius_mask),
         },
         center_heatmap=center_heatmap.astype(np.float32),
         tip_heatmap=tip_heatmap.astype(np.float32),

@@ -214,6 +214,12 @@ static size_t camera_baseline_estimate_history_next_index = 0U;
 static bool camera_baseline_current_frame_is_bright = false;
 static float camera_baseline_current_frame_mean_luma = 0.0f;
 static float camera_baseline_current_frame_bright_ratio = 0.0f;
+/* Keep the polar reject stream readable: log a tiny budget per frame and then
+ * suppress the repeats until the next capture request. */
+#define APP_BASELINE_POLAR_REJECT_LOG_LIMIT 3U
+static size_t app_baseline_polar_reject_log_budget =
+	APP_BASELINE_POLAR_REJECT_LOG_LIMIT;
+static bool app_baseline_polar_reject_log_suppressed = false;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -316,6 +322,14 @@ static bool AppBaselineRuntime_EstimateDialCenterFromRimVotes(
 static float AppBaselineRuntime_RunnerUpPeakAfterSuppression(
 	const float *peak_values, size_t num_bins, size_t best_index,
 	size_t suppression_bins);
+static void AppBaselineRuntime_ResetPolarRejectLogBudget(void);
+static bool AppBaselineRuntime_TryLogPolarReject(void);
+static void AppBaselineRuntime_LogPolarRejectNoPeak(const char *source_label,
+	bool bright_relaxed);
+static void AppBaselineRuntime_LogPolarRejectAngle(float angle_deg,
+	const char *source_label);
+static void AppBaselineRuntime_LogPolarRejectContinuity(long continuity_m,
+	long threshold_m, const char *source_label, bool bright_relaxed);
 static void AppBaselineRuntime_LogEstimate(
 	const AppBaselineRuntime_Estimate_t *estimate);
 /* USER CODE END PFP */
@@ -338,6 +352,88 @@ static void AppBaselineRuntime_StoreLastEstimate(
 	camera_baseline_last_angle_rad = estimate->angle_rad;
 	camera_baseline_last_confidence = estimate->confidence;
 	camera_baseline_last_result_generation++;
+}
+
+/**
+ * @brief Reset the per-frame polar reject log budget.
+ */
+static void AppBaselineRuntime_ResetPolarRejectLogBudget(void)
+{
+	app_baseline_polar_reject_log_budget = APP_BASELINE_POLAR_REJECT_LOG_LIMIT;
+	app_baseline_polar_reject_log_suppressed = false;
+}
+
+/**
+ * @brief Return true when the current frame still has room for another polar
+ * reject message. After the budget is spent, emit one suppression notice and
+ * keep the rest quiet.
+ */
+static bool AppBaselineRuntime_TryLogPolarReject(void)
+{
+	if (app_baseline_polar_reject_log_budget > 0U)
+	{
+		app_baseline_polar_reject_log_budget--;
+		return true;
+	}
+
+	if (!app_baseline_polar_reject_log_suppressed)
+	{
+		app_baseline_polar_reject_log_suppressed = true;
+		(void)DebugConsole_WriteString(
+			"[BASELINE] Polar reject logs suppressed for this frame.\r\n");
+	}
+
+	return false;
+}
+
+/**
+ * @brief Print a throttled no-peak reject.
+ */
+static void AppBaselineRuntime_LogPolarRejectNoPeak(const char *source_label,
+	bool bright_relaxed)
+{
+	if (!AppBaselineRuntime_TryLogPolarReject())
+	{
+		return;
+	}
+
+	DebugConsole_Printf("[BASELINE] Polar reject: no_peak source=%s mode=%s\r\n",
+		source_label,
+		bright_relaxed ? "bright-relaxed" : "normal");
+}
+
+/**
+ * @brief Print a throttled angle reject.
+ */
+static void AppBaselineRuntime_LogPolarRejectAngle(float angle_deg,
+	const char *source_label)
+{
+	if (!AppBaselineRuntime_TryLogPolarReject())
+	{
+		return;
+	}
+
+	const long angle_x10 = AppBaselineRuntime_RoundToLong(angle_deg * 10.0f);
+	DebugConsole_Printf("[BASELINE] Polar reject: angle=%ld.%01ld source=%s\r\n",
+		angle_x10 / 10L,
+		((angle_x10 % 10L) < 0L) ? -(angle_x10 % 10L) : (angle_x10 % 10L),
+		source_label);
+}
+
+/**
+ * @brief Print a throttled continuity reject.
+ */
+static void AppBaselineRuntime_LogPolarRejectContinuity(long continuity_m,
+	long threshold_m, const char *source_label, bool bright_relaxed)
+{
+	if (!AppBaselineRuntime_TryLogPolarReject())
+	{
+		return;
+	}
+
+	DebugConsole_Printf("[BASELINE] Polar reject: continuity=%ld/%ld source=%s mode=%s\r\n",
+		continuity_m, threshold_m, source_label,
+		bright_relaxed ? "bright-relaxed" : "normal");
 }
 
 /**
@@ -601,6 +697,7 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 		return false;
 	}
 
+	AppBaselineRuntime_ResetPolarRejectLogBudget();
 	AppBaselineRuntime_UpdateFrameBrightnessProfile(frame_bytes, frame_size);
 	{
 		const long mean_luma_x10 = AppBaselineRuntime_RoundToLong(
@@ -905,11 +1002,10 @@ static float AppBaselineRuntime_ComputeEstimateQuality(
 /**
  * @brief Return a small priority score for live geometry sources.
  *
- * Clean, near-centered captures should prefer the stable fixed-crop anchor
- * first, then the inner image center, and only then fall back to the
- * board-specific prior before we consider the bright and rim hypotheses. The
- * board prior is still useful as a rescue path on awkward framings, but it
- * should not outrank the stable crop on the ideal captures we care about most.
+ * The live captures are now biased toward the main dial, but the stable
+ * geometric families should stay close enough that a better board or rim
+ * hypothesis can win when the fixed crop is clearly wrong. Bright-center stays
+ * lower because it is still the easiest glare false positive.
  */
 static int AppBaselineRuntime_SourcePriority(const char *source_label)
 {
@@ -920,7 +1016,7 @@ static int AppBaselineRuntime_SourcePriority(const char *source_label)
 
 	if (strcmp(source_label, "fixed-crop-polar") == 0)
 	{
-		return 5;
+		return 4;
 	}
 
 	if (strcmp(source_label, "image-center-polar") == 0)
@@ -930,7 +1026,7 @@ static int AppBaselineRuntime_SourcePriority(const char *source_label)
 
 	if (strcmp(source_label, "board-prior-polar") == 0)
 	{
-		return 3;
+		return 4;
 	}
 
 	if (strcmp(source_label, "bright-center-polar") == 0)
@@ -940,7 +1036,7 @@ static int AppBaselineRuntime_SourcePriority(const char *source_label)
 
 	if (strcmp(source_label, "rim-center-polar") == 0)
 	{
-		return 1;
+		return 4;
 	}
 
 	return 0;
@@ -1691,10 +1787,10 @@ static bool AppBaselineRuntime_HasAcceptablePeakSeparation(
 /**
  * @brief Check whether a soft peak is still a safe continuation frame.
  *
- * We only relax the peak-ratio gate for the strong fixed-crop and
- * image-center families, and only when the new reading stays close to the last
- * stable temperature. That keeps the fallback conservative while still letting
- * a slightly broad but coherent frame advance the baseline.
+ * We only relax the peak-ratio gate for the stable geometric families, and
+ * only when the new reading stays close to the last stable temperature. That
+ * keeps the fallback conservative while still letting a coherent board or rim
+ * hypothesis advance the baseline when it is the better fit.
  */
 static bool AppBaselineRuntime_IsBorderlineContinuityEstimate(
 	const AppBaselineRuntime_Estimate_t *estimate)
@@ -1711,7 +1807,9 @@ static bool AppBaselineRuntime_IsBorderlineContinuityEstimate(
 
 	if ((estimate->source_label == NULL) ||
 		((strcmp(estimate->source_label, "fixed-crop-polar") != 0) &&
-		 (strcmp(estimate->source_label, "image-center-polar") != 0)))
+		 (strcmp(estimate->source_label, "image-center-polar") != 0) &&
+		 (strcmp(estimate->source_label, "board-prior-polar") != 0) &&
+		 (strcmp(estimate->source_label, "rim-center-polar") != 0)))
 	{
 		return false;
 	}
@@ -2778,14 +2876,11 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 			}
 		}
 
-		if ((top_scores[0] <= 0.0f))
-		{
-			DebugConsole_Printf(
-				"[BASELINE] Polar reject: no_peak source=%s mode=%s\r\n",
-				source_label,
-				bright_relaxed ? "bright-relaxed" : "normal");
-			return false;
-		}
+	if ((top_scores[0] <= 0.0f))
+	{
+		AppBaselineRuntime_LogPolarRejectNoPeak(source_label, bright_relaxed);
+		return false;
+	}
 
 		/* Use spoke continuity to select the best peak. The needle forms a
 		 * continuous dark spoke from center to edge, while dial markings are
@@ -3316,13 +3411,7 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 			if (!AppBaselineRuntime_IsAngleInCelsiusSweep(best_angle_deg) ||
 				AppBaselineRuntime_IsAngleInSubdialBand(best_angle_deg))
 			{
-				const long angle_x10 = AppBaselineRuntime_RoundToLong(
-					best_angle_deg * 10.0f);
-				DebugConsole_Printf(
-					"[BASELINE] Polar reject: angle=%ld.%01ld source=%s\r\n",
-					angle_x10 / 10L,
-					((angle_x10 % 10L) < 0L) ? -(angle_x10 % 10L) : (angle_x10 % 10L),
-					source_label);
+				AppBaselineRuntime_LogPolarRejectAngle(best_angle_deg, source_label);
 				return false;
 			}
 
@@ -3371,10 +3460,8 @@ static bool AppBaselineRuntime_EstimatePolarNeedle(
 							spoke_continuity * 1000.0f);
 						const long threshold_m = AppBaselineRuntime_RoundToLong(
 							final_spoke_continuity_threshold * 1000.0f);
-						DebugConsole_Printf(
-							"[BASELINE] Polar reject: continuity=%ld/%ld source=%s mode=%s\r\n",
-							continuity_m, threshold_m, source_label,
-							bright_relaxed ? "bright-relaxed" : "normal");
+						AppBaselineRuntime_LogPolarRejectContinuity(
+							continuity_m, threshold_m, source_label, bright_relaxed);
 						return false;
 					}
 				}

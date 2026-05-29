@@ -44,10 +44,11 @@ _Min_Stack_Size = 0x8000; /* required amount of stack (32KB -- main() init path 
 /* Memories definition */
 MEMORY
 {
-  ROM    (rx)     : ORIGIN = 0x34000400,   LENGTH = 511K
-  /* Shrink RAM to 512K (AXISRAM1 only) so BSS cannot grow into AXISRAM2
-     where the OBB model input buffer lives at 0x34110000.  */
-  RAM    (xrw)    : ORIGIN = 0x34080000,   LENGTH = 512K
+  ROM    (rx)     : ORIGIN = 0x34000400,   LENGTH = 520K
+  /* Shrink RAM to 503K (AXISRAM1 only) so BSS cannot grow into AXISRAM2
+     where the OBB model input buffer lives at 0x34110000.
+     ROM grew to 520K to accommodate tip-focus .rodata (epoch descriptors).  */
+  RAM    (xrw)    : ORIGIN = 0x34082400,   LENGTH = 503K
   /* Scalar model blob at 0x70200000 (matches FLASH_SCALAR in flash_boot.bat). */
   EXTRAM (rw)           : ORIGIN = 0x70200000,   LENGTH = 3200K
   /* Rectifier model blob at 0x70600000 (matches FLASH_RECTIFIER in flash_boot.bat).
@@ -64,6 +65,14 @@ MEMORY
      BSS arrays (thread stacks, frame scratch) that would otherwise push BSS
      past 0x34100000 into the OBB input buffer region.  */
   NPU_SRAM6 (xrw) : ORIGIN = 0x34350000,   LENGTH = 448K
+   /* Tip-focus geometry model: weights ~2 MiB, placed in unused xSPI2 flash
+    * at 0x70400000 (matches model's c_info.json offset_start).
+    * Flash_boot.bat programs tip_focus_weights.raw here. */
+   TIP_FOCUS_WEIGHTS (rw) : ORIGIN = 0x70400000,   LENGTH = 4096K
+  /* Tip-focus geometry model: activations ~632 KiB scratch buffer placed in
+   * unused AXISRAM3+4 (contiguous, 0x34200000, 896K).  AXISRAM3/4 are not
+   * used by any NPU model or application code. */
+  TIP_FOCUS_RAM (xrw) : ORIGIN = 0x34200000,   LENGTH = 896K
 }
 
 PHDRS
@@ -101,6 +110,18 @@ SECTIONS
     . = ALIGN(4);
     _etext = .;        /* define a global symbols at end of code */
   } >ROM :text
+
+   /* Tip-focus weights: placed BEFORE .rodata so the linker routes
+    * .rodata.g_network_weights_array here instead of into ROM.
+    * NOLOAD — the data is NOT included in the .elf binary.  The raw
+    * weight blob is extracted from the .o file in a post-compile step
+    * and must be flashed to 0x70400000 separately. */
+  .tip_focus_weights (NOLOAD) :
+  {
+    . = ALIGN(32);
+    KEEP(*(.rodata.g_network_weights_array))
+    . = ALIGN(32);
+  } >TIP_FOCUS_WEIGHTS
 
   /* Constant data into "ROM" Rom type memory */
   .rodata :
@@ -145,6 +166,16 @@ SECTIONS
     KEEP(*(.xspi2_source_crop_box_pool))
     . = ALIGN(32);
   } >EXTRAM_SOURCE_CROP_BOX
+
+  /* Tip-focus geometry model pool: placed at the tip-focus weights flash
+    * region (0x70400000).  Matches TIP_FOCUS_WEIGHTS in the MEMORY block and
+    * network_atonbuf.xSPI2.raw in flash_boot.bat. */
+  .xspi2_tip_focus_pool (NOLOAD) :
+  {
+    . = ALIGN(32);
+    KEEP(*(.xspi2_tip_focus_pool))
+    . = ALIGN(32);
+  } >TIP_FOCUS_WEIGHTS
 
   .ARM.extab   : {
     . = ALIGN(4);
@@ -239,6 +270,17 @@ SECTIONS
     _ebss = .;         /* define a global symbol at bss end */
     __bss_end__ = _ebss;
   } >RAM :data
+
+  /* Tip-focus activations scratch buffer (~632 KiB) placed in AXISRAM3+4.
+   * Defined with __attribute__((section(".tip_focus_activations"))). */
+  .tip_focus_activations (NOLOAD) :
+  {
+    . = ALIGN(32);
+    __stip_focus_activations = .;
+    KEEP(*(.tip_focus_activations))
+    KEEP(*(.tip_focus_activations*))
+    . = ALIGN(32);
+  } >TIP_FOCUS_RAM
 
   /* AXISRAM6 section for large BSS arrays displaced from main RAM to avoid
      overlapping the OBB model input buffer in AXISRAM2 (0x34110000).  */

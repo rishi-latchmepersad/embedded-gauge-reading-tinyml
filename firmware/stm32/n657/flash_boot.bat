@@ -36,6 +36,11 @@ set "OBB_BIN=%SCRIPT_DIR%Appli\Debug\obb_model_stage.bin"
 set "SOURCE_CROP_BOX_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.source_crop_box.xSPI2.raw"
 if not exist "%SOURCE_CROP_BOX_RAW%" set "SOURCE_CROP_BOX_RAW=%REPO_ROOT%st_ai_output\atonbuf.source_crop_box.xSPI2.raw"
 set "SOURCE_CROP_BOX_BIN=%SCRIPT_DIR%Appli\Debug\source_crop_box_model_stage.bin"
+REM Tip-focus geometry weights blob (~2.1 MiB), provided directly by the NPU
+REM export as network_atonbuf.xSPI2.raw.  Flashed to 0x70C00000.
+set "TIP_FOCUS_WEIGHTS_RAW=%SCRIPT_DIR%st_ai_output\packages\tip_focus_v4_112_int8_n6_npu\st_ai_output\network_atonbuf.xSPI2.raw"
+if not exist "%TIP_FOCUS_WEIGHTS_RAW%" set "TIP_FOCUS_WEIGHTS_RAW=%REPO_ROOT%st_ai_output\packages\tip_focus_v4_112_int8_n6_npu\st_ai_output\network_atonbuf.xSPI2.raw"
+set "TIP_FOCUS_WEIGHTS_BIN=%SCRIPT_DIR%Appli\Debug\tip_focus_weights_stage.bin"
 set "APP_BIN=%SCRIPT_DIR%Appli\Debug\n657_Appli.bin"
 set "APP_SIGN=%SCRIPT_DIR%Appli\Debug\n657_Appli_sign_new.bin"
 set "APP_SIGN_TMP=%SCRIPT_DIR%Appli\Debug\n657_Appli_sign_tmp.bin"
@@ -78,6 +83,10 @@ if "%FLASH_MODEL%"=="1" if not exist "%OBB_RAW%" (
 if "%FLASH_MODEL%"=="1" if not exist "%SOURCE_CROP_BOX_RAW%" (
     echo ERROR: Source-crop-box model not found: "%SOURCE_CROP_BOX_RAW%"
     exit /b 1
+)
+if "%FLASH_MODEL%"=="1" if not exist "%TIP_FOCUS_WEIGHTS_RAW%" (
+    echo WARNING: Tip-focus weights not found: "%TIP_FOCUS_WEIGHTS_RAW%"
+    echo The tip-focus geometry stage will fail at runtime.  Re-export the NPU model to generate it.
 )
 
 echo.
@@ -163,6 +172,25 @@ if "%FLASH_MODEL%"=="1" (
         exit /b 1
     )
     echo Source-crop-box model flashed at 0x70B00000.
+
+    if exist "%TIP_FOCUS_WEIGHTS_RAW%" (
+        echo === Step 4e: Flash tip-focus weights at 0x70400000 ===
+        echo Tip-focus weights source: "%TIP_FOCUS_WEIGHTS_RAW%"
+        for %%I in ("%TIP_FOCUS_WEIGHTS_RAW%") do echo Tip-focus weights source size: %%~zI bytes
+        copy /y "%TIP_FOCUS_WEIGHTS_RAW%" "%TIP_FOCUS_WEIGHTS_BIN%" >nul
+        if errorlevel 1 (
+            echo WARNING: Could not stage tip-focus weights as .bin.
+        ) else (
+            "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%TIP_FOCUS_WEIGHTS_BIN%" 0x70400000
+            if errorlevel 1 (
+                echo WARNING: Tip-focus weights flash failed.
+            ) else (
+                echo Tip-focus weights flashed at 0x70400000.
+            )
+        )
+    ) else (
+        echo === Step 4e: Skipping tip-focus weights (not found) ===
+    )
 ) else (
     echo === Step 4: Skipping model image flash (FLASH_MODEL not set) ===
 )
