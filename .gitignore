@@ -60,6 +60,14 @@ ml/data/raw/*
 ml/data/captured_images/_debug/
 ml/data/captured_images/_live_rectified_probe/
 
+# Generated dataset outputs
+ml/data/captured_images/
+ml/data/preprocessed_crops/
+ml/data/labelled/*.zip
+ml/data/board_captures_labeled.csv
+ml/data/board_captures_labeled_v2.csv
+ml/data/merged_geometry_board_manifest.csv
+
 #ignore build files
 /build/*
 firmware/stm32/N657X0_bringup/build/*
@@ -74,6 +82,7 @@ ml/__pycache__/*
 ml/.pytest_cache/*
 __pycache__/*
 *.pyc
+st_ai_output/*
 firmware/stm32/n657/st_ai_output/*
 !firmware/stm32/n657/st_ai_output/.gitkeep
 
