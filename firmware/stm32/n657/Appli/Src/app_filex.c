@@ -725,10 +725,7 @@ static void AppFileX_StateMachine_Step(
 		/* Drain a bounded number of messages each cycle so we do not starve other work. */
 
 		if (context_ptr->log_service_is_initialized != 0U) {
-#if 0
-			/* Temporarily disable SD debug-log draining while isolating capture/save deadlock behavior. */
 			SdDebugLogService_ServiceQueue(32U);
-#endif
 		}
 		break;
 	}

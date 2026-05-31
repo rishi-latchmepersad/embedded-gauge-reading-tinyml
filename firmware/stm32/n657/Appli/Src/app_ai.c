@@ -49,6 +49,7 @@
 #include "npu_cache.h"
 #include "stm32n6xx_hal.h"
 #include "ai_network_tip_focus_v4_112_int8.h"
+#include "app_center_detector.h"
 
 /*
  * The STM32N6 ATON runtime library expects this wait-mask state symbol when
@@ -218,13 +219,16 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 /* Dead-zone mask constant: logits outside the gauge sweep are set to this
  * large negative value so they become zero after softmax. */
 #define APP_AI_POLAR_MASK_LOGIT (-1.0e9f)
+/* Scalar model image path (deprecated — retained for the scalar stage spec). */
 #define APP_AI_SCALAR_XSPI2_MODEL_IMAGE_PATH \
 	"packages/mobilenetv2_rectified_scalar_finetune_v2/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8_atonbuf.xSPI2.raw"
+#define APP_AI_CENTER_DETECTOR_XSPI2_MODEL_IMAGE_PATH \
+	"packages/center_detector_v1_int8/st_ai_output/mobilenetv2_center_detector_atonbuf.xSPI2.raw"
 #define APP_AI_RECTIFIER_XSPI2_MODEL_IMAGE_PATH \
 	"atonbuf.rectifier.xSPI2.raw"
 #define APP_AI_OBB_XSPI2_MODEL_IMAGE_PATH \
 	"packages/prod_model_v0.3_obb_int8/st_ai_output/mobilenetv2_obb_longterm_atonbuf.xSPI2.raw"
-#define APP_AI_XSPI2_MODEL_IMAGE_PATH APP_AI_SCALAR_XSPI2_MODEL_IMAGE_PATH
+#define APP_AI_XSPI2_MODEL_IMAGE_PATH APP_AI_CENTER_DETECTOR_XSPI2_MODEL_IMAGE_PATH
 #define APP_AI_XSPI2_PROGRAM_CHUNK_BYTES 4096U
 #define APP_AI_XSPI2_ERASE_BLOCK_BYTES (64U * 1024U)
 #define APP_AI_XSPI2_PROBE_BYTES 16U
@@ -322,9 +326,13 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 #define APP_AI_XSPI2_RECTIFIER_CHIP_OFFSET (APP_AI_XSPI2_RECTIFIER_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
 #define APP_AI_XSPI2_OBB_BASE_ADDR 0x70700000UL
 #define APP_AI_XSPI2_OBB_CHIP_OFFSET (APP_AI_XSPI2_OBB_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
-/* Legacy alias used by the single-stage logging helpers; points to scalar. */
-#define APP_AI_XSPI2_MODEL_BASE_ADDR APP_AI_XSPI2_SCALAR_BASE_ADDR
-#define APP_AI_XSPI2_MODEL_CHIP_OFFSET APP_AI_XSPI2_SCALAR_CHIP_OFFSET
+/* Center detector model: reuses the scalar flash slot at 0x70200000.
+ * The scalar model has been replaced by the center detector. */
+#define APP_AI_XSPI2_CENTER_DETECTOR_BASE_ADDR APP_AI_XSPI2_SCALAR_BASE_ADDR
+#define APP_AI_XSPI2_CENTER_DETECTOR_CHIP_OFFSET (APP_AI_XSPI2_CENTER_DETECTOR_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
+/* Legacy alias used by the single-stage logging helpers; points to center detector. */
+#define APP_AI_XSPI2_MODEL_BASE_ADDR APP_AI_XSPI2_CENTER_DETECTOR_BASE_ADDR
+#define APP_AI_XSPI2_MODEL_CHIP_OFFSET APP_AI_XSPI2_CENTER_DETECTOR_CHIP_OFFSET
 /* FileX can take a while to recover from card init retries or media errors.
  * Give the loader a longer window so we do not give up just before the stack
  * settles. */
@@ -379,10 +387,21 @@ static size_t app_ai_forced_crop_y_min = 0U;
 static size_t app_ai_forced_crop_width = 0U;
 static size_t app_ai_forced_crop_height = 0U;
 static const char *app_ai_forced_crop_label = NULL;
+/* Scalar model pool: 32-byte placeholder at 0x70200000 (EXTRAM).
+ * The weight blob is pre-flashed to xSPI2 at this address; the NPU reads
+ * weights directly from flash, not through this array. */
 __attribute__((section(".xspi2_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
 uint8_t _mem_pool_xSPI2_scalar_full_finetune_from_best_piecewise_calibrated_int8[32U] = {
 	0U,
 };
+/* Center detector pool alias: shares the same xSPI2 flash address (0x70200000)
+ * as the (now-deprecated) scalar model.  Both weight blobs cannot be present
+ * simultaneously; the center detector blob replaces the scalar blob in flash.
+ * The alias avoids a second 32-byte placeholder at a different address, which
+ * would shift every weight offset in the generated NPU code. */
+__asm__(".global _mem_pool_xSPI2_mobilenetv2_center_detector\n"
+	".set _mem_pool_xSPI2_mobilenetv2_center_detector, "
+	"_mem_pool_xSPI2_scalar_full_finetune_from_best_piecewise_calibrated_int8");
 /* Rectifier pool placed in its own section so the linker script can map it to
  * the rectifier flash region at 0x70600000 ??? matching FLASH_RECTIFIER in
  * flash_boot.bat.  The NPU resolves all weight addresses as:
@@ -539,6 +558,10 @@ LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 	mobilenetv2_obb_longterm);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 	mobilenetv2_source_crop_box_v1_stripped_int8);
+/* Center detector replaces the scalar CNN as the sole inference authority.
+ * Its weight blob lives at 0x70200000 (the old scalar slot). */
+LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
+	mobilenetv2_center_detector);
 
 typedef struct AppAI_ModelStageSpec AppAI_ModelStageSpec;
 
@@ -592,6 +615,19 @@ static const AppAI_ModelStageSpec app_ai_scalar_stage = {
 	.uses_rectifier_box = false,
 	.xspi2_chip_offset = APP_AI_XSPI2_SCALAR_CHIP_OFFSET,
 	.xspi2_base_addr = APP_AI_XSPI2_SCALAR_BASE_ADDR,
+};
+
+static const AppAI_ModelStageSpec app_ai_center_detector_stage = {
+	.stage_label = "center_detector",
+	.model_image_path = APP_AI_CENTER_DETECTOR_XSPI2_MODEL_IMAGE_PATH,
+	.nn_instance = &NN_Instance_mobilenetv2_center_detector,
+	.network_init_fn =
+		LL_ATON_EC_Network_Init_mobilenetv2_center_detector,
+	.inference_init_fn =
+		LL_ATON_EC_Inference_Init_mobilenetv2_center_detector,
+	.uses_rectifier_box = false,
+	.xspi2_chip_offset = APP_AI_XSPI2_CENTER_DETECTOR_CHIP_OFFSET,
+	.xspi2_base_addr = APP_AI_XSPI2_CENTER_DETECTOR_BASE_ADDR,
 };
 
 static const AppAI_ModelStageSpec app_ai_rectifier_stage = {
@@ -2291,28 +2327,6 @@ static bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr)
 	return true;
 }
 
-#if 0
-static bool AppAI_Xspi2ModelImageMatchesFlash(void) {
-	if (!AppAI_Xspi2ReadFlashProbe(APP_AI_XSPI2_SCALAR_CHIP_OFFSET, 0U,
-			app_ai_xspi2_signature_start,
-			sizeof(app_ai_xspi2_signature_start))) {
-		DebugConsole_Printf("[AI] xSPI2 verify failed at start signature.\r\n");
-		return false;
-	}
-
-	if ((app_ai_xspi2_programmed_size >= APP_AI_XSPI2_PROBE_BYTES)
-			&& !AppAI_Xspi2ReadFlashProbe(APP_AI_XSPI2_SCALAR_CHIP_OFFSET,
-					app_ai_xspi2_programmed_size - APP_AI_XSPI2_PROBE_BYTES,
-					app_ai_xspi2_signature_tail,
-					sizeof(app_ai_xspi2_signature_tail))) {
-		DebugConsole_Printf("[AI] xSPI2 verify failed at tail signature.\r\n");
-		return false;
-	}
-
-	return true;
-}
-#endif /* 0 */
-
 static bool AppAI_Xspi2ModelImageMatchesMappedFlash(void)
 {
 	if (!AppAI_Xspi2ReadMappedProbe(0U, app_ai_xspi2_signature_start,
@@ -2770,240 +2784,6 @@ static bool AppAI_ReadXspi2ModelSourceProbes(FX_FILE *model_file_ptr,
 
 	return true;
 }
-
-#if 0
-static bool AppAI_ProgramXspi2ModelImageFromSdForStage(
-		const AppAI_ModelStageSpec *stage) {
-	FX_MEDIA *media_ptr = NULL;
-	FX_FILE model_file = { 0 };
-	ULONG file_size = 0U;
-	ULONG bytes_read = 0U;
-	ULONG bytes_remaining = 0U;
-	ULONG flash_offset = 0U;
-	UINT fx_status = FX_SUCCESS;
-	UINT tx_status = TX_SUCCESS;
-	int32_t bsp_status = BSP_ERROR_NONE;
-	uint8_t source_prefix[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
-	uint8_t source_tail[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
-	bool has_tail_probe = false;
-
-	if ((stage == NULL) || (stage->model_image_path == NULL)) {
-		return false;
-	}
-
-	if (!AppAI_WaitForFileXMediaReady(APP_AI_FILEX_MEDIA_READY_TIMEOUT_MS)) {
-		AppAI_LogXspi2LoadFailure(stage->stage_label, FX_MEDIA_NOT_OPEN,
-				BSP_ERROR_NONE);
-		return false;
-	}
-
-	(void) DebugConsole_WriteString("[AI] xSPI2 stage acquire media lock start.\r\n");
-	tx_status = AppFileX_AcquireMediaLock();
-	if (tx_status != TX_SUCCESS) {
-		AppAI_LogXspi2LoadFailure(stage->stage_label, (UINT) tx_status,
-				BSP_ERROR_NONE);
-		return false;
-	}
-	(void) DebugConsole_WriteString("[AI] xSPI2 stage acquire media lock OK.\r\n");
-
-	media_ptr = AppFileX_GetMediaHandle();
-	if (media_ptr == NULL) {
-		AppFileX_ReleaseMediaLock();
-		AppAI_LogXspi2LoadFailure(stage->stage_label, FX_MEDIA_NOT_OPEN,
-				BSP_ERROR_NONE);
-		return false;
-	}
-
-	(void) DebugConsole_WriteString("[AI] xSPI2 stage media handle OK.\r\n");
-	if (fx_directory_default_set(media_ptr, FX_NULL) != FX_SUCCESS) {
-		AppFileX_ReleaseMediaLock();
-		AppAI_LogXspi2LoadFailure(stage->stage_label, FX_SUCCESS,
-				BSP_ERROR_NONE);
-		return false;
-	}
-	(void) DebugConsole_WriteString("[AI] xSPI2 stage directory reset OK.\r\n");
-
-	(void) DebugConsole_WriteString("[AI] xSPI2 stage file open start.\r\n");
-	fx_status = fx_file_open(media_ptr, &model_file,
-			(CHAR *) stage->model_image_path, FX_OPEN_FOR_READ);
-	if (fx_status != FX_SUCCESS) {
-		(void) fx_directory_default_set(media_ptr, FX_NULL);
-		AppFileX_ReleaseMediaLock();
-		AppAI_LogXspi2LoadFailure(stage->stage_label, fx_status, BSP_ERROR_NONE);
-		return false;
-	}
-	(void) DebugConsole_WriteString("[AI] xSPI2 stage file open OK.\r\n");
-
-	file_size = model_file.fx_file_current_file_size;
-	if (file_size == 0U) {
-		(void) fx_file_close(&model_file);
-		(void) fx_directory_default_set(media_ptr, FX_NULL);
-		AppFileX_ReleaseMediaLock();
-		AppAI_LogXspi2LoadFailure(stage->stage_label, FX_SUCCESS,
-				BSP_ERROR_NONE);
-		return false;
-	}
-	DebugConsole_Printf("[AI] %s model file size: %lu bytes.\r\n",
-			stage->stage_label, (unsigned long) file_size);
-
-	(void) DebugConsole_WriteString("[AI] xSPI2 stage source probes start.\r\n");
-	if (!AppAI_ReadXspi2ModelSourceProbes(&model_file, file_size,
-			source_prefix, source_tail, &has_tail_probe)) {
-		(void) fx_file_close(&model_file);
-		(void) fx_directory_default_set(media_ptr, FX_NULL);
-		AppFileX_ReleaseMediaLock();
-		AppAI_LogXspi2LoadFailure(stage->stage_label, FX_SUCCESS,
-				BSP_ERROR_COMPONENT_FAILURE);
-		return false;
-	}
-	(void) DebugConsole_WriteString("[AI] xSPI2 stage source probes OK.\r\n");
-
-	for (ULONG erase_addr = 0U; erase_addr < file_size;
-			erase_addr += APP_AI_XSPI2_ERASE_BLOCK_BYTES) {
-		bsp_status = BSP_XSPI_NOR_Erase_Block(0U,
-				stage->xspi2_chip_offset + erase_addr,
-				BSP_XSPI_NOR_ERASE_64K);
-		if (bsp_status != BSP_ERROR_NONE) {
-			(void) fx_file_close(&model_file);
-			(void) fx_directory_default_set(media_ptr, FX_NULL);
-			AppFileX_ReleaseMediaLock();
-			AppAI_LogXspi2LoadFailure(stage->stage_label, FX_SUCCESS,
-					bsp_status);
-			return false;
-		}
-	}
-
-	bytes_remaining = file_size;
-	flash_offset = 0U;
-	{
-		ULONG chunk_index = 0U;
-		(void) DebugConsole_WriteString("[AI] xSPI2 stage write begin.\r\n");
-
-		while (bytes_remaining > 0U) {
-			const ULONG chunk_size = (bytes_remaining > APP_AI_XSPI2_PROGRAM_CHUNK_BYTES)
-					? APP_AI_XSPI2_PROGRAM_CHUNK_BYTES
-					: bytes_remaining;
-
-			if (chunk_index == 0U) {
-				(void) DebugConsole_WriteString(
-						"[AI] xSPI2 stage first chunk write start.\r\n");
-			}
-			if ((flash_offset == 0U)
-					|| ((flash_offset % APP_AI_XSPI2_ERASE_BLOCK_BYTES) == 0U)) {
-				AppAI_LogXspi2ProgramChunkProgress(chunk_index, flash_offset,
-						chunk_size);
-			}
-
-			bytes_read = 0U;
-			fx_status = fx_file_read(&model_file, app_ai_xspi2_program_buffer,
-					chunk_size, &bytes_read);
-			if ((fx_status != FX_SUCCESS) || (bytes_read != chunk_size)) {
-				(void) fx_file_close(&model_file);
-				(void) fx_directory_default_set(media_ptr, FX_NULL);
-				AppFileX_ReleaseMediaLock();
-				AppAI_LogXspi2LoadFailure(stage->stage_label, fx_status,
-						BSP_ERROR_NONE);
-				return false;
-			}
-
-			/* Keep the flash writer honest: clean the staging buffer cache lines
-			 * before BSP_XSPI_NOR_Write() reads the fresh file contents. */
-			(void) mcu_cache_clean_range((uint32_t) (uintptr_t) app_ai_xspi2_program_buffer,
-					(uint32_t) (uintptr_t) app_ai_xspi2_program_buffer
-							+ (uint32_t) chunk_size);
-
-			bsp_status = BSP_XSPI_NOR_Write(0U, app_ai_xspi2_program_buffer,
-					stage->xspi2_chip_offset + flash_offset,
-					(uint32_t) chunk_size);
-			if (bsp_status != BSP_ERROR_NONE) {
-				(void) fx_file_close(&model_file);
-				(void) fx_directory_default_set(media_ptr, FX_NULL);
-				AppFileX_ReleaseMediaLock();
-				AppAI_LogXspi2LoadFailure(stage->stage_label, FX_SUCCESS,
-						bsp_status);
-				return false;
-			}
-
-			flash_offset += chunk_size;
-			bytes_remaining -= chunk_size;
-			chunk_index++;
-		}
-	}
-	(void) DebugConsole_WriteString("[AI] xSPI2 stage write complete.\r\n");
-	AppAI_LogXspi2FlashStatus("rectifier stage write complete");
-
-	/* Probe the first 16 bytes back from flash immediately after write (still in
-	 * indirect/write mode) to confirm the data landed at the expected address. */
-	{
-		uint8_t post_write[APP_AI_XSPI2_PROBE_BYTES] = { 0U };
-		char pwlog[128];
-		(void) BSP_XSPI_NOR_Read(0U, post_write,
-				stage->xspi2_chip_offset, APP_AI_XSPI2_PROBE_BYTES);
-#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
-		(void) DebugConsole_Snprintf(pwlog, sizeof(pwlog),
-				"[AI] %s post-write probe: [%02X%02X%02X%02X%02X%02X%02X%02X"
-				"%02X%02X%02X%02X%02X%02X%02X%02X] "
-				"src=[%02X%02X%02X%02X%02X%02X%02X%02X"
-				"%02X%02X%02X%02X%02X%02X%02X%02X]\r\n",
-				stage->stage_label,
-				post_write[0],post_write[1],post_write[2],post_write[3],
-				post_write[4],post_write[5],post_write[6],post_write[7],
-				post_write[8],post_write[9],post_write[10],post_write[11],
-				post_write[12],post_write[13],post_write[14],post_write[15],
-				source_prefix[0],source_prefix[1],source_prefix[2],source_prefix[3],
-				source_prefix[4],source_prefix[5],source_prefix[6],source_prefix[7],
-				source_prefix[8],source_prefix[9],source_prefix[10],source_prefix[11],
-				source_prefix[12],source_prefix[13],source_prefix[14],source_prefix[15]);
-		(void) DebugConsole_WriteString(pwlog);
-#endif
-	}
-
-	(void) fx_file_close(&model_file);
-	(void) fx_directory_default_set(media_ptr, FX_NULL);
-	AppFileX_ReleaseMediaLock();
-
-	app_ai_xspi2_programmed_size = file_size;
-	/* Update the per-stage size so the verify tail-probe uses the right offset
-	 * regardless of which stage was provisioned last. */
-	if (strcmp(stage->stage_label, "rectifier") == 0) {
-		app_ai_rectifier_programmed_size = file_size;
-		(void) memcpy(app_ai_rectifier_sig_start, source_prefix,
-				APP_AI_XSPI2_PROBE_BYTES);
-		(void) memcpy(app_ai_rectifier_sig_tail, source_tail,
-				APP_AI_XSPI2_PROBE_BYTES);
-		app_ai_rectifier_sig_valid = has_tail_probe;
-	} else {
-		app_ai_scalar_programmed_size = file_size;
-		(void) memcpy(app_ai_scalar_sig_start, source_prefix,
-				APP_AI_XSPI2_PROBE_BYTES);
-		(void) memcpy(app_ai_scalar_sig_tail, source_tail,
-				APP_AI_XSPI2_PROBE_BYTES);
-		app_ai_scalar_sig_valid = has_tail_probe;
-	}
-
-	if (!AppAI_ReconfigureXspi2ForRuntime()) {
-		AppAI_LogXspi2LoadFailure(stage->stage_label, FX_SUCCESS,
-				BSP_ERROR_COMPONENT_FAILURE);
-		return false;
-	}
-	if (!AppAI_Xspi2EnableMemoryMappedMode()) {
-		AppAI_LogXspi2LoadFailure("enable MM after provision", FX_SUCCESS,
-				BSP_ERROR_COMPONENT_FAILURE);
-		return false;
-	}
-
-	(void) DebugConsole_WriteString(
-			"[AI] xSPI2 stage provisioning complete; verify skipped.\r\n");
-	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS) {
-		AppAI_LogXspi2IndirectAndMappedPrefix();
-		AppAI_LogXspi2MappedScaleBytes();
-	}
-	app_ai_loaded_xspi2_stage = stage;
-	DebugConsole_Printf("[AI] %s xSPI2 model image ready.\r\n",
-			stage->stage_label);
-	return true;
-}
-#endif /* 0 */
 
 static bool AppAI_EnsureXspi2ModelImageReadyForStage(
 	const AppAI_ModelStageSpec *stage)
@@ -4810,58 +4590,6 @@ static bool AppAI_WaitForFileXMediaReady(uint32_t timeout_ms)
 	return true;
 }
 
-#if 0
-static bool AppAI_EnsureXspi2ModelImageReady(void) {
-	if (app_ai_xspi2_initialized) {
-		return true;
-	}
-
-	/* The runtime consumes the blob through the mapped xSPI2 window, so verify
-	 * that view first. Some boots leave the indirect probe path in a misleading
-	 * state even when the programmed image is still present. */
-	if (!AppAI_ReconfigureXspi2ForRuntime()) {
-		AppAI_LogXspi2LoadFailure("runtime reconfigure", FX_SUCCESS,
-				BSP_ERROR_COMPONENT_FAILURE);
-		return false;
-	}
-	if (!AppAI_Xspi2EnableMemoryMappedMode()) {
-		AppAI_LogXspi2LoadFailure("enable MM for verify", FX_SUCCESS,
-				BSP_ERROR_COMPONENT_FAILURE);
-		return false;
-	}
-
-	if (AppAI_Xspi2ModelImageMatchesMappedFlash()) {
-		DebugConsole_Printf(
-				"[AI] xSPI2 model image already present; skipping provisioning.\r\n");
-		AppAI_LogXspi2IndirectAndMappedPrefix();
-		AppAI_LogXspi2MappedScaleBytes();
-	} else {
-		DebugConsole_Printf(
-				"[AI] xSPI2 model image missing or stale; programming from SD card.\r\n");
-		if (!AppAI_EnsureXspi2MemoryReady()) {
-			AppAI_LogXspi2LoadFailure("xSPI2 memory", FX_SUCCESS,
-					BSP_ERROR_COMPONENT_FAILURE);
-			return false;
-		}
-
-		if (!AppAI_ProgramXspi2ModelImageFromSd()) {
-			DebugConsole_Printf(
-					"[AI] xSPI2 model image provisioning failed.\r\n");
-			return false;
-		}
-	}
-
-	if (!AppAI_Xspi2ModelImageMatchesMappedFlash()) {
-		DebugConsole_Printf(
-				"[AI] xSPI2 mapped verify failed after provisioning.\r\n");
-	}
-
-	app_ai_xspi2_initialized = true;
-	DebugConsole_Printf("[AI] xSPI2 model image ready.\r\n");
-	return true;
-}
-#endif /* 0 */
-
 bool App_AI_Model_Init(void)
 {
 	if (app_ai_runtime_initialized)
@@ -5437,6 +5165,12 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	if (!App_AI_Model_Init())
 	{
 		(void)DebugConsole_WriteString("[AI] Dry-run entry aborted during model init.\r\n");
+		return false;
+	}
+
+	if (!AppCenterDetector_Init())
+	{
+		(void)DebugConsole_WriteString("[AI] Dry-run entry aborted during center-detector init.\r\n");
 		return false;
 	}
 	AppAI_LogR9("post_model_init");
@@ -6065,20 +5799,49 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 #endif
 	}
 #endif
-	if (!AppAI_RunStageInference(&app_ai_scalar_stage, safe_frame_bytes, frame_size,
-								 &scalar_crop, &scalar_output_info, &scalar_output_value))
+	/* ----------------------------------------------------------------------
+	 * Center detector + polar-vote pipeline.
+	 * Replaces the scalar CNN stage.  The OBB crop (scalar_crop) is fed
+	 * to the center detector, which predicts the gauge centre (cx, cy) in
+	 * crop coordinates, maps to full-frame, then runs polar-vote to find
+	 * the needle angle and convert to temperature.
+	 * ---------------------------------------------------------------------- */
 	{
-		(void)DebugConsole_WriteString("[AI] Dry-run entry aborted during scalar stage.\r\n");
-		return false;
+		AppCenterDetector_Result_t cd_result = {0};
+		if (AppCenterDetector_Run(safe_frame_bytes, frame_size,
+				scalar_crop.x_min, scalar_crop.y_min,
+				scalar_crop.width, scalar_crop.height,
+				APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
+				APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS,
+				&cd_result))
+		{
+			if (cd_result.valid)
+			{
+				app_ai_last_inference_value = cd_result.temperature_c;
+				app_ai_last_inference_valid = true;
+				DebugConsole_Printf(
+					"[AI] Center detector: center=(%.1f,%.1f) "
+					"angle=%.2f\u00B0 temp=%.1f\u00B0C conf=%.2f\r\n",
+					(double)cd_result.center_x,
+					(double)cd_result.center_y,
+					(double)(cd_result.needle_angle_rad * 180.0 / 3.14159),
+					(double)cd_result.temperature_c,
+					(double)cd_result.confidence);
+			}
+			else
+			{
+				DebugConsole_WriteString(
+					"[AI] Center detector: polar vote failed (no clear needle).\r\n");
+				app_ai_last_inference_valid = false;
+			}
+		}
+		else
+		{
+			DebugConsole_WriteString(
+				"[AI] Center detector pipeline failed.\r\n");
+			app_ai_last_inference_valid = false;
+		}
 	}
-
-#if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
-	(void)scalar_output_value;
-#else
-	app_ai_last_inference_value =
-		AppAI_TraceAndApplyInferenceCalibration(scalar_output_value);
-	app_ai_last_inference_valid = true;
-#endif
 
 	return true;
 #endif

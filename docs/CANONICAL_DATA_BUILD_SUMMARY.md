@@ -56,7 +56,7 @@
 
 ## Next Steps (Phase 4-6)
 
-According to `plan.md`, the next phases are:
+The next phases are:
 
 ### Phase 4: Baseline Retrain
 - Train MobileNetV2 (alpha=0.35) on canonical splits

@@ -402,12 +402,19 @@ def main() -> None:
         args.workspace_dir,
         model_name=args.name,
     )
-    shutil.copy2(generated_raw, canonical_raw)
-    print(
-        "[RELOC] Canonical xSPI2 raw blob refreshed: "
-        f"{canonical_raw} (source={generated_raw})",
-        flush=True,
-    )
+    if generated_raw.resolve() != canonical_raw.resolve():
+        shutil.copy2(generated_raw, canonical_raw)
+        print(
+            "[RELOC] Canonical xSPI2 raw blob refreshed: "
+            f"{canonical_raw} (source={generated_raw})",
+            flush=True,
+        )
+    else:
+        print(
+            "[RELOC] Canonical xSPI2 raw blob already at destination: "
+            f"{canonical_raw}",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

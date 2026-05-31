@@ -164,19 +164,10 @@ static void VD6G_Delay(struct VD6G_Ctx *ctx, uint32_t delay_in_ms)
 
 static void VD6G_Log(struct VD6G_Ctx *ctx, int lvl, const char *format, va_list ap)
 {
-#if 0
-  const int current_lvl = VD6G_LVL_DBG(0);
-
-  if (lvl > current_lvl)
-    return ;
-
-  vprintf(format, ap);
-#else
   (void)ctx;
   (void)lvl;
   (void)format;
   (void)ap;
-#endif
 }
 
 static int CMW_VD56G3_GetResType(uint32_t width, uint32_t height, VD6G_Res_t *res)

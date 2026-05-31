@@ -365,7 +365,7 @@ CubeProgrammer appeared to silently fail to program sectors 82-83 (0x70520000). 
 - `app_ai.c`: `APP_AI_XSPI2_RECTIFIER_BASE_ADDR = 0x70600000UL`, `APP_AI_XSPI2_RECTIFIER_CHIP_OFFSET = 0x00600000UL`
 - `flash_boot.bat`: `FLASH_RECTIFIER` address = `0x70600000`
 - `STM32N657X0HXQ_LRUN.ld`: `EXTRAM_RECTIFIER ORIGIN = 0x70600000`
-- `CLAUDE.md`: model section updated
+- Model section updated
 
 ### Binary/flash timing race — verify timestamp before flashing
 
@@ -425,7 +425,7 @@ The gauge was at 14°C and then 35°C, board always reported -8.168633°C (`bits
 
 ## Stable Working References
 
-- Roadmap: `PLANS.md`
+- Roadmap: archived planning notes
 - Repo working rules: `AGENTS.md`
 
 ## Current Model Deployment State (2026-04-19)
@@ -1263,3 +1263,20 @@ Takeaway:
 - Ordinal was the best of the three, but it still fell well short of the `v8` board-probe hard-case performance.
 - Coarse-to-fine and two-stage were both worse, even though the coarse head learned quickly.
 - The current best polar-vote baseline remains `v8`; if we revisit supervision shape again, it should probably be a new geometry formulation rather than just another classification head on the same polar features.
+
+## 2026-05-18 to 2026-05-29: Moved From Live Memory
+
+The detailed daily notes that used to live in `docs/ai-memory.md` were moved out of the live file during the cleanup pass because they are no longer the current state of the project.
+
+### Model Experiments
+- 2026-05-29: `direct_v2` remained the best board reader at 8.01 C MAE. Sweep-logits and polar-evidence variants underperformed, mainly because classification was harder than regression at the sample sizes available.
+- 2026-05-28: tip-focus hardfault fixes covered the R9 activation base, xSPI2 flash programming, and the first center-detector integration notes.
+- 2026-05-27: tip-focus and OBB runtime fixes covered xSPI2 address alignment, AXISRAM2 enable, and inner-celsius mask overflow cleanup.
+- 2026-05-24 to 2026-05-25: aux-head and QAT strategies were exhausted. `tip_focus` stayed the best candidate, and Cube.AI INT8 packaging was feasible.
+- 2026-05-20 to 2026-05-23: geometry-heatmap, localizer, source-crop-box, and detector-style crop experiments were useful, but they did not replace the later hybrid center-selector direction.
+- 2026-05-19 and earlier: the archive retains the classical baseline tuning, calibration fixes, capture and storage stabilization, RTC seeding, and earlier hard-fault debugging history.
+
+### Why It Was Moved
+- The live memory file should stay short and current.
+- The detailed chronology above is historical context, not the active project state.
+- Topic-specific details remain available in the existing topical files under `docs/ai-memory/`.

@@ -286,7 +286,7 @@ static float AppBaselineRuntime_ReadEdgeMagnitude(const uint8_t *frame_bytes,
 												  float *background_luma_out);
 static bool AppBaselineRuntime_IsInSubdialMask(size_t center_x, size_t center_y,
 											   size_t x, size_t y, float radius_px);
-static bool AppBaselineRuntime_EstimatePolarNeedle(
+bool AppBaselineRuntime_EstimatePolarNeedle(
 	const uint8_t *frame_bytes, size_t frame_size,
 	size_t frame_width_pixels, size_t frame_height_pixels,
 	size_t scan_x_min, size_t scan_y_min, size_t scan_x_max,
@@ -2075,7 +2075,7 @@ static bool AppBaselineRuntime_SelectSmoothedEstimate(
 /**
  * @brief Map an angle inside the gauge sweep to a temperature.
  */
-static float AppBaselineRuntime_ConvertAngleToTemperature(float angle_rad)
+float AppBaselineRuntime_ConvertAngleToTemperature(float angle_rad)
 {
 	/* Apply calibration offset determined from hard-case analysis.
 	 * The detected angles are consistently ~2° low compared to expected
@@ -2603,7 +2603,7 @@ static float AppBaselineRuntime_ScoreAngle(const uint8_t *frame_bytes,
  * - vote for spoke angles using Sobel edge alignment in the inner annulus
  * - keep the strongest angular peak if it stands clearly above background
  */
-static bool AppBaselineRuntime_EstimatePolarNeedle(
+bool AppBaselineRuntime_EstimatePolarNeedle(
 	const uint8_t *frame_bytes, size_t frame_size,
 	size_t frame_width_pixels, size_t frame_height_pixels,
 	size_t scan_x_min, size_t scan_y_min, size_t scan_x_max,

@@ -157,15 +157,7 @@ HAL_StatusTypeDef HAL_RCCEx_PeriphCLKConfig(const RCC_PeriphCLKInitTypeDef  *Per
       }
       else
       {
-#if 0 /* TO DO */
-        /* Store the content of BDCR register before the reset of Backup Domain */
-        /* excepted the RTC clock source selection that will be changed */
-        tmpreg = READ_BIT(RCC->BDCR, ~(RCC_BDCR_RTCSEL));
-        __HAL_RCC_BACKUPRESET_FORCE();
-        __HAL_RCC_BACKUPRESET_RELEASE();
-        /* Restore the content of BDCR register */
-        WRITE_REG(RCC->BDCR, tmpreg);
-#endif /* #if 0  TO DO */
+        /* Intentionally left blank: keep the backup domain state unchanged. */
       }
     }
 
