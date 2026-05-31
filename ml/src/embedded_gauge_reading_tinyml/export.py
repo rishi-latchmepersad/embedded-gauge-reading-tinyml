@@ -53,7 +53,7 @@ class ExportConfig:
     model_path: Path
     output_dir: Path
     hard_case_manifest: Path
-    deployment_kind: Literal["scalar", "rectifier", "obb", "source_crop_box"] = "scalar"
+    deployment_kind: Literal["scalar", "rectifier", "obb", "source_crop_box", "center_detector"] = "scalar"
     representative_count: int = 32
     image_height: int = DEFAULT_IMAGE_HEIGHT
     image_width: int = DEFAULT_IMAGE_WIDTH
@@ -172,13 +172,35 @@ def _select_source_crop_box_deployment_model(model: keras.Model) -> keras.Model:
     return box_model
 
 
+def _select_center_detector_deployment_model(model: keras.Model) -> keras.Model:
+    """Extract the center_xy output for deployment as a single-tensor model."""
+    try:
+        center_output = model.get_layer("center_xy").output
+    except ValueError:
+        return model
+
+    if len(model.outputs) == 1:
+        return model
+
+    center_model = keras.Model(
+        inputs=model.inputs,
+        outputs=center_output,
+        name=f"{model.name}_center_detector",
+    )
+    print(
+        "[EXPORT] Using center_xy deployment wrapper around multi-output model.",
+        flush=True,
+    )
+    return center_model
+
+
 def _build_representative_examples(
     *,
     hard_case_manifest: Path,
     image_height: int,
     image_width: int,
     representative_count: int,
-    deployment_kind: Literal["scalar", "rectifier", "obb", "source_crop_box"],
+    deployment_kind: Literal["scalar", "rectifier", "obb", "source_crop_box", "center_detector"],
 ) -> list[TrainingExample]:
     """Collect a deterministic slice of labeled images for TFLite calibration."""
     config = TrainConfig(
@@ -331,7 +353,7 @@ def build_export_metadata(
     output_zero_point: int,
     representative_examples: int,
     hard_case_manifest: Path,
-    deployment_kind: Literal["scalar", "rectifier", "obb", "source_crop_box"],
+    deployment_kind: Literal["scalar", "rectifier", "obb", "source_crop_box", "center_detector"],
 ) -> dict[str, Any]:
     """Build a serializable metadata payload for firmware handoff."""
     if deployment_kind == "scalar":
@@ -343,6 +365,12 @@ def build_export_metadata(
         board_notes = (
             "Use this artifact as the first-stage rectifier on the STM32 "
             "capture path. It consumes the full frame and predicts a dial crop."
+        )
+    elif deployment_kind == "center_detector":
+        board_notes = (
+            "Use this artifact as the second-stage center detector after OBB. "
+            "It consumes a 224x224 crop and predicts normalized (cx, cy) for "
+            "the needle pivot point."
         )
     else:
         board_notes = (
@@ -388,6 +416,8 @@ def export_board_tflite_artifacts(config: ExportConfig) -> ExportResult:
             model = _select_obb_deployment_model(model)
         elif config.deployment_kind == "source_crop_box":
             model = _select_source_crop_box_deployment_model(model)
+        elif config.deployment_kind == "center_detector":
+            model = _select_center_detector_deployment_model(model)
         print(
             f"[EXPORT] Stage: load-model-done elapsed={time.monotonic() - start_time:.1f}s",
             flush=True,

@@ -17,7 +17,7 @@ extern "C" {
 /**
  * @brief Apply the deploy-time scalar calibration to the model output.
  *
- * The board currently uses the active affine postprocess in
+ * The board currently uses the active piecewise postprocess in
  * app_inference_calibration.c so we can compare calibrated and raw outputs
  * during live capture work. If the correction needs to be disabled again,
  * that file owns the switch.

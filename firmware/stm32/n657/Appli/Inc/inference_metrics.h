@@ -34,10 +34,10 @@ extern "C"
         char label[METRICS_LABEL_MAX_LEN]; /* "CNN", "BASELINE", etc. */
         uint32_t timestamp_ms;             /* When sample was taken */
         uint32_t latency_us;               /* Inference duration in microseconds */
-        float power_pre_mw;                /* Power before inference */
-        float power_mid_mw;                /* Power during inference (if available) */
-        float power_post_mw;               /* Power after inference */
-        float power_delta_mw;              /* power_mid - power_pre */
+        float power_pre_w;                 /* Power before inference */
+        float power_mid_w;                 /* Power during inference (if available) */
+        float power_post_w;                /* Power after inference */
+        float power_delta_w;               /* power_mid - power_pre */
         float temperature_c;               /* Inference result (if applicable) */
         bool valid;                        /* True if record is valid */
     } MetricsRecord_t;
@@ -51,9 +51,9 @@ extern "C"
         float latency_avg_ms;
         float latency_min_ms;
         float latency_max_ms;
-        float power_delta_avg_mw;
-        float power_delta_min_mw;
-        float power_delta_max_mw;
+        float power_delta_avg_w;
+        float power_delta_min_w;
+        float power_delta_max_w;
         float energy_avg_uj; /* Average energy per inference */
     } MetricsSummary_t;
 

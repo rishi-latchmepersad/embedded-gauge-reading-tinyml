@@ -282,7 +282,7 @@ def build_mobilenetv2_geometry_heatmap_v1(
         input_shape=input_shape,
         alpha=alpha,
         include_top=False,
-        weights='imagenet',
+        weights="imagenet" if pretrained else None,
         pooling=None,
     )
     backbone.trainable = not backbone_frozen
@@ -403,6 +403,7 @@ def build_mobilenetv2_geometry_heatmap_v4_112(
     include_aux_coords=False,
     aux_head_size="small",
     aux_head_type="none",
+    pretrained: bool = True,
 ):
     """Build the 112x112 geometry heatmap model for tip-stable INT8 deployment.
 
@@ -564,8 +565,172 @@ def build_mobilenetv2_geometry_heatmap_v4_112(
         )(aux_offset)
         outputs.append(aux_offset_map)
 
+    if aux_head_type == "axis_simcc":
+        # SimCC-style axis-marginal logit head.  Branches from the decoder
+        # GAP features (*not* spatial Conv2D + mean/max pool) to avoid gradient
+        # dilution.  Dense layers provide dense gradient flow to every weight.
+        # Outputs 1D logit vectors for center/tip x/y coordinates.
+        # Shape: (batch, 4, 112) with semantic order [center_x, center_y, tip_x, tip_y].
+        axis_feat = layers.Dense(
+            128,
+            activation="relu",
+            kernel_initializer="he_normal",
+            name="axis_simcc_dense_1",
+        )(confidence_features)
+        axis_raw = layers.Dense(
+            4 * 112,
+            activation="linear",
+            kernel_initializer="he_normal",
+            name="axis_simcc_logits_raw",
+        )(axis_feat)
+        axis_logits = layers.Reshape((4, 112), name="axis_logits")(axis_raw)
+        outputs.append(axis_logits)
+
     return keras.Model(
         inputs=inputs,
         outputs=outputs,
         name="mobilenetv2_geometry_heatmap_v4_112",
+    )
+
+
+def build_heatmap_angle_model(
+    input_shape=(224, 224, 3),
+    alpha=0.35,
+    backbone_frozen=False,
+    heatmap_size=112,
+) -> keras.Model:
+    """Build a heatmap model for angle prediction from cropped gauge images.
+
+    This model predicts center and tip heatmaps from which the needle angle
+    is derived via soft-argmax decoding and atan2. The architecture is based
+    on the proven v4 112x112 heatmap model but simplified by removing the
+    auxiliary heads that did not improve INT8 robustness in Phase 11 experiments.
+
+    Architecture:
+    - Backbone: MobileNetV2 (alpha=0.35, optionally ImageNet pretrained)
+    - Decoder: Progressive upsampling with 56x56 skip connection
+    - Heads:
+        - center_heatmap (112x112x1, sigmoid) — Gaussian peak at dial center
+        - tip_heatmap (112x112x1, sigmoid) — Gaussian peak at needle tip
+        - confidence (scalar, sigmoid) — whether needle is visible
+
+    Inference pipeline:
+    1. Predict heatmaps from 224x224 cropped input
+    2. Decode via soft-argmax: center_x, center_y, tip_x, tip_y
+    3. Compute angle: atan2(tip_y - center_y, tip_x - center_x)
+    4. Map to temperature: celsius_from_inner_dial_angle_degrees(angle)
+
+    Why heatmap approach:
+    - Spatial heatmaps provide explicit needle geometry supervision
+    - Soft-argmax decoding is differentiable, enabling end-to-end training
+    - Angle is derived geometrically, ensuring circular consistency
+    - More interpretable than direct angle regression
+
+    Args:
+        input_shape: Input image shape (height, width, channels)
+        alpha: MobileNetV2 width multiplier (0.35 for compact model)
+        backbone_frozen: Whether to freeze backbone weights
+            (False = fine-tune, True = use pretrained features only)
+        heatmap_size: Output heatmap resolution (default 112)
+
+    Returns:
+        keras.Model with outputs [center_heatmap, tip_heatmap, confidence]
+    """
+    inputs = keras.Input(shape=input_shape, name="input_image")
+
+    # Backbone: MobileNetV2 with ImageNet weights
+    backbone = keras.applications.MobileNetV2(
+        input_shape=input_shape,
+        alpha=alpha,
+        include_top=False,
+        weights="imagenet",
+        pooling=None,
+    )
+    backbone.trainable = not backbone_frozen
+
+    # Extract features at multiple scales for skip connection
+    feature_extractor = keras.Model(
+        inputs=backbone.input,
+        outputs=[
+            backbone.get_layer("block_3_expand_relu").output,  # 56x56 features
+            backbone.output,  # 7x7 features
+        ],
+        name="mobilenetv2_angle_backbone",
+    )
+
+    skip_56, x = feature_extractor(inputs)
+
+    # Progressive decoder with bilinear upsampling
+    # Block 1: 7x7 -> 14x14
+    x = layers.Conv2D(
+        128,
+        3,
+        padding="same",
+        activation="relu",
+        kernel_initializer="he_normal",
+        name="angle_decoder_conv_1",
+    )(x)
+    x = layers.UpSampling2D(size=(2, 2), interpolation="bilinear", name="angle_decoder_up_1")(x)
+
+    # Block 2: 14x14 -> 28x28
+    x = layers.Conv2D(
+        64,
+        3,
+        padding="same",
+        activation="relu",
+        kernel_initializer="he_normal",
+        name="angle_decoder_conv_2",
+    )(x)
+    x = layers.UpSampling2D(size=(2, 2), interpolation="bilinear", name="angle_decoder_up_2")(x)
+
+    # Block 3: 28x28 -> 56x56
+    x = layers.Conv2D(
+        32,
+        3,
+        padding="same",
+        activation="relu",
+        kernel_initializer="he_normal",
+        name="angle_decoder_conv_3",
+    )(x)
+    x = layers.UpSampling2D(size=(2, 2), interpolation="bilinear", name="angle_decoder_up_3")(x)
+
+    # Skip connection from block_3_expand_relu (56x56)
+    # Project to matching channels and concatenate
+    skip_56 = layers.Conv2D(
+        16,
+        1,
+        padding="same",
+        activation="relu",
+        kernel_initializer="he_normal",
+        name="angle_decoder_skip_56",
+    )(skip_56)
+    x = layers.Concatenate(name="angle_decoder_concat_56")([x, skip_56])
+
+    # Refine and upsample to 112x112
+    x = layers.Conv2D(
+        32,
+        3,
+        padding="same",
+        activation="relu",
+        kernel_initializer="he_normal",
+        name="angle_decoder_refine_112",
+    )(x)
+    x = layers.UpSampling2D(size=(2, 2), interpolation="bilinear", name="angle_decoder_up_4")(x)
+
+    # Heatmap heads
+    center_heatmap = layers.Conv2D(
+        1, 1, padding="same", activation="sigmoid", name="center_heatmap"
+    )(x)
+    tip_heatmap = layers.Conv2D(
+        1, 1, padding="same", activation="sigmoid", name="tip_heatmap"
+    )(x)
+
+    # Confidence head from pooled features
+    confidence_features = layers.GlobalAveragePooling2D(name="angle_confidence_gap")(x)
+    confidence = layers.Dense(1, activation="sigmoid", name="confidence")(confidence_features)
+
+    return keras.Model(
+        inputs=inputs,
+        outputs=[center_heatmap, tip_heatmap, confidence],
+        name="mobilenetv2_heatmap_angle",
     )

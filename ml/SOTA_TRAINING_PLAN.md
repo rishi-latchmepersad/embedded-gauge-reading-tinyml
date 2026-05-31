@@ -259,4 +259,4 @@ poetry run python scripts/train_sota_model_v1.py --device cpu
 For questions, refer to:
 - `SOTA_MODEL_README.md` — Architecture details
 - `docs/ai-memory.md` — Accumulated learnings
-- `CLAUDE.md` — Flash boot instructions
+- `firmware/stm32/n657/flash_boot.bat` — Flash boot script and board-mode notes

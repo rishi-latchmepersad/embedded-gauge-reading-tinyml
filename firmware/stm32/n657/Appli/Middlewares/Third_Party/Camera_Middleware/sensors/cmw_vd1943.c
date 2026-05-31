@@ -189,14 +189,10 @@ static void VD1943_Delay(struct VD1943_Ctx *ctx, uint32_t delay_in_ms)
 
 static void VD1943_Log(struct VD1943_Ctx *ctx, int lvl, const char *format, va_list ap)
 {
-#if 0
-  const int current_lvl = VD1943_LVL_DBG(2);
-
-  if (lvl > current_lvl)
-    return ;
-
-  vprintf(format, ap);
-#endif
+  (void)ctx;
+  (void)lvl;
+  (void)format;
+  (void)ap;
 }
 
 /**

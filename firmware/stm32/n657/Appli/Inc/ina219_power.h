@@ -41,8 +41,8 @@ extern "C" {
 typedef struct {
     float bus_voltage_v;      /**< Bus voltage in Volts */
     float shunt_voltage_mv;   /**< Shunt voltage in millivolts */
-    float current_ma;         /**< Current in milliamps */
-    float power_mw;           /**< Power in milliwatts */
+    float current_ma;         /**< Current in milliamps (positive = board draw) */
+    float power_w;            /**< Power in watts */
     uint32_t timestamp_ms;    /**< Timestamp in milliseconds */
     bool valid;               /**< True if reading is valid */
 } INA219_Measurement_t;

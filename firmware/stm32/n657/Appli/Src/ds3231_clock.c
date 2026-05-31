@@ -27,9 +27,9 @@
 #define DS3231_I2C_PROBE_TIMEOUT_MS  50U
 #define DS3231_READ_RETRY_ATTEMPTS    5U
 #define DS3231_READ_RETRY_DELAY_MS   10U
-/* Normal boot policy: only reseed when the DS3231 comes up at year 2000.
- * Keep the override available, but leave it disabled unless we are doing a
- * one-off time sync pass.
+/* One-time RTC recovery mode: force a seed from firmware build time on boot.
+ * After the clock is corrected on hardware, set this back to 0 so normal
+ * boots only reseed when DS3231 reports its 2000 power-on default.
  */
 #ifndef DS3231_FORCE_BUILD_TIME_SEED_ON_BOOT
 #define DS3231_FORCE_BUILD_TIME_SEED_ON_BOOT 0

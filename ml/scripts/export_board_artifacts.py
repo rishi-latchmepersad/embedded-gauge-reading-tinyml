@@ -50,7 +50,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--deployment-kind",
-        choices=["scalar", "rectifier", "obb"],
+        choices=["scalar", "rectifier", "obb", "center_detector"],
         default="scalar",
         help="Deployment flavor to export for the board.",
     )

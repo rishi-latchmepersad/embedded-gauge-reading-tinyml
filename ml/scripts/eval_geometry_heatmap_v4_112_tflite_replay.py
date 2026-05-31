@@ -156,6 +156,8 @@ def _as_output_dict(outputs: Any) -> dict[str, tf.Tensor]:
             result["aux_coords"] = tf.cast(outputs["aux_coords"], tf.float32)
         if "aux_offset_map" in outputs:
             result["aux_offset_map"] = tf.cast(outputs["aux_offset_map"], tf.float32)
+        if "axis_logits" in outputs:
+            result["axis_logits"] = tf.cast(outputs["axis_logits"], tf.float32)
         return result
     center_heatmap, tip_heatmap, confidence, *extra = outputs
     result = {
@@ -166,7 +168,9 @@ def _as_output_dict(outputs: Any) -> dict[str, tf.Tensor]:
     if extra:
         extra_tensor = extra[0]
         extra_ndim = getattr(extra_tensor, 'ndim', len(extra_tensor.shape) if hasattr(extra_tensor, 'shape') else 0)
-        if extra_ndim >= 3:
+        if extra_ndim == 3:
+            result["axis_logits"] = tf.cast(extra_tensor, tf.float32)
+        elif extra_ndim >= 4:
             result["aux_offset_map"] = tf.cast(extra_tensor, tf.float32)
         else:
             result["aux_coords"] = tf.cast(extra_tensor, tf.float32)
@@ -201,7 +205,9 @@ def _predict_tflite_outputs(
     if len(outputs) >= 4:
         # Detect aux output type from semantic output names.
         aux_name = semantic_output_names[3] if semantic_output_names and len(semantic_output_names) > 3 else ""
-        if "offset_map" in aux_name:
+        if "axis_logits" in aux_name:
+            semantic_outputs["axis_logits"] = np.asarray(outputs[3], dtype=np.float32)
+        elif "offset_map" in aux_name:
             semantic_outputs["aux_offset_map"] = np.asarray(outputs[3], dtype=np.float32)
         else:
             semantic_outputs["aux_coords"] = np.asarray(outputs[3], dtype=np.float32)
@@ -373,6 +379,7 @@ def _evaluate_model(
             window_size=window_size,
             aux_coords=outputs["aux_coords"][index] if "aux_coords" in outputs else None,
             aux_offset_map=outputs["aux_offset_map"][index] if "aux_offset_map" in outputs else None,
+            axis_logits=outputs["axis_logits"][index] if "axis_logits" in outputs else None,
             offset_scale_px=offset_scale_px,
         )
         reasons = ";".join(guarded.rejection_reasons) if guarded.rejection_reasons else "none"
@@ -499,6 +506,8 @@ def main() -> None:
     parser.add_argument("--keras-validation-report-path", type=Path, default=DEFAULT_KERAS_VALIDATION_REPORT_PATH)
     parser.add_argument("--offset-scale-px", type=float, default=8.0,
                         help="Heatmap pixels per unit tanh range for aux_offset_map decode")
+    parser.add_argument("--inner-celsius-mask", action="store_true",
+                        help="Apply inner-Celsius-only mask after resize to exclude outer distractors")
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parent.parent.parent
@@ -539,6 +548,7 @@ def main() -> None:
         input_size=DEFAULT_INPUT_SIZE,
         heatmap_size=V4_HEATMAP_SIZE,
         sigma_pixels=V4_SIGMA_PIXELS,
+        inner_celsius_mask=args.inner_celsius_mask,
     ).samples
     inputs = np.stack([sample.crop_image for sample in examples], axis=0).astype(np.float32)
 

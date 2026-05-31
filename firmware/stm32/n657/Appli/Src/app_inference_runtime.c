@@ -264,15 +264,11 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 				} bits = { .f = final_value };
 				char inference_line[64] = { 0 };
 
-				/* CNN is the sole inference authority. Log its value directly. */
+				/* Log the final value that was published by the AI worker. */
 				AppInferenceLog_FormatFloatTenths(inference_line,
-						sizeof(inference_line), "[AI] CNN value: ", final_value);
+						sizeof(inference_line), "[AI] Final AI value logged: ", final_value);
 				(void) DebugConsole_WriteString(inference_line);
-				(void) DebugConsole_WriteString("\r\n");
 
-				AppInferenceLog_FormatFloatTenths(inference_line,
-						sizeof(inference_line), "[AI] Inference value: ", final_value);
-				(void) DebugConsole_WriteString(inference_line);
 				AppInferenceLog_FormatFloatMicros(inference_line,
 						sizeof(inference_line), "[AI] Inference exact: ", final_value);
 				(void) DebugConsole_WriteString(inference_line);
@@ -281,6 +277,9 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 					(void) tx_queue_send(&inference_log_queue, &bits.u,
 							TX_NO_WAIT);
 				}
+			} else {
+				(void) DebugConsole_WriteString(
+						"[AI] Final AI value not published (held or invalid).\r\n");
 			}
 		}
 

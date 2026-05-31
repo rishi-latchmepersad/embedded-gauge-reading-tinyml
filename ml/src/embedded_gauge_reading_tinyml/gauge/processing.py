@@ -28,6 +28,7 @@ class GaugeSpec:
     max_value: float  # Gauge value at min_angle_rad + sweep_rad.
     units: str = ""  # Engineering units (for example "C" or "psi").
     direction: str = "clockwise"  # Needle sweep direction in image coordinates.
+    needle_colour: str = "dark"  # Needle colour: "dark" or "light".
 
 
 def value_to_fraction(value: float, spec: GaugeSpec) -> float:
@@ -106,6 +107,11 @@ def load_gauge_specs(path: Path = CALIBRATION_TOML_PATH) -> dict[str, GaugeSpec]
         max_value = float(spec_dict["max_value"])
         units = str(spec_dict.get("units", "")).strip()
         direction = str(spec_dict.get("direction", "clockwise")).strip().lower()
+        needle_colour = str(spec_dict.get("needle_colour", "dark")).strip().lower()
+        if needle_colour not in {"dark", "light"}:
+            raise ValueError(
+                f"{gauge_id}: needle_colour must be 'dark' or 'light', got '{needle_colour}'."
+            )
         if sweep_deg <= 0.0:
             raise ValueError(f"{gauge_id}: sweep_deg must be > 0.")
         if max_value <= min_value:
@@ -124,5 +130,6 @@ def load_gauge_specs(path: Path = CALIBRATION_TOML_PATH) -> dict[str, GaugeSpec]
             max_value=max_value,  # Store max value.
             units=units,
             direction=direction,
+            needle_colour=needle_colour,
         )
     return specs  # Return the completed mapping.

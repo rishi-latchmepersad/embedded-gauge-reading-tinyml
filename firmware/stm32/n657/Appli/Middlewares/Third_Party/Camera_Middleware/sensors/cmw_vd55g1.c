@@ -168,14 +168,10 @@ static void VD55G1_Delay(struct VD55G1_Ctx *ctx, uint32_t delay_in_ms)
 
 static void VD55G1_Log(struct VD55G1_Ctx *ctx, int lvl, const char *format, va_list ap)
 {
-#if 0
-  const int current_lvl = VD55G1_LVL_DBG(0);
-
-  if (lvl > current_lvl)
-    return ;
-
-  vprintf(format, ap);
-#endif
+  (void)ctx;
+  (void)lvl;
+  (void)format;
+  (void)ap;
 }
 
 /**

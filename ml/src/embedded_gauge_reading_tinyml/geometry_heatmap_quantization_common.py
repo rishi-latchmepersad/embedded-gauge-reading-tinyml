@@ -83,6 +83,7 @@ def load_split_samples(
     input_size: int = DEFAULT_INPUT_SIZE,
     heatmap_size: int = DEFAULT_HEATMAP_SIZE,
     sigma_pixels: float = DEFAULT_SIGMA_PIXELS,
+    inner_celsius_mask: bool = False,
 ) -> SplitSamples:
     """Load clean manifest rows for one split and build board replay samples."""
 
@@ -96,6 +97,7 @@ def load_split_samples(
             input_size=input_size,
             heatmap_size=heatmap_size,
             sigma_pixels=sigma_pixels,
+            inner_celsius_mask=inner_celsius_mask,
         )
         for example in split_examples
     ]
@@ -166,6 +168,7 @@ def decode_and_guard(
     window_size: int = 3,
     aux_coords: np.ndarray | None = None,
     aux_offset_map: np.ndarray | None = None,
+    axis_logits: np.ndarray | None = None,
     offset_scale_px: float = 8.0,
 ) -> tuple[GeometryDecodedPrediction, GeometryGuardrailResult]:
     """Decode one sample and immediately apply guardrails.
@@ -196,6 +199,12 @@ def decode_and_guard(
     if aux_offset_map is not None:
         decoded = _apply_offset_map_correction(
             decoded, aux_offset_map, offset_scale_px, calibration_candidate,
+            true_temperature_c=sample.metadata["temperature_c"],
+        )
+
+    if axis_logits is not None:
+        decoded = _apply_axis_logits_decode(
+            decoded, axis_logits, calibration_candidate,
             true_temperature_c=sample.metadata["temperature_c"],
         )
 
@@ -293,3 +302,66 @@ def _apply_offset_map_correction(
         predicted_temperature_c_calibrated=float(predicted_temp),
         absolute_error_c_calibrated=float(abs(predicted_temp - true_temperature_c)),
     )
+
+
+def _apply_axis_logits_decode(
+    decoded: Any,
+    axis_logits: np.ndarray,
+    calibration_candidate: Any,
+    *,
+    true_temperature_c: float = 0.0,
+) -> Any:
+    """Decode center/tip from axis_simcc logits using 1D softargmax w3.
+
+    axis_logits: (4, 112) with [center_x, center_y, tip_x, tip_y].
+    Each axis is decoded via softargmax with window 3, then converted
+    from 112-bin space to 224-pixel coordinates.
+    """
+    import dataclasses
+
+    def _decode_axis(logits: np.ndarray) -> float:
+        """1D softargmax with w3 around the argmax bin."""
+        probs = _softmax_1d(logits)
+        argmax = int(np.argmax(probs))
+        lo = max(argmax - 1, 0)
+        hi = min(argmax + 2, len(probs))
+        window = probs[lo:hi]
+        if window.sum() > 1e-12:
+            window = window / window.sum()
+        bins = np.arange(lo, hi, dtype=np.float64)
+        return float(np.sum(bins * window))
+
+    num_bins = axis_logits.shape[-1]  # 112
+    cx_bin = _decode_axis(np.asarray(axis_logits[0], dtype=np.float64))
+    cy_bin = _decode_axis(np.asarray(axis_logits[1], dtype=np.float64))
+    tx_bin = _decode_axis(np.asarray(axis_logits[2], dtype=np.float64))
+    ty_bin = _decode_axis(np.asarray(axis_logits[3], dtype=np.float64))
+
+    # Convert bin index to 224-space: coord_px = bin * 223 / 111
+    bin_to_px = 223.0 / (num_bins - 1)
+    cx = cx_bin * bin_to_px
+    cy = cy_bin * bin_to_px
+    tx = tx_bin * bin_to_px
+    ty = ty_bin * bin_to_px
+
+    predicted_angle = angle_degrees_from_center_to_tip(cx, cy, tx, ty)
+    predicted_temp = predict_temperature_from_candidate(predicted_angle, calibration_candidate)
+
+    return dataclasses.replace(
+        decoded,
+        predicted_center_x_224=cx,
+        predicted_center_y_224=cy,
+        predicted_tip_x_224=tx,
+        predicted_tip_y_224=ty,
+        predicted_angle_degrees=float(predicted_angle),
+        predicted_temperature_c_calibrated=float(predicted_temp),
+        absolute_error_c_calibrated=float(abs(predicted_temp - true_temperature_c)),
+    )
+
+
+def _softmax_1d(logits: np.ndarray) -> np.ndarray:
+    """Numerically stable softmax for 1D array."""
+    logits = np.asarray(logits, dtype=np.float64)
+    shifted = logits - np.max(logits)
+    exp_vals = np.exp(shifted)
+    return exp_vals / exp_vals.sum()

@@ -546,6 +546,35 @@ static bool CameraPlatform_SelectImx335WhiteBalanceReference(
 }
 
 /**
+ * @brief Briefly enable ISP AEC to settle on the scene, then lock.
+ *
+ * Enables AEC, waits for the settle delay, disables AEC, and caches the
+ * final exposure/gain so the subsequent capture uses a locked setting
+ * that matches the scene brightness.
+ */
+bool CameraPlatform_AeSettleAndLock(void)
+{
+    if (!CameraPlatform_EnableImx335AutoExposure())
+    {
+        DebugConsole_WriteString("[CAMERA][AE] Failed to enable AEC for settle.\r\n");
+        return false;
+    }
+
+    DebugConsole_WriteString("[CAMERA][AE] AEC enabled; settling...\r\n");
+    DelayMilliseconds_ThreadX(CAMERA_CAPTURE_AE_SETTLE_DELAY_MS);
+
+    if (!CameraPlatform_DisableImx335AutoExposure())
+    {
+        DebugConsole_WriteString("[CAMERA][AE] Failed to disable AEC after settle.\r\n");
+        return false;
+    }
+
+    CameraPlatform_CacheAcceptedExposureGain();
+    DebugConsole_WriteString("[CAMERA][AE] AEC settled and locked.\r\n");
+    return true;
+}
+
+/**
  * @brief Lock the IMX335 white balance to one fixed middleware reference.
  *
  * This keeps the processed YUV path from drifting between AWB reference

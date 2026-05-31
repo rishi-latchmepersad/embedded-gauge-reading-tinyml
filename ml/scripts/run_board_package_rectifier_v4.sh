@@ -50,4 +50,6 @@ CUDA_VISIBLE_DEVICES="-1" "${POETRY_BIN}" run python -u scripts/package_scalar_m
   --canonical-raw-path "${CANONICAL_RAW_PATH}" \
   --compression high \
   --optimization balanced \
+  --input-data-type int8 \
+  --output-data-type float32 \
   2>&1 | tee "${LOG_FILE}"

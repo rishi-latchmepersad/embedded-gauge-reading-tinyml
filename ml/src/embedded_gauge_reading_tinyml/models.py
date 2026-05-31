@@ -1361,7 +1361,162 @@ def build_mobilenetv2_regression_model(
     return model
 
 
-def build_mobilenetv2_tiny_regression_model(
+def build_mobilenetv2_sweep_logits_model(
+    image_height: int,
+    image_width: int,
+    *,
+    num_bins: int = 90,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 0.35,
+    head_units: int = 64,
+    head_dropout: float = 0.3,
+) -> keras.Model:
+    """Build a MobileNetV2 tiny model with a sweep-aligned logit head.
+
+    Predicts 90 logits covering the gauge sweep. Train with soft targets
+    via KL-divergence or cosine similarity. Decode at inference using
+    top-k expectation over softmax.
+    """
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    x = keras.layers.GlobalAveragePooling2D(name="sweep_logits_gap")(x)
+    x = keras.layers.Dropout(head_dropout, name="sweep_logits_dropout_1")(x)
+    x = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="sweep_logits_dense",
+    )(x)
+    x = keras.layers.Dropout(head_dropout, name="sweep_logits_dropout_2")(x)
+    sweep_logits = keras.layers.Dense(
+        num_bins,
+        activation="linear",
+        name="sweep_logits",
+    )(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs=sweep_logits,
+        name=_mobilenetv2_model_name(
+            regression_kind="sweep_logits",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    setattr(model, "_num_bins", num_bins)
+    return model
+
+
+def build_mobilenetv2_angle_vote_model(
+    image_height: int,
+    image_width: int,
+    *,
+    num_angle_bins: int = 36,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 0.35,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a gauge-agnostic angle-vote model with MobileNetV2 backbone.
+
+    Predicts a distribution over 36 angle bins (10° resolution) covering the
+    full 360° circle. The angle is converted to temperature at inference via
+    GaugeSpec, making this model reusable across gauges.
+    """
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    x = keras.layers.GlobalAveragePooling2D(name="angle_vote_gap")(x)
+    x = keras.layers.Dropout(head_dropout, name="angle_vote_dropout_1")(x)
+    x = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="angle_vote_dense",
+    )(x)
+    x = keras.layers.Dropout(head_dropout, name="angle_vote_dropout_2")(x)
+    angle_logits = keras.layers.Dense(
+        num_angle_bins,
+        activation="linear",
+        name="angle_logits",
+    )(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs=angle_logits,
+        name=_mobilenetv2_model_name(
+            regression_kind="angle_vote",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    setattr(model, "_num_angle_bins", num_angle_bins)
+    return model
+
+
+def build_mobilenetv2_angle_sincos_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 0.35,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a gauge-agnostic angle sin/cos regression model with MobileNetV2 backbone.
+
+    Predicts (sin(angle), cos(angle)) of the needle direction. The angle is
+    converted to temperature at inference via GaugeSpec. This is a 2-output
+    regression task (much simpler than 36-bin classification) and works well
+    with limited training data.
+    """
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    x = keras.layers.GlobalAveragePooling2D(name="sincos_gap")(x)
+    x = keras.layers.Dropout(head_dropout, name="sincos_dropout_1")(x)
+    x = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="sincos_dense",
+    )(x)
+    x = keras.layers.Dropout(head_dropout, name="sincos_dropout_2")(x)
+    outputs = keras.layers.Dense(
+        2,
+        activation="linear",
+        name="angle_sincos",
+    )(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs=outputs,
+        name=_mobilenetv2_model_name(
+            regression_kind="angle_sincos",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_bluraware_reader_model(
     image_height: int,
     image_width: int,
     *,
@@ -2184,6 +2339,379 @@ def build_mobilenetv2_geometry_model(
             alpha=alpha,
             head_units=head_units,
         ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+@keras.saving.register_keras_serializable(package="embedded_gauge_reading_tinyml")
+class PolarEvidenceLayer(keras.layers.Layer):
+    """Convert spatial features to per-angle evidence using center-relative
+    polar coordinates and differentiable soft binning.
+
+    For each pixel in the feature map this layer:
+      1. Computes its angle relative to the predicted center (atan2)
+      2. Computes a learned per-pixel evidence score via small conv
+      3. Soft-bins pixel scores into angular bins using Gaussian kernels
+      4. Applies a radial mask to focus on the annular needle region
+
+    The result is a per-angle evidence array mimicking the classical polar
+    spoke voting, fully differentiable w.r.t. both feature values and center.
+    """
+
+    def __init__(
+        self,
+        num_angles: int = 180,
+        sigma_angle: float = 0.04,
+        radius_mean: float = 0.35,
+        radius_sigma: float = 0.25,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.num_angles = num_angles
+        self.sigma_angle = sigma_angle
+        self.radius_mean = radius_mean
+        self.radius_sigma = radius_sigma
+        self._bin_centers: tf.Tensor | None = None
+
+    def build(self, input_shape: tf.TensorShape) -> None:
+        C = input_shape[-1]
+        self.score_conv = keras.Sequential(
+            [
+                keras.layers.Conv2D(max(C // 4, 8), 3, padding="same", activation="relu"),
+                keras.layers.Conv2D(1, 1, padding="same", activation="linear"),
+            ],
+            name="polar_score_conv",
+        )
+        bc = np.linspace(-math.pi, math.pi, self.num_angles + 1, dtype=np.float32)[:self.num_angles]
+        self._bin_centers = tf.constant(bc, dtype=tf.float32)
+
+    def compute_output_spec(self, features, center_norm):
+        return keras.KerasTensor(
+            shape=(features.shape[0], self.num_angles), dtype=features.dtype
+        )
+
+    def call(
+        self, features: tf.Tensor, center_norm: tf.Tensor
+    ) -> tf.Tensor:
+        """Run polar evidence computation.
+
+        Args:
+            features: (B, H, W, C) — spatial feature map.
+            center_norm: (B, 2) — (cx, cy) in [0, 1] normalized.
+
+        Returns:
+            (B, num_angles) — per-angle evidence logits.
+        """
+        H = features.shape[1]
+        W = features.shape[2]
+        B = tf.shape(features)[0]
+
+        # 1. Per-pixel center-relative angle and radius with explicit broadcasting
+        x_grid = tf.range(W, dtype=tf.float32)[None, None, :]  # (1, 1, W)
+        y_grid = tf.range(H, dtype=tf.float32)[None, :, None]  # (1, H, 1)
+        cx = center_norm[:, None, None, 0] * tf.cast(W - 1, tf.float32)  # (B, 1, 1)
+        cy = center_norm[:, None, None, 1] * tf.cast(H - 1, tf.float32)  # (B, 1, 1)
+        dx = tf.broadcast_to(x_grid + 0.5 - cx, (B, H, W))   # (B, H, W)
+        dy = tf.broadcast_to(y_grid + 0.5 - cy, (B, H, W))   # (B, H, W)
+        angle = tf.math.atan2(dy, dx)
+        radius = tf.sqrt(dx * dx + dy * dy)
+
+        # 2. Per-pixel evidence scores from learned conv
+        scores = self.score_conv(features)  # (B, H, W, 1)
+        scores = tf.squeeze(scores, axis=-1)  # (B, H, W)
+
+        # 3. Radial mask (annular focus)
+        radial_mask = tf.exp(
+            -((radius - self.radius_mean * tf.cast(W - 1, tf.float32)) ** 2)
+            / (2.0 * (self.radius_sigma * tf.cast(W - 1, tf.float32)) ** 2)
+        )
+        radial_mask = tf.cast(radial_mask, tf.float32)
+
+        # 4. Soft angular binning with Gaussian kernels
+        diff = angle[..., None] - self._bin_centers[None, None, None, :]
+        diff = tf.math.atan2(
+            tf.math.sin(diff), tf.math.cos(diff)
+        )  # circular
+        weights = tf.exp(
+            -(diff ** 2) / (2.0 * self.sigma_angle ** 2)
+        )  # (B, H, W, A)
+
+        # 5. Weighted aggregation
+        weighted = scores[..., None] * weights * radial_mask[..., None]
+        evidence = tf.reduce_sum(weighted, axis=[1, 2])  # (B, A)
+        return evidence
+
+    def get_config(self) -> dict:
+        config = super().get_config()
+        config.update(
+            num_angles=self.num_angles,
+            sigma_angle=self.sigma_angle,
+            radius_mean=self.radius_mean,
+            radius_sigma=self.radius_sigma,
+        )
+        return config
+
+
+def build_mobilenetv2_polar_evidence_model(
+    image_height: int,
+    image_width: int,
+    *,
+    num_angles: int = 180,
+    decoder_channels: tuple[int, ...] = (128, 64, 32),
+    heatmap_size: int = 28,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 0.35,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a classical-inspired polar evidence CNN with three learned heads.
+
+    Architecture (mimics the firmware classical pipeline):
+      1. Center head: predicts the dial center (cx, cy) in [0, 1] normalized coords.
+      2. Polar evidence head: samples backbone features radially around the
+         predicted center and produces per-angle evidence logits.
+      3. Confidence head: scalar [0, 1] confidence in the predicted geometry.
+
+    All gauge decode (angle → temperature) happens outside the model using
+    GaugeSpec, so this model is gauge-agnostic.
+
+    Key design choices:
+    - Local, center-conditioned polar sampling (not old full-frame polar warp).
+    - Differentiable bilinear sampling for end-to-end center + evidence training.
+    - No Celsius or angle computation inside the graph, keeping it TFLite-friendly.
+    - Backbone frozen by default.
+
+    Args:
+        image_height: Input image height.
+        image_width: Input image width.
+        num_angles: Number of angular bins for the polar evidence head.
+        decoder_channels: Progressive decoder channel sizes.
+        heatmap_size: Intermediate feature resolution for polar sampling.
+        pretrained: Load ImageNet backbone weights.
+        backbone_trainable: Whether the backbone is trainable.
+        alpha: MobileNetV2 width multiplier.
+        head_dropout: Dropout rate on dense heads.
+
+    Returns:
+        keras.Model with outputs:
+            center: (B, 2) — (cx, cy) sigmoid-normalized.
+            polar_evidence: (B, num_angles) — per-angle evidence logits.
+            confidence: (B, 1) — scalar sigmoid confidence.
+    """
+    inputs = keras.Input(
+        shape=(image_height, image_width, 3), name="image"
+    )
+    x = keras.layers.Rescaling(1.0 / 127.5, offset=-1.0, name="preprocess")(inputs)
+
+    backbone = keras.applications.MobileNetV2(
+        include_top=False,
+        weights="imagenet" if pretrained else None,
+        input_shape=(image_height, image_width, 3),
+        alpha=alpha,
+    )
+    backbone.trainable = backbone_trainable
+
+    # Shared backbone features at 7x7
+    backbone_features = backbone(x, training=backbone_trainable)
+
+    # ---- Head 1: Center prediction ----
+    pooled = keras.layers.GlobalAveragePooling2D(name="center_gap")(
+        backbone_features
+    )
+    center_feat = keras.layers.Dropout(head_dropout)(pooled)
+    center_feat = keras.layers.Dense(64, activation="swish", name="center_dense")(
+        center_feat
+    )
+    center_feat = keras.layers.Dropout(head_dropout)(center_feat)
+    center = keras.layers.Dense(2, activation="sigmoid", name="center")(center_feat)
+
+    # ---- Head 2: Polar evidence ----
+    # Build a small progressive decoder to get higher-res features for sampling
+    x_dec = backbone_features
+    for stage, ch in enumerate(decoder_channels, start=1):
+        x_dec = keras.layers.Conv2D(
+            ch, 3, padding="same", use_bias=False, name=f"polar_decoder_conv_{stage}"
+        )(x_dec)
+        x_dec = keras.layers.BatchNormalization(
+            momentum=0.9, epsilon=1e-3, name=f"polar_decoder_norm_{stage}"
+        )(x_dec)
+        x_dec = keras.layers.Activation("swish")(x_dec)
+        x_dec = keras.layers.UpSampling2D(
+            size=2, interpolation="bilinear", name=f"polar_decoder_up_{stage}"
+        )(x_dec)
+
+    # Ensure we reach the target resolution
+    if heatmap_size != x_dec.shape[1]:
+        x_dec = keras.layers.Resizing(
+            heatmap_size,
+            heatmap_size,
+            interpolation="bilinear",
+            name="polar_decoder_resize",
+        )(x_dec)
+
+    # Polar evidence sampling
+    polar_evidence_logits = PolarEvidenceLayer(
+        num_angles=num_angles,
+        sigma_angle=0.04,
+        radius_mean=0.35,
+        radius_sigma=0.25,
+        name="polar_evidence",
+    )(x_dec, center)
+
+    # ---- Head 3: Confidence ----
+    conf_feat = keras.layers.Dropout(head_dropout)(pooled)
+    conf_feat = keras.layers.Dense(16, activation="swish", name="confidence_dense")(
+        conf_feat
+    )
+    conf_feat = keras.layers.Dropout(head_dropout)(conf_feat)
+    confidence = keras.layers.Dense(
+        1, activation="sigmoid", name="confidence"
+    )(conf_feat)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "center": center,
+            "polar_evidence": polar_evidence_logits,
+            "confidence": confidence,
+        },
+        name=f"mobilenetv2_polar_evidence_a{alpha}",
+    )
+    setattr(model, "_mobilenet_backbone", backbone)
+    return model
+
+
+def build_mobilenetv2_center_selector(
+    image_height: int,
+    image_width: int,
+    *,
+    num_hypotheses: int = 5,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 0.35,
+    head_units: int = 64,
+    head_dropout: float = 0.3,
+) -> keras.Model:
+    """Build a small MobileNetV2-tiny hybrid localizer.
+
+    Learns two things:
+      1. center_logits (num_hypotheses) — which of the classical firmware
+         center hypotheses is best for this image.
+      2. center_offset (2, tanh) — sub-pixel refinement from the argmax
+         hypothesis to the true center.
+
+    The classical hypotheses (computed outside the model) are:
+      - bright centroid, crop center, board prior, rim center, image center.
+
+    Decode: argmax(center_logits) → pick hypothesis → add center_offset
+    → feed refined center into classical polar spoke vote → GaugeSpec.
+
+    Args:
+        image_height: Input image height.
+        image_width: Input image width.
+        num_hypotheses: Number of classical center hypotheses (default 4).
+        pretrained: Load ImageNet backbone weights.
+        backbone_trainable: Whether the backbone is trainable.
+        alpha: MobileNetV2 width multiplier.
+        head_units: Dense layer units.
+        head_dropout: Dropout rate.
+
+    Returns:
+        keras.Model with outputs:
+          center_logits: (B, num_hypotheses) — unnormalized hypothesis scores.
+          center_offset: (B, 2, tanh) — residual from chosen hypothesis.
+    """
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    x = keras.layers.GlobalAveragePooling2D(name="selector_gap")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+    x = keras.layers.Dense(head_units, activation="swish", name="selector_dense")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+
+    center_logits = keras.layers.Dense(
+        num_hypotheses, name="center_logits"
+    )(x)
+    center_offset = keras.layers.Dense(
+        2, activation="tanh", name="center_offset"
+    )(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "center_logits": center_logits,
+            "center_offset": center_offset,
+        },
+        name=f"mobilenetv2_center_selector_a{alpha}",
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_geometry_reader(
+    image_height: int,
+    image_width: int,
+    *,
+    heatmap_size: int = 28,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 0.35,
+) -> keras.Model:
+    """Build a gauge-agnostic geometry reader producing raw keypoint heatmaps.
+
+    MobileNetV2 alpha=0.35 → small conv decoder → 2 heatmap outputs
+    (center, tip). No gauge-specific parameters are embedded in the model;
+    all gauge decode (angle → temperature) happens outside using GaugeSpec
+    from embedded_gauge_reading_tinyml.gauge.processing.
+
+    The two heatmap outputs are:
+    - center_heatmap (heatmap_size x heatmap_size x 1, sigmoid): Gaussian peak at dial center
+    - tip_heatmap (heatmap_size x heatmap_size x 1, sigmoid): Gaussian peak at needle tip
+
+    Key design rationale:
+    - Gauge-agnostic: the same model can decode any gauge by swapping the GaugeSpec
+    - No Celsius or angle computation inside the model graph, keeping it TFLite-friendly
+    - Backbone frozen by default to leverage pretrained ImageNet features
+      without catastrophic overfitting on the small gauge dataset
+
+    Args:
+        image_height: Input image height in pixels.
+        image_width: Input image width in pixels.
+        heatmap_size: Output heatmap spatial resolution (default 28).
+        pretrained: Whether to load ImageNet backbone weights.
+        backbone_trainable: Whether the MobileNetV2 backbone is trainable.
+        alpha: MobileNetV2 width multiplier (0.35 for tiny NPU-friendly model).
+
+    Returns:
+        keras.Model with outputs {'center_heatmap': ..., 'tip_heatmap': ...}.
+    """
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    heatmaps = _build_keypoint_heatmap_head(
+        x,
+        heatmap_size=heatmap_size,
+        num_keypoints=2,
+    )
+    center_heatmap = heatmaps[..., 0:1]
+    tip_heatmap = heatmaps[..., 1:2]
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "center_heatmap": center_heatmap,
+            "tip_heatmap": tip_heatmap,
+        },
+        name=f"mobilenetv2_geometry_reader_a{alpha}_hm{heatmap_size}",
     )
     setattr(model, "_mobilenet_backbone", base_model)
     return model
@@ -3435,6 +3963,63 @@ def build_mobilenetv2_obb_model(
             alpha=alpha,
             head_units=head_units,
         ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_center_detection_model(
+    image_height: int = 224,
+    image_width: int = 224,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a MobileNetV2-based center detector with an auxiliary needle-colour head.
+
+    The primary output ``center_xy`` predicts a normalized (cx, cy) in [0, 1]
+    that locates the dial center / needle pivot.  The auxiliary head predicts
+    whether the needle is dark or light (used as a weak regulariser and to
+    support future multi-colour gauges).
+    """
+    inputs = keras.Input(
+        shape=(image_height, image_width, 3), name="image"
+    )
+
+    # The pipeline emits [0, 1] floats; MobileNetV2 expects [-1, 1].
+    x = keras.layers.Rescaling(
+        1.0 / 127.5, offset=-1.0, name="mobilenetv2_preprocess"
+    )(inputs)
+
+    base_model = keras.applications.MobileNetV2(
+        include_top=False,
+        weights="imagenet",
+        input_shape=(image_height, image_width, 3),
+        alpha=alpha,
+    )
+    base_model.trainable = False
+
+    x = base_model(x, training=False)
+    x = keras.layers.GlobalAveragePooling2D(name="center_detection_gap")(x)
+    x = keras.layers.Dense(
+        head_units, activation="swish", name="center_detection_dense"
+    )(x)
+    x = keras.layers.Dropout(head_dropout, name="center_detection_dropout")(x)
+
+    center_xy = keras.layers.Dense(
+        2, activation="sigmoid", name="center_xy"
+    )(x)
+    needle_colour_head = keras.layers.Dense(
+        2, activation="softmax", name="needle_colour_head"
+    )(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "center_xy": center_xy,
+            "needle_colour_head": needle_colour_head,
+        },
+        name="center_detector",
     )
     setattr(model, "_mobilenet_backbone", base_model)
     return model

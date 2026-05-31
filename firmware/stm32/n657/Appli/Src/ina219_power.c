@@ -25,7 +25,7 @@
 /* Calibration values for 0.1 ohm shunt, 3.2A max current */
 #define INA219_CALIBRATION_VALUE    0x1000U  /* Adjust based on your shunt */
 #define INA219_CURRENT_LSB_MA       0.1f     /* 0.1 mA per bit */
-#define INA219_POWER_LSB_MW         2.0f     /* 2 mW per bit */
+#define INA219_POWER_LSB_W          0.002f   /* 2 mW per bit, reported here as 0.002 W per bit */
 
 /* Thread configuration */
 #define INA219_THREAD_STACK_SIZE    1024U
@@ -41,9 +41,16 @@ static TX_SEMAPHORE g_ina219_semaphore;
 static uint8_t g_ina219_thread_stack[INA219_THREAD_STACK_SIZE];
 static volatile bool g_thread_running = false;
 
-static long INA219_ToMilliUnits(float value)
+static float INA219_ConvertSignedRaw(uint16_t raw_value, float scale)
 {
-    return (long)lroundf(value * 1000.0f);
+    const int32_t signed_raw =
+        (raw_value & 0x8000U) ? -((int32_t)((~raw_value + 1U) & 0xFFFFU)) : (int32_t)raw_value;
+    return (float)signed_raw * scale;
+}
+
+static long INA219_ToTenths(float value)
+{
+    return (long)lroundf(value * 10.0f);
 }
 
 /* Private function prototypes -----------------------------------------------*/
@@ -173,23 +180,16 @@ bool INA219_ReadMeasurement(INA219_Measurement_t *measurement)
     /* Bus voltage: 4mV per bit, shift right 3 bits */
     measurement->bus_voltage_v = ((float)(raw_bus >> 3)) * 0.004f;
     
-    /* Shunt voltage: 10uV per bit, signed */
-    if (raw_shunt & 0x8000U) {
-        /* Negative value */
-        measurement->shunt_voltage_mv = -((float)((~raw_shunt + 1U) & 0xFFFFU)) * 0.01f;
-    } else {
-        measurement->shunt_voltage_mv = ((float)raw_shunt) * 0.01f;
-    }
-    
-    /* Current: based on calibration */
-    if (raw_current & 0x8000U) {
-        measurement->current_ma = -((float)((~raw_current + 1U) & 0xFFFFU)) * INA219_CURRENT_LSB_MA;
-    } else {
-        measurement->current_ma = ((float)raw_current) * INA219_CURRENT_LSB_MA;
-    }
-    
-    /* Power: based on calibration */
-    measurement->power_mw = ((float)raw_power) * INA219_POWER_LSB_MW;
+    /* Shunt voltage: 10uV per bit, signed. Flip the sign so board draw is positive. */
+    measurement->shunt_voltage_mv =
+        -INA219_ConvertSignedRaw(raw_shunt, 0.01f);
+
+    /* Current: based on calibration. Flip the sign so board draw is positive. */
+    measurement->current_ma =
+        -INA219_ConvertSignedRaw(raw_current, INA219_CURRENT_LSB_MA);
+
+    /* Power: based on calibration, reported in watts. */
+    measurement->power_w = ((float)raw_power) * INA219_POWER_LSB_W;
     
     measurement->timestamp_ms = tx_time_get();
     measurement->valid = true;
@@ -236,15 +236,15 @@ static void INA219_ThreadEntry(ULONG thread_input)
         if (status == TX_SUCCESS) {
             /* Semaphore signaled - take a reading and log it */
             if (INA219_ReadMeasurement(&measurement)) {
-                const long vbus_milli = INA219_ToMilliUnits(measurement.bus_voltage_v);
-                const long vshunt_milli = INA219_ToMilliUnits(measurement.shunt_voltage_mv);
-                const long current_milli = INA219_ToMilliUnits(measurement.current_ma);
-                const long power_milli = INA219_ToMilliUnits(measurement.power_mw);
-                DebugConsole_Printf("[INA219] Vbus=%ld.%03ldV Ishunt=%ld.%03ldmV I=%ld.%03ldmA P=%ld.%03ldmW\r\n",
-                    vbus_milli / 1000L, labs(vbus_milli % 1000L),
-                    vshunt_milli / 1000L, labs(vshunt_milli % 1000L),
-                    current_milli / 1000L, labs(current_milli % 1000L),
-                    power_milli / 1000L, labs(power_milli % 1000L));
+                const long vbus_tenth = INA219_ToTenths(measurement.bus_voltage_v);
+                const long vshunt_tenth = INA219_ToTenths(measurement.shunt_voltage_mv);
+                const long current_tenth = INA219_ToTenths(measurement.current_ma);
+                const long power_tenth = INA219_ToTenths(measurement.power_w);
+                DebugConsole_Printf("[INA219] Vbus=%ld.%01ldV Ishunt=%ld.%01ldmV I=%ld.%01ldmA P=%ld.%01ldW\r\n",
+                    vbus_tenth / 10L, labs(vbus_tenth % 10L),
+                    vshunt_tenth / 10L, labs(vshunt_tenth % 10L),
+                    current_tenth / 10L, labs(current_tenth % 10L),
+                    power_tenth / 10L, labs(power_tenth % 10L));
             }
         }
     }
@@ -313,14 +313,14 @@ bool INA219_LogReading(const char *label)
     }
     
     {
-        const long vbus_milli = INA219_ToMilliUnits(measurement.bus_voltage_v);
-        const long current_milli = INA219_ToMilliUnits(measurement.current_ma);
-        const long power_milli = INA219_ToMilliUnits(measurement.power_mw);
-        DebugConsole_Printf("[INA219][%s] Vbus=%ld.%03ldV I=%ld.%03ldmA P=%ld.%03ldmW\r\n",
+        const long vbus_tenth = INA219_ToTenths(measurement.bus_voltage_v);
+        const long current_tenth = INA219_ToTenths(measurement.current_ma);
+        const long power_tenth = INA219_ToTenths(measurement.power_w);
+        DebugConsole_Printf("[INA219][%s] Vbus=%ld.%01ldV I=%ld.%01ldmA P=%ld.%01ldW\r\n",
             label,
-            vbus_milli / 1000L, labs(vbus_milli % 1000L),
-            current_milli / 1000L, labs(current_milli % 1000L),
-            power_milli / 1000L, labs(power_milli % 1000L));
+            vbus_tenth / 10L, labs(vbus_tenth % 10L),
+            current_tenth / 10L, labs(current_tenth % 10L),
+            power_tenth / 10L, labs(power_tenth % 10L));
     }
     
     /* Signal the monitoring thread to take a reading */
