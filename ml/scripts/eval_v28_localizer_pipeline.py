@@ -28,6 +28,7 @@ from embedded_gauge_reading_tinyml.board_pipeline import (  # noqa: E402
     decode_rectifier_crop_box,
     load_capture_image,
     load_model_session,
+    refine_crop_with_luma_under_obb_constraint,
 )
 from embedded_gauge_reading_tinyml.firmware_preprocessing import (  # noqa: E402
     build_training_style_polar_vote_float32,
@@ -124,6 +125,7 @@ def _parse_args() -> argparse.Namespace:
             "source_crop_box",
             "source_crop_canvas_box",
             "obb_params",
+            "obb_plus_luma_refined",
             "rectifier_box",
             "keypoint_coords",
             "keypoint_heatmaps",
@@ -573,12 +575,16 @@ def _evaluate_one(
             "keypoint_heatmaps",
         ),
     )
+    """Resolve the localizer head name for luma refinement dispatching."""
+    effective_head = (
+        "obb_params" if localizer_head == "obb_plus_luma_refined" else localizer_head
+    )
     crop_decision = _decode_localizer_crop_box(
         localizer_outputs,
         source_width=source_image.shape[1],
         source_height=source_image.shape[0],
         image_size=image_size,
-        localizer_head=localizer_head,
+        localizer_head=effective_head,
         obb_crop_scale=obb_crop_scale,
         obb_width_scale=obb_width_scale,
         obb_height_scale=obb_height_scale,
@@ -594,6 +600,19 @@ def _evaluate_one(
         keypoint_center_y_bias_pixels=keypoint_center_y_bias_pixels,
         keypoint_min_crop_size=keypoint_min_crop_size,
     )
+
+    if localizer_head == "obb_plus_luma_refined" and crop_decision.accepted:
+        refined_box = refine_crop_with_luma_under_obb_constraint(
+            source_image,
+            crop_decision.crop_box_xyxy,
+        )
+        crop_decision = LocalizerCropDecision(
+            crop_box_xyxy=refined_box,
+            crop_source="obb_plus_luma_refined",
+            accepted=crop_decision.accepted,
+            fallback_reason=crop_decision.fallback_reason,
+            details=crop_decision.details,
+        )
 
     v28_tensor = build_training_style_polar_vote_float32(
         source_image,

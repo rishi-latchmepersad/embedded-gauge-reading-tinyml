@@ -6,39 +6,39 @@
 - Validation gate passed: no
 
 ## Keras (val)
-- Accepted MAE: 6.9625 C
-- Acceptance rate: 0.7660
-- Worst accepted error: 54.2412 C
-- Accepted >20 C failures: 1
-- Under 2/5/10 C: 10.64% / 31.91% / 65.96%
-- Center MAE px: 22.5324
-- Tip MAE px: 27.8956
-- Angle MAE deg: 32.4460
+- Accepted MAE: 4.8450 C
+- Acceptance rate: 0.4255
+- Worst accepted error: 13.3422 C
+- Accepted >20 C failures: 0
+- Under 2/5/10 C: 10.64% / 25.53% / 36.17%
+- Center MAE px: 9.5874
+- Tip MAE px: 48.6812
+- Angle MAE deg: 100.4136
 - Temp drift mean/median/p90: nan / nan / nan
 
 ## TFLite FP32
-- Accepted MAE: 6.9624 C
-- Acceptance rate: 0.7660
-- Worst accepted error: 54.2411 C
-- Accepted >20 C failures: 1
+- Accepted MAE: 4.8450 C
+- Acceptance rate: 0.4255
+- Worst accepted error: 13.3420 C
+- Accepted >20 C failures: 0
 - Temp drift mean/median/p90: 0.0000 / 0.0000 / 0.0001
 - Center drift mean/median: 0.0000 / 0.0000
-- Tip drift mean/median: 0.0003 / 0.0002
+- Tip drift mean/median: 0.0002 / 0.0002
 - Guardrail disagreements: 0
 
 ## TFLite INT8
-- Accepted MAE: 7.3914 C
-- Acceptance rate: 0.7660
-- Worst accepted error: 42.4801 C
-- Accepted >20 C failures: 2
-- Temp drift mean/median/p90: 1.7108 / 1.3472 / 3.0880
-- Center drift mean/median: 2.7714 / 2.7810
-- Tip drift mean/median: 13.7627 / 10.8498
+- Accepted MAE: 5.2775 C
+- Acceptance rate: 0.4255
+- Worst accepted error: 19.2520 C
+- Accepted >20 C failures: 0
+- Temp drift mean/median/p90: 2.7654 / 2.4181 / 4.2774
+- Center drift mean/median: 1.1518 / 1.0291
+- Tip drift mean/median: 12.5746 / 11.2602
 - Guardrail disagreements: 6
 
 ## Tensor Contract
 - FP32 input dtype: float32
 - INT8 input dtype: int8
-- FP32 output dtypes: float32, float32, float32, float32
-- INT8 output dtypes: int8, int8, int8, int8
-- Semantic output reorder: [2, 0, 3, 1]
+- FP32 output dtypes: float32, float32, float32
+- INT8 output dtypes: int8, int8, int8
+- Semantic output reorder: [1, 0, 2]

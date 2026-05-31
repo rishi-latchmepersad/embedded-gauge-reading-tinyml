@@ -39,6 +39,7 @@
 # Debug files
 *.dSYM/
 *.su
+*.cyclo
 *.idb
 *.pdb
 
@@ -68,6 +69,20 @@ ml/data/board_captures_labeled.csv
 ml/data/board_captures_labeled_v2.csv
 ml/data/merged_geometry_board_manifest.csv
 
+# Generated reports and local logs
+docs/int8_drift_decision_report.md
+docs/phase-13a-tip-focus-firmware-integration-spike.md
+ml/tmp/train_log.txt
+ml/reports/geometry_heatmap_v4_112_*.md
+ml/ml/reports/geometry_heatmap_v4_112_*.md
+
+# STM32CubeIDE project metadata and local build outputs
+firmware/stm32/n657/Appli/.cproject
+firmware/stm32/n657/Appli/.settings/stm32cubeide.project.prefs
+firmware/stm32/n657/Appli/Debug/
+firmware/stm32/n657/Appli/makefile.targets
+firmware/stm32/n657/Appli/Makefile
+
 #ignore build files
 /build/*
 firmware/stm32/N657X0_bringup/build/*
@@ -86,10 +101,12 @@ st_ai_output/*
 firmware/stm32/n657/st_ai_output/*
 !firmware/stm32/n657/st_ai_output/.gitkeep
 
-# Temporary directories
-tmp_*/
+# Temporary directories and files
+tmp_*
 tmp/*
 !tmp/.gitkeep
+ml/tmp/*
+!ml/tmp/.gitkeep
 
 # Python virtual environments
 .venv/
@@ -100,4 +117,10 @@ ml/.venv/
 
 # ML debug outputs
 ml/debug/
+
+# Local Windows placeholder artifact
+/nul
+
+# Dirty vendor reference checkout
+third_party_refs/x-cube-n6-camera-capture/
 

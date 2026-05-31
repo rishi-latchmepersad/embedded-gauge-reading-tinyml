@@ -262,6 +262,183 @@ def _angle_in_sweep(
     return shifted <= (spec.sweep_rad + margin_rad)
 
 
+def _middle_shaft_weight(rr: np.ndarray, dial_radius_px: float) -> np.ndarray:
+    """Return a radial weight that peaks in the middle-shaft band (~0.45 × radius).
+
+    Falls off toward the hub and rim so that the middle of the needle shaft
+    contributes the most to a spoke vote.
+    """
+    peak_r: float = 0.45 * dial_radius_px
+    sigma: float = max(0.15 * dial_radius_px, 1.0)
+    return np.exp(-0.5 * ((rr - peak_r) / sigma) ** 2)
+
+
+def _find_top_local_peaks(
+    values: np.ndarray,
+    num_peaks: int = 5,
+    min_distance: int = 30,
+) -> list[tuple[int, float]]:
+    """Return the (index, value) of the top N local maxima.
+
+    Each local maximum must be at least `min_distance` bins away from any
+    higher-ranked peak so we avoid returning multiple bins of the same bump.
+    """
+    if values.size == 0:
+        return []
+
+    # Local maxima are points higher than both neighbours (wrap-around).
+    left: np.ndarray = np.roll(values, 1)
+    right: np.ndarray = np.roll(values, -1)
+    is_peak: np.ndarray = (values >= left) & (values >= right)
+
+    candidates: list[tuple[int, float]] = [
+        (int(i), float(values[i])) for i in range(values.size) if is_peak[i]
+    ]
+    candidates.sort(key=lambda pair: pair[1], reverse=True)
+
+    selected: list[tuple[int, float]] = []
+    for idx, val in candidates:
+        # Check if this peak is far enough from already-selected peaks.
+        if all(abs(idx - s_idx) >= min_distance for s_idx, _ in selected):
+            selected.append((idx, val))
+            if len(selected) >= num_peaks:
+                break
+
+    return selected
+
+
+def _score_radial_spoke(
+    image_bgr: np.ndarray,
+    *,
+    center_xy: tuple[float, float],
+    angle_rad: float,
+    dial_radius_px: float,
+    gray: np.ndarray | None = None,
+) -> float:
+    """Score how needle-like a radial spoke is at the given angle.
+
+    Uses the existing _sample_line_darkness function and returns a
+    composite score. This is used as a tiebreaker when the polar histogram
+    is ambiguous.
+    """
+    if gray is None:
+        gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+
+    cx, cy = center_xy
+    tip_x: float = cx + math.cos(angle_rad) * 0.80 * dial_radius_px
+    tip_y: float = cy + math.sin(angle_rad) * 0.80 * dial_radius_px
+    tail_x: float = cx + math.cos(angle_rad) * 0.25 * dial_radius_px
+    tail_y: float = cy + math.sin(angle_rad) * 0.25 * dial_radius_px
+
+    contrast, dark_fraction = _sample_line_darkness(
+        gray,
+        x1=tail_x,
+        y1=tail_y,
+        x2=tip_x,
+        y2=tip_y,
+        center_xy=center_xy,
+        dial_radius_px=dial_radius_px,
+    )
+    return max(contrast, 0.0) + 0.80 * dark_fraction
+
+
+def _needle_detection_shaft_score(
+    image_bgr: np.ndarray,
+    detection: NeedleDetection,
+    *,
+    center_xy: tuple[float, float],
+    dial_radius_px: float,
+) -> float:
+    """Score how needle-like a detection is by sampling its shaft darkness.
+
+    Returns a score in [0, ~2] where higher means the detection looks more
+    like a dark needle shaft.
+    """
+    angle_rad: float = math.atan2(detection.unit_dy, detection.unit_dx)
+    contrast, dark_fraction = _sample_line_darkness(
+        cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY),
+        x1=center_xy[0] + math.cos(angle_rad) * 0.25 * dial_radius_px,
+        y1=center_xy[1] + math.sin(angle_rad) * 0.25 * dial_radius_px,
+        x2=center_xy[0] + math.cos(angle_rad) * 0.80 * dial_radius_px,
+        y2=center_xy[1] + math.sin(angle_rad) * 0.80 * dial_radius_px,
+        center_xy=center_xy,
+        dial_radius_px=dial_radius_px,
+    )
+    return max(contrast, 0.0) + 0.80 * dark_fraction
+
+
+def _detect_needle_unit_vector_spoked_arc(
+    image_bgr: np.ndarray,
+    *,
+    center_xy: tuple[float, float],
+    dial_radius_px: float,
+    gauge_spec: GaugeSpec | None = None,
+) -> NeedleDetection | None:
+    """Detect needle direction with polar + Hough-line fusion.
+
+    Runs the baseline polar voter AND the Hough line-segment detector
+    independently, scores each by shaft darkness, and returns the one
+    that looks more like a dark needle.
+
+    The polar histogram is excellent when the needle is the dominant dark
+    radial feature.  It occasionally locks onto a tick mark or shadow
+    (wrong-spoke failure).  The Hough line-segment detector explicitly
+    looks for a line that passes from near the hub toward the rim — a
+    structural constraint the polar vote lacks.
+
+    By picking whichever method produces a higher shaft-darkness score
+    we fuse the strengths of both approaches.
+    """
+    polar_result: NeedleDetection | None = _detect_needle_unit_vector_polar(
+        image_bgr,
+        center_xy=center_xy,
+        dial_radius_px=dial_radius_px,
+        gauge_spec=gauge_spec,
+    )
+    hough_result: NeedleDetection | None = _detect_needle_unit_vector_line_segment(
+        image_bgr,
+        center_xy=center_xy,
+        dial_radius_px=dial_radius_px,
+        gauge_spec=gauge_spec,
+    )
+
+    candidates: list[tuple[NeedleDetection, str]] = []
+    if polar_result is not None:
+        candidates.append((polar_result, "polar"))
+    if hough_result is not None:
+        candidates.append((hough_result, "hough"))
+
+    if not candidates:
+        return None
+
+    if len(candidates) == 1:
+        return candidates[0][0]
+
+    # Score each candidate by shaft darkness and pick the best.
+    best_score: float = float("-inf")
+    best_detection: NeedleDetection | None = None
+    best_name: str = ""
+
+    for detection, name in candidates:
+        shaft_score: float = _needle_detection_shaft_score(
+            image_bgr, detection,
+            center_xy=center_xy,
+            dial_radius_px=dial_radius_px,
+        )
+        # Boost the polar score slightly to prefer it when scores are close.
+        adjusted_score: float = shaft_score * (1.15 if name == "polar" else 1.0)
+        if adjusted_score > best_score:
+            best_score = adjusted_score
+            best_detection = detection
+            best_name = name
+
+    # Confidence floor: if the winner has a very low shaft score, reject it.
+    if best_score < 0.08:
+        return None
+
+    return best_detection
+
+
 def _detect_needle_unit_vector_polar(
     image_bgr: np.ndarray,
     *,
@@ -1487,4 +1664,423 @@ def evaluate_classical_baseline(
         mae=mae,
         rmse=rmse,
         predictions=predictions,
+    )
+
+
+# ── Firmware-matched classical baseline ──────────────────────────────────
+# These constants match the STM32N6 firmware's app_baseline_runtime.c,
+# mapped into 224x224 crop-space coordinates.
+
+_FW_DIAL_RADIUS_PX: float = 0.56 * 224.0  # ~125 px
+_FW_BRIGHT_THRESHOLD: int = 150
+_FW_SATURATION_THRESHOLD: int = 235
+_FW_MIN_BRIGHT_PIXELS: int = 1024
+_FW_BOARD_PRIOR_CENTER_X: float = 0.49 * 224.0
+_FW_BOARD_PRIOR_CENTER_Y: float = 0.446 * 224.0
+_FW_BOARD_PRIOR_RADIUS_PX: float = 0.35 * 224.0
+_FW_INNER_DIAL_CENTER_X: float = 0.5 * 224.0
+_FW_INNER_DIAL_CENTER_Y: float = 0.446 * 224.0
+_FW_FIXED_CROP_BIAS_PX: int = 18
+_FW_REFINEMENT_OFFSETS: tuple[int, ...] = (-4, 0, 4)
+_FW_CONFIDENCE_THRESHOLD: float = 1.25
+_FW_MIN_ACCEPT_SCORE: float = 2.0
+_FW_MIN_PEAK_RATIO: float = 0.35
+_FW_CONSENSUS_TEMP_DELTA_C: float = 4.0
+_FW_CONSENSUS_MIN_QUALITY_RATIO: float = 0.85
+_FW_CENTER_MAX_DIST: float = 40.0
+_FW_RIM_SEARCH_COARSE_STEP: int = 8
+_FW_RIM_SEARCH_FINE_STEP: int = 4
+_FW_RIM_SEARCH_RADIUS: float = 20.0
+
+
+@dataclass
+class _FwEstimate:
+    valid: bool = False
+    center_x: float = 0.0
+    center_y: float = 0.0
+    angle_deg: float = 0.0
+    temperature_c: float = 0.0
+    confidence: float = 0.0
+    best_score: float = 0.0
+    runner_up_score: float = 0.0
+    source_label: str = ""
+    detection: NeedleDetection | None = None
+
+
+def _fw_bright_centroid_hypothesis(
+    image_bgr: np.ndarray,
+) -> tuple[float, float] | None:
+    """Luma-weighted bright centroid (matches firmware)."""
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    h, w = image_bgr.shape[:2]
+    scan_x_min = max(0, round(_FW_INNER_DIAL_CENTER_X - _FW_DIAL_RADIUS_PX * 1.5))
+    scan_y_min = max(0, round(_FW_INNER_DIAL_CENTER_Y - _FW_DIAL_RADIUS_PX * 1.5))
+    scan_x_max = min(w, round(_FW_INNER_DIAL_CENTER_X + _FW_DIAL_RADIUS_PX * 1.5))
+    scan_y_max = min(h, round(_FW_INNER_DIAL_CENTER_Y + _FW_DIAL_RADIUS_PX * 1.5))
+    bright_sum_x: int = 0
+    bright_sum_y: int = 0
+    bright_count: int = 0
+    for y in range(scan_y_min, scan_y_max):
+        for x in range(scan_x_min, scan_x_max):
+            luma = float(gray[y, x])
+            if luma < _FW_BRIGHT_THRESHOLD:
+                continue
+            if luma > _FW_SATURATION_THRESHOLD:
+                continue
+            bright_count += 1
+            bright_sum_x += x
+            bright_sum_y += y
+    if bright_count < _FW_MIN_BRIGHT_PIXELS:
+        return None
+    cx = bright_sum_x / bright_count
+    cy = bright_sum_y / bright_count
+    biased_cy = max(cy - _FW_FIXED_CROP_BIAS_PX, 0.0)
+    return (cx, biased_cy)
+
+
+def _fw_fixed_crop_center() -> tuple[float, float]:
+    """Training-crop inner dial center with upward bias (matches firmware)."""
+    cx = _FW_INNER_DIAL_CENTER_X
+    cy = max(_FW_INNER_DIAL_CENTER_Y - _FW_FIXED_CROP_BIAS_PX, 0.0)
+    return (cx, cy)
+
+
+def _fw_board_prior_center() -> tuple[float, float]:
+    """Board prior center (matches firmware)."""
+    return (_FW_BOARD_PRIOR_CENTER_X, _FW_BOARD_PRIOR_CENTER_Y)
+
+
+def _fw_rim_search_center(
+    image_bgr: np.ndarray,
+) -> tuple[float, float] | None:
+    """Score centers near inner dial by rim edge radial alignment (matches firmware).
+    
+    Uses numpy for vectorized computation instead of Python loops.
+    """
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    h, w = image_bgr.shape[:2]
+    
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    mag = np.sqrt(gx * gx + gy * gy)
+    
+    sat_mask = gray > _FW_SATURATION_THRESHOLD
+    weak_mask = mag < 2.0
+    rim_mask = np.zeros((h, w), dtype=bool)
+    
+    cx0, cy0 = _FW_INNER_DIAL_CENTER_X, _FW_INNER_DIAL_CENTER_Y
+    yy, xx = np.ogrid[:h, :w]
+    rr = np.sqrt((xx - cx0)**2 + (yy - cy0)**2)
+    rim_min = _FW_DIAL_RADIUS_PX * 0.84
+    rim_max = _FW_DIAL_RADIUS_PX * 1.04
+    rim_mask = (rr >= rim_min) & (rr <= rim_max)
+    
+    valid = rim_mask & ~sat_mask & ~weak_mask
+    if valid.sum() < 10:
+        return None
+    
+    rim_y, rim_x = np.where(valid)
+    rim_mag = mag[rim_y, rim_x]
+    
+    sx = max(1, round(cx0 - _FW_RIM_SEARCH_RADIUS))
+    sy = max(1, round(cy0 - _FW_RIM_SEARCH_RADIUS))
+    ex = min(w - 1, round(cx0 + _FW_RIM_SEARCH_RADIUS))
+    ey = min(h - 1, round(cy0 + _FW_RIM_SEARCH_RADIUS))
+    
+    best_score_val = -1.0
+    best_cx = cx0
+    best_cy = cy0
+    
+    for step in (_FW_RIM_SEARCH_COARSE_STEP, _FW_RIM_SEARCH_FINE_STEP):
+        for cy in range(sy, ey + 1, step):
+            for cx in range(sx, ex + 1, step):
+                drx = rim_x.astype(np.float32) - cx
+                dry = rim_y.astype(np.float32) - cy
+                dr = np.sqrt(drx * drx + dry * dry)
+                dr_safe = np.maximum(dr, 1.0)
+                rx = drx / dr_safe
+                ry = dry / dr_safe
+                gx_vals = gx[rim_y, rim_x] / np.maximum(rim_mag, 1.0)
+                gy_vals = gy[rim_y, rim_x] / np.maximum(rim_mag, 1.0)
+                align = np.abs(gx_vals * rx + gy_vals * ry)
+                score = float(np.sum(align * rim_mag))
+                if score > best_score_val:
+                    best_score_val = score
+                    best_cx = float(cx)
+                    best_cy = float(cy)
+    
+    return (best_cx, best_cy)
+
+
+def _fw_center_hypotheses(
+    image_bgr: np.ndarray,
+) -> list[tuple[str, tuple[float, float], float]]:
+    """Generate all 5 center hypotheses (matches firmware)."""
+    hypotheses: list[tuple[str, tuple[float, float], float]] = []
+    bright = _fw_bright_centroid_hypothesis(image_bgr)
+    if bright is not None:
+        hypotheses.append(("bright-center-polar", bright, _FW_DIAL_RADIUS_PX))
+    hypotheses.append(("fixed-crop-polar", _fw_fixed_crop_center(), _FW_DIAL_RADIUS_PX))
+    hypotheses.append(("board-prior-polar", _fw_board_prior_center(), _FW_BOARD_PRIOR_RADIUS_PX))
+    rim = _fw_rim_search_center(image_bgr)
+    if rim is not None:
+        hypotheses.append(("rim-center-polar", rim, _FW_DIAL_RADIUS_PX))
+    hypotheses.append(("image-center-polar", (_FW_INNER_DIAL_CENTER_X, _FW_INNER_DIAL_CENTER_Y), _FW_DIAL_RADIUS_PX))
+    return hypotheses
+
+
+def _fw_run_polar_vote(
+    image_bgr: np.ndarray,
+    center_xy: tuple[float, float],
+    dial_radius_px: float,
+    gauge_spec: GaugeSpec | None,
+) -> _FwEstimate | None:
+    """Run the polar vote at a given center (matches firmware)."""
+    det = _detect_needle_unit_vector_polar(
+        image_bgr,
+        center_xy=center_xy,
+        dial_radius_px=dial_radius_px,
+        gauge_spec=gauge_spec,
+    )
+    if det is None:
+        return None
+    angle_deg = math.degrees(math.atan2(det.unit_dy, det.unit_dx)) % 360
+    temp_c = float("nan")
+    if gauge_spec is not None:
+        temp_c = needle_vector_to_value(det.unit_dx, det.unit_dy, gauge_spec)
+    est = _FwEstimate(
+        valid=True,
+        center_x=center_xy[0],
+        center_y=center_xy[1],
+        angle_deg=angle_deg,
+        temperature_c=temp_c,
+        confidence=det.confidence,
+        best_score=det.peak_value,
+        runner_up_score=det.runner_up_value,
+        detection=det,
+    )
+    return est
+
+
+def _fw_refine_estimate(
+    image_bgr: np.ndarray,
+    seed: _FwEstimate,
+    dial_radius_px: float,
+    gauge_spec: GaugeSpec | None,
+) -> _FwEstimate | None:
+    """5x5 offset sweep around seed center (matches firmware)."""
+    h, w = image_bgr.shape[:2]
+    min_cx = 1
+    min_cy = 1
+    max_cx = w - 2
+    max_cy = h - 2
+    best = seed
+    found = True
+    for dy in _FW_REFINEMENT_OFFSETS:
+        for dx in _FW_REFINEMENT_OFFSETS:
+            cx = int(round(seed.center_x + dx))
+            cy = int(round(seed.center_y + dy))
+            cx = max(min_cx, min(cx, max_cx))
+            cy = max(min_cy, min(cy, max_cy))
+            est = _fw_run_polar_vote(image_bgr, (float(cx), float(cy)), dial_radius_px, gauge_spec)
+            if est is None:
+                continue
+            if _fw_is_better_estimate(est, best):
+                best = est
+    return best if found else None
+
+
+def _fw_compute_quality(est: _FwEstimate) -> float:
+    """Quality = confidence / peak_ratio (matches firmware)."""
+    if not est.valid or est.best_score <= 0.0:
+        return 0.0
+    if est.runner_up_score > 0.0:
+        peak_ratio = est.best_score / est.runner_up_score
+    else:
+        peak_ratio = est.best_score
+    peak_ratio = max(peak_ratio, 1.0)
+    return est.confidence / peak_ratio
+
+
+def _fw_source_priority(source_label: str) -> int:
+    """Source priority (matches firmware)."""
+    if source_label in ("fixed-crop-polar", "image-center-polar", "board-prior-polar", "rim-center-polar"):
+        return 4
+    if source_label == "bright-center-polar":
+        return 2
+    return 0
+
+
+def _fw_is_better_estimate(
+    candidate: _FwEstimate,
+    incumbent: _FwEstimate,
+) -> bool:
+    """Compare two estimates using priority + quality (matches firmware)."""
+    if not candidate.valid:
+        return False
+    if not incumbent.valid:
+        return True
+    cq = _fw_compute_quality(candidate)
+    iq = _fw_compute_quality(incumbent)
+    if candidate.source_label == "bright-center-polar":
+        dx = candidate.center_x - _FW_INNER_DIAL_CENTER_X
+        dy = candidate.center_y - _FW_INNER_DIAL_CENTER_Y
+        if dx * dx + dy * dy > 150.0 * 150.0:
+            return False
+    if cq > iq:
+        cp = _fw_source_priority(candidate.source_label)
+        ip_prior = _fw_source_priority(incumbent.source_label)
+        ratio = cq / iq if iq > 0 else float("inf")
+        if cp > ip_prior:
+            return True
+        if cp < ip_prior:
+            return ratio >= 2.0
+        return True
+    if cq < iq:
+        cp = _fw_source_priority(candidate.source_label)
+        ip_prior = _fw_source_priority(incumbent.source_label)
+        return cp > ip_prior
+    return False
+
+
+def _fw_pass_acceptance_gate(
+    est: _FwEstimate,
+    image_bgr: np.ndarray,
+) -> bool:
+    """Acceptance gate (matches firmware)."""
+    if not est.valid:
+        return False
+    if est.confidence < _FW_CONFIDENCE_THRESHOLD:
+        return False
+    if est.best_score < _FW_MIN_ACCEPT_SCORE:
+        return False
+    if est.runner_up_score > 0.0:
+        pk_ratio = est.best_score / est.runner_up_score
+        if pk_ratio < _FW_MIN_PEAK_RATIO:
+            return False
+    dx = est.center_x - _FW_INNER_DIAL_CENTER_X
+    dy = est.center_y - _FW_INNER_DIAL_CENTER_Y
+    if dx * dx + dy * dy > _FW_CENTER_MAX_DIST * _FW_CENTER_MAX_DIST:
+        return False
+    return True
+
+
+def _fw_select_consensus(
+    estimates: list[_FwEstimate | None],
+    fallback: _FwEstimate | None,
+) -> _FwEstimate | None:
+    """Consensus clustering (matches firmware)."""
+    valid: list[tuple[int, _FwEstimate]] = [
+        (i, e) for i, e in enumerate(estimates) if e is not None and e.valid
+    ]
+    if len(valid) < 2:
+        return fallback
+    support: list[int] = [0] * len(estimates)
+    best_support: int = 0
+    for i, e_i in valid:
+        count: int = 1
+        for j, e_j in valid:
+            if i == j:
+                continue
+            delta = abs(e_i.temperature_c - e_j.temperature_c)
+            if delta <= _FW_CONSENSUS_TEMP_DELTA_C:
+                count += 1
+        support[i] = count
+        if count > best_support:
+            best_support = count
+    if best_support < 2:
+        return fallback
+    fallback_quality = _fw_compute_quality(fallback) if fallback is not None else 0.0
+    fallback_priority = _fw_source_priority(fallback.source_label) if fallback is not None else 0
+    best: _FwEstimate | None = None
+    best_priority: int = -1
+    best_quality: float = -1.0
+    best_peak_ratio: float = -1.0
+    best_confidence: float = -1.0
+    best_score: float = -1.0
+    for i, e_i in valid:
+        if support[i] != best_support:
+            continue
+        q = _fw_compute_quality(e_i)
+        pk_ratio = (e_i.best_score / e_i.runner_up_score) if e_i.runner_up_score > 0 else e_i.best_score
+        p = _fw_source_priority(e_i.source_label)
+        better = (
+            best is None
+            or p > best_priority
+            or (p == best_priority and q > best_quality)
+            or (p == best_priority and q == best_quality and pk_ratio > best_peak_ratio)
+            or (p == best_priority and q == best_quality and pk_ratio == best_peak_ratio and e_i.confidence > best_confidence)
+            or (p == best_priority and q == best_quality and pk_ratio == best_peak_ratio and e_i.confidence == best_confidence and e_i.best_score > best_score)
+        )
+        if better:
+            best = e_i
+            best_priority = p
+            best_quality = q
+            best_peak_ratio = pk_ratio
+            best_confidence = e_i.confidence
+            best_score = e_i.best_score
+    if best is None or fallback_quality <= 0.0:
+        return fallback
+    if best_priority < fallback_priority:
+        return fallback
+    if best_priority > fallback_priority:
+        return best
+    if best_quality >= fallback_quality * _FW_CONSENSUS_MIN_QUALITY_RATIO:
+        return best
+    return fallback
+
+
+def run_firmware_baseline(
+    image_bgr: np.ndarray,
+    gauge_spec: GaugeSpec | None = None,
+) -> tuple[float, float, float, NeedleDetection | None]:
+    """Run the firmware-matched classical baseline.
+
+    Matches the STM32N6 firmware's 5-hypothesis + refinement + consensus
+    algorithm in app_baseline_runtime.c.
+
+    Returns (center_x, center_y, dial_radius_px, detection).
+    """
+    hypotheses = _fw_center_hypotheses(image_bgr)
+    raw_estimates: list[_FwEstimate] = []
+    for label, (cx, cy), radius in hypotheses:
+        est = _fw_run_polar_vote(image_bgr, (cx, cy), radius, gauge_spec)
+        if est is not None:
+            est.source_label = label
+            raw_estimates.append(est)
+    if not raw_estimates:
+        return (
+            _FW_INNER_DIAL_CENTER_X,
+            _FW_INNER_DIAL_CENTER_Y,
+            _FW_DIAL_RADIUS_PX,
+            None,
+        )
+    refined: list[_FwEstimate | None] = []
+    for est in raw_estimates:
+        r = _fw_refine_estimate(image_bgr, est, _FW_DIAL_RADIUS_PX, gauge_spec)
+        # Locate matching hypothesis radius for source label
+        hyp_radius = _FW_DIAL_RADIUS_PX
+        for label2, _, rad in hypotheses:
+            if label2 == est.source_label:
+                hyp_radius = rad
+                break
+        if r is not None:
+            r.source_label = est.source_label
+            refined.append(r)
+        else:
+            refined.append(None)
+    best: _FwEstimate | None = None
+    for r in refined:
+        if r is None:
+            continue
+        if best is None or _fw_is_better_estimate(r, best):
+            best = r
+    consensus = _fw_select_consensus(refined, best)
+    if consensus is not None and consensus.valid:
+        return (consensus.center_x, consensus.center_y, _FW_DIAL_RADIUS_PX, consensus.detection)
+    return (
+        _FW_INNER_DIAL_CENTER_X,
+        _FW_INNER_DIAL_CENTER_Y,
+        _FW_DIAL_RADIUS_PX,
+        None,
     )

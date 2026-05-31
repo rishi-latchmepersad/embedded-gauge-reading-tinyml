@@ -20,7 +20,9 @@ angles in image space consistently.
 """
 
 import math
-from typing import Optional
+from typing import Any, Optional
+
+import numpy as np
 
 
 def angle_degrees_from_center_to_tip(
@@ -202,3 +204,206 @@ def angle_radians_to_degrees(angle_radians: float) -> float:
         Angle in degrees
     """
     return math.degrees(angle_radians)
+
+
+def temperature_to_inner_dial_angle_degrees(
+    celsius: float,
+    cold_angle_degrees: float = 135.0,
+    sweep_degrees: float = 270.0,
+    minimum_celsius: float = -30.0,
+    maximum_celsius: float = 50.0,
+) -> float:
+    """Convert a temperature to the inner dial needle angle in degrees.
+
+    Reverse of celsius_from_inner_dial_angle_degrees. Maps a temperature
+    to the needle angle that a correctly-calibrated gauge would show.
+
+    Args:
+        celsius: Temperature in Celsius
+        cold_angle_degrees: Angle at the cold end (default 135)
+        sweep_degrees: Total angular sweep (default 270)
+        minimum_celsius: Temperature at cold end (default -30)
+        maximum_celsius: Temperature at hot end (default 50)
+
+    Returns:
+        Needle angle in degrees [0, 360)
+    """
+    temperature_range = maximum_celsius - minimum_celsius
+    if temperature_range <= 0.0:
+        raise ValueError("maximum_celsius must be > minimum_celsius")
+    fraction = (celsius - minimum_celsius) / temperature_range
+    fraction = min(max(fraction, 0.0), 1.0)
+    angle = cold_angle_degrees + fraction * sweep_degrees
+    return angle % 360.0
+
+
+def angle_logits_to_temperature(
+    logits: np.ndarray,
+    gauge_spec: Any,
+    *,
+    num_bins: int = 36,
+    decode_topk: int = 3,
+) -> float:
+    """Decode 36-bin angle logits to temperature via circular expectation.
+
+    Steps:
+    1. Softmax over logits → probabilities per angle bin
+    2. Circular expectation (Von Mises) → mean angle in radians
+    3. Mean angle → fraction of sweep → temperature via gauge_spec
+
+    Args:
+        logits: Raw logits array of shape (num_bins,) or (1, num_bins)
+        gauge_spec: GaugeSpec with min_angle_rad, sweep_rad, min_value, max_value
+        num_bins: Number of angle bins (default 36 for 10° resolution)
+        decode_topk: Number of top bins to use for expectation (default 3)
+
+    Returns:
+        Temperature in gauge_spec units
+    """
+    flat = np.asarray(logits, dtype=np.float32).reshape(-1)
+    if flat.size < num_bins:
+        flat = np.pad(flat, (0, num_bins - flat.size))
+    flat = flat[:num_bins]
+
+    # Softmax
+    flat -= flat.max()
+    exp_vals = np.exp(flat)
+    probs = exp_vals / (exp_vals.sum() + 1e-8)
+
+    # Top-k filtering for robustness
+    topk = min(decode_topk, num_bins)
+    top_indices = np.argsort(probs)[-topk:]
+    mask = np.zeros_like(probs)
+    mask[top_indices] = 1.0
+    probs = probs * mask
+    probs /= probs.sum() + 1e-8
+
+    # Circular expectation
+    bin_angles = np.linspace(0.0, 2.0 * math.pi, num_bins, endpoint=False, dtype=np.float32)
+    sin_sum = float(np.sum(probs * np.sin(bin_angles)))
+    cos_sum = float(np.sum(probs * np.cos(bin_angles)))
+    mean_angle = math.atan2(sin_sum, cos_sum)
+    if mean_angle < 0.0:
+        mean_angle += 2.0 * math.pi
+
+    # Map angle to temperature via gauge_spec
+    angle_deg = math.degrees(mean_angle)
+    cold_angle_deg = math.degrees(gauge_spec.min_angle_rad)
+    sweep_deg = math.degrees(gauge_spec.sweep_rad)
+    return celsius_from_inner_dial_angle_degrees(
+        angle_deg,
+        cold_angle_degrees=cold_angle_deg,
+        sweep_degrees=sweep_deg,
+        minimum_celsius=gauge_spec.min_value,
+        maximum_celsius=gauge_spec.max_value,
+    )
+
+
+def temperature_to_angle_bin_distribution(
+    celsius: float,
+    gauge_spec: Any,
+    *,
+    num_bins: int = 36,
+    sigma_bins: float = 1.5,
+) -> np.ndarray:
+    """Convert a temperature label to a soft angle-bin target distribution.
+
+    Creates a circular Gaussian centered on the bin corresponding to the
+    temperature's needle angle. Used as the training target for the
+    angle-vote model's categorical cross-entropy loss.
+
+    Args:
+        celsius: Temperature in Celsius
+        gauge_spec: GaugeSpec for angle-temperature mapping
+        num_bins: Number of angle bins (default 36)
+        sigma_bins: Gaussian width in bins (default 1.5)
+
+    Returns:
+        Float32 array of shape (num_bins,) summing to 1.0
+    """
+    angle = temperature_to_inner_dial_angle_degrees(
+        celsius,
+        cold_angle_degrees=math.degrees(gauge_spec.min_angle_rad),
+        sweep_degrees=math.degrees(gauge_spec.sweep_rad),
+        minimum_celsius=gauge_spec.min_value,
+        maximum_celsius=gauge_spec.max_value,
+    )
+    bin_width = 360.0 / num_bins
+    center_bin = (angle / bin_width) % num_bins
+    indices = np.arange(num_bins, dtype=np.float32)
+    dist = np.exp(
+        -0.5 * ((indices - np.float32(center_bin)) / np.float32(sigma_bins)) ** 2
+    )
+    # Circular wrap: account for bins at the 0/360 boundary
+    dist_wrapped = dist.copy()
+    dist_wrapped[:num_bins // 2] += np.exp(
+        -0.5 * ((indices[:num_bins // 2] + num_bins - np.float32(center_bin)) / np.float32(sigma_bins)) ** 2
+    )
+    dist_wrapped[-num_bins // 2:] += np.exp(
+        -0.5 * ((indices[-num_bins // 2:] - num_bins - np.float32(center_bin)) / np.float32(sigma_bins)) ** 2
+    )
+    total = float(np.sum(dist_wrapped))
+    if total > 0.0:
+        dist_wrapped /= np.float32(total)
+    return dist_wrapped.astype(np.float32)
+
+
+def temperature_to_angle_sincos(
+    celsius: float,
+    gauge_spec: Any,
+) -> tuple[float, float]:
+    """Convert temperature to needle-direction unit vector (sin, cos).
+
+    The needle angle is computed from temperature via the gauge spec, then
+    converted to (sin(angle), cos(angle)). Used as the regression target
+    for angle sin/cos models.
+
+    Args:
+        celsius: Temperature in Celsius
+        gauge_spec: GaugeSpec with angle→temperature mapping
+
+    Returns:
+        Tuple of (sin_angle, cos_angle) representing the unit-length
+        needle direction vector.
+    """
+    angle_deg = temperature_to_inner_dial_angle_degrees(
+        celsius,
+        cold_angle_degrees=math.degrees(gauge_spec.min_angle_rad),
+        sweep_degrees=math.degrees(gauge_spec.sweep_rad),
+        minimum_celsius=gauge_spec.min_value,
+        maximum_celsius=gauge_spec.max_value,
+    )
+    angle_rad = math.radians(angle_deg)
+    return (math.sin(angle_rad), math.cos(angle_rad))
+
+
+def angle_sincos_to_temperature(
+    sin_val: float,
+    cos_val: float,
+    gauge_spec: Any,
+) -> float:
+    """Decode (sin, cos) predictions to temperature via gauge spec.
+
+    Uses atan2 to recover the angle, then maps to temperature.
+
+    Args:
+        sin_val: Predicted sin(angle)
+        cos_val: Predicted cos(angle)
+        gauge_spec: GaugeSpec for angle→temperature mapping
+
+    Returns:
+        Temperature in gauge_spec units (Celsius)
+    """
+    angle_rad = math.atan2(sin_val, cos_val)
+    if angle_rad < 0.0:
+        angle_rad += 2.0 * math.pi
+    angle_deg = math.degrees(angle_rad)
+    cold_angle_deg = math.degrees(gauge_spec.min_angle_rad)
+    sweep_deg = math.degrees(gauge_spec.sweep_rad)
+    return celsius_from_inner_dial_angle_degrees(
+        angle_deg,
+        cold_angle_degrees=cold_angle_deg,
+        sweep_degrees=sweep_deg,
+        minimum_celsius=gauge_spec.min_value,
+        maximum_celsius=gauge_spec.max_value,
+    )

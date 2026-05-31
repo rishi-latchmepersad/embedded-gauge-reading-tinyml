@@ -5,3 +5,4 @@ min_value = -30.0 # actual min value in degC
 max_value = 50.0  # actual max value in degC
 units = "C"
 direction = "clockwise"
+needle_colour = "dark"

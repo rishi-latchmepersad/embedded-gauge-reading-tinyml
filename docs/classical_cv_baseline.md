@@ -5,11 +5,33 @@ It is the reference floor that any ML model must beat to justify its complexity.
 
 ## Pipeline
 
-Three-stage pure geometry pipeline, no learned weights:
+The live STM32 baseline is a deterministic multi-hypothesis polar-vote
+pipeline over the 224x224 preview frame:
 
-1. **Dial localisation** — `cv2.HoughCircles` on CLAHE-enhanced greyscale. Scores circles by radius and proximity to image centre.
-2. **Needle detection** — Canny edges + `cv2.HoughLinesP` on an annulus mask (hub excluded at 15%, outer frame at 95%). Lines scored by radial spread, centre proximity, and darkness contrast. Falls back to a polar-transform dark-band detector when no lines survive.
-3. **Angle → value calibration** — `atan2(unit_dy, unit_dx)` mapped through `GaugeSpec` for `littlegood_home_temp_gauge_c` (min=135°, sweep=270°, range −30…50°C).
+1. Capture a YUV422 preview snapshot and profile luma/brightness. If the
+   frame is bright, the baseline switches to the more permissive
+   `bright-relaxed` thresholds.
+2. Build five center hypotheses: bright centroid, fixed training crop, board
+   prior, rim geometry, and the inner image center.
+3. For each accepted seed, vote over 360 polar bins for the darkest
+   needle-like spoke. Saturated pixels and the subdial mask are rejected, the
+   middle shaft is weighted more heavily, and the vote score is boosted by hub
+   continuity, tip extension, and radial/tangential alignment. A hot-zone
+   wrap-around rescue handles needles near the sweep boundary.
+4. When the local geometry sweep is enabled, each accepted seed is refined
+   over a tiny 5x5 offset grid and the best-quality estimate is kept.
+   Remaining candidates are collapsed with a consensus selector.
+5. Apply the confidence and peak-separation gate, then either publish the new
+   estimate or hold/smooth the small 3-frame history buffer if the frame is
+   ambiguous or unstable.
+6. Convert the accepted angle to temperature with the calibrated 135° / 270°
+   sweep map spanning -30°C to +50°C. A small angle offset is applied before
+   the final value is logged.
+
+This is the firmware flow implemented in
+[firmware/stm32/n657/Appli/Src/app_baseline_runtime.c](../firmware/stm32/n657/Appli/Src/app_baseline_runtime.c).
+The benchmark tables below are historical evaluation results from the older
+classical baseline harness.
 
 Key source files:
 - [ml/src/embedded_gauge_reading_tinyml/baseline_classical_cv.py](../ml/src/embedded_gauge_reading_tinyml/baseline_classical_cv.py)
@@ -85,3 +107,4 @@ wsl -d Ubuntu-24.04 -e bash /mnt/d/Projects/embedded-gauge-reading-tinyml/ml/scr
 ```
 
 Results are written to `ml/artifacts/baseline/classical_cv_<timestamp>/`.
+

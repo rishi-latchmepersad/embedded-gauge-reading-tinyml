@@ -48,7 +48,6 @@
 #include "cmw_imx335.h"
 #include "cmw_utils.h"
 #include "imx335.h"
-#include "ai_network_tip_focus_v4_112_int8.h"
 #include "imx335_reg.h"
 
 /* USER CODE END Includes */

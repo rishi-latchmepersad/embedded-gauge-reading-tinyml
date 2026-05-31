@@ -1,5 +1,63 @@
 # AI Memory
 
+## 2026-05-30: Hybrid Center-Selector NPU Approach
+
+### Design Rationale
+- The safest ML upgrade is a **hybrid localizer**, not a new reader: use the NPU to pick/refine the dial center, then keep the classical **polar vote -> angle -> GaugeSpec -> temperature** path exactly as-is.
+- The model replaces the slow/brittle center-hypothesis search, not the final readout logic. This keeps the project aligned with baseline principles while giving us a real chance at better speed and reliability.
+
+### Architecture
+- **Model**: `build_mobilenetv2_center_selector()` in `ml/src/embedded_gauge_reading_tinyml/models.py`
+  - MobileNetV2 alpha=0.35 backbone (frozen by default)
+  - GAP -> Dropout -> Dense(64, swish) -> Dropout shared trunk
+  - Head 1: `center_logits` (4, linear) — picks which classical hypothesis is best
+  - Head 2: `center_offset` (2, tanh) — sub-pixel refinement from selected hypothesis
+- **Training**: `ml/scripts/train_center_selector_v1.py`
+  - Distance-based soft targets: `score = exp(-distance / temperature)` where temperature=0.05
+  - Board oversampling (10x), photometric augmentation only (no spatial augments)
+  - Loss: categorical_crossentropy (logits, weight=1.0) + mse (offset, weight=5.0)
+  - Optimizer: Adam(lr=3e-4), EarlyStopping(patience=20), ReduceLROnPlateau
+
+### Confidence Gating
+- Derived from three signals:
+  1. **Logit margin**: difference between top-2 hypothesis logits (threshold: 1.5)
+  2. **Entropy**: uncertainty of softmax distribution (threshold: 1.0 nats)
+  3. **Offset magnitude**: refinement size in pixels (threshold: 5.0 px)
+- Confidence score: `0.5 * margin_conf + 0.3 * entropy_conf + 0.2 * offset_conf`
+- High confidence: all three signals pass their individual gates
+- Low confidence: fall back to classical multi-hypothesis center search
+
+### Inference Flow
+1. **High confidence**: predicted center -> polar vote -> GaugeSpec decode -> temperature
+2. **Low confidence**: fallback to classical multi-hypothesis search + polar vote
+
+### Files
+- `ml/src/embedded_gauge_reading_tinyml/models.py`: `build_mobilenetv2_center_selector()` (lines 2585-2653)
+- `ml/src/embedded_gauge_reading_tinyml/hybrid_localizer.py`: Classical hypotheses + polar vote
+- `ml/scripts/train_center_selector_v1.py`: Training script with confidence gating
+- `ml/scripts/replay_center_selector_v1.py`: End-to-end replay harness
+- `ml/tests/test_center_selector.py`: Unit tests for model, hypotheses, soft targets, confidence
+
+### Export
+- INT8 TFLite with uint8 input, float32 outputs (center_logits, center_offset)
+- Metadata JSON includes hypothesis order, offset scale, confidence thresholds
+- Firmware integration: first-stage center selector, classical baseline as fallback
+
+### Success Criteria
+- Board MAE must match or beat classical baseline
+- End-to-end latency or center-selection time should improve measurably
+- Max error and failure rate must not regress
+- Selector must export and run as int8 board artifact
+
+## 2026-05-30: Canonical OBB Deployment Refreshed to v34
+
+- The canonical OBB deployment slot `ml/artifacts/deployment/prod_model_v0.3_obb_int8/` was refreshed from `tmp/prod_model_v0_3_obb_deployment_v34/`.
+- The new board-facing TFLite is `model_int8.tflite` at 712,112 bytes, and the matching firmware xSPI2 raw blob is `firmware/stm32/n657/st_ai_output/packages/prod_model_v0.3_obb_int8/st_ai_output/mobilenetv2_obb_longterm_atonbuf.xSPI2.raw` at 3,220,049 bytes.
+- The shorter top-level `firmware/stm32/n657/st_ai_output/atonbuf.obb.xSPI2.raw` file was stale and caused the board to run the wrong OBB image; keep the package raw as the canonical deployment artifact for prod v0.8 validation.
+- The OBB runtime still falls back to hardcoded probe bytes when the SD-side signature cache is not populated, so `app_ai.c` must keep `app_ai_obb_xspi2_signature_start/tail` aligned with the refreshed raw blob or the board will reject the stage at the head probe.
+- `firmware/stm32/n657/flash_boot.bat` now emits both scalar and OBB signature reports into `tmp/flash_signatures/` during the flash flow so the next model refresh can be checked against the embedded fallback bytes before the board is reflashed.
+- The OBB stage previously linked against the tip-focus package runtime bundle by mistake; `firmware/stm32/n657/Appli/makefile.targets` now points `USER_OBJS` at `packages/prod_model_v0.3_obb_int8/st_ai_ws/build_mobilenetv2_obb_longterm/`, which matches the offline OBB export used for validation.
+
 ## 2026-05-29: MobileNetV2 Tiny Sweep-Logits Angle-Vote Reader (Handoff Execution)
 
 ### Handoff Goal
@@ -160,9 +218,9 @@ Keep this file short, and put detailed notes in the topical files below.
 
 **How to Flash**: Run `firmware/stm32/n657/flash_boot.bat` which flashes:
 - `network_atonbuf.xSPI2.raw` → 0x70400000 (tip-focus weights, 2,201,505 bytes)
-- `atonbuf.xSPI2.raw` → 0x70200000 (scalar model)
+- `packages/mobilenetv2_rectified_scalar_finetune_v2/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8_atonbuf.xSPI2.raw` → 0x70200000 (scalar model)
 - `atonbuf.rectifier.xSPI2.raw` → 0x70600000 (rectifier model)
-- `atonbuf.obb.xSPI2.raw` → 0x70700000 (OBB model)
+- `packages/prod_model_v0.3_obb_int8/st_ai_output/mobilenetv2_obb_longterm_atonbuf.xSPI2.raw` → 0x70700000 (OBB model)
 - `atonbuf.source_crop_box.xSPI2.raw` → 0x70B00000 (source-crop-box model)
 
 **Memory Layout**:
@@ -2492,6 +2550,34 @@ Requires X-CUBE-AI 10.2.0 pack at `X_CUBE_AI_PACK_ROOT`.
 - The firmware now uses the rectifier localizer first in the tip-focus crop selection path and keeps the source-crop-box stage disabled by default.
 - The board-owned rectifier package was regenerated under `firmware/stm32/n657/st_ai_output/packages/mobilenetv2_rectifier_zoom_aug_v4/st_ai_output/` and the canonical `atonbuf.rectifier.xSPI2.raw` blob was refreshed so the firmware and boot path consume the same native-int8 rectifier export.
 
+## 2026-05-29: Prod v0.8 Freeze — OBB + Luma Refine + Scalar + Calibration
+
+### Pipeline
+OBB localizer (prod_model_v0.3_obb_int8, obb_crop_scale=1.2) → luma bright-centroid refinement constrained to OBB window → scalar reader (scalar_full_finetune_from_best_piecewise_calibrated_int8) → piecewise calibration (prodv0_3_obb_scalar_calibration.json) → 3-frame burst median smoothing.
+
+### Validation Results (57-sample hard manifest)
+| Metric | Prod v0.8 | Classical Baseline | Δ |
+|---|---|---|---|
+| MAE | **7.50°C** | 9.49°C | **-2.0°C** |
+| RMSE | **11.11°C** | 18.66°C | **-7.6°C** |
+| p90 | **16.27°C** | 37.26°C | **-21.0°C** |
+| Max | **43.56°C** | 60.89°C | **-17.3°C** |
+| Median | 4.62°C | **2.22°C** | +2.4°C |
+| Under 5°C | 28/56 (50%) | 33/51 (65%) | -15% |
+| Coverage | 56/56 (100%) | 51/57 (89%) | **+11%** |
+
+### Key Findings
+- Luma refinement improves OBB-only scalar MAE from 23.70→7.50°C (16.2°C drop). Helps 31/56 cases (avg 29.5°C improvement each), hurts only 3/56 (avg 2.8°C degradation), no change in 22/56.
+- Crop quality is the primary bottleneck. Rectified gold standard gives 0.34°C MAE on V28, but all automatic crop strategies are 7-20°C.
+- Prod v0.8 beats classical baseline on MAE, RMSE, p90, max, and coverage. Median is below 5°C. Not yet under the 5°C mean-MAE gate.
+- Decision: **Freeze as-is** — ship v0.8, iterate on crop quality in a follow-up.
+
+### Code Changes
+- `board_pipeline.py`: Added luma refinement to `predict_board_pipeline_on_capture` (optional, `enable_luma_refinement` flag). Added `selected_stage="obb_plus_luma"` when luma refinement is accepted. Fixed bug where `selected_stage` was hardcoded to `"obb"` in OBB path return statement.
+- `eval_board_pipeline_on_captures.py`: Added CLI flags for luma refinement parameters. Added `luma_refinement_enabled` to summary JSON.
+- `app_ai.h`: Wrapped legacy `AppAI_SourceCropBox` typedef and xSPI2 map defines inside `#if APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE`.
+- `app_ai.c`: Wrapped source-crop-box stage spec, function declarations, function definitions, and local variables inside `#if APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE`.
+
 ## 2026-05-28: v3 Geometry Coordinate Regression — All Experiments Stuck at ~0.11 val_MAE
 
 - **Approach**: Coordinate regression (cx, cy, tx, ty) with simple CNN (~65k params, GroupNorm, sigmoid outputs) trained from scratch on 418 preprocessed crops + 76 board captures.
@@ -2501,3 +2587,33 @@ Requires X-CUBE-AI 10.2.0 pack at `X_CUBE_AI_PACK_ROOT`.
 - **Files**: `ml/scripts/train_geometry_v3.py`, `ml/scripts/evaluate_geometry_v2.py`
 - **Output**: `/tmp/gauge_geometry_v3/simple_cnn_w10/`
 - **Next**: Need fundamental change in output representation — predict angle directly (sin/cos encoding) or temperature directly instead of 4 coordinates. Abandon coordinate regression approach.
+### 2026-05-30 Firmware Realignment
+- The live STM32 runtime was re-pointed from the stale 66 KB V28 scalar blob to the rectified scalar package raw at `st_ai_output/packages/mobilenetv2_rectified_scalar_finetune_v2/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8_atonbuf.xSPI2.raw`.
+- `app_ai.c` now uses the rectified-scalar float reader, enables output calibration and burst smoothing by default, and sets `APP_AI_OBB_CROP_SCALE=1.20` to match the offline prod v0.8 freeze.
+- `app_inference_calibration.c` now uses the same piecewise hinge basis as `prodv0_3_obb_scalar_calibration.json` instead of the older affine/hot-tail blend, so the live board and the offline replay path apply the same scalar postprocess.
+- The OBB localizer timeout was relaxed from 10 s to 45 s so the live board can actually finish the stage on the 60 s capture cadence instead of falling back before the offline crop path has a chance to converge.
+- The OBB stage was also re-pointed at the full `mobilenetv2_obb_longterm_atonbuf.xSPI2.raw` package raw after the stale top-level shortcut proved too small for the generated network's 3.22 MB weight pool.
+- The OBB epoch loop now follows the vendor contract for `LL_ATON_RT_NO_WFE` and advances immediately instead of yielding a ThreadX slice, because that extra scheduling gap was stretching the localizer stage without matching the offline graph behavior.
+- `flash_boot.bat` now extracts scalar signatures from the package raw so the flash workflow, hardcoded probes, and runtime signature checks stay aligned.
+- `APP_AI_ENABLE_RUNTIME_METRICS` is now enabled by default in `app_ai.c`, and the AI path logs INA219 samples as `AI-PRE`, `AI-MID`, `AI-POST`, and `AI-DONE` so power reporting is visible again during inference.
+
+## 2026-05-31: OBB Pivot From-Scratch Training & Spoked-Arc Polar Refinement
+
+### OBB Pivot Training (from scratch, 100 ep)
+- Trained MobileNetV2 OBB from scratch with needle pivot targets (28 epochs, killed when val MAE plateaued at 0.062)
+- **Test MAE = 0.102** (6-param avg), center dist 7.51 px — comparable to dedicated center detector (7.00 px)
+- **Decision**: Did NOT beat the dedicated center detector (~7 px). Two-model pipeline remains the best approach.
+
+### Spoked-Arc Refinement (polar + Hough fusion)
+- New `_detect_needle_unit_vector_spoked_arc()`: runs both polar voter and Hough line-segment detector independently, then picks the result with the higher shaft-darkness score (`_needle_detection_shaft_score`)
+- **GT center: MAE 15.42° → 9.22°** (40% improvement, fixes 2/5 catastrophic wrong-spoke failures)
+- **OBB center: MAE 32.76° → 24.19°** (26% better)
+- **Center detector: MAE 19.84° → 22.34°** (13% worse — Hough sensitive to center error)
+- Key functions added: `_find_top_local_peaks()`, `_score_radial_spoke()`, `_middle_shaft_weight()`, `_needle_detection_shaft_score()`
+- `_middle_shaft_weight()` was previously referenced but undefined — now implemented.
+- The spoked-arc is available but NOT the default detector (polar voter remains default). Best used when center quality is good.
+
+### Next Steps
+- TFLite export + int8 quantization of center detector for STM32N6. The OBB model for dial detection needs the same treatment (but was previously exported).
+- Consider adding needle-direction regression head to the center detector (replacing the polar voter entirely).
+- Evaluate firmware C implementation of the polar voter and optionally the Hough line-segment fallback.

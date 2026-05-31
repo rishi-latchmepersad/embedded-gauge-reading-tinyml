@@ -27,6 +27,7 @@ import tensorflow as tf
 
 from embedded_gauge_reading_tinyml import models as model_layers
 from embedded_gauge_reading_tinyml.board_crop_compare import (
+    estimate_board_crop_from_rgb,
     load_rgb_image,
     load_yuv422_capture_as_rgb,
 )
@@ -141,7 +142,7 @@ class BoardPipelineResult:
     obb_decision: CropDecodeDecision
     rectifier_output_probe: TensorProbe | None
     rectifier_decision: CropDecodeDecision | None
-    selected_stage: Literal["obb", "rectifier"]
+    selected_stage: Literal["obb", "obb_plus_luma", "rectifier"]
     selected_crop_box_xyxy: tuple[float, float, float, float]
     scalar_input_probe: TensorProbe
     scalar_output_probe: TensorProbe
@@ -878,6 +879,15 @@ def predict_board_pipeline_on_capture(
     obb_source_y_bias_pixels: float = 0.0,
     use_calibration: bool = False,
     calibration_path: Path | None = None,
+    enable_luma_refinement: bool = False,
+    luma_bright_threshold: int = 80,
+    luma_border_pixels: int = 16,
+    luma_crop_width_scale: float = 17.0 / 20.0,
+    luma_crop_height_scale: float = 17.0 / 20.0,
+    luma_center_x_bias_pixels: int = 0,
+    luma_center_y_bias_ratio: float = 0.11,
+    luma_center_y_bias_min_pixels: int = 8,
+    luma_center_y_bias_max_pixels: int = 18,
 ) -> BoardPipelineResult:
     """Replay the full board pipeline on one capture."""
     def emit(message: str) -> None:
@@ -923,12 +933,33 @@ def predict_board_pipeline_on_capture(
         obb_source_y_bias_pixels=obb_source_y_bias_pixels,
     )
 
-    selected_stage: Literal["obb", "rectifier"] = "obb"
+    selected_stage: Literal["obb", "obb_plus_luma", "rectifier"] = "obb"
     rectifier_output_probe: TensorProbe | None = None
     rectifier_decision: CropDecodeDecision | None = None
 
     if obb_decision.accepted:
         selected_crop_box = obb_decision.crop_box_xyxy
+        if enable_luma_refinement:
+            emit("luma refine start under obb constraint")
+            refined = refine_crop_with_luma_under_obb_constraint(
+                source_image,
+                selected_crop_box,
+                bright_threshold=luma_bright_threshold,
+                border_pixels=luma_border_pixels,
+                crop_width_scale=luma_crop_width_scale,
+                crop_height_scale=luma_crop_height_scale,
+                center_x_bias_pixels=luma_center_x_bias_pixels,
+                center_y_bias_ratio=luma_center_y_bias_ratio,
+                center_y_bias_min_pixels=luma_center_y_bias_min_pixels,
+                center_y_bias_max_pixels=luma_center_y_bias_max_pixels,
+            )
+            if refined != selected_crop_box:
+                emit("luma refine accepted refined crop")
+                selected_crop_box = refined
+                selected_stage = "obb_plus_luma"
+            else:
+                emit("luma refine rejected kept obb crop")
+            emit("luma refine done")
         try:
             emit("scalar invoke start stage=obb")
             _scalar_output, scalar_input_probe, scalar_output_probe, raw_prediction = (
@@ -970,7 +1001,7 @@ def predict_board_pipeline_on_capture(
                 obb_decision=obb_decision,
                 rectifier_output_probe=None,
                 rectifier_decision=None,
-                selected_stage="obb",
+                selected_stage=selected_stage,
                 selected_crop_box_xyxy=selected_crop_box,
                 scalar_input_probe=scalar_input_probe,
                 scalar_output_probe=scalar_output_probe,
@@ -1040,3 +1071,60 @@ def predict_board_pipeline_on_capture(
         burst_history_count=history_count,
         burst_history_reset=history_reset,
     )
+
+
+def refine_crop_with_luma_under_obb_constraint(
+    source_image: RGBImage,
+    obb_crop_xyxy: tuple[float, float, float, float],
+    *,
+    bright_threshold: int = 80,
+    border_pixels: int = 16,
+    crop_width_scale: float = 17.0 / 20.0,
+    crop_height_scale: float = 17.0 / 20.0,
+    center_x_bias_pixels: int = 0,
+    center_y_bias_ratio: float = 0.11,
+    center_y_bias_min_pixels: int = 8,
+    center_y_bias_max_pixels: int = 18,
+) -> tuple[float, float, float, float]:
+    """Refine an OBB crop box using the CPU luma bright-centroid heuristic.
+
+    Runs ``estimate_board_crop_from_rgb`` on the full source image and accepts
+    the luma result only when its centroid falls inside the OBB bounding window
+    (the OBB acts as a spatial guardrail).  When luma fails or strays outside
+    the OBB window, the original OBB crop is returned unchanged.
+    """
+    obb_x0, obb_y0, obb_x1, obb_y1 = obb_crop_xyxy
+    obb_cx = (obb_x0 + obb_x1) * 0.5
+    obb_cy = (obb_y0 + obb_y1) * 0.5
+    obb_hw = (obb_x1 - obb_x0) * 0.5
+    obb_hh = (obb_y1 - obb_y0) * 0.5
+
+    luma_est = estimate_board_crop_from_rgb(
+        source_image,
+        bright_threshold=bright_threshold,
+        border_pixels=border_pixels,
+        crop_width_scale=crop_width_scale,
+        crop_height_scale=crop_height_scale,
+        center_x_bias_pixels=center_x_bias_pixels,
+        center_y_bias_ratio=center_y_bias_ratio,
+        center_y_bias_min_pixels=center_y_bias_min_pixels,
+        center_y_bias_max_pixels=center_y_bias_max_pixels,
+    )
+    if luma_est is not None:
+        luma_cx = (luma_est.crop_box.x_min + luma_est.crop_box.x_max) * 0.5
+        luma_cy = (luma_est.crop_box.y_min + luma_est.crop_box.y_max) * 0.5
+        luma_within_obb = (
+            (luma_cx >= (obb_cx - obb_hw))
+            and (luma_cx <= (obb_cx + obb_hw))
+            and (luma_cy >= (obb_cy - obb_hh))
+            and (luma_cy <= (obb_cy + obb_hh))
+        )
+        if luma_within_obb:
+            return (
+                float(luma_est.crop_box.x_min),
+                float(luma_est.crop_box.y_min),
+                float(luma_est.crop_box.x_max),
+                float(luma_est.crop_box.y_max),
+            )
+
+    return obb_crop_xyxy

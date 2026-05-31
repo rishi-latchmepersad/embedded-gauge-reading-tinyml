@@ -5,21 +5,21 @@
 - Selected stage: frozen
 
 ## Frozen Stage Val Replay
-- Accepted MAE: 2.6664 C
-- Acceptance rate: 0.8298
-- Worst accepted error: 9.5230 C
+- Accepted MAE: nan C
+- Acceptance rate: 0.0000
+- Worst accepted error: nan C
 - Accepted >20 C failures: 0
-- Under 2/5/10 C: 36.17% / 68.09% / 82.98%
-- Center MAE px: 7.8361
-- Tip MAE px: 19.3810
-- Angle MAE deg: 17.6387
+- Under 2/5/10 C: 0.00% / 0.00% / 0.00%
+- Center MAE px: 9.2273
+- Tip MAE px: 42.6101
+- Angle MAE deg: 82.0315
 
 ## Final Val Replay
-- Accepted MAE: 2.6664 C
-- Acceptance rate: 0.8298
-- Worst accepted error: 9.5230 C
+- Accepted MAE: nan C
+- Acceptance rate: 0.0000
+- Worst accepted error: nan C
 - Accepted >20 C failures: 0
-- Under 2/5/10 C: 36.17% / 68.09% / 82.98%
-- Center MAE px: 7.8361
-- Tip MAE px: 19.3810
-- Angle MAE deg: 17.6387
+- Under 2/5/10 C: 0.00% / 0.00% / 0.00%
+- Center MAE px: 9.2273
+- Tip MAE px: 42.6101
+- Angle MAE deg: 82.0315

@@ -52,6 +52,7 @@ from embedded_gauge_reading_tinyml.board_pipeline import (  # noqa: E402
     load_model_session,
     load_capture_image,
     prepare_full_frame,
+    refine_crop_with_luma_under_obb_constraint,
 )
 from embedded_gauge_reading_tinyml.firmware_preprocessing import (  # noqa: E402
     build_training_style_polar_vote_float32,
@@ -112,6 +113,8 @@ class StrategyRow:
     board_abs_error: float | None
     obb_prediction: float
     obb_abs_error: float
+    obb_plus_luma_refined_prediction: float
+    obb_plus_luma_refined_abs_error: float
     rectifier_prediction: float
     rectifier_abs_error: float
     rectifier_fallback_reason: str | None
@@ -120,6 +123,10 @@ class StrategyRow:
     obb_crop_y0: float
     obb_crop_x1: float
     obb_crop_y1: float
+    obb_plus_luma_refined_crop_x0: float
+    obb_plus_luma_refined_crop_y0: float
+    obb_plus_luma_refined_crop_x1: float
+    obb_plus_luma_refined_crop_y1: float
     rectifier_crop_x0: float
     rectifier_crop_y0: float
     rectifier_crop_x1: float
@@ -556,6 +563,8 @@ def main() -> None:
     board_weights: list[float] = []
     obb_errors: list[float] = []
     obb_weights: list[float] = []
+    obb_plus_luma_errors: list[float] = []
+    obb_plus_luma_weights: list[float] = []
     rectifier_errors: list[float] = []
     rectifier_weights: list[float] = []
 
@@ -663,6 +672,30 @@ def main() -> None:
         obb_errors.append(obb_error)
         obb_weights.append(item.sample_weight)
 
+        obb_plus_luma_box = refine_crop_with_luma_under_obb_constraint(
+            source_image,
+            obb_box,
+            bright_threshold=args.board_bright_threshold,
+            border_pixels=args.board_border_pixels,
+            crop_width_scale=args.board_width_scale,
+            crop_height_scale=args.board_height_scale,
+            center_x_bias_pixels=args.board_center_x_bias_pixels,
+            center_y_bias_ratio=args.board_center_y_bias_ratio,
+            center_y_bias_min_pixels=args.board_center_y_bias_min_pixels,
+            center_y_bias_max_pixels=args.board_center_y_bias_max_pixels,
+        )
+        obb_plus_luma_refined_prediction, _ = _predict_exact_v28(
+            exact_model,
+            source_image,
+            obb_plus_luma_box,
+            center_search_px=args.center_search_px,
+            gauge_spec=gauge_spec,
+        )
+        obb_plus_luma_refined_error = abs(
+            obb_plus_luma_refined_prediction - item.value)
+        obb_plus_luma_errors.append(obb_plus_luma_refined_error)
+        obb_plus_luma_weights.append(item.sample_weight)
+
         rectifier_output, _rectifier_output_name = _run_session(
             rectifier_session,
             full_frame_batch,
@@ -700,6 +733,8 @@ def main() -> None:
                 board_abs_error=board_error,
                 obb_prediction=obb_prediction,
                 obb_abs_error=obb_error,
+                obb_plus_luma_refined_prediction=obb_plus_luma_refined_prediction,
+                obb_plus_luma_refined_abs_error=obb_plus_luma_refined_error,
                 rectifier_prediction=rectifier_prediction,
                 rectifier_abs_error=rectifier_error,
                 rectifier_fallback_reason=rectifier_decision.fallback_reason,
@@ -708,6 +743,10 @@ def main() -> None:
                 obb_crop_y0=float(obb_box[1]),
                 obb_crop_x1=float(obb_box[2]),
                 obb_crop_y1=float(obb_box[3]),
+                obb_plus_luma_refined_crop_x0=float(obb_plus_luma_box[0]),
+                obb_plus_luma_refined_crop_y0=float(obb_plus_luma_box[1]),
+                obb_plus_luma_refined_crop_x1=float(obb_plus_luma_box[2]),
+                obb_plus_luma_refined_crop_y1=float(obb_plus_luma_box[3]),
                 rectifier_crop_x0=float(rectifier_box[0]),
                 rectifier_crop_y0=float(rectifier_box[1]),
                 rectifier_crop_x1=float(rectifier_box[2]),
@@ -732,11 +771,13 @@ def main() -> None:
         "rectified_mae": _weighted_mean_abs_error(rectified_errors, rectified_weights),
         "board_mae": _weighted_mean_abs_error(board_errors, board_weights),
         "obb_mae": _weighted_mean_abs_error(obb_errors, obb_weights),
+        "obb_plus_luma_refined_mae": _weighted_mean_abs_error(obb_plus_luma_errors, obb_plus_luma_weights),
         "rectifier_mae": _weighted_mean_abs_error(rectifier_errors, rectifier_weights),
         "fixed_samples": len(fixed_errors),
         "rectified_samples": len(rectified_errors),
         "board_samples": len(board_errors),
         "obb_samples": len(obb_errors),
+        "obb_plus_luma_refined_samples": len(obb_plus_luma_errors),
         "rectifier_samples": len(rectifier_errors),
     }
     summary_path = args.output_dir / "summary.json"
@@ -750,6 +791,7 @@ def main() -> None:
         f"rectified_mae={summary['rectified_mae']:.6f} "
         f"board_mae={summary['board_mae']:.6f} "
         f"obb_mae={summary['obb_mae']:.6f} "
+        f"obb_plus_luma_refined_mae={summary['obb_plus_luma_refined_mae']:.6f} "
         f"rectifier_mae={summary['rectifier_mae']:.6f} "
         f"rectifier_crop_scale={args.rectifier_crop_scale:.2f} "
         f"obb_width_scale={args.obb_width_scale:.3f} "

@@ -22,22 +22,24 @@ set SCRIPT_DIR=%~dp0
 set "REPO_ROOT=%SCRIPT_DIR%..\..\..\"
 set "FSBL_BIN=%SCRIPT_DIR%FSBL\Debug\n657_FSBL.bin"
 set "FSBL_TRUSTED=%SCRIPT_DIR%FSBL\Debug\FSBL_trusted.bin"
+REM Prod v0.8: the production pipeline needs only scalar + OBB blobs.
+REM Legacy blobs (rectifier, source-crop-box, tip-focus) are optional and
+REM only flashed when present; missing ones produce a warning, not a hard error.
 REM Prefer firmware-local model artifacts first; repo-root artifacts may be stale.
-set "SCALAR_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.xSPI2.raw"
-set "RECTIFIER_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.rectifier.xSPI2.raw"
-set "OBB_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.obb.xSPI2.raw"
-if not exist "%SCALAR_RAW%" set "SCALAR_RAW=%REPO_ROOT%st_ai_output\atonbuf.xSPI2.raw"
-if not exist "%RECTIFIER_RAW%" set "RECTIFIER_RAW=%REPO_ROOT%st_ai_output\atonbuf.rectifier.xSPI2.raw"
-if not exist "%OBB_RAW%" set "OBB_RAW=%REPO_ROOT%st_ai_output\atonbuf.obb.xSPI2.raw"
+set "SCALAR_RAW=%SCRIPT_DIR%st_ai_output\packages\mobilenetv2_rectified_scalar_finetune_v2\st_ai_output\scalar_full_finetune_from_best_piecewise_calibrated_int8_atonbuf.xSPI2.raw"
+set "OBB_RAW=%SCRIPT_DIR%st_ai_output\packages\prod_model_v0.3_obb_int8\st_ai_output\mobilenetv2_obb_longterm_atonbuf.xSPI2.raw"
+if not exist "%SCALAR_RAW%" set "SCALAR_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\mobilenetv2_rectified_scalar_finetune_v2\st_ai_output\scalar_full_finetune_from_best_piecewise_calibrated_int8_atonbuf.xSPI2.raw"
+if not exist "%OBB_RAW%" set "OBB_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\prod_model_v0.3_obb_int8\st_ai_output\mobilenetv2_obb_longterm_atonbuf.xSPI2.raw"
 REM CubeProgrammer v2.21 does not accept .raw extension with -w; stage as .bin
 set "SCALAR_BIN=%SCRIPT_DIR%Appli\Debug\scalar_model_stage.bin"
-set "RECTIFIER_BIN=%SCRIPT_DIR%Appli\Debug\rectifier_model_stage.bin"
 set "OBB_BIN=%SCRIPT_DIR%Appli\Debug\obb_model_stage.bin"
+REM Optional legacy blobs (not required for Prod v0.8)
+set "RECTIFIER_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.rectifier.xSPI2.raw"
+if not exist "%RECTIFIER_RAW%" set "RECTIFIER_RAW=%REPO_ROOT%st_ai_output\atonbuf.rectifier.xSPI2.raw"
+set "RECTIFIER_BIN=%SCRIPT_DIR%Appli\Debug\rectifier_model_stage.bin"
 set "SOURCE_CROP_BOX_RAW=%SCRIPT_DIR%st_ai_output\atonbuf.source_crop_box.xSPI2.raw"
 if not exist "%SOURCE_CROP_BOX_RAW%" set "SOURCE_CROP_BOX_RAW=%REPO_ROOT%st_ai_output\atonbuf.source_crop_box.xSPI2.raw"
 set "SOURCE_CROP_BOX_BIN=%SCRIPT_DIR%Appli\Debug\source_crop_box_model_stage.bin"
-REM Tip-focus geometry weights blob (~2.1 MiB), provided directly by the NPU
-REM export as network_atonbuf.xSPI2.raw.  Flashed to 0x70C00000.
 set "TIP_FOCUS_WEIGHTS_RAW=%SCRIPT_DIR%st_ai_output\packages\tip_focus_v4_112_int8_n6_npu\st_ai_output\network_atonbuf.xSPI2.raw"
 if not exist "%TIP_FOCUS_WEIGHTS_RAW%" set "TIP_FOCUS_WEIGHTS_RAW=%REPO_ROOT%st_ai_output\packages\tip_focus_v4_112_int8_n6_npu\st_ai_output\network_atonbuf.xSPI2.raw"
 set "TIP_FOCUS_WEIGHTS_BIN=%SCRIPT_DIR%Appli\Debug\tip_focus_weights_stage.bin"
@@ -45,8 +47,17 @@ set "APP_BIN=%SCRIPT_DIR%Appli\Debug\n657_Appli.bin"
 set "APP_SIGN=%SCRIPT_DIR%Appli\Debug\n657_Appli_sign_new.bin"
 set "APP_SIGN_TMP=%SCRIPT_DIR%Appli\Debug\n657_Appli_sign_tmp.bin"
 set "APP_SIGN_FALLBACK=%SCRIPT_DIR%Appli\Debug\n657_Appli_Signed.bin"
+set "SIG_REPORT_DIR=%REPO_ROOT%tmp\flash_signatures"
 set "FLASH_MODEL=1"
 set "FLASH_APP=1"
+
+if not exist "%SIG_REPORT_DIR%" (
+    mkdir "%SIG_REPORT_DIR%"
+    if errorlevel 1 (
+        echo ERROR: Could not create signature report directory: "%SIG_REPORT_DIR%"
+        exit /b 1
+    )
+)
 
 if not exist "%SIGN%" (
     echo ERROR: Signing tool not found: "%SIGN%"
@@ -72,21 +83,22 @@ if "%FLASH_MODEL%"=="1" if not exist "%SCALAR_RAW%" (
     echo ERROR: Scalar model not found: "%SCALAR_RAW%"
     exit /b 1
 )
-if "%FLASH_MODEL%"=="1" if not exist "%RECTIFIER_RAW%" (
-    echo ERROR: Rectifier model not found: "%RECTIFIER_RAW%"
-    exit /b 1
-)
 if "%FLASH_MODEL%"=="1" if not exist "%OBB_RAW%" (
     echo ERROR: OBB model not found: "%OBB_RAW%"
     exit /b 1
 )
+REM Optional legacy blobs — warn but do not hard-fail
+if "%FLASH_MODEL%"=="1" if not exist "%RECTIFIER_RAW%" (
+    echo WARNING: Rectifier model not found: "%RECTIFIER_RAW%"
+    echo Prod v0.8 does not require the rectifier; skipping.
+)
 if "%FLASH_MODEL%"=="1" if not exist "%SOURCE_CROP_BOX_RAW%" (
-    echo ERROR: Source-crop-box model not found: "%SOURCE_CROP_BOX_RAW%"
-    exit /b 1
+    echo WARNING: Source-crop-box model not found: "%SOURCE_CROP_BOX_RAW%"
+    echo Prod v0.8 does not require source-crop-box; skipping.
 )
 if "%FLASH_MODEL%"=="1" if not exist "%TIP_FOCUS_WEIGHTS_RAW%" (
     echo WARNING: Tip-focus weights not found: "%TIP_FOCUS_WEIGHTS_RAW%"
-    echo The tip-focus geometry stage will fail at runtime.  Re-export the NPU model to generate it.
+    echo Prod v0.8 disables the tip-focus geometry stage; skipping is safe.
 )
 
 echo.
@@ -113,7 +125,7 @@ if errorlevel 1 (
 
 echo.
 if "%FLASH_MODEL%"=="1" (
-    echo === Step 4a: Flash scalar model at 0x70200000 ===
+    echo === Step 4a: Flash scalar model at 0x70200000 (required) ===
     echo Scalar source: "%SCALAR_RAW%"
     for %%I in ("%SCALAR_RAW%") do echo Scalar source size: %%~zI bytes
     copy /y "%SCALAR_RAW%" "%SCALAR_BIN%" >nul
@@ -128,22 +140,7 @@ if "%FLASH_MODEL%"=="1" (
     )
     echo Scalar model flashed at 0x70200000.
 
-    echo === Step 4b: Flash rectifier model at 0x70600000 ===
-    echo Rectifier source: "%RECTIFIER_RAW%"
-    for %%I in ("%RECTIFIER_RAW%") do echo Rectifier source size: %%~zI bytes
-    copy /y "%RECTIFIER_RAW%" "%RECTIFIER_BIN%" >nul
-    if errorlevel 1 (
-        echo ERROR: Could not stage rectifier model as .bin.
-        exit /b 1
-    )
-    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%RECTIFIER_BIN%" 0x70600000
-    if errorlevel 1 (
-        echo ERROR: Rectifier model flash failed.
-        exit /b 1
-    )
-    echo Rectifier model flashed at 0x70600000.
-
-    echo === Step 4c: Flash OBB model at 0x70700000 ===
+    echo === Step 4b: Flash OBB model at 0x70700000 (required) ===
     echo OBB source: "%OBB_RAW%"
     for %%I in ("%OBB_RAW%") do echo OBB source size: %%~zI bytes
     copy /y "%OBB_RAW%" "%OBB_BIN%" >nul
@@ -158,23 +155,46 @@ if "%FLASH_MODEL%"=="1" (
     )
     echo OBB model flashed at 0x70700000.
 
-    echo === Step 4d: Flash source-crop-box model at 0x70B00000 ===
-    echo Source-crop-box source: "%SOURCE_CROP_BOX_RAW%"
-    for %%I in ("%SOURCE_CROP_BOX_RAW%") do echo Source-crop-box source size: %%~zI bytes
-    copy /y "%SOURCE_CROP_BOX_RAW%" "%SOURCE_CROP_BOX_BIN%" >nul
-    if errorlevel 1 (
-        echo ERROR: Could not stage source-crop-box model as .bin.
-        exit /b 1
+    if exist "%RECTIFIER_RAW%" (
+        echo === Step 4c: Flash rectifier model at 0x70600000 (optional) ===
+        echo Rectifier source: "%RECTIFIER_RAW%"
+        for %%I in ("%RECTIFIER_RAW%") do echo Rectifier source size: %%~zI bytes
+        copy /y "%RECTIFIER_RAW%" "%RECTIFIER_BIN%" >nul
+        if errorlevel 1 (
+            echo WARNING: Could not stage rectifier model as .bin.
+        ) else (
+            "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%RECTIFIER_BIN%" 0x70600000
+            if errorlevel 1 (
+                echo WARNING: Rectifier model flash failed.
+            ) else (
+                echo Rectifier model flashed at 0x70600000.
+            )
+        )
+    ) else (
+        echo === Step 4c: Skipping rectifier (not found) ===
     )
-    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%SOURCE_CROP_BOX_BIN%" 0x70B00000
-    if errorlevel 1 (
-        echo ERROR: Source-crop-box model flash failed.
-        exit /b 1
+
+    if exist "%SOURCE_CROP_BOX_RAW%" (
+        echo === Step 4d: Flash source-crop-box model at 0x70B00000 (optional) ===
+        echo Source-crop-box source: "%SOURCE_CROP_BOX_RAW%"
+        for %%I in ("%SOURCE_CROP_BOX_RAW%") do echo Source-crop-box source size: %%~zI bytes
+        copy /y "%SOURCE_CROP_BOX_RAW%" "%SOURCE_CROP_BOX_BIN%" >nul
+        if errorlevel 1 (
+            echo WARNING: Could not stage source-crop-box model as .bin.
+        ) else (
+            "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%SOURCE_CROP_BOX_BIN%" 0x70B00000
+            if errorlevel 1 (
+                echo WARNING: Source-crop-box model flash failed.
+            ) else (
+                echo Source-crop-box model flashed at 0x70B00000.
+            )
+        )
+    ) else (
+        echo === Step 4d: Skipping source-crop-box (not found) ===
     )
-    echo Source-crop-box model flashed at 0x70B00000.
 
     if exist "%TIP_FOCUS_WEIGHTS_RAW%" (
-        echo === Step 4e: Flash tip-focus weights at 0x70400000 ===
+        echo === Step 4e: Flash tip-focus weights at 0x70400000 (optional) ===
         echo Tip-focus weights source: "%TIP_FOCUS_WEIGHTS_RAW%"
         for %%I in ("%TIP_FOCUS_WEIGHTS_RAW%") do echo Tip-focus weights source size: %%~zI bytes
         copy /y "%TIP_FOCUS_WEIGHTS_RAW%" "%TIP_FOCUS_WEIGHTS_BIN%" >nul
@@ -198,7 +218,18 @@ if "%FLASH_MODEL%"=="1" (
 if "%FLASH_MODEL%"=="1" (
     echo.
     echo === Step 4d: Extract model signatures for firmware update ===
-    python "%REPO_ROOT%ml\scripts\extract_model_signature.py" "%SCALAR_RAW%"
+    python "%REPO_ROOT%ml\scripts\extract_model_signature.py" "%SCALAR_RAW%" > "%SIG_REPORT_DIR%\scalar_signature.txt"
+    if errorlevel 1 (
+        echo ERROR: Scalar signature extraction failed.
+        exit /b 1
+    )
+    python "%REPO_ROOT%ml\scripts\extract_model_signature.py" "%OBB_RAW%" > "%SIG_REPORT_DIR%\obb_signature.txt"
+    if errorlevel 1 (
+        echo ERROR: OBB signature extraction failed.
+        exit /b 1
+    )
+    echo Scalar signature report: "%SIG_REPORT_DIR%\scalar_signature.txt"
+    echo OBB signature report: "%SIG_REPORT_DIR%\obb_signature.txt"
 ) else (
     echo === Step 4d: Skipping model signature extraction ===
 )

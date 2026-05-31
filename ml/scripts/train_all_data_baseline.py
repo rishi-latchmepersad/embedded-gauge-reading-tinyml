@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -47,10 +48,18 @@ from embedded_gauge_reading_tinyml.models import (
     build_mobilenetv2_sweep_distribution_model,
     build_mobilenetv2_ordinal_model,
     build_mobilenetv2_regression_model,
+    build_mobilenetv2_angle_vote_model,
+    build_mobilenetv2_angle_sincos_model,
 )
 from embedded_gauge_reading_tinyml.board_crop_compare import (
     load_rgb_image,
 )
+from embedded_gauge_reading_tinyml.gauge_geometry import (
+    temperature_to_angle_bin_distribution,
+    temperature_to_angle_sincos,
+    angle_sincos_to_temperature,
+)
+from embedded_gauge_reading_tinyml.gauge.processing import GaugeSpec
 
 # Configure logging
 logging.basicConfig(
@@ -62,6 +71,16 @@ logger = logging.getLogger(__name__)
 IMAGE_SIZE = 224
 VALUE_MIN = -30.0
 VALUE_MAX = 50.0
+# Default GaugeSpec for the SAB inner-Celsius dial used across all captures.
+# The dial sweeps ~270° counter-clockwise from 135° (cold, -30°C) to 45° (hot, +50°C).
+DEFAULT_GAUGE_SPEC = GaugeSpec(
+    gauge_id="sab_inner_celsius",
+    min_angle_rad=135.0 * (math.pi / 180.0),  # 135° in radians
+    sweep_rad=270.0 * (math.pi / 180.0),  # 270° in radians
+    min_value=-30.0,
+    max_value=50.0,
+    units="C",
+)
 
 
 def _configure_mobilenet_backbone_trainability(
@@ -439,6 +458,10 @@ def create_dataset(
     polar_only_model: bool = False,
     polar_dualview_model: bool = False,
     polar_sweep_distribution_model: bool = False,
+    polar_sincos_model: bool = False,
+    mobilenetv2_angle_vote_model: bool = False,
+    angle_vote_bins: int = 36,
+    angle_vote_sigma_bins: float = 1.5,
     ordinal_threshold_step: float = 10.0,
     interval_bin_width: float = 5.0,
     sweep_distribution_bins: int = 81,
@@ -468,7 +491,7 @@ def create_dataset(
             if crop_boxes is not None:
                 crop_box = crop_boxes.get(str(row["image_path_resolved"]))
             # We validate the image path up front so bad files are skipped early.
-            if polar_only_model or polar_sweep_distribution_model:
+            if polar_only_model or polar_sweep_distribution_model or polar_sincos_model:
                 _ = preprocess_polar_image(
                     row["image_path_resolved"],
                     (224, 224),
@@ -508,6 +531,11 @@ def create_dataset(
             "polar_sweep_distribution_model currently supports sweep_distribution "
             "targets only."
         )
+    if mobilenetv2_angle_vote_model and aux_head_kind is not None:
+        raise ValueError(
+            "mobilenetv2_angle_vote_model does not support aux_head_kind; "
+            "the angle vote head IS the primary output."
+        )
     if (polar_only_model or polar_sweep_distribution_model) and augment:
         logger.info(
             "Polar-geometry model requested with augmentation; disabling "
@@ -525,7 +553,7 @@ def create_dataset(
     def _record_generator() -> Any:
         """Yield preprocessed images and the matching training targets."""
         for image_path, value, sample_weight, crop_box in loaded_records:
-            if polar_only_model or polar_sweep_distribution_model:
+            if polar_only_model or polar_sweep_distribution_model or polar_sincos_model:
                 polar_image = preprocess_polar_image(
                     image_path,
                     (224, 224),
@@ -651,6 +679,35 @@ def create_dataset(
                         yield {"polar_image": polar_image}, target
                     else:
                         yield image, target
+            elif mobilenetv2_angle_vote_model:
+                sin_val, cos_val = temperature_to_angle_sincos(
+                    value, DEFAULT_GAUGE_SPEC,
+                )
+                angle_target = np.array([sin_val, cos_val], dtype=np.float32)
+                if use_weights and sample_weight is not None:
+                    if polar_dualview_model:
+                        yield {
+                            "full_image": image,
+                            "polar_image": polar_image,
+                        }, angle_target, np.float32(sample_weight)
+                    elif polar_only_model or polar_sweep_distribution_model:
+                        yield {"polar_image": polar_image}, angle_target, np.float32(sample_weight)
+                    elif polar_sincos_model:
+                        yield polar_image, angle_target, np.float32(sample_weight)
+                    else:
+                        yield image, angle_target, np.float32(sample_weight)
+                else:
+                    if polar_dualview_model:
+                        yield {
+                            "full_image": image,
+                            "polar_image": polar_image,
+                        }, angle_target
+                    elif polar_only_model or polar_sweep_distribution_model:
+                        yield {"polar_image": polar_image}, angle_target
+                    elif polar_sincos_model:
+                        yield polar_image, angle_target
+                    else:
+                        yield image, angle_target
             else:
                 if use_weights and sample_weight is not None:
                     if polar_dualview_model:
@@ -745,6 +802,22 @@ def create_dataset(
             dataset = tf.data.Dataset.from_generator(
                 _record_generator,
                 output_signature=(image_spec, target_spec, weight_spec),
+            )
+        else:
+            dataset = tf.data.Dataset.from_generator(
+                _record_generator,
+                output_signature=(image_spec, target_spec),
+            )
+    elif mobilenetv2_angle_vote_model:
+        target_spec = tf.TensorSpec(shape=(2,), dtype=tf.float32)
+        if use_weights and "sample_weight" in df.columns:
+            dataset = tf.data.Dataset.from_generator(
+                _record_generator,
+                output_signature=(
+                    image_spec,
+                    target_spec,
+                    tf.TensorSpec(shape=(), dtype=tf.float32),
+                ),
             )
         else:
             dataset = tf.data.Dataset.from_generator(
@@ -1077,6 +1150,9 @@ def train_all_data_baseline(
     polar_only_model: bool = False,
     polar_dualview_model: bool = False,
     polar_sweep_distribution_model: bool = False,
+    mobilenetv2_angle_vote_model: bool = False,
+    angle_vote_bins: int = 36,
+    angle_vote_sigma_bins: float = 1.5,
     dual_resolution_crop_ratio: float = 0.78,
     ordinal_threshold_step: float = 10.0,
     interval_bin_width: float = 5.0,
@@ -1084,6 +1160,8 @@ def train_all_data_baseline(
     sweep_distribution_sigma_bins: float = 1.75,
     aux_loss_weight: float = 0.35,
     augment_mode: str = "standard",
+    angle_augment: bool = False,
+    polar_sincos_model: bool = False,
 ) -> dict[str, Any]:
     """Train on all data using proven canonical baseline pipeline."""
     np.random.seed(seed)
@@ -1097,12 +1175,20 @@ def train_all_data_baseline(
             polar_only_model,
             polar_dualview_model,
             polar_sweep_distribution_model,
+            mobilenetv2_angle_vote_model,
+            polar_sincos_model,
         ]
     ) > 1:
         raise ValueError(
-            "dual_resolution_model, polar_only_model, polar_dualview_model, and "
-            "polar_sweep_distribution_model "
+            "model family flags "
+            "(dual_resolution_model, polar_only_model, polar_dualview_model, "
+            "polar_sweep_distribution_model, mobilenetv2_angle_vote_model, polar_sincos_model) "
             "cannot be enabled together"
+        )
+    if mobilenetv2_angle_vote_model and aux_head_kind is not None:
+        raise ValueError(
+            "mobilenetv2_angle_vote_model does not support aux_head_kind; "
+            "the angle vote head IS the primary output."
         )
     if (polar_dualview_model or polar_only_model) and aux_head_kind is not None:
         raise ValueError(
@@ -1161,7 +1247,8 @@ def train_all_data_baseline(
     # Keep the polar-geometry paths augmentation-light so we can isolate the
     # geometry change before adding more knobs.
     train_augment = not (
-        polar_dualview_model or polar_only_model or polar_sweep_distribution_model
+        polar_dualview_model or polar_only_model or polar_sweep_distribution_model or polar_sincos_model
+        or (mobilenetv2_angle_vote_model and not angle_augment)
     )
 
     # Create datasets
@@ -1178,6 +1265,10 @@ def train_all_data_baseline(
         polar_only_model=polar_only_model,
         polar_dualview_model=polar_dualview_model,
         polar_sweep_distribution_model=polar_sweep_distribution_model,
+        polar_sincos_model=polar_sincos_model,
+        mobilenetv2_angle_vote_model=mobilenetv2_angle_vote_model or polar_sincos_model,
+        angle_vote_bins=angle_vote_bins,
+        angle_vote_sigma_bins=angle_vote_sigma_bins,
         ordinal_threshold_step=ordinal_threshold_step,
         interval_bin_width=interval_bin_width,
         sweep_distribution_bins=sweep_distribution_bins,
@@ -1196,6 +1287,10 @@ def train_all_data_baseline(
         polar_only_model=polar_only_model,
         polar_dualview_model=polar_dualview_model,
         polar_sweep_distribution_model=polar_sweep_distribution_model,
+        polar_sincos_model=polar_sincos_model,
+        mobilenetv2_angle_vote_model=mobilenetv2_angle_vote_model or polar_sincos_model,
+        angle_vote_bins=angle_vote_bins,
+        angle_vote_sigma_bins=angle_vote_sigma_bins,
         ordinal_threshold_step=ordinal_threshold_step,
         interval_bin_width=interval_bin_width,
         sweep_distribution_bins=sweep_distribution_bins,
@@ -1214,10 +1309,10 @@ def train_all_data_baseline(
         polar_only_model=polar_only_model,
         polar_dualview_model=polar_dualview_model,
         polar_sweep_distribution_model=polar_sweep_distribution_model,
-        ordinal_threshold_step=ordinal_threshold_step,
-        interval_bin_width=interval_bin_width,
-        sweep_distribution_bins=sweep_distribution_bins,
-        sweep_distribution_sigma_bins=sweep_distribution_sigma_bins,
+        polar_sincos_model=polar_sincos_model,
+        mobilenetv2_angle_vote_model=mobilenetv2_angle_vote_model or polar_sincos_model,
+        angle_vote_bins=angle_vote_bins,
+        angle_vote_sigma_bins=angle_vote_sigma_bins,
     )
 
     # Avoid duplicating the ImageNet bootstrap when a warm-start checkpoint is provided.
@@ -1310,7 +1405,21 @@ def train_all_data_baseline(
             num_bins=sweep_distribution_bins,
         )
     else:
-        if polar_only_model:
+        if mobilenetv2_angle_vote_model or polar_sincos_model:
+            logger.info(
+                "Building MobileNetV2 angle sin/cos regression model "
+                f"(alpha={alpha}, head_units={head_units}, dropout={dropout}, "
+                f"polar_input={polar_sincos_model})..."
+            )
+            model = build_mobilenetv2_angle_sincos_model(
+                image_height=IMAGE_SIZE,
+                image_width=IMAGE_SIZE,
+                pretrained=use_pretrained_backbone and not polar_sincos_model,
+                alpha=alpha,
+                head_units=head_units,
+                head_dropout=dropout,
+            )
+        elif polar_only_model:
             logger.info(
                 "Building MobileNetV2 polar-only model "
                 f"(alpha={alpha}, head_units={head_units}, dropout={dropout}, "
@@ -1501,6 +1610,15 @@ def train_all_data_baseline(
                     ],
                 },
             )
+        elif mobilenetv2_angle_vote_model or polar_sincos_model:
+            model.compile(
+                optimizer=optimizer,
+                loss=keras.losses.MeanSquaredError(),
+                metrics=[
+                    keras.metrics.MeanAbsoluteError(name="mae"),
+                    keras.metrics.MeanSquaredError(name="mse"),
+                ],
+            )
         else:
             model.compile(
                 optimizer=optimizer,
@@ -1524,7 +1642,7 @@ def train_all_data_baseline(
 
     _configure_mobilenet_backbone_trainability(
         base_model,
-        trainable=False,
+        trainable=polar_sincos_model,  # train from scratch: unfrozen from the start
         unfreeze_last_n=0,
         freeze_batchnorm=mobilenet_freeze_batchnorm,
     )
@@ -1532,7 +1650,12 @@ def train_all_data_baseline(
     # Callbacks
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / "best_weights.weights.h5"
-    monitor_metric = "val_gauge_value_mae" if aux_head_kind is not None else "val_mae"
+    if mobilenetv2_angle_vote_model or polar_sincos_model:
+        monitor_metric = "val_loss"
+    elif aux_head_kind is not None:
+        monitor_metric = "val_gauge_value_mae"
+    else:
+        monitor_metric = "val_mae"
 
     callbacks = [
         keras.callbacks.ModelCheckpoint(
@@ -1560,42 +1683,61 @@ def train_all_data_baseline(
         ),
     ]
 
-    # Phase 1: Warmup
-    logger.info(f"\n=== Phase 1: Warmup ({warmup_epochs} epochs, frozen backbone) ===")
-    history_warmup = model.fit(
-        train_ds,
-        validation_data=val_ds,
-        steps_per_epoch=int(np.ceil(len(train_df) / batch_size)),
-        validation_steps=int(np.ceil(len(val_df) / batch_size)),
-        epochs=warmup_epochs,
-        callbacks=callbacks,
-        verbose=1,
-    )
+    if polar_sincos_model:
+        # No pretrained backbone — train all layers from scratch from epoch 1.
+        # Use the base learning rate (higher than fine_tune_lr) for from-scratch.
+        logger.info(
+            f"\n=== Training from scratch ({epochs} epochs, lr={learning_rate}) ==="
+        )
+        _compile_current_model(learning_rate)
+        history_warmup = None
+        history_finetune = model.fit(
+            train_ds,
+            validation_data=val_ds,
+            steps_per_epoch=int(np.ceil(len(train_df) / batch_size)),
+            validation_steps=int(np.ceil(len(val_df) / batch_size)),
+            epochs=epochs,
+            initial_epoch=0,
+            callbacks=callbacks,
+            verbose=1,
+        )
+    else:
+        # Phase 1: Warmup (frozen backbone)
+        logger.info(f"\n=== Phase 1: Warmup ({warmup_epochs} epochs, frozen backbone) ===")
+        history_warmup = model.fit(
+            train_ds,
+            validation_data=val_ds,
+            steps_per_epoch=int(np.ceil(len(train_df) / batch_size)),
+            validation_steps=int(np.ceil(len(val_df) / batch_size)),
+            epochs=warmup_epochs,
+            callbacks=callbacks,
+            verbose=1,
+        )
 
-    # Phase 2: Fine-tune
-    fine_tune_epochs = epochs - warmup_epochs
-    logger.info(
-        f"\n=== Phase 2: Fine-tune ({fine_tune_epochs} epochs, unfrozen backbone) ==="
-    )
+        # Phase 2: Fine-tune
+        fine_tune_epochs = epochs - warmup_epochs
+        logger.info(
+            f"\n=== Phase 2: Fine-tune ({fine_tune_epochs} epochs, unfrozen backbone) ==="
+        )
 
-    _configure_mobilenet_backbone_trainability(
-        base_model,
-        trainable=True,
-        unfreeze_last_n=mobilenet_unfreeze_last_n,
-        freeze_batchnorm=mobilenet_freeze_batchnorm,
-    )
-    _compile_current_model(fine_tune_lr)
+        _configure_mobilenet_backbone_trainability(
+            base_model,
+            trainable=True,
+            unfreeze_last_n=mobilenet_unfreeze_last_n,
+            freeze_batchnorm=mobilenet_freeze_batchnorm,
+        )
+        _compile_current_model(fine_tune_lr)
 
-    history_finetune = model.fit(
-        train_ds,
-        validation_data=val_ds,
-        steps_per_epoch=int(np.ceil(len(train_df) / batch_size)),
-        validation_steps=int(np.ceil(len(val_df) / batch_size)),
-        epochs=epochs,
-        initial_epoch=warmup_epochs,
-        callbacks=callbacks,
-        verbose=1,
-    )
+        history_finetune = model.fit(
+            train_ds,
+            validation_data=val_ds,
+            steps_per_epoch=int(np.ceil(len(train_df) / batch_size)),
+            validation_steps=int(np.ceil(len(val_df) / batch_size)),
+            epochs=epochs,
+            initial_epoch=warmup_epochs,
+            callbacks=callbacks,
+            verbose=1,
+        )
 
     # Evaluate
     logger.info("\n=== Evaluating on test set ===")
@@ -1607,20 +1749,28 @@ def train_all_data_baseline(
     logger.info(f"Saved model to {output_dir / 'model.keras'}")
 
     # Save history
-    history_combined = {
-        "warmup": {
+    history_combined = {}
+    if history_warmup is not None:
+        history_combined["warmup"] = {
             k: [float(v) for v in vals] for k, vals in history_warmup.history.items()
-        },
-        "finetune": {
-            k: [float(v) for v in vals] for k, vals in history_finetune.history.items()
-        },
+        }
+    history_combined["finetune"] = {
+        k: [float(v) for v in vals] for k, vals in history_finetune.history.items()
     }
     with open(output_dir / "history.json", "w") as f:
         json.dump(history_combined, f, indent=2)
 
     # Save predictions
     predictions_raw = model.predict(test_ds, verbose=1)
-    if isinstance(predictions_raw, dict):
+    if mobilenetv2_angle_vote_model or polar_sincos_model:
+        # Decode (sin, cos) to temperature via gauge spec
+        assert predictions_raw.ndim == 2 and predictions_raw.shape[1] == 2
+        predictions = np.asarray(
+            [angle_sincos_to_temperature(row[0], row[1], DEFAULT_GAUGE_SPEC)
+             for row in predictions_raw],
+            dtype=np.float32,
+        )
+    elif isinstance(predictions_raw, dict):
         predictions = np.asarray(predictions_raw["gauge_value"], dtype=np.float32).reshape(-1)
     else:
         predictions = np.asarray(predictions_raw, dtype=np.float32).reshape(-1)
@@ -1684,6 +1834,12 @@ def main() -> None:
         action="store_true",
         default=False,
         help="Skip TensorFlow GPU memory-growth probing for WSL stability.",
+    )
+    parser.add_argument(
+        "--gpu-preallocate",
+        action="store_true",
+        default=False,
+        help="Pre-allocate all GPU memory (disable memory growth).",
     )
     parser.add_argument(
         "--init-model",
@@ -1798,6 +1954,38 @@ def main() -> None:
         help="Use a single-input polar sweep-distribution MobileNetV2 architecture.",
     )
     parser.add_argument(
+        "--mobilenetv2-angle-vote-model",
+        action="store_true",
+        help="Use MobileNetV2 backbone + 36-bin angle voting head (gauge-agnostic).",
+    )
+    parser.add_argument(
+        "--mobilenetv2-angle-sincos-model",
+        action="store_true",
+        help="Use MobileNetV2 backbone + sin/cos angle regression head (gauge-agnostic).",
+    )
+    parser.add_argument(
+        "--angle-vote-bins",
+        type=int,
+        default=36,
+        help="Number of angle bins for the angle-vote model (default 36).",
+    )
+    parser.add_argument(
+        "--angle-vote-sigma-bins",
+        type=float,
+        default=1.5,
+        help="Gaussian sigma in bins for angle target distribution (default 1.5).",
+    )
+    parser.add_argument(
+        "--angle-augment",
+        action="store_true",
+        help="Enable augmentation for the angle-vote/sincos model (disabled by default).",
+    )
+    parser.add_argument(
+        "--polar-sincos-model",
+        action="store_true",
+        help="Feed polar-warped images through MobileNetV2 + sin/cos head, trained from scratch.",
+    )
+    parser.add_argument(
         "--augment-mode",
         type=str,
         choices=["standard", "hard_preview"],
@@ -1812,6 +2000,9 @@ def main() -> None:
     if args.no_gpu_memory_growth:
         # WSL can stall on the GPU probe, so let TensorFlow initialize lazily.
         gpus = []
+    elif args.gpu_preallocate:
+        # Pre-allocate all GPU memory for maximum throughput.
+        gpus = tf.config.list_physical_devices("GPU")
     else:
         gpus = tf.config.list_physical_devices("GPU")
         for gpu in gpus:
@@ -1861,6 +2052,9 @@ def main() -> None:
         polar_only_model=args.polar_only_model,
         polar_dualview_model=args.polar_dualview_model,
         polar_sweep_distribution_model=args.polar_sweep_distribution_model,
+        mobilenetv2_angle_vote_model=args.mobilenetv2_angle_vote_model,
+        angle_vote_bins=args.angle_vote_bins,
+        angle_vote_sigma_bins=args.angle_vote_sigma_bins,
         dual_resolution_crop_ratio=args.dual_resolution_crop_ratio,
         ordinal_threshold_step=args.ordinal_threshold_step,
         interval_bin_width=args.interval_bin_width,
@@ -1868,6 +2062,8 @@ def main() -> None:
         sweep_distribution_sigma_bins=args.sweep_distribution_sigma_bins,
         aux_loss_weight=args.aux_loss_weight,
         augment_mode=args.augment_mode,
+        angle_augment=args.angle_augment,
+        polar_sincos_model=args.polar_sincos_model,
     )
 
     logger.info(f"\n{'='*60}")

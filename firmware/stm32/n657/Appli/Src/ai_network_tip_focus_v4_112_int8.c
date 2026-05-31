@@ -28,6 +28,7 @@
  * Defined in app_ai.c.  Called before inference to ensure the
  * tip-focus weight blob at 0x70400000 is visible to the CPU. */
 extern bool AppAI_Xspi2EnsureMemoryMappedMode(void);
+extern bool AppAI_VerifyTipFocusWeights(void);
 
 /* Log the generated resize metadata right before ST's helper runs.
  * This keeps the diagnostic noise focused on the four resize nodes that

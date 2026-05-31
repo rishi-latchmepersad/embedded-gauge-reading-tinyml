@@ -17,19 +17,27 @@ extern "C" {
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "ai_network_tip_focus_v4_112_int8.h"
 
-/** @brief Path to the source-crop-box model image on xSPI2 flash. */
+/* Prod v0.8: source-crop-box stage is disabled by default.
+ * The OBB + luma + polar-vote cascade replaces it.
+ * Define APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE=1 from the compiler command line
+ * to re-enable for debug comparisons. */
+#ifndef APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
+#define APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE 0U
+#endif
+
+#if APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
+/** @brief Path to the source-crop-box model image on xSPI2 flash (legacy debug-only). */
 #define APP_AI_SOURCE_CROP_BOX_XSPI2_MODEL_IMAGE_PATH \
 	"atonbuf.source_crop_box.xSPI2.raw"
 
-/** @brief Base address for the source-crop-box model in xSPI2 mapped window. */
+/** @brief Base address for the source-crop-box model in xSPI2 mapped window (legacy). */
 #define APP_AI_XSPI2_SOURCE_CROP_BOX_BASE_ADDR 0x70B00000UL
 
-/** @brief Chip offset for the source-crop-box model from xSPI2 chip base. */
+/** @brief Chip offset for the source-crop-box model from xSPI2 chip base (legacy). */
 #define APP_AI_XSPI2_SOURCE_CROP_BOX_CHIP_OFFSET (APP_AI_XSPI2_SOURCE_CROP_BOX_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
 
-/** @brief Source-space xyxy crop box produced by the source-crop-box localizer. */
+/** @brief Source-space xyxy crop box produced by the source-crop-box localizer (legacy). */
 typedef struct
 {
 	float x_min;
@@ -37,18 +45,7 @@ typedef struct
 	float x_max;
 	float y_max;
 } AppAI_SourceCropBox;
-
-#ifndef APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
-/* Phase 13A tip-focus spike: auto-disable source-crop-box so a missing
- * flash blob at 0x70B00000 does not block the tip-focus dry-run.
- * The tip-focus guard may be supplied on the compiler command line
- * (before this header is parsed), so #if defined() is safe here. */
-#if defined(APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE) && APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
-#define APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE 0U
-#else
-#define APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE 1U
-#endif
-#endif
+#endif /* APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE */
 
 /**
  * @brief Initialize the generated AI runtime package.
@@ -99,7 +96,8 @@ bool AppAI_Xspi2EnsureMemoryMappedMode(void);
 bool App_AI_GetLastInferenceResult(float *value_out);
 
 /**
- * @brief Verify that tip-focus weights are programmed in xSPI2 flash.
+ * @brief Verify that tip-focus weights are programmed in xSPI2 flash
+ *        (legacy debug-only; tip-focus stage is disabled by default in prod v0.8).
  *
  * Reads the signature bytes from xSPI2 at 0x70400000 and compares
  * against the expected network_atonbuf.xSPI2.raw header.

@@ -1413,6 +1413,109 @@ def build_mobilenetv2_sweep_logits_model(
     return model
 
 
+def build_mobilenetv2_angle_vote_model(
+    image_height: int,
+    image_width: int,
+    *,
+    num_angle_bins: int = 36,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 0.35,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a gauge-agnostic angle-vote model with MobileNetV2 backbone.
+
+    Predicts a distribution over 36 angle bins (10° resolution) covering the
+    full 360° circle. The angle is converted to temperature at inference via
+    GaugeSpec, making this model reusable across gauges.
+    """
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    x = keras.layers.GlobalAveragePooling2D(name="angle_vote_gap")(x)
+    x = keras.layers.Dropout(head_dropout, name="angle_vote_dropout_1")(x)
+    x = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="angle_vote_dense",
+    )(x)
+    x = keras.layers.Dropout(head_dropout, name="angle_vote_dropout_2")(x)
+    angle_logits = keras.layers.Dense(
+        num_angle_bins,
+        activation="linear",
+        name="angle_logits",
+    )(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs=angle_logits,
+        name=_mobilenetv2_model_name(
+            regression_kind="angle_vote",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    setattr(model, "_num_angle_bins", num_angle_bins)
+    return model
+
+
+def build_mobilenetv2_angle_sincos_model(
+    image_height: int,
+    image_width: int,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 0.35,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a gauge-agnostic angle sin/cos regression model with MobileNetV2 backbone.
+
+    Predicts (sin(angle), cos(angle)) of the needle direction. The angle is
+    converted to temperature at inference via GaugeSpec. This is a 2-output
+    regression task (much simpler than 36-bin classification) and works well
+    with limited training data.
+    """
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    x = keras.layers.GlobalAveragePooling2D(name="sincos_gap")(x)
+    x = keras.layers.Dropout(head_dropout, name="sincos_dropout_1")(x)
+    x = keras.layers.Dense(
+        head_units,
+        activation="swish",
+        name="sincos_dense",
+    )(x)
+    x = keras.layers.Dropout(head_dropout, name="sincos_dropout_2")(x)
+    outputs = keras.layers.Dense(
+        2,
+        activation="linear",
+        name="angle_sincos",
+    )(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs=outputs,
+        name=_mobilenetv2_model_name(
+            regression_kind="angle_sincos",
+            alpha=alpha,
+            head_units=head_units,
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
 def build_mobilenetv2_bluraware_reader_model(
     image_height: int,
     image_width: int,
@@ -2476,6 +2579,77 @@ def build_mobilenetv2_polar_evidence_model(
         name=f"mobilenetv2_polar_evidence_a{alpha}",
     )
     setattr(model, "_mobilenet_backbone", backbone)
+    return model
+
+
+def build_mobilenetv2_center_selector(
+    image_height: int,
+    image_width: int,
+    *,
+    num_hypotheses: int = 5,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 0.35,
+    head_units: int = 64,
+    head_dropout: float = 0.3,
+) -> keras.Model:
+    """Build a small MobileNetV2-tiny hybrid localizer.
+
+    Learns two things:
+      1. center_logits (num_hypotheses) — which of the classical firmware
+         center hypotheses is best for this image.
+      2. center_offset (2, tanh) — sub-pixel refinement from the argmax
+         hypothesis to the true center.
+
+    The classical hypotheses (computed outside the model) are:
+      - bright centroid, crop center, board prior, rim center, image center.
+
+    Decode: argmax(center_logits) → pick hypothesis → add center_offset
+    → feed refined center into classical polar spoke vote → GaugeSpec.
+
+    Args:
+        image_height: Input image height.
+        image_width: Input image width.
+        num_hypotheses: Number of classical center hypotheses (default 4).
+        pretrained: Load ImageNet backbone weights.
+        backbone_trainable: Whether the backbone is trainable.
+        alpha: MobileNetV2 width multiplier.
+        head_units: Dense layer units.
+        head_dropout: Dropout rate.
+
+    Returns:
+        keras.Model with outputs:
+          center_logits: (B, num_hypotheses) — unnormalized hypothesis scores.
+          center_offset: (B, 2, tanh) — residual from chosen hypothesis.
+    """
+    inputs, x, base_model = _build_mobilenetv2_backbone(
+        image_height,
+        image_width,
+        pretrained=pretrained,
+        backbone_trainable=backbone_trainable,
+        alpha=alpha,
+    )
+    x = keras.layers.GlobalAveragePooling2D(name="selector_gap")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+    x = keras.layers.Dense(head_units, activation="swish", name="selector_dense")(x)
+    x = keras.layers.Dropout(head_dropout)(x)
+
+    center_logits = keras.layers.Dense(
+        num_hypotheses, name="center_logits"
+    )(x)
+    center_offset = keras.layers.Dense(
+        2, activation="tanh", name="center_offset"
+    )(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "center_logits": center_logits,
+            "center_offset": center_offset,
+        },
+        name=f"mobilenetv2_center_selector_a{alpha}",
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
     return model
 
 
@@ -3789,6 +3963,63 @@ def build_mobilenetv2_obb_model(
             alpha=alpha,
             head_units=head_units,
         ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_center_detection_model(
+    image_height: int = 224,
+    image_width: int = 224,
+    alpha: float = 1.0,
+    head_units: int = 128,
+    head_dropout: float = 0.2,
+) -> keras.Model:
+    """Build a MobileNetV2-based center detector with an auxiliary needle-colour head.
+
+    The primary output ``center_xy`` predicts a normalized (cx, cy) in [0, 1]
+    that locates the dial center / needle pivot.  The auxiliary head predicts
+    whether the needle is dark or light (used as a weak regulariser and to
+    support future multi-colour gauges).
+    """
+    inputs = keras.Input(
+        shape=(image_height, image_width, 3), name="image"
+    )
+
+    # The pipeline emits [0, 1] floats; MobileNetV2 expects [-1, 1].
+    x = keras.layers.Rescaling(
+        1.0 / 127.5, offset=-1.0, name="mobilenetv2_preprocess"
+    )(inputs)
+
+    base_model = keras.applications.MobileNetV2(
+        include_top=False,
+        weights="imagenet",
+        input_shape=(image_height, image_width, 3),
+        alpha=alpha,
+    )
+    base_model.trainable = False
+
+    x = base_model(x, training=False)
+    x = keras.layers.GlobalAveragePooling2D(name="center_detection_gap")(x)
+    x = keras.layers.Dense(
+        head_units, activation="swish", name="center_detection_dense"
+    )(x)
+    x = keras.layers.Dropout(head_dropout, name="center_detection_dropout")(x)
+
+    center_xy = keras.layers.Dense(
+        2, activation="sigmoid", name="center_xy"
+    )(x)
+    needle_colour_head = keras.layers.Dense(
+        2, activation="softmax", name="needle_colour_head"
+    )(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "center_xy": center_xy,
+            "needle_colour_head": needle_colour_head,
+        },
+        name="center_detector",
     )
     setattr(model, "_mobilenet_backbone", base_model)
     return model

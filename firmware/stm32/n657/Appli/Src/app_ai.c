@@ -7,6 +7,19 @@
  */
 /* USER CODE END Header */
 
+/* Prod v0.8: disable legacy tip-focus geometry stage and source-crop-box
+ * stage by default.  The OBB -> luma -> polar-vote cascade replaces them.
+ * These defines must appear before app_ai.h includes the tip-focus header,
+ * which uses #ifndef guards that respect pre-include definitions. */
+#ifdef APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
+#undef APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
+#endif
+#define APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE 0U
+#ifdef APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
+#undef APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
+#endif
+#define APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE 0U
+
 #include "app_ai.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -59,7 +72,7 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 #undef APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
 #define APP_AI_ENABLE_XSPI2_VERBOSE_LOGS 0U
 #ifndef APP_AI_ENABLE_RUNTIME_METRICS
-#define APP_AI_ENABLE_RUNTIME_METRICS 0U
+#define APP_AI_ENABLE_RUNTIME_METRICS 1U
 #endif
 /* Keep rectifier diagnostics available even when the rest of the verbose
  * console logging stays off. This is a temporary bring-up aid for crop
@@ -86,11 +99,10 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 #ifndef APP_AI_ENABLE_TIP_FOCUS_RECTIFIER
 #define APP_AI_ENABLE_TIP_FOCUS_RECTIFIER 0U
 #endif
-/* The raw model output has been more accurate than the smoothed board value on
- * the current captures, so keep burst smoothing off unless we explicitly want
- * to compare filtered behaviour. */
+/* Prod v0.8 freeze: keep the 3-frame burst median enabled so the live board
+ * path matches the offline recipe and does not jump on glare-heavy captures. */
 #ifndef APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
-#define APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING 0U
+#define APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING 1U
 #endif
 /* The ATON runtime has been faulting immediately after the per-frame reset
  * path, so keep that reset behind a switch while we verify whether the model
@@ -98,11 +110,17 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 #ifndef APP_AI_RESET_NETWORK_EACH_INFERENCE
 #define APP_AI_RESET_NETWORK_EACH_INFERENCE 0
 #endif
-/* The OBB stage is now the preferred front-end for the live crop path.
+/* The OBB stage is the preferred front-end for the live crop path.
  * Keep it behind a switch so we can still isolate it quickly if a future board
  * build needs a scalar-only fallback. */
 #ifndef APP_AI_ENABLE_OBB_STAGE
 #define APP_AI_ENABLE_OBB_STAGE 1U
+#endif
+/* Prod v0.8: refine the OBB crop using the CPU luma bright-centroid heuristic,
+ * constrained to the OBB bounding window.  Set to 0 to skip refinement and
+ * use the raw OBB crop directly. */
+#ifndef APP_AI_ENABLE_LUMA_REFINER
+#define APP_AI_ENABLE_LUMA_REFINER 1U
 #endif
 /* Production path: model images are provisioned via xSPI flash script.
  * Keep SD-based scalar reprovision disabled in live runtime. */
@@ -123,12 +141,11 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 #define APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL 2U
 #define APP_AI_CAPTURE_FRAME_BYTES \
 	(APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL)
-/* V28 polar-vote circular CNN: 224x224x7 int8 input (polar RGB, Sobel edges,
- * vote prior) replaces the old 224x224x3 float RGB input. The element count
- * here is the total number of int8 values; the name is kept for backward
- * compatibility with buffer-size macros that reference it. */
+/* Rectified scalar reader: 224x224x3 float RGB input. The offline prod v0.8
+ * recipe uses the luma-refined crop to feed this float path, then applies the
+ * external calibration/postprocess in firmware. */
 #define APP_AI_MODEL_INPUT_FLOAT_COUNT \
-	(APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * 7U)
+	(APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * 3U)
 /* Bright-object detector threshold used to find the gauge face before
  * cropping and resizing the tensor. 80 was a better fit than 60 on captured
  * frames because 60 was too loose and pulled in most of the background. */
@@ -174,12 +191,10 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 #define APP_AI_BYPASS_SCALAR_STAGE_BEFORE_PREPROCESS 0U
 #define APP_AI_MODEL_INPUT_FLOAT_BYTES \
 	(APP_AI_MODEL_INPUT_FLOAT_COUNT * sizeof(float))
-/* V28 circular output: 224 int8 angle-bin logits.  Round up to a cache-line
- * multiple so the NPU has room for alignment padding. */
-#define APP_AI_MODEL_OUTPUT_INT8_COUNT 224U
+/* Rectified scalar output: a single float temperature value. */
+#define APP_AI_MODEL_OUTPUT_FLOAT_COUNT 1U
 #define APP_AI_MODEL_OUTPUT_FLOAT_BYTES \
-	((APP_AI_MODEL_OUTPUT_INT8_COUNT + APP_AI_CACHE_LINE_BYTES - 1U) / \
-	 APP_AI_CACHE_LINE_BYTES * APP_AI_CACHE_LINE_BYTES)
+	(APP_AI_MODEL_OUTPUT_FLOAT_COUNT * sizeof(float))
 /* Circular decode constants from gauge_calibration_parameters.toml.
  * The gauge sweeps clockwise from 135 deg (2.356 rad) over 270 deg (4.712 rad).
  * Value range: -30 C to +50 C. */
@@ -203,10 +218,12 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 /* Dead-zone mask constant: logits outside the gauge sweep are set to this
  * large negative value so they become zero after softmax. */
 #define APP_AI_POLAR_MASK_LOGIT (-1.0e9f)
-#define APP_AI_SCALAR_XSPI2_MODEL_IMAGE_PATH "atonbuf.xSPI2.raw"
+#define APP_AI_SCALAR_XSPI2_MODEL_IMAGE_PATH \
+	"packages/mobilenetv2_rectified_scalar_finetune_v2/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8_atonbuf.xSPI2.raw"
 #define APP_AI_RECTIFIER_XSPI2_MODEL_IMAGE_PATH \
 	"atonbuf.rectifier.xSPI2.raw"
-#define APP_AI_OBB_XSPI2_MODEL_IMAGE_PATH "atonbuf.obb.xSPI2.raw"
+#define APP_AI_OBB_XSPI2_MODEL_IMAGE_PATH \
+	"packages/prod_model_v0.3_obb_int8/st_ai_output/mobilenetv2_obb_longterm_atonbuf.xSPI2.raw"
 #define APP_AI_XSPI2_MODEL_IMAGE_PATH APP_AI_SCALAR_XSPI2_MODEL_IMAGE_PATH
 #define APP_AI_XSPI2_PROGRAM_CHUNK_BYTES 4096U
 #define APP_AI_XSPI2_ERASE_BLOCK_BYTES (64U * 1024U)
@@ -214,9 +231,13 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 /* Keep the rectifier crop slightly larger than the raw box so the scalar head
  * still sees the needle and a bit of surrounding dial context. */
 #define APP_AI_RECTIFIER_CROP_SCALE 1.80f
-/* The exact V28 board replay preferred a tighter OBB crop on the hard cases;
- * 0.83 beat the board heuristic in the offline sweep. */
-#define APP_AI_OBB_CROP_SCALE 0.83f
+/* Prod v0.8 offline freeze used a 1.20x OBB crop scale before the luma
+ * refinement stage constrained the final crop window. */
+#define APP_AI_OBB_CROP_SCALE 1.20f
+/* Keep the OBB localizer bounded, but give it enough time to finish on the
+ * 60 s capture cadence. The earlier 10 s cap forced a fallback before the
+ * deployed localizer could converge on harder frames. */
+#define APP_AI_OBB_INFERENCE_TIMEOUT_MS 45000U
 /* Keep the live OBB path aligned with the offline board replay window. The
  * older 0.60 threshold was too strict and pushed valid crops into fallback. */
 #define APP_AI_OBB_TRAINING_CROP_MIN_RATIO 0.15f
@@ -359,7 +380,7 @@ static size_t app_ai_forced_crop_width = 0U;
 static size_t app_ai_forced_crop_height = 0U;
 static const char *app_ai_forced_crop_label = NULL;
 __attribute__((section(".xspi2_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
-uint8_t _mem_pool_xSPI2_polar_vote_circular_v28_int8[32U] = {
+uint8_t _mem_pool_xSPI2_scalar_full_finetune_from_best_piecewise_calibrated_int8[32U] = {
 	0U,
 };
 /* Rectifier pool placed in its own section so the linker script can map it to
@@ -420,23 +441,23 @@ volatile size_t app_ai_scalar_preprocess_last_row = (size_t)SIZE_MAX;
 /* Keep each preprocessing pass small enough that we can reshape the scalar
  * path without one huge monolithic row loop. */
 #define APP_AI_SCALAR_PREPROCESS_ROWS_PER_CHUNK 8U
-/* Start/tail signatures for the current atonbuf.xSPI2.raw.
+/* Start/tail signatures for the rectified scalar package raw.
  * Update these when a new model is exported by running:
  *   python3 -c "
- *     d=open('st_ai_output/atonbuf.xSPI2.raw','rb').read()
+ *     d=open('st_ai_output/packages/mobilenetv2_rectified_scalar_finetune_v2/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8_atonbuf.xSPI2.raw','rb').read()
  *     print('start:', bytes(d[:16]).hex())
  *     print('tail: ', bytes(d[-16:]).hex())" */
-/* Scalar model: atonbuf.xSPI2.raw (66,081 bytes) flashed at 0x70200000. */
+/* Rectified scalar model: package raw (3,218,865 bytes) flashed at 0x70200000. */
 static const uint8_t app_ai_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0xD0U, 0xFBU, 0xD7U, 0x0CU, 0xBFU, 0xAFU, 0xEEU, 0x1AU,
-	0xFAU, 0x40U, 0xD5U, 0x63U, 0xE2U, 0x54U, 0xD8U, 0x64U,
+	0xEFU, 0x1BU, 0x2BU, 0xE0U, 0xD7U, 0xE5U, 0xECU, 0x06U,
+	0x04U, 0xFFU, 0x33U, 0xECU, 0x1BU, 0xDDU, 0x14U, 0x05U,
 };
 static const uint8_t app_ai_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x83U,
 };
-/* Rectifier v3 xSPI2 signatures used when the board boots with the rectifier
- * blob already flashed at 0x70200000. Size: 121,217 bytes. */
+/* Rectified scalar v2 xSPI2 signatures used when the board boots with the
+ * prod v0.8 scalar blob already flashed at 0x70200000. Size: 3,218,865 bytes. */
 static const uint8_t app_ai_rectifier_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x0FU, 0x11U, 0xF8U, 0x10U, 0xD0U, 0xD8U, 0x0EU, 0x28U,
 	0x99U, 0xCEU, 0x98U, 0x7DU, 0xBCU, 0x42U, 0x5EU, 0xF2U,
@@ -445,42 +466,16 @@ static const uint8_t app_ai_rectifier_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BY
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x80U,
 };
-/* prodv0.3 OBB xSPI2 signatures. */
+/* prodv0.3 OBB xSPI2 signatures for the canonical v34 blob.
+ * The board verifies against these bytes when the SD-side cache is not
+ * populated, so keep them aligned with the package raw file. */
 static const uint8_t app_ai_obb_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0xF2U,
-	0x17U,
-	0x29U,
-	0xE2U,
-	0xDCU,
-	0xEBU,
-	0xEDU,
-	0x04U,
-	0x09U,
-	0x01U,
-	0x35U,
-	0xEBU,
-	0x14U,
-	0xDEU,
-	0x0FU,
-	0x02U,
+	0xF2U, 0x17U, 0x29U, 0xE2U, 0xDCU, 0xEBU, 0xEDU, 0x04U,
+	0x09U, 0x01U, 0x35U, 0xEBU, 0x14U, 0xDEU, 0x0FU, 0x02U,
 };
 static const uint8_t app_ai_obb_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x00U,
-	0x7FU,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x7FU,
 };
 
 /* Source-crop-box xSPI2 signatures for atonbuf.source_crop_box.xSPI2.raw. */
@@ -537,7 +532,7 @@ static bool app_ai_tip_focus_sig_valid = false;
 /* Declare the generated NN instance locally so the dry-run helper can run the
  * AtoNN runtime on the exact network produced by Cube.AI. */
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
-	polar_vote_circular_v28_int8);
+	scalar_full_finetune_from_best_piecewise_calibrated_int8);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 	mobilenetv2_rectifier_hardcase_finetune);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
@@ -589,11 +584,11 @@ typedef struct
 static const AppAI_ModelStageSpec app_ai_scalar_stage = {
 	.stage_label = "scalar",
 	.model_image_path = APP_AI_SCALAR_XSPI2_MODEL_IMAGE_PATH,
-	.nn_instance = &NN_Instance_polar_vote_circular_v28_int8,
+	.nn_instance = &NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8,
 	.network_init_fn =
-		LL_ATON_EC_Network_Init_polar_vote_circular_v28_int8,
+		LL_ATON_EC_Network_Init_scalar_full_finetune_from_best_piecewise_calibrated_int8,
 	.inference_init_fn =
-		LL_ATON_EC_Inference_Init_polar_vote_circular_v28_int8,
+		LL_ATON_EC_Inference_Init_scalar_full_finetune_from_best_piecewise_calibrated_int8,
 	.uses_rectifier_box = false,
 	.xspi2_chip_offset = APP_AI_XSPI2_SCALAR_CHIP_OFFSET,
 	.xspi2_base_addr = APP_AI_XSPI2_SCALAR_BASE_ADDR,
@@ -623,6 +618,7 @@ static const AppAI_ModelStageSpec app_ai_obb_stage = {
 	.xspi2_base_addr = APP_AI_XSPI2_OBB_BASE_ADDR,
 };
 
+#if APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
 static const AppAI_ModelStageSpec app_ai_source_crop_box_stage = {
 	.stage_label = "source_crop_box",
 	.model_image_path = APP_AI_SOURCE_CROP_BOX_XSPI2_MODEL_IMAGE_PATH,
@@ -633,6 +629,7 @@ static const AppAI_ModelStageSpec app_ai_source_crop_box_stage = {
 	.xspi2_chip_offset = APP_AI_XSPI2_SOURCE_CROP_BOX_CHIP_OFFSET,
 	.xspi2_base_addr = APP_AI_XSPI2_SOURCE_CROP_BOX_BASE_ADDR,
 };
+#endif /* APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE */
 
 static bool AppAI_ShouldLogStageDiagnostics(
 	const AppAI_ModelStageSpec *stage)
@@ -822,10 +819,12 @@ static void AppAI_SetForcedCrop(const char *label, size_t x_min,
 static void AppAI_ClearForcedCrop(void);
 static bool AppAI_DecodeObbCropBox(const LL_Buffer_InfoTypeDef *output_buffer_info,
 								   AppAI_SourceCrop *crop_out, AppAI_ObbBox *obb_box_out);
+#if APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
 static bool AppAI_DecodeSourceCropBox(
 	const LL_Buffer_InfoTypeDef *output_buffer_info,
 	AppAI_SourceCrop *crop_out,
 	AppAI_SourceCropBox *box_out);
+#endif /* APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE */
 static bool AppAI_DecodeRectifierCropBox(
 	const LL_Buffer_InfoTypeDef *output_buffer_info,
 	AppAI_SourceCrop *crop_out,
@@ -3857,6 +3856,7 @@ static bool AppAI_DecodeObbCropBox(
 
 	return true;
 }
+#if APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
 static void AppAI_LogSourceCropBoxResult(
 	const LL_Buffer_InfoTypeDef *output_buffer_info,
 	const AppAI_SourceCropBox *source_crop_box)
@@ -3980,6 +3980,7 @@ static bool __attribute__((noinline)) AppAI_DecodeSourceCropBox(
 	}
 	return true;
 }
+#endif /* APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE */
 
 #if !defined(APP_AI_DISABLE_LEGACY_TOPK_DECODE)
 static bool AppAI_DecodeScalarTopKExpectationFromOutput(
@@ -4368,8 +4369,8 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 
 #if APP_AI_YUV422_INPUT_LUMA_ONLY
 	if (!AppAI_PreprocessYuv422FrameToFloatInput(frame_bytes, frame_size,
-												 input_ptr, input_float_count,
-												 input_len_bytes))
+											 input_ptr, input_float_count,
+											 input_len_bytes))
 	{
 		AppAI_ClearForcedCrop();
 		return false;
@@ -4377,7 +4378,7 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 #else
 	if ((stage == &app_ai_scalar_stage) && (input_info->nbits <= 8U))
 	{
-		/* V28 polar-vote model: 7-channel int8 polar input. */
+		/* Legacy int8 polar-vote model: 7-channel polar input. */
 		if (!AppAI_PreprocessYuv422FrameToPolarInput(frame_bytes, frame_size,
 														  input_bytes_ptr, input_len_bytes,
 														  input_info))
@@ -4485,7 +4486,8 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 
 #if APP_AI_ENABLE_RUNTIME_METRICS
 	/* Start metrics tracking for this inference */
-	Metrics_StartInference("CNN");
+	(void)INA219_LogReading("AI-PRE");
+	Metrics_StartInference(stage->stage_label);
 #endif
 
 	if (emit_stage_diagnostics && (stage == &app_ai_scalar_stage) && (LL_Buffer_addr_start(output_info) != NULL) &&
@@ -4509,16 +4511,58 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		(void)DebugConsole_WriteString("[AI] Stage inference run start.\r\n");
 	}
 	bool mid_logged = false;
+	bool inference_aborted = false;
+	uint32_t obb_stage_start_tick = 0U;
+	if (stage == &app_ai_obb_stage)
+	{
+		obb_stage_start_tick = HAL_GetTick();
+	}
 	for (uint32_t epoch_step = 0U;; ++epoch_step)
 	{
+		/* The OBB localizer has a much deeper epoch schedule than the scalar
+		 * reader.  Cap runaway loops so a bad runtime state cannot freeze the
+		 * board indefinitely. */
+		if (epoch_step >= 256U)
+		{
+			(void)DebugConsole_WriteString(
+				"[AI] Stage inference aborted: epoch budget exhausted.\r\n");
+			inference_aborted = true;
+			break;
+		}
+
+		if (stage == &app_ai_obb_stage)
+		{
+			const uint32_t obb_elapsed_ms = HAL_GetTick() - obb_stage_start_tick;
+			if (obb_elapsed_ms > APP_AI_OBB_INFERENCE_TIMEOUT_MS)
+			{
+				DebugConsole_Printf(
+					"[AI] OBB inference aborted: time budget exhausted (%lu ms > %lu ms).\r\n",
+					(unsigned long)obb_elapsed_ms,
+					(unsigned long)APP_AI_OBB_INFERENCE_TIMEOUT_MS);
+				inference_aborted = true;
+				break;
+			}
+		}
+
 		/* Log mid-inference power after a few epochs (NPU active) */
 		if (!mid_logged && epoch_step == 5U)
 		{
 #if APP_AI_ENABLE_RUNTIME_METRICS
-			(void)INA219_LogReading("MID");
+			(void)INA219_LogReading("AI-MID");
 			Metrics_Checkpoint("MID");
 #endif
 			mid_logged = true;
+		}
+
+		/* Reassert xSPI2 memory-mapped mode before each epoch so the NPU's
+		 * AXI master sees the weight flash. Epoch-block SW operators that read
+		 * xSPI2-resident metadata (e.g. resize scale tables) can stall the
+		 * system bus if MM mode drops between epochs. */
+		if (!AppAI_Xspi2EnsureMemoryMappedMode())
+		{
+			(void)DebugConsole_WriteString("[AI] Stage inference aborted: xSPI2 MM lost.\r\n");
+			inference_aborted = true;
+			break;
 		}
 
 		const LL_ATON_RT_RetValues_t run_status =
@@ -4531,10 +4575,34 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 
 		if (run_status == LL_ATON_RT_WFE)
 		{
+			/* Let the ATON runtime wait on its own event chain. The vendor
+			 * init sequence now installs the IRQ path, so a true WFE wait is
+			 * the closest match to the offline runtime behavior. */
 			LL_ATON_OSAL_WFE();
 		}
-		/* LL_ATON_RT_NO_WFE means the next epoch can start immediately, so
-		 * keep the loop tight here and do not yield the thread. */
+		else if (run_status == LL_ATON_RT_NO_WFE)
+		{
+			/* NO_WFE means the runtime has already advanced the epoch chain and
+			 * wants the caller to issue the next epoch immediately. Do not add a
+			 * ThreadX scheduling gap here; that only stretches the OBB stage. */
+		}
+		else
+		{
+			DebugConsole_Printf(
+				"[AI] Stage inference aborted: unexpected ATON status=%ld.\r\n",
+				(long)run_status);
+			inference_aborted = true;
+			break;
+		}
+	}
+	if (inference_aborted)
+	{
+#if APP_AI_ENABLE_RUNTIME_METRICS
+		(void)INA219_LogReading("AI-ABORT");
+		Metrics_EndInference(NAN);
+#endif
+		AppAI_ClearForcedCrop();
+		return false;
 	}
 	if (emit_stage_diagnostics)
 	{
@@ -4543,7 +4611,7 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 
 #if APP_AI_ENABLE_RUNTIME_METRICS
 	/* Log post-inference power (peak during NPU activity) */
-	(void)INA219_LogReading("POST");
+	(void)INA219_LogReading("AI-POST");
 	Metrics_Checkpoint("POST");
 #endif
 
@@ -4551,6 +4619,10 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	output_len_bytes = (size_t)LL_Buffer_len(output_info);
 	if (output_ptr == NULL)
 	{
+#if APP_AI_ENABLE_RUNTIME_METRICS
+		(void)INA219_LogReading("AI-ABORT");
+		Metrics_EndInference(NAN);
+#endif
 		AppAI_ClearForcedCrop();
 		return false;
 	}
@@ -4560,6 +4632,10 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 			"[AI] Stage output buffer too small: nbits=%lu len=%lu\r\n",
 			(unsigned long)output_info->nbits,
 			(unsigned long)output_len_bytes);
+#if APP_AI_ENABLE_RUNTIME_METRICS
+		(void)INA219_LogReading("AI-ABORT");
+		Metrics_EndInference(NAN);
+#endif
 		AppAI_ClearForcedCrop();
 		return false;
 	}
@@ -4602,13 +4678,22 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 
 	/* Cache the output value before xSPI2 reconfiguration, because the
 	 * internal buffer info pointers will become stale after reconfigure.
-	 * V28 polar-vote model: decode 224 int8 logits via circular softmax.
-	 * Fallback: single-scalar quantized decode for rectifier/OBB stages. */
-	if (emit_stage_diagnostics && (stage == &app_ai_scalar_stage) &&
-		AppAI_DecodeCircularVoteFromOutput(
-			output_ptr,
-			output_len_bytes,
-			&output_value))
+	 * The production scalar path is a float regression head; the older int8
+	 * circular-vote helpers remain only for legacy exports. */
+	if ((stage == &app_ai_scalar_stage) && (output_info->nbits > 8U))
+	{
+		(void)memcpy(&output_value, output_ptr, sizeof(output_value));
+		if (emit_stage_diagnostics)
+		{
+			(void)DebugConsole_WriteString(
+				"[AI] Scalar decode mode: float_regression\r\n");
+		}
+	}
+	else if (emit_stage_diagnostics && (stage == &app_ai_scalar_stage) &&
+			 AppAI_DecodeCircularVoteFromOutput(
+				 output_ptr,
+				 output_len_bytes,
+				 &output_value))
 	{
 		DebugConsole_Printf(
 			"[AI] Scalar decode mode: circular_vote bins=%lu\r\n",
@@ -4685,6 +4770,10 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		{
 			(void)DebugConsole_WriteString(
 				"[AI] Scalar output invalid: non-finite value.\r\n");
+#if APP_AI_ENABLE_RUNTIME_METRICS
+			(void)INA219_LogReading("AI-ABORT");
+			Metrics_EndInference(NAN);
+#endif
 			AppAI_ClearForcedCrop();
 			return false;
 		}
@@ -4817,7 +4906,6 @@ static void AppAI_LogR9(const char *label)
 	__asm volatile("mov %0, r9" : "=r"(r9_before));
 	DebugConsole_Printf("[AI][DRY_RUN][R9] %s=%p\r\n",
 						label, (const void *)r9_before);
-	__asm volatile("mov r9, %0" : : "r"(r9_before) : "r9");
 }
 
 #if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
@@ -5056,12 +5144,39 @@ static void AppAI_ResetInferenceBurstHistory(void)
 
 static bool AppAI_RuntimeInitStepwise(void)
 {
-	/* Let the vendor runtime perform the low-level ATON bring-up, OSAL setup,
-	 * and IRQ wiring once ThreadX is alive. That matches the generated NPU
-	 * sample flow more closely than open-coding the pieces by hand. */
+	/* Use the same explicit ATON bring-up sequence that the working generated
+	 * sample uses.  The lighter LL_ATON_RT_RuntimeInit() path proved too weak
+	 * for the OBB stage because it did not leave the NPU interrupt chain in a
+	 * state that reliably wakes the runtime from WFE. */
 	(void)DebugConsole_WriteString("[AI] ATON runtime init start.\r\n");
 	LL_ATON_RT_SetRuntimeCallback(NULL);
-	LL_ATON_RT_RuntimeInit();
+	if (LL_ATON_Init() != LL_ATON_OK)
+	{
+		(void)DebugConsole_WriteString(
+			"[AI] ATON runtime init failed in LL_ATON_Init().\r\n");
+		return false;
+	}
+
+	/* The ATON platform macros use a scratch `t` local exactly like the vendor
+	 * runtime sample, so keep that local in scope before invoking them. */
+	uint32_t t = 0U;
+
+	ATON_DISABLE_CLR_CONFCLR(INTCTRL, 0);
+	ATON_INTCTRL_STD_INTORMSK_SET(ATON_STRENG_INT_MASK(ATON_STRENG_NUM, 0, 0));
+	ATON_INTCTRL_STD_INTANDMSK_SET(0xFFFFFFFFU);
+#if (ATON_INT_NR > 32)
+	ATON_INTCTRL_STD_INTORMSK_H_SET(0xFFFFFFFFU);
+	ATON_INTCTRL_STD_INTANDMSK_H_SET(0xFFFFFFFFU);
+#endif
+	ATON_ENABLE(INTCTRL, 0);
+
+	LL_ATON_OSAL_INIT();
+	LL_ATON_OSAL_DISABLE_IRQ(0U);
+	LL_ATON_OSAL_DISABLE_IRQ(1U);
+	LL_ATON_OSAL_DISABLE_IRQ(2U);
+	LL_ATON_OSAL_DISABLE_IRQ(3U);
+	LL_ATON_OSAL_INSTALL_IRQ(ATON_STD_IRQ_LINE, ATON_STD_IRQHandler);
+	LL_ATON_OSAL_ENABLE_IRQ(ATON_STD_IRQ_LINE);
 	(void)DebugConsole_WriteString("[AI] ATON runtime init OK.\r\n");
 	return true;
 }
@@ -5298,13 +5413,15 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	AppAI_SourceCrop scalar_crop = {0U, 0U, 0U, 0U};
 	bool scalar_crop_from_rectifier = false;
 	bool scalar_crop_from_obb = false;
+#if APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
 	bool scalar_crop_from_source_crop_box = false;
-	float obb_output_value = 0.0f;
-	float rectifier_output_value = 0.0f;
 	float source_crop_box_output_value = 0.0f;
-	float scalar_output_value = 0.0f;
 	const LL_Buffer_InfoTypeDef *source_crop_box_output_info = NULL;
 	AppAI_SourceCropBox source_crop_box = {0.0f, 0.0f, 0.0f, 0.0f};
+#endif /* APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE */
+	float obb_output_value = 0.0f;
+	float rectifier_output_value = 0.0f;
+	float scalar_output_value = 0.0f;
 
 	(void)DebugConsole_WriteString("[AI] Dry-run entry.\r\n");
 	AppAI_LogR9("entry");
@@ -5774,7 +5891,11 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		}
 
 	}
-	if (!scalar_crop_from_rectifier && !scalar_crop_from_obb && !scalar_crop_from_source_crop_box)
+	if (!scalar_crop_from_rectifier && !scalar_crop_from_obb
+#if APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
+		&& !scalar_crop_from_source_crop_box
+#endif
+		)
 	{
 		scalar_crop = fixed_training_crop;
 		DebugConsole_Printf(
@@ -5792,6 +5913,71 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 			(unsigned long)scalar_crop.height);
 #endif
 	}
+
+/* ------------------------------------------------------------------
+ * Prod v0.8: refine the OBB crop with the CPU luma heuristic,
+ * constrained to the OBB bounding window.
+ * ------------------------------------------------------------------ */
+#if APP_AI_ENABLE_LUMA_REFINER
+	if (scalar_crop_from_obb && !scalar_crop_from_rectifier
+#if APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
+		&& !scalar_crop_from_source_crop_box
+#endif
+		)
+	{
+		size_t luma_x = 0U, luma_y = 0U, luma_w = 0U, luma_h = 0U;
+		const bool luma_ok = AppAI_EstimateGaugeCropBoxFromYuv422(
+			safe_frame_bytes, frame_size,
+			APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
+			APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS,
+			&luma_x, &luma_y, &luma_w, &luma_h);
+
+		if (luma_ok)
+		{
+			const float luma_cx = (float)luma_x + (float)luma_w * 0.5f;
+			const float luma_cy = (float)luma_y + (float)luma_h * 0.5f;
+			const float obb_cx =
+				(float)scalar_crop.x_min + (float)scalar_crop.width * 0.5f;
+			const float obb_cy =
+				(float)scalar_crop.y_min + (float)scalar_crop.height * 0.5f;
+			const float obb_hw = (float)scalar_crop.width * 0.5f;
+			const float obb_hh = (float)scalar_crop.height * 0.5f;
+
+			/* Accept luma only when its centroid falls inside the OBB
+			 * bounding window so OBB acts as a spatial guardrail. */
+			if ((luma_cx >= (obb_cx - obb_hw))
+				&& (luma_cx <= (obb_cx + obb_hw))
+				&& (luma_cy >= (obb_cy - obb_hh))
+				&& (luma_cy <= (obb_cy + obb_hh)))
+			{
+				scalar_crop.x_min = luma_x;
+				scalar_crop.y_min = luma_y;
+				scalar_crop.width = luma_w;
+				scalar_crop.height = luma_h;
+				DebugConsole_WriteString(
+					"[AI] Prod v0.8: luma-refined crop accepted.\r\n");
+				DebugConsole_Printf(
+					"[AI] Prod v0.8: luma crop x=%lu y=%lu w=%lu h=%lu\r\n",
+					(unsigned long)scalar_crop.x_min,
+					(unsigned long)scalar_crop.y_min,
+					(unsigned long)scalar_crop.width,
+					(unsigned long)scalar_crop.height);
+			}
+			else
+			{
+				DebugConsole_WriteString(
+					"[AI] Prod v0.8: luma centroid outside OBB; "
+					"keeping raw OBB crop.\r\n");
+			}
+		}
+		else
+		{
+			DebugConsole_WriteString(
+				"[AI] Prod v0.8: luma heuristic failed; "
+				"keeping raw OBB crop.\r\n");
+		}
+	}
+#endif /* APP_AI_ENABLE_LUMA_REFINER */
 
 #if APP_AI_BYPASS_SCALAR_STAGE_BEFORE_PREPROCESS
 	if (scalar_crop_from_rectifier)
@@ -5862,6 +6048,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 			"[AI] Scalar handoff active; OBB fallback scalar inference enabled.\r\n");
 #endif
 	}
+#if APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
 	else if (scalar_crop_from_source_crop_box)
 	{
 #if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
@@ -5869,6 +6056,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 			"[AI] Scalar handoff active; source-crop-box crop scalar inference enabled.\r\n");
 #endif
 	}
+#endif
 	else
 	{
 #if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
@@ -5903,7 +6091,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 static const LL_Buffer_InfoTypeDef *AppAI_GetInputBufferInfo(void)
 {
 	const LL_Buffer_InfoTypeDef *input_info =
-		NN_Instance_polar_vote_circular_v28_int8.network
+		NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8.network
 			->input_buffers_info();
 
 	if ((input_info == NULL) || (input_info->name == NULL))
@@ -5917,7 +6105,7 @@ static const LL_Buffer_InfoTypeDef *AppAI_GetInputBufferInfo(void)
 static const LL_Buffer_InfoTypeDef *AppAI_GetOutputBufferInfo(void)
 {
 	const LL_Buffer_InfoTypeDef *output_info =
-		NN_Instance_polar_vote_circular_v28_int8.network
+		NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8.network
 			->output_buffers_info();
 
 	if ((output_info == NULL) || (output_info->name == NULL))
@@ -6044,9 +6232,9 @@ static void AppAI_LogInferenceResult(
 				 sizeof(output_bits.u));
 	output_value = output_bits.f;
 
-	internal_buffers =
+		internal_buffers =
 		LL_ATON_Internal_Buffers_Info(
-			&NN_Instance_polar_vote_circular_v28_int8);
+			&NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8);
 	quantize_output_info = AppAI_FindFirstBufferInfoByNames(internal_buffers,
 															quantize_output_names, sizeof(quantize_output_names) / sizeof(quantize_output_names[0]));
 	sub_output_info = AppAI_FindFirstBufferInfoByNames(internal_buffers,
@@ -6250,7 +6438,7 @@ static void AppAI_LogInferenceResult(
 
 #if APP_AI_ENABLE_RUNTIME_METRICS
 	/* Log final power consumption and end metrics tracking */
-	(void)INA219_LogReading("CNN-DONE");
+	(void)INA219_LogReading("AI-DONE");
 	Metrics_EndInference(output_value);
 #endif
 }
@@ -6799,9 +6987,9 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 		return false;
 	}
 
-	/* Minimum 3-channel float input (224*224*3) for RGB models like OBB.
-	 * The scalar model uses 7-channel int8 via the polar path, so this
-	 * float path only runs for non-scalar stages with nbits > 8. */
+	/* Minimum 3-channel float input (224*224*3) for RGB models like the
+	 * rectified scalar reader and the OBB front-end. Legacy int8 polar-path
+	 * tensors stay on their separate branch below. */
 	const size_t min_float_count = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * 3U;
 	const size_t min_float_bytes = min_float_count * sizeof(float);
 	if ((frame_size < (size_t)APP_AI_CAPTURE_FRAME_BYTES) ||

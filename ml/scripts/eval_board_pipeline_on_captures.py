@@ -216,6 +216,59 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print stage-by-stage progress markers while replaying each capture.",
     )
+    parser.add_argument(
+        "--enable-luma-refinement",
+        action="store_true",
+        help="Refine OBB crop with the CPU luma bright-centroid heuristic.",
+    )
+    parser.add_argument(
+        "--luma-bright-threshold",
+        type=int,
+        default=80,
+        help="Bright-pixel threshold for the luma heuristic.",
+    )
+    parser.add_argument(
+        "--luma-border-pixels",
+        type=int,
+        default=16,
+        help="Border width ignored by the luma heuristic.",
+    )
+    parser.add_argument(
+        "--luma-crop-width-scale",
+        type=float,
+        default=17.0 / 20.0,
+        help="Luma heuristic width scale relative to the training crop width.",
+    )
+    parser.add_argument(
+        "--luma-crop-height-scale",
+        type=float,
+        default=17.0 / 20.0,
+        help="Luma heuristic height scale relative to the training crop height.",
+    )
+    parser.add_argument(
+        "--luma-center-x-bias-pixels",
+        type=int,
+        default=0,
+        help="Luma heuristic horizontal bias in pixels.",
+    )
+    parser.add_argument(
+        "--luma-center-y-bias-ratio",
+        type=float,
+        default=0.11,
+        help="Luma heuristic vertical bias ratio relative to crop height.",
+    )
+    parser.add_argument(
+        "--luma-center-y-bias-min-pixels",
+        type=int,
+        default=8,
+        help="Lower bound for the luma heuristic vertical bias in pixels.",
+    )
+    parser.add_argument(
+        "--luma-center-y-bias-max-pixels",
+        type=int,
+        default=18,
+        help="Upper bound for the luma heuristic vertical bias in pixels.",
+    )
     return parser.parse_args()
 
 
@@ -420,6 +473,15 @@ def main() -> None:
             obb_source_x_bias_pixels=args.obb_source_x_bias_pixels,
             obb_source_y_bias_pixels=args.obb_source_y_bias_pixels,
             use_calibration=not args.no_calibration,
+            enable_luma_refinement=args.enable_luma_refinement,
+            luma_bright_threshold=args.luma_bright_threshold,
+            luma_border_pixels=args.luma_border_pixels,
+            luma_crop_width_scale=args.luma_crop_width_scale,
+            luma_crop_height_scale=args.luma_crop_height_scale,
+            luma_center_x_bias_pixels=args.luma_center_x_bias_pixels,
+            luma_center_y_bias_ratio=args.luma_center_y_bias_ratio,
+            luma_center_y_bias_min_pixels=args.luma_center_y_bias_min_pixels,
+            luma_center_y_bias_max_pixels=args.luma_center_y_bias_max_pixels,
         )
         _print_result(result)
         print(
@@ -452,6 +514,7 @@ def main() -> None:
         "calibration_enabled": not args.no_calibration,
         "history_size": args.history_size,
         "history_reset_delta": args.history_reset_delta,
+        "luma_refinement_enabled": bool(args.enable_luma_refinement),
     }
     if abs_errors:
         abs_errors_array = np.asarray(abs_errors, dtype=np.float32)
