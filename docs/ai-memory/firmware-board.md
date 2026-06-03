@@ -8,27 +8,36 @@ See `archive.md` for the full chronology.
 - `DUMMY_CYCLES_READ_OCTAL = 20U` is a recurring bug to treat as a canary.
 - The rectifier flash address is permanently `0x70600000`.
 - Binary/flash timing races should be checked by verifying timestamps before flashing.
-- The rectifier stage now trusts the flashed blob and skips its signature gate, because the stale fingerprint was blocking a valid fallback image and contributing to the live freeze.
-- The live AI cascade no longer enters the rectifier runtime by default; if the OBB crop is out of range or the OBB scalar pass fails, the board falls back to the fixed training crop instead so the capture loop keeps moving.
+- The rectifier notes are now archival only; the live board path uses the OBB localizer and center detector instead.
+- The live AI cascade now keeps the OBB/luma path as diagnostics, but the center detector consumes the stable training crop directly so it stays in the domain it was trained on.
 - The classical manifest-side Hough helper now rejects implausible circles and uses a `0.75x` effective radius, which is what keeps the hard-case and board-style weak-focus manifests under `10C` offline.
 
-## Two-Stage Pipeline
+## Current AI Pipeline
 
-- The current board path is a two-stage pipeline: rectifier first, scalar second.
-- Keep the rectifier and scalar artifacts in sync with the firmware wrappers.
-- The rectifier stage should stay small and predictable; the scalar stage should do the final readout.
+```mermaid
+flowchart TD
+    A["IMX335 capture"] --> B["DCMIPP / 224x224 YUV422 buffer"]
+    B --> C["OBB localizer"]
+    C --> D["Optional luma refiner (diagnostic)"]
+    D --> E["Center detector (stable training crop)"]
+    E --> F["Polar vote baseline"]
+    F --> G["Angle -> temperature"]
+```
+
+- Keep the OBB and center-detector artifacts in sync with the firmware wrappers.
+- The OBB stage should stay small and predictable; the center detector does the spatial readout before the classical baseline converts angle to temperature.
 
 ## Deployment State
 
-- The live board path remains the scalar reader, but the current A/B view bypasses firmware-side calibration so we can compare the raw model output directly.
-- The current board candidate is `prod_model_v0.3_obb_int8`, wired through the OBB wrapper in `app_ai.c`.
+- The live board path now uses the OBB localizer plus center detector, but the center detector reads the stable training crop directly. The current A/B view still bypasses firmware-side calibration so we can compare raw model outputs directly.
+- The current board bundle is `mobilenetv2_obb_longterm` at `0x70700000` plus `mobilenetv2_center_detector` at `0x70200000`, wired through `app_ai.c` and `app_center_detector.c`.
 - The live polar baseline now keeps the strongest raw angular peak instead of re-ranking the top bins with hub/width heuristics. That extra re-ranking was promoting unrelated fixed-crop peaks on the hard live traces, so the firmware is staying closer to the Python Hough-first reference.
 - The classical firmware selector now defaults to a conservative fixed-crop-first branch with the local geometry sweep behind `APP_BASELINE_ENABLE_LOCAL_GEOMETRY_SWEEP=0`. The sweep is still present for experiments, but the live board no longer trusts it by default after the hard live traces showed that nearby offset refinement could jump to the wrong plateau.
-- The firmware build is currently green with the OBB wrapper linked against the shared scalar runtime bundle.
+- The firmware build is currently green with the OBB wrapper and center-detector runtime linked together.
 - The OBB package originally pointed its CPU input arena at `0x34100000`, which collided with the app's live RAM footprint in `.bss`, heap, and ThreadX globals; the arena base has been moved up to `0x34107000`, which sits above `_end = 0x34106b58` in the current link map.
-- The scalar package had the same overlap issue, and the wrapper has now been rebuilt against `0x34107000` too, so both model stages are clear of the live app RAM window.
+- The center detector package had the same overlap issue, and the wrapper has now been rebuilt against `0x34107000` too, so both active model stages are clear of the live app RAM window.
 - `sysmem.c` now caps the newlib heap below `0x34110000` so future `malloc` activity cannot climb into the AI arena.
-- The scalar output calibration helper is currently compiled with `APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION=0`, so the live board reports the raw model output while we compare it against the calibrated and smoothed paths.
+- The board-side output calibration helper is currently compiled with `APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION=0`, so the live board reports the raw model output while we compare it against the calibrated and smoothed paths.
 - The camera init thread stack is now 16 KB instead of 8 KB, and the brightness-gate logic no longer retries the same capture in place. It now nudges IMX335 for the next cycle and keeps the current frame flowing, which is safer for the camera init thread. The active nudge is a 25% fractional exposure/gain step instead of a 2x jump, which should reduce the old bright/dark oscillation.
 - The debug console is now fail-fast under contention instead of spinning, so a lower-priority logger can finish without a higher-priority thread starving it; the heartbeat thread still avoids per-pulse UART logging so LED liveness is not tied to console throughput.
 - The visible green LED is now the normal heartbeat, and red is reserved for fault state so a solid red LED should mean a real fault instead of the startup indicator.

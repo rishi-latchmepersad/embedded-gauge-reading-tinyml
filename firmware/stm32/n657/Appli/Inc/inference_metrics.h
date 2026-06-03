@@ -78,9 +78,10 @@ extern "C"
 
     /**
      * @brief Complete the inference and record metrics.
+     * @param label Label matching an active Metrics_StartInference call
      * @param temperature_c Optional inference result (NaN if not applicable)
      */
-    void Metrics_EndInference(float temperature_c);
+    void Metrics_EndInference(const char *label, float temperature_c);
 
     /**
      * @brief Get the last completed metrics record.
@@ -107,10 +108,29 @@ extern "C"
     void Metrics_Clear(void);
 
     /**
-     * @brief Get current timestamp in microseconds.
+     * @brief Get current timestamp in microseconds (64-bit, non-wrapping).
      * @retval Microseconds since boot
      */
-    uint32_t Metrics_GetMicros(void);
+    uint64_t Metrics_GetMicros(void);
+
+    /**
+     * @brief Override the start time of an active inference slot.
+     *
+     * Used by the async baseline pipeline: the capture thread calls
+     * Metrics_StartInference, but the worker thread may need to fix the
+     * slot's start_time_us to the actual capture timestamp if the slot
+     * was re-started by a subsequent capture before the worker finished.
+     */
+    void Metrics_OverrideStartTime(const char *label, uint64_t start_time_us);
+
+    /**
+     * @brief Feed a power sample (in milliwatts) to any active inference slot.
+     *
+     * Called by the INA219 monitoring thread at its sample rate (1 Hz).
+     * Samples are accumulated across the inference window and min/avg/max are
+     * logged when Metrics_EndInference fires.
+     */
+    void Metrics_PowerSample(float power_mw);
 
 #ifdef __cplusplus
 }

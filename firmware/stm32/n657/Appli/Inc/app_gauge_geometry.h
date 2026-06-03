@@ -28,6 +28,31 @@
 #define APP_GAUGE_INNER_DIAL_CENTER_X_RATIO 0.5000f
 #define APP_GAUGE_INNER_DIAL_CENTER_Y_RATIO 0.4460f
 
+/* Celsius needle pivot offset from the OBB bounding-box geometric centre.
+ * Expressed as fraction of the frame dimension so it scales with resolution.
+ * Positive values move the pivot right / down from the OBB centre.
+ * Calibrated from the rim-geometry detector on the live board:
+ *   pivot_x = obb_centre_abs_x + frame_width  * APP_GAUGE_OBB_PIVOT_X_OFFSET_RATIO
+ *   pivot_y = obb_centre_abs_y + frame_height * APP_GAUGE_OBB_PIVOT_Y_OFFSET_RATIO
+ */
+/* Inner Celsius dial radius as a fraction of the frame dimension.
+ * The baseline derives this from training-crop height × 0.56, which
+ * on a 224×224 frame produces 68.9 px.  Using a fixed frame ratio
+ * keeps the polar-vote scan ring stable regardless of lighting.
+ * The OBB box size is lighting-dependent and cannot supply a
+ * reliable radius for the polar annulus. */
+#define APP_GAUGE_INNER_DIAL_RADIUS_FRAME_RATIO 0.3076f
+
+/* Celsius needle pivot offset from the OBB bounding-box geometric centre.
+ * Expressed as fraction of the frame dimension so it scales with resolution.
+ * Positive values move the pivot right / down from the OBB centre.
+ * Calibrated from the rim-geometry detector on the live board:
+ *   pivot_x = obb_centre_abs_x + frame_width  * APP_GAUGE_OBB_PIVOT_X_OFFSET_RATIO
+ *   pivot_y = obb_centre_abs_y + frame_height * APP_GAUGE_OBB_PIVOT_Y_OFFSET_RATIO
+ */
+#define APP_GAUGE_OBB_PIVOT_X_OFFSET_RATIO (-0.0089f)  /* ≈ −2 px */
+#define APP_GAUGE_OBB_PIVOT_Y_OFFSET_RATIO  0.0625f    /* ≈ +14 px */
+
 /* Keep the legacy per-module names so the existing call sites stay readable. */
 #define APP_AI_TRAINING_CROP_X_MIN_RATIO \
 	APP_GAUGE_TRAINING_CROP_X_MIN_RATIO

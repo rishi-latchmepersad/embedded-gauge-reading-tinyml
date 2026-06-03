@@ -21,27 +21,42 @@
 
 /* Private defines -----------------------------------------------------------*/
 #define METRICS_TIMER_FREQ_HZ 1000000U /* 1 MHz = 1us resolution */
+#define METRICS_ACTIVE_SLOTS 2U
 
 /* Private variables ---------------------------------------------------------*/
 static MetricsRecord_t s_metrics_buffer[METRICS_MAX_SAMPLES];
 static uint32_t s_metrics_count = 0;
 static uint32_t s_metrics_index = 0;
 
-/* Active inference tracking */
+/* Active inference tracking — two slots so BASELINE and AI can be
+ * timed independently within the same capture cycle. */
 static struct
 {
-    bool active;
-    char label[METRICS_LABEL_MAX_LEN];
-    uint32_t start_time_us;
-    uint32_t checkpoint_time_us;
-    float power_pre_w;
-    float power_mid_w;
-    float power_post_w;
-} s_active_inference = {0};
+	bool active;
+	char label[METRICS_LABEL_MAX_LEN];
+	uint64_t start_time_us;
+	uint64_t checkpoint_time_us;
+	float power_pre_w;
+	float power_mid_w;
+	float power_post_w;
+	/* Power accumulation during the active window (fed by INA219 thread). */
+	uint32_t power_sample_count;
+	float power_min_mw;
+	float power_max_mw;
+	float power_sum_mw;
+} s_active_slots[METRICS_ACTIVE_SLOTS] = {0};
+
+/* 64-bit DWT cycle-counter extension to avoid wrap every 5.4 s. */
+static struct
+{
+	uint64_t high_cycles;
+	uint32_t prev_cycles;
+} s_dwt_state = {0, 0};
 
 /* Private function prototypes -----------------------------------------------*/
 static float Metrics_ReadPower(void);
 static long Metrics_ToTenth(float value);
+static int Metrics_FindActiveSlot(const char *label);
 
 /* Private functions ---------------------------------------------------------*/
 
@@ -70,59 +85,128 @@ static long Metrics_ToTenth(float value)
  */
 void Metrics_Init(void)
 {
-    memset(s_metrics_buffer, 0, sizeof(s_metrics_buffer));
-    s_metrics_count = 0;
-    s_metrics_index = 0;
-    memset(&s_active_inference, 0, sizeof(s_active_inference));
+	memset(s_metrics_buffer, 0, sizeof(s_metrics_buffer));
+	s_metrics_count = 0;
+	s_metrics_index = 0;
+	memset(s_active_slots, 0, sizeof(s_active_slots));
 
-    DebugConsole_Printf("[METRICS] Initialized (max %u samples)\r\n", METRICS_MAX_SAMPLES);
+	DebugConsole_Printf("[METRICS] Initialized (max %u samples)\r\n", METRICS_MAX_SAMPLES);
 }
 
 /**
  * @brief Get current timestamp in microseconds using DWT cycle counter.
+ *
+ * The DWT counter wraps every ~5.4 s at 800 MHz, so we extend it to 64
+ * bits by tracking the high word across wraps.
  */
-uint32_t Metrics_GetMicros(void)
+uint64_t Metrics_GetMicros(void)
 {
-    /* Use DWT cycle counter for high-resolution timing */
-    static bool dwt_initialized = false;
-    if (!dwt_initialized)
-    {
-        CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-        DWT->CYCCNT = 0;
-        DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-        dwt_initialized = true;
-    }
+	static bool dwt_initialized = false;
+	if (!dwt_initialized)
+	{
+		CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+		DWT->CYCCNT = 0;
+		DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+		s_dwt_state.prev_cycles = 0U;
+		s_dwt_state.high_cycles = 0ULL;
+		dwt_initialized = true;
+	}
 
-    /* Convert cycles to microseconds (assuming 800MHz clock) */
-    uint32_t cycles = DWT->CYCCNT;
-    return cycles / 800; /* 800 cycles = 1us at 800MHz */
+	uint32_t cycles = DWT->CYCCNT;
+	if (cycles < s_dwt_state.prev_cycles)
+	{
+		s_dwt_state.high_cycles += (1ULL << 32);
+	}
+	s_dwt_state.prev_cycles = cycles;
+	uint64_t total = s_dwt_state.high_cycles + (uint64_t)cycles;
+	return total / 800ULL;
+}
+
+/**
+ * @brief Find an active slot with the given label.  Returns -1 if not found.
+ */
+static int Metrics_FindActiveSlot(const char *label)
+{
+	if (label == NULL)
+	{
+		return -1;
+	}
+	for (size_t i = 0U; i < (size_t)METRICS_ACTIVE_SLOTS; i++)
+	{
+		if (s_active_slots[i].active &&
+			(strcmp(s_active_slots[i].label, label) == 0))
+		{
+			return (int)i;
+		}
+	}
+	return -1;
 }
 
 /**
  * @brief Start a new inference timing session.
+ *
+ * If a slot with the same label is already active it is ended first.
+ * If all slots are busy the call is silently dropped.
  */
 void Metrics_StartInference(const char *label)
 {
-    if (label == NULL)
-    {
-        return;
-    }
+	int slot;
 
-    /* End any active inference first */
-    if (s_active_inference.active)
-    {
-        Metrics_EndInference(NAN);
-    }
+	if (label == NULL)
+	{
+		return;
+	}
 
-    /* Start new inference tracking */
-    s_active_inference.active = true;
-    strncpy(s_active_inference.label, label, METRICS_LABEL_MAX_LEN - 1);
-    s_active_inference.label[METRICS_LABEL_MAX_LEN - 1] = '\0';
-    s_active_inference.start_time_us = Metrics_GetMicros();
-    s_active_inference.checkpoint_time_us = 0;
-    s_active_inference.power_pre_w = Metrics_ReadPower();
-    s_active_inference.power_mid_w = 0.0f;
-    s_active_inference.power_post_w = 0.0f;
+	/* If a slot for this label is already active, just stamp the new
+	 * capture time and reset power accumulators — do NOT end the slot.
+	 * The async baseline worker may still be processing the previous
+	 * frame; ending the slot would discard its latency measurement. */
+	slot = Metrics_FindActiveSlot(label);
+	if (slot >= 0)
+	{
+		s_active_slots[(size_t)slot].start_time_us = Metrics_GetMicros();
+		s_active_slots[(size_t)slot].power_pre_w = Metrics_ReadPower();
+		s_active_slots[(size_t)slot].power_mid_w = 0.0f;
+		s_active_slots[(size_t)slot].power_post_w = 0.0f;
+		s_active_slots[(size_t)slot].power_sample_count = 0U;
+		s_active_slots[(size_t)slot].power_min_mw = 0.0f;
+		s_active_slots[(size_t)slot].power_max_mw = 0.0f;
+		s_active_slots[(size_t)slot].power_sum_mw = 0.0f;
+		Metrics_PowerSample(s_active_slots[(size_t)slot].power_pre_w * 1000.0f);
+		return;
+	}
+
+	/* Find a free slot. */
+	slot = -1;
+	for (int i = 0; i < (int)METRICS_ACTIVE_SLOTS; i++)
+	{
+		if (!s_active_slots[(size_t)i].active)
+		{
+			slot = i;
+			break;
+		}
+	}
+	if (slot < 0)
+	{
+		return;
+	}
+
+	s_active_slots[(size_t)slot].active = true;
+	strncpy(s_active_slots[(size_t)slot].label, label,
+			METRICS_LABEL_MAX_LEN - 1);
+	s_active_slots[(size_t)slot].label[METRICS_LABEL_MAX_LEN - 1] = '\0';
+	s_active_slots[(size_t)slot].start_time_us = Metrics_GetMicros();
+	s_active_slots[(size_t)slot].power_pre_w = Metrics_ReadPower();
+	s_active_slots[(size_t)slot].power_mid_w = 0.0f;
+	s_active_slots[(size_t)slot].power_post_w = 0.0f;
+	s_active_slots[(size_t)slot].power_sample_count = 0U;
+	s_active_slots[(size_t)slot].power_min_mw = 0.0f;
+	s_active_slots[(size_t)slot].power_max_mw = 0.0f;
+	s_active_slots[(size_t)slot].power_sum_mw = 0.0f;
+
+	/* Seed the accumulator immediately with the current power reading
+	 * so the first sample doesn't lag up to 1 s behind the start. */
+	Metrics_PowerSample(s_active_slots[(size_t)slot].power_pre_w * 1000.0f);
 }
 
 /**
@@ -130,45 +214,89 @@ void Metrics_StartInference(const char *label)
  */
 void Metrics_Checkpoint(const char *checkpoint_name)
 {
-    if (!s_active_inference.active || checkpoint_name == NULL)
-    {
-        return;
-    }
+	if (checkpoint_name == NULL)
+	{
+		return;
+	}
 
-    if (strcmp(checkpoint_name, "MID") == 0)
-    {
-        s_active_inference.power_mid_w = Metrics_ReadPower();
-        s_active_inference.checkpoint_time_us = Metrics_GetMicros();
-    }
+	for (size_t i = 0U; i < (size_t)METRICS_ACTIVE_SLOTS; i++)
+	{
+		if (s_active_slots[i].active &&
+			(strcmp(checkpoint_name, "MID") == 0))
+		{
+			s_active_slots[i].power_mid_w = Metrics_ReadPower();
+			s_active_slots[i].checkpoint_time_us = Metrics_GetMicros();
+			return;
+		}
+	}
+}
+
+/**
+ * @brief Feed a power reading (milliwatts) to every active inference slot.
+ *
+ * Called by the INA219 monitoring thread at its sample rate.  Samples are
+ * accumulated across the pipeline window and logged as min/avg/max when
+ * the metric ends.
+ */
+void Metrics_PowerSample(float power_mw)
+{
+	for (size_t i = 0U; i < (size_t)METRICS_ACTIVE_SLOTS; i++)
+	{
+		if (s_active_slots[i].active)
+		{
+			s_active_slots[i].power_sum_mw += power_mw;
+			s_active_slots[i].power_sample_count++;
+
+			if ((s_active_slots[i].power_sample_count == 1U) ||
+				(power_mw < s_active_slots[i].power_min_mw))
+			{
+				s_active_slots[i].power_min_mw = power_mw;
+			}
+			if (power_mw > s_active_slots[i].power_max_mw)
+			{
+				s_active_slots[i].power_max_mw = power_mw;
+			}
+		}
+	}
 }
 
 /**
  * @brief Complete the inference and record metrics.
+ *
+ * Finds an active slot whose label matches @p label and closes it.
+ * If no matching slot is active the function does nothing.
  */
-void Metrics_EndInference(float temperature_c)
+void Metrics_EndInference(const char *label, float temperature_c)
 {
-    if (!s_active_inference.active)
-    {
-        return;
-    }
+	int slot = Metrics_FindActiveSlot(label);
+	if (slot < 0)
+	{
+		return;
+	}
 
-    uint32_t end_time_us = Metrics_GetMicros();
-    s_active_inference.power_post_w = Metrics_ReadPower();
-    const bool temperature_is_finite = isfinite(temperature_c) != 0;
+	uint64_t end_time_us = Metrics_GetMicros();
+	s_active_slots[(size_t)slot].power_post_w = Metrics_ReadPower();
+	const bool temperature_is_finite = (isfinite(temperature_c) != 0);
 
-    /* Calculate latency */
-    uint32_t latency_us = end_time_us - s_active_inference.start_time_us;
+	/* Calculate latency */
+	uint64_t latency_us64 =
+		end_time_us - s_active_slots[(size_t)slot].start_time_us;
+	uint32_t latency_us = (latency_us64 > (uint64_t)UINT32_MAX)
+		? UINT32_MAX
+		: (uint32_t)latency_us64;
 
-    /* Store in circular buffer */
-    MetricsRecord_t *record = &s_metrics_buffer[s_metrics_index];
-    strncpy(record->label, s_active_inference.label, METRICS_LABEL_MAX_LEN - 1);
-    record->label[METRICS_LABEL_MAX_LEN - 1] = '\0';
-    record->timestamp_ms = HAL_GetTick();
-    record->latency_us = latency_us;
-    record->power_pre_w = s_active_inference.power_pre_w;
-    record->power_mid_w = s_active_inference.power_mid_w;
-    record->power_post_w = s_active_inference.power_post_w;
-    record->power_delta_w = s_active_inference.power_mid_w - s_active_inference.power_pre_w;
+	/* Store in circular buffer */
+	MetricsRecord_t *record = &s_metrics_buffer[s_metrics_index];
+	strncpy(record->label, s_active_slots[(size_t)slot].label,
+			METRICS_LABEL_MAX_LEN - 1);
+	record->label[METRICS_LABEL_MAX_LEN - 1] = '\0';
+	record->timestamp_ms = HAL_GetTick();
+	record->latency_us = latency_us;
+	record->power_pre_w = s_active_slots[(size_t)slot].power_pre_w;
+	record->power_mid_w = s_active_slots[(size_t)slot].power_mid_w;
+	record->power_post_w = s_active_slots[(size_t)slot].power_post_w;
+	record->power_delta_w = s_active_slots[(size_t)slot].power_mid_w
+		- s_active_slots[(size_t)slot].power_pre_w;
     record->temperature_c = temperature_is_finite ? temperature_c : NAN;
     record->valid = true;
 
@@ -243,8 +371,46 @@ void Metrics_EndInference(float temperature_c)
     }
     SdDebugLogService_EnqueueLine(csv_line);
 
-    /* Reset active inference */
-    s_active_inference.active = false;
+    /* Power stats: log min / avg / max across the pipeline window. */
+	if (s_active_slots[(size_t)slot].power_sample_count > 0U)
+	{
+		const uint32_t n = s_active_slots[(size_t)slot].power_sample_count;
+		const float avg_mw =
+			s_active_slots[(size_t)slot].power_sum_mw / (float)n;
+		/* roundtrip through ToTenth keeps one-decimal-place consistency,
+		 * reported in milliwatts */
+		const long pmin = Metrics_ToTenth(
+			s_active_slots[(size_t)slot].power_min_mw);
+		const long pavg = Metrics_ToTenth(avg_mw);
+		const long pmax = Metrics_ToTenth(
+			s_active_slots[(size_t)slot].power_max_mw);
+		DebugConsole_Printf(
+			"[POWER][%s] min=%ld.%01ld mW avg=%ld.%01ld mW max=%ld.%01ld mW (%lu samples)\r\n",
+			record->label,
+			labs(pmin) / 10L, labs(pmin) % 10L,
+			labs(pavg) / 10L, labs(pavg) % 10L,
+			labs(pmax) / 10L, labs(pmax) % 10L,
+			(unsigned long)n);
+	}
+
+    /* Reset the active slot */
+    s_active_slots[(size_t)slot].active = false;
+}
+
+/**
+ * @brief Override the start time of an active inference slot.
+ *
+ * The async baseline pipeline calls Metrics_StartInference at capture time,
+ * but the worker thread may need to fix the slot's capture timestamp if a
+ * subsequent frame's capture re-started the slot before the worker finished.
+ */
+void Metrics_OverrideStartTime(const char *label, uint64_t start_time_us)
+{
+    int slot = Metrics_FindActiveSlot(label);
+    if (slot >= 0)
+    {
+        s_active_slots[(size_t)slot].start_time_us = start_time_us;
+    }
 }
 
 /**

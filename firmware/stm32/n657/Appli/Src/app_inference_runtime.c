@@ -27,6 +27,7 @@
 #include "debug_console.h"
 #include "debug_led.h"
 #include "ds3231_clock.h"
+#include "inference_metrics.h"
 #include "threadx_utils.h"
 /* USER CODE END Includes */
 
@@ -200,6 +201,7 @@ bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
 
 	(void) memcpy(camera_ai_frame_snapshot, frame_ptr, (size_t) frame_length);
 	(void) DebugConsole_WriteString("[AI] Dry-run snapshot copied.\r\n");
+	Metrics_StartInference("AI");
 	(void) DebugConsole_WriteString("[AI] Queueing dry-run request.\r\n");
 
 	camera_ai_request_in_flight = true;

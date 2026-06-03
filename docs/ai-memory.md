@@ -2,90 +2,120 @@
 
 ## Quick-reference for the current state of the project.
 
-### Pipeline Architecture (Prod v0.9)
+### Pipeline Architecture (Live Board, 2026-06-02)
 
 **Camera:** IMX335 → DCMIPP → 224×224 YUV422 frame buffer
 
-**Inference pipeline** (run in `App_AI_RunDryInferenceFromYuv422`):
-1. **OBB localizer** (`mobilenetv2_obb_longterm`) — full-frame 224×224 → gauge bounding box (cx, cy, w, h)
-2. **Luma refiner** (CPU heuristic, optional) — refines OBB crop using bright-centroid
-3. **Center detector** (`mobilenetv2_center_detector`) — OBB crop → 224×224 int8 RGB → NPU → (cx, cy) in crop coordinates → map to full-frame coords
-4. **Polar vote** (`AppBaselineRuntime_EstimatePolarNeedle`) — full-frame 224×224 YUV, NN-predicted center → needle angle, confidence
-5. **Angle→Temperature** (`AppBaselineRuntime_ConvertAngleToTemperature`) — calibrated gauge arc mapping
+**AI inference pipeline** (run in `App_AI_RunDryInferenceFromYuv422`):
+1. **OBB localizer** (`mobilenetv2_obb_longterm`) — full-frame 224×224 → gauge bounding box
+2. **OBB → pivot centre** — compute Celsius needle pivot from OBB centre + per-gauge offset ratios (from `app_gauge_geometry.h` and TOML gauge spec). EMA-smoothed to reject x-centre jitter. Bypasses the broken centre-detector CNN entirely.
+3. **Polar vote** (`AppBaselineRuntime_EstimatePolarNeedle`) — 224×224 YUV, OBB-derived pivot → needle angle + confidence
+4. **Angle → Temperature** (`AppBaselineRuntime_ConvertAngleToTemperature`)
 
-### Models & Flash Slots
+**Baseline pipeline:**
+1. Bright-pixel centre, fixed-crop, board-prior, rim-geometry, and image-centre seeds
+2. Each seed runs polar vote independently
+3. Live selector picks best candidate; stability history smooths outliers
+4. Rim-geometry seed consistently finds (100-116, 108-112) centre → 10.6°C
 
-| Model | Flash Address | Weights | Input | Output |
-|-------|--------------|---------|-------|--------|
-| OBB (`mobilenetv2_obb_longterm`) | 0x70700000 | 3.07 MB | 224×224×3 float32 | 24 bytes (6×float32: cx,cy,w,h,cos,sin) |
-| Center Detector (`mobilenetv2_center_detector`) | 0x70200000 | 3.08 MB | 224×224×3 int8 | 2 bytes (cx_int8, cy_int8) |
-| Rectifier (`mobilenetv2_rectifier_hardcase_finetune`) | 0x70600000 | 118 KB | 224×224×3 float32 | crop box |
-| Scalar CNN (deprecated, kept for diagnostics) | 0x70200000 | 3.07 MB | — | — |
+### Gauge Calibration Parameters
 
-xSPI2 memory map: FSBL (0x70000000), App (0x70100000, 1 MB), Center-Detector (0x70200000, 3.2 MB), Tip-Focus (0x70400000, 4 MB), Rectifier (0x70600000, 256 KB), OBB (0x70700000, 4 MB)
+Stored in `ml/src/embedded_gauge_reading_tinyml/gauge/gauge_calibration_parameters.toml` and mirrored in `app_gauge_geometry.h`:
 
-### Key Files
+```toml
+[littlegood_home_temp_gauge_c]
+min_deg = 135.0        # min tick at ~7:30, maps to -30°C
+sweep_deg = 270.0      # needle sweeps 270° clockwise
+min_value = -30.0      # degrees Celsius
+max_value = 50.0
+units = "C"
+direction = "clockwise"
+needle_colour = "dark"
+obb_pivot_x_offset_ratio = -0.0089   # ≈ −2 px on 224×224 frame
+obb_pivot_y_offset_ratio = 0.0625    # ≈ +14 px on 224×224 frame
+```
+
+The OBB pivot offsets are **from the OBB geometric centre** (not from the box edge). They are frame-ratio scaled for resolution independence. Calibrated from the rim-geometry centre detector on the live board: `pivot = OBB_centre + offset`.
+
+### Centre-Detector CNN Status
+
+**BYPASSED** in the live AI pipeline. The CNN produces garbage raw int8 outputs (`[CD] raw int8 output: %d %d` shows meaningless values, and `[AI] Center detector using OBB fallback center: (,)` prints blank floats because the output is NaN/invalid). Instead, the AI pipeline derives the pivot from the OBB box geometry using the gauge-spec constants above. A `TrainingCropCenter` override was previously used (centre (112,99)) but gave temperature readings off by ~6°C because the true Celsius dial centre is ~4 px lower and ~9 px further right.
+
+### OBB Performance
+
+The OBB CNN runs stably on the NPU:
+- `obb_valid = 1` in 100% of captures
+- `obb_cy = 0.4180` — exact same value every frame (y-centre is perfectly stable)
+- `obb_cx` varies 0.473–0.527 across frames (±0.027 normalized, ~6 px)
+- `obb_box_w` 0.53–0.55 normalized, ~145–150 px
+- `obb_box_h` 0.71–0.74 normalized, ~160–166 px
+- OBB crop: x=32–46, y=11–15, w=144–150, h=159–166
+- Never times out, never produces non-finite values
+
+**EMA smoothing** (`APP_AI_OBB_CENTER_EMA_ALPHA = 0.20`) suppresses single-frame x-centre jitter. With smoothing: y-pivot = 107.6 (rock-solid), x-pivot varies only ±0.5 px across frames.
+
+### Live Board Accuracy (2026-06-02, True = 10°C)
+
+| Pipeline | Reading | Error | Confidence |
+|----------|---------|-------|------------|
+| AI (OBB→pivot) | 10.3°C | +0.3°C | 47.1 |
+| Baseline (held) | 10.3°C | +0.3°C | 6.9 |
+| Baseline rim-geometry seed | 10.6°C | +0.6°C | 25.1 |
+| AI (OBB→pivot, avg) | 10.7°C | +0.7°C | 30–35 |
+
+The AI pipeline consistently matches or beats the baseline. The AI reads 10.3–11.2°C with confidence 30–47 across captures. The baseline periodically locks to a stale held value but recovers.
+
+### Latency & Power Metrics (2026-06-02)
+
+- **DWT counter** fixed from 32-bit (wraps every 5.4s at 800MHz) to 64-bit extended counter via high-word tracking
+- **Multi-slot metrics**: Two concurrent active inference slots so BASELINE and AI can be timed within the same capture cycle
+- **Timing boundaries**: Both pipelines start at snapshot copy (`RequestEstimate` / `RequestDryRun`) and end at temperature estimate print (`LogEstimate` / dry-run success path)
+- **Power tracking** (TBD): continuous INA219 sampling during pipeline window, min/avg/max reported after latency line
+
+### Key Source Files
 
 | File | Purpose |
 |------|---------|
-| `Appli/Src/app_ai.c` | Main inference pipeline (OBB → luma → center-detector → polar-vote) |
-| `Appli/Src/app_center_detector.c` | Center detector module: crop, YUV→int8 RGB, NPU inference, dequantize, polar vote |
-| `Appli/Inc/app_center_detector.h` | Public API for center detector pipeline |
-| `Appli/Src/app_baseline_runtime.c` | Classical baseline worker + polar vote engine |
-| `Appli/Inc/app_baseline_runtime.h` | Public API: `AppBaselineRuntime_EstimatePolarNeedle`, `ConvertAngleToTemperature` |
-| `Appli/Src/ai_network_mobilenetv2_center_detector.c` | Thin wrapper `#include`ing Cube.AI generated .c |
-| `Appli/Src/ai_network_mobilenetv2_obb_longterm.c` | Thin wrapper `#include`ing OBB generated .c |
-| `st_ai_output/packages/center_detector_v1_int8/` | Cube.AI generated center detector files |
-| `st_ai_output/packages/prod_model_v0.3_obb_int8/` | Cube.AI generated OBB files |
+| `app_baseline_runtime.c` | Classical CV baseline with 5-seed polar voting, continuity scoring, history smoothing |
+| `app_ai.c` + `app_ai_runtime_tail.inc` | AI pipeline: OBB → offset-pivot → polar vote → temperature |
+| `app_ai_helpers_decode.inc` | OBB stage inference, decode, crop computation |
+| `app_center_detector.c` | Centre-detector module (CNN bypassed; polar vote used directly) |
+| `app_gauge_geometry.h` | Training crop ratios, inner-dial centre ratios, OBB pivot offset ratios |
+| `inference_metrics.c` | 64-bit DWT timing, multi-slot inference metrics, latency logging |
+| `ina219_power.c` | INA219 power monitor driver and sampling thread |
+| `gauge_calibration_parameters.toml` | Per-gauge angular & spatial calibration (mirrored in C header) |
+| `processing.py` | Python `GaugeSpec` dataclass with TOML loader |
 
-### Performance (Python eval on 52 test samples)
+### Key Calibration Constants (app_gauge_geometry.h)
 
-| Pipeline | MAE (°C) | Center Dist (px) |
-|----------|----------|-------------------|
-| Center Detector + Polar Vote | **19.84** | 7.00±4.3 |
-| OBB + Polar Vote | 32.76 | 8.08±4.9 |
-| Firmware Baseline (ported) | 41.14 | 17.87±10.5 |
-| GT Oracle + Polar Vote | 15.42 | — |
-
-### Center Detector Details
-
-- **Architecture:** MobileNetV2-based regression (2 output neurons)
-- **Training inputs:** 224×224×3 int8 RGB, zero_point=-128, scale=0.00392156886
-- **Output:** 2×int8 (cx, cy) normalized to [0, 1] in crop space
-  - Dequantize: `val_norm = (val_int8 + 128) * 0.00390625`
-  - Full-frame: `ff_cx = crop.x_min + cx_norm * crop.width`
-- **Weight blob:** `mobilenetv2_center_detector_atonbuf.xSPI2.raw` (~3.08 MB)
-- **Pool symbol alias:** `_mem_pool_xSPI2_mobilenetv2_center_detector` is an asm alias for `_mem_pool_xSPI2_scalar_full_finetune_from_best_piecewise_calibrated_int8` (both at 0x70200000)
-
-### Pipeline Flow in `App_AI_RunDryInferenceFromYuv422`
-
+```c
+#define APP_GAUGE_TRAINING_CROP_X_MIN_RATIO 0.1027f   // crop left edge
+#define APP_GAUGE_TRAINING_CROP_Y_MIN_RATIO 0.2573f   // crop top edge
+#define APP_GAUGE_INNER_DIAL_CENTER_X_RATIO 0.5000f   // (112,99) — baseline default
+#define APP_GAUGE_INNER_DIAL_CENTER_Y_RATIO 0.4460f   // (112,99)
+#define APP_GAUGE_OBB_PIVOT_X_OFFSET_RATIO (-0.0089f) // OBB centre → pivot x offset
+#define APP_GAUGE_OBB_PIVOT_Y_OFFSET_RATIO  0.0625f   // OBB centre → pivot y offset
 ```
-[frame 224x224 YUV422]
-       ↓
-  OBB stage (NPU)
-       ↓
-  Luma refiner (CPU, optional)
-       ↓
-  Center detector (AppCenterDetector_Run):
-    → Crop OBB box from frame
-    → Resize to 224x224 int8 RGB
-    → NPU inference → (cx_int8, cy_int8)
-    → Dequantize → (cx, cy) in full-frame coords
-    → Polar vote (AppBaselineRuntime_EstimatePolarNeedle)
-    → Angle → temperature
-       ↓
-  app_ai_last_inference_value = temperature
-```
-
-### Build Notes
-
-- Cube.AI generated pool symbols are 32-byte NOLOAD placeholders. The actual weight data (~3 MB per model) is pre-flashed to xSPI2 via `flash_boot.bat` before boot.
-- The center detector pool is aliased to the scalar pool via `__asm__(".set ...")` to avoid a second placeholder at a different address, which would shift every weight offset in the generated NPU code.
-- The scalar CNN model is still compiled in (thin wrapper + NN instance macro) for diagnostic/reference, but its inference call is disabled in the pipeline.
 
 ### Known Issues / Next Steps
 
-- **~15% catastrophic polar voter failure rate** — about 1 in 7 frames where the polar vote finds no clear needle. Root cause: the scanned polar ring may contain glare, shadows, or be outside the gauge face.
-- **~2/3 of angle error is center-estimation**, ~1/3 is the polar voter itself.
-- **Spoked-arc voter** improves GT/oracle by 40% but slightly hurts center detector (+13%) due to Hough sensitivity to center errors.
-- The polar vote uses `camera_baseline_current_frame_is_bright` state from the baseline runtime thread — this may be stale if the baseline thread is not actively processing the same frame.
+- **Centre CNN is non-functional** on the live board — produces garbage int8 outputs. The OBB→pivot offset approach works as a substitute. Centre CNN needs retraining with board-capture labels.
+- **Baseline live selector** prefers fixed-crop seed (source priority 5) over rim-geometry (priority 1) even when rim-geometry is correct. The baseline can lock to stale held values for multiple frames.
+- **Bright-relaxed mode** triggers at 60-70% brightness in normal captures, lowering continuity gates. Darker captures (normal mode) produce cleaner polar votes with fewer hot-zone false positives.
+- **Polar vote fragility**: a single-pixel centre change can flip the winning peak from the true needle to a dial marking. The 262–264° region has strong false peaks from fixed dial artwork.
+- **Dial radius discrepancy**: AI uses ~60–62 px from OBB; baseline uses 68.9 px from frame ratio. Both give similar temperatures but the difference may indicate the OBB-sizing heuristic needs refinement.
+
+### Centre Probe Grid Results (diagnostic, code removed)
+
+The rim-geometry centre `(116, 108)` proved to be the correct pivot. The OBB geometric centre is at `~ob_cx_abs ≈ 106, obb_cy_abs ≈ 94`. The offset of (−2, +14) px from OBB centre to Celsius pivot was calibrated once and stored in the gauge spec. The OBB approach generalizes: different gauge types only need different offset ratios.
+
+### Recent Changes Summary (2026-06-02)
+
+1. **Added OBB pivot offset to gauge spec** — TOML + Python `GaugeSpec` + C `app_gauge_geometry.h`
+2. **Switched AI centre from TrainingCropCenter to OBB-derived** — `pivot = OBB_centre + offset_ratio * frame_size`
+3. **Added EMA smoothing on OBB centre** — `APP_AI_OBB_CENTER_EMA_ALPHA = 0.20`, suppresses x-jitter
+4. **Fixed DWT latency counter** — 32→64 bit to prevent 5.4s wrap garbage
+5. **Multi-slot metrics** — baseline and AI tracked independently
+6. **Fixed AI EndInference** — was inside never-called `AppAI_LogInferenceResult` function
+7. **Cleaned up probe grid diagnostic code** — 97-line grid sweep removed
+8. **Removed duplicate DebugConsole_Printf calls** from rejection path

@@ -18,8 +18,8 @@ CALIBRATION_TOML_PATH: Path = (  # Default location for gauge calibration parame
 
 @dataclass(frozen=True)
 class GaugeSpec:
-    """Per-gauge calibration: min angle, sweep, and value range for each
-    gauge that we want to measure."""
+    """Per-gauge calibration: min angle, sweep, value range, and OBB-to-pivot
+    geometry for each gauge type that we want to measure."""
 
     gauge_id: str  # Identify which gauge this spec applies to.
     min_angle_rad: float  # Angle in radians where the gauge reads min_value.
@@ -29,6 +29,9 @@ class GaugeSpec:
     units: str = ""  # Engineering units (for example "C" or "psi").
     direction: str = "clockwise"  # Needle sweep direction in image coordinates.
     needle_colour: str = "dark"  # Needle colour: "dark" or "light".
+    obb_pivot_x_offset_ratio: float = 0.0  # OBB centre → pivot x offset as frame fraction.
+    obb_pivot_y_offset_ratio: float = 0.0  # OBB centre → pivot y offset as frame fraction.
+    inner_dial_radius_frame_ratio: float = 0.3076  # inner Celsius dial radius / frame dim.
 
 
 def value_to_fraction(value: float, spec: GaugeSpec) -> float:
@@ -122,6 +125,9 @@ def load_gauge_specs(path: Path = CALIBRATION_TOML_PATH) -> dict[str, GaugeSpec]
             )
         min_rad: float = math.radians(min_deg)  # Convert min to radians.
         sweep_rad: float = math.radians(sweep_deg)  # Convert sweep to radians.
+        obb_pivot_x_offset_ratio = float(spec_dict.get("obb_pivot_x_offset_ratio", 0.0))
+        obb_pivot_y_offset_ratio = float(spec_dict.get("obb_pivot_y_offset_ratio", 0.0))
+        inner_dial_radius_frame_ratio = float(spec_dict.get("inner_dial_radius_frame_ratio", 0.3076))
         specs[gauge_id] = GaugeSpec(  # Build a typed GaugeSpec.
             gauge_id=gauge_id,  # Preserve the gauge identifier.
             min_angle_rad=min_rad,  # Store min angle in radians.
@@ -131,5 +137,8 @@ def load_gauge_specs(path: Path = CALIBRATION_TOML_PATH) -> dict[str, GaugeSpec]
             units=units,
             direction=direction,
             needle_colour=needle_colour,
+            obb_pivot_x_offset_ratio=obb_pivot_x_offset_ratio,
+            obb_pivot_y_offset_ratio=obb_pivot_y_offset_ratio,
+            inner_dial_radius_frame_ratio=inner_dial_radius_frame_ratio,
         )
     return specs  # Return the completed mapping.

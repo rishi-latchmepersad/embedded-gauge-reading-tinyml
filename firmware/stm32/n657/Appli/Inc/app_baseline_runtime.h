@@ -34,6 +34,8 @@ typedef struct
 	const char *source_label;
 } AppBaselineRuntime_Estimate_t;
 
+
+
 /**
  * @brief Initialize the baseline runtime synchronization objects.
  *
@@ -67,25 +69,6 @@ bool AppBaselineRuntime_RequestEstimate(const uint8_t *frame_ptr,
 
 /**
  * @brief Run the polar-vote needle detector at a given center point.
- *
- * Scans the angular sweep around (center_x, center_y) in the full-frame
- * YUV422 buffer and votes for the strongest dark radial line (needle).
- *
- * @param frame_bytes       Pointer to the full YUV422 frame.
- * @param frame_size        Number of valid bytes in the frame.
- * @param frame_width_pixels  Width of the frame in pixels (e.g. 2592).
- * @param frame_height_pixels Height of the frame in pixels (e.g. 1944).
- * @param scan_x_min        Scan-window left (0 for full-frame).
- * @param scan_y_min        Scan-window top (0 for full-frame).
- * @param scan_x_max        Scan-window right (frame_width_pixels for full-frame).
- * @param scan_y_max        Scan-window bottom (frame_height_pixels for full-frame).
- * @param center_x          Pivot column (gauge centre) in full-frame pixels.
- * @param center_y          Pivot row (gauge centre) in full-frame pixels.
- * @param dial_radius_px    Expected gauge radius in pixels (used for mask).
- * @param source_label      Human-readable label for debug logging.
- * @param[out] estimate_out Filled with angle, temperature, confidence.
- * @retval true  when a valid needle was detected.
- * @retval false when the polar vote failed (no clear peak).
  */
 bool AppBaselineRuntime_EstimatePolarNeedle(
 	const uint8_t *frame_bytes, size_t frame_size,
@@ -96,8 +79,20 @@ bool AppBaselineRuntime_EstimatePolarNeedle(
 	const char *source_label, AppBaselineRuntime_Estimate_t *estimate_out);
 
 /**
- * @brief Convert a polar-vote angle (radians, in the calibrated gauge arc)
- *        to a temperature in degrees Celsius.
+ * @brief Find the dial center by rim-edge alignment.
+ *
+ * Searches for the circular gauge rim using edge gradients and radial
+ * alignment.  Used as the primary center detector in the AI pipeline.
+ */
+bool AppBaselineRuntime_EstimateDialCenterFromRimVotes(
+	const uint8_t *frame_bytes, size_t frame_size,
+	size_t frame_width_pixels, size_t frame_height_pixels,
+	size_t scan_x_min, size_t scan_y_min, size_t scan_x_max,
+	size_t scan_y_max, float dial_radius_px,
+	size_t *center_x_out, size_t *center_y_out, float *center_quality_out);
+
+/**
+ * @brief Map angle to temperature.
  */
 float AppBaselineRuntime_ConvertAngleToTemperature(float angle_rad);
 

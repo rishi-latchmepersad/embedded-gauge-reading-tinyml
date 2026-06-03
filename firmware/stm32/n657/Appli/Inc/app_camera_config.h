@@ -64,7 +64,11 @@ extern "C" {
  * 50% bright-pixel ratio catches the still-overexposed frames, while a
  * 220/45 solid-overexposure fallback still catches the near-white frame from
  * 11:51. */
-#define CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD     100U
+/* Mean luma below 150 triggers a brightness nudge.  The OBB localizer's
+ * x-centre drifts 3–6 px at mean ≤ 130 and stabilizes by mean ≈ 170.
+ * This threshold forces one extra exposure stop so the OBB output is
+ * lighting-invariant regardless of initial scene brightness. */
+#define CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD     150U
 #define CAMERA_CAPTURE_BRIGHTNESS_DARK_MAX_THRESHOLD      240U
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD   200U
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_PIXEL_LEVEL_THRESHOLD 220U

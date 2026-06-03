@@ -68,6 +68,11 @@ ml/data/labelled/*.zip
 ml/data/board_captures_labeled.csv
 ml/data/board_captures_labeled_v2.csv
 ml/data/merged_geometry_board_manifest.csv
+ml/data/center_training_crops/
+ml/data/center_training_manual/
+ml/data/heatmap_training/
+ml/data/obb_board_crops/
+ml/data/*_annotated_centers.csv
 
 # Generated reports and local logs
 docs/int8_drift_decision_report.md

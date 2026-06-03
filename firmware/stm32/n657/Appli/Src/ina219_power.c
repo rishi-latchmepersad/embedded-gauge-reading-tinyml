@@ -15,6 +15,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include "debug_console.h"
+#include "inference_metrics.h"
 #include "main.h"
 #include "tx_api.h"
 
@@ -30,7 +31,7 @@
 /* Thread configuration */
 #define INA219_THREAD_STACK_SIZE    1024U
 #define INA219_THREAD_PRIORITY      15U      /* Low priority */
-#define INA219_SAMPLE_PERIOD_MS     1000U    /* Sample every 1 second */
+#define INA219_SAMPLE_PERIOD_MS     250U     /* Sample every 250 ms for power stats */
 
 /* Private variables ---------------------------------------------------------*/
 static I2C_HandleTypeDef *g_hi2c = NULL;
@@ -142,6 +143,14 @@ bool INA219_Init(I2C_HandleTypeDef *hi2c)
     
     g_initialized = true;
     DebugConsole_Printf("[INA219] Initialized at 0x%02X\r\n", INA219_I2C_ADDRESS_7BIT);
+
+    /* Seed the measurement cache so Metrics_ReadPower doesn't return 0 W
+     * on the very first pipeline start. */
+    {
+        INA219_Measurement_t seed = {0};
+        (void) INA219_ReadMeasurement(&seed);
+    }
+
     return true;
 }
 
@@ -231,21 +240,12 @@ static void INA219_ThreadEntry(ULONG thread_input)
     
     while (g_thread_running) {
         /* Wait for semaphore or timeout (1 second) */
-        UINT status = tx_semaphore_get(&g_ina219_semaphore, INA219_SAMPLE_PERIOD_MS);
-        
-        if (status == TX_SUCCESS) {
-            /* Semaphore signaled - take a reading and log it */
-            if (INA219_ReadMeasurement(&measurement)) {
-                const long vbus_tenth = INA219_ToTenths(measurement.bus_voltage_v);
-                const long vshunt_tenth = INA219_ToTenths(measurement.shunt_voltage_mv);
-                const long current_tenth = INA219_ToTenths(measurement.current_ma);
-                const long power_tenth = INA219_ToTenths(measurement.power_w);
-                DebugConsole_Printf("[INA219] Vbus=%ld.%01ldV Ishunt=%ld.%01ldmV I=%ld.%01ldmA P=%ld.%01ldW\r\n",
-                    vbus_tenth / 10L, labs(vbus_tenth % 10L),
-                    vshunt_tenth / 10L, labs(vshunt_tenth % 10L),
-                    current_tenth / 10L, labs(current_tenth % 10L),
-                    power_tenth / 10L, labs(power_tenth % 10L));
-            }
+        (void) tx_semaphore_get(&g_ina219_semaphore, INA219_SAMPLE_PERIOD_MS);
+
+        /* Read sensor and feed power (mW) to the metrics subsystem so
+         * min/avg/max can be reported per-pipeline after latency ends. */
+        if (INA219_ReadMeasurement(&measurement)) {
+            Metrics_PowerSample(measurement.power_w * 1000.0f);
         }
     }
     
@@ -298,35 +298,29 @@ bool INA219_StartMonitoringThread(void)
 }
 
 /**
- * @brief Trigger a power reading and log it with a label.
+ * @brief Trigger a power reading and log it with a label (silent).
  */
 bool INA219_LogReading(const char *label)
 {
-    if (!g_initialized) {
-        return false;
-    }
-    
-    INA219_Measurement_t measurement;
-    if (!INA219_ReadMeasurement(&measurement)) {
-        DebugConsole_Printf("[INA219][%s] Failed to read measurement\r\n", label);
-        return false;
-    }
-    
-    {
-        const long vbus_tenth = INA219_ToTenths(measurement.bus_voltage_v);
-        const long current_tenth = INA219_ToTenths(measurement.current_ma);
-        const long power_tenth = INA219_ToTenths(measurement.power_w);
-        DebugConsole_Printf("[INA219][%s] Vbus=%ld.%01ldV I=%ld.%01ldmA P=%ld.%01ldW\r\n",
-            label,
-            vbus_tenth / 10L, labs(vbus_tenth % 10L),
-            current_tenth / 10L, labs(current_tenth % 10L),
-            power_tenth / 10L, labs(power_tenth % 10L));
-    }
-    
-    /* Signal the monitoring thread to take a reading */
-    tx_semaphore_put(&g_ina219_semaphore);
-    
-    return true;
+	INA219_Measurement_t measurement;
+
+	if (!g_initialized)
+	{
+		return false;
+	}
+
+	if (!INA219_ReadMeasurement(&measurement))
+	{
+		return false;
+	}
+
+	(void)label;
+
+	/* Legacy: reads and stores the measurement silently.
+	 * Continuous power stats are now reported by Metrics_PowerSample
+	 * and printed as [POWER][label] after the latency line. */
+
+	return true;
 }
 
 /**

@@ -5,4 +5,12 @@ min_value = -30.0 # actual min value in degC
 max_value = 50.0  # actual max value in degC
 units = "C"
 direction = "clockwise"
-needle_colour = "dark"
+needle_colour = "black"
+# Celsius needle pivot offset from the OBB bounding-box geometric centre.
+# Expressed as fraction of the frame width / height so it scales with
+# resolution changes.  Positive offsets move right / down from the
+# OBB centre.  Calibrated from the rim-geometry detector on the live
+# board (OBB centre + offset → correct polar-vote pivot).
+obb_pivot_x_offset_ratio = -0.0089   # ≈ −2 px on a 224×224 frame
+obb_pivot_y_offset_ratio =  0.0625   # ≈ +14 px on a 224×224 frame
+inner_dial_radius_frame_ratio = 0.3076  # 68.9 px on 224×224

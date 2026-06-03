@@ -8,6 +8,7 @@
 
 ## Expectations
 - Prefer small, testable changes. Don't change code that you don't need to.
+- Prefer modular files and folders over large monolithic files. Split firmware stages into separate .c/.h modules (e.g., `app_center_detector.c`, `app_baseline_runtime.c`) rather than adding thousands of lines to a single file.
 - We will use Pytest for Python code and Unity for C code. 
 - Explain your suggestions to me with code and I'll do the implementation. Teach me.
 - All of our Python code should be typed.
@@ -28,6 +29,10 @@
 - If a new file does not clearly belong in `ml/`, `firmware/`, `docs/`, or `tmp/`, stop and choose the smallest existing home rather than inventing a new top-level folder.
 
 ## Commands
+- The firmware build runs on **Windows via STM32CubeIDE only**.
+  * Never modify build-system files: `makefile`, `makefile.targets`, `subdir.mk` (any subdir), or any file under `Debug/` — these are generated/managed by CubeIDE.
+  * Never convert Windows paths (`C:/Users/...`) to WSL paths (`/mnt/c/...`) in firmware files. The firmware is never built under WSL.
+  * Fix only `.c` and `.h` source files in `Appli/Src/` and `Appli/Inc/` for C bugs.
 - Use `poetry` for env management and scripts.
 - Prefer `pytest` for tests.
 - Use WSL for ML work, with the GPU preferred.
