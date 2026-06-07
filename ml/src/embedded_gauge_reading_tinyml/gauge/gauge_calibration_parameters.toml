@@ -5,7 +5,7 @@ min_value = -30.0 # actual min value in degC
 max_value = 50.0  # actual max value in degC
 units = "C"
 direction = "clockwise"
-needle_colour = "black"
+needle_colour = "dark"
 # Celsius needle pivot offset from the OBB bounding-box geometric centre.
 # Expressed as fraction of the frame width / height so it scales with
 # resolution changes.  Positive offsets move right / down from the

@@ -22,11 +22,11 @@ set "SCRIPT_DIR=%~dp0"
 set "REPO_ROOT=%SCRIPT_DIR%..\..\..\"
 set "FSBL_BIN=%SCRIPT_DIR%FSBL\Debug\n657_FSBL.bin"
 set "FSBL_TRUSTED=%SCRIPT_DIR%FSBL\Debug\FSBL_trusted.bin"
-set "CENTER_DETECTOR_RAW=%SCRIPT_DIR%st_ai_output\packages\center_detector_v4_int8\st_ai_output\mobilenetv2_center_detector_atonbuf.xSPI2.raw"
-set "OBB_RAW=%SCRIPT_DIR%st_ai_output\packages\prod_model_v0.3_obb_int8\st_ai_output\mobilenetv2_obb_longterm_atonbuf.xSPI2.raw"
+set "CENTER_DETECTOR_RAW=%SCRIPT_DIR%st_ai_output\packages\heatmap_cd_tiny\st_ai_output\heatmap_cd_atonbuf.AXISRAM2.raw"
+set "OBB_RAW=%SCRIPT_DIR%st_ai_output\packages\prod_model_obb_compact_int8\st_ai_output\prod_model_obb_compact_int8_atonbuf.xSPI2.raw"
 
-if not exist "%CENTER_DETECTOR_RAW%" set "CENTER_DETECTOR_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\center_detector_v4_int8\st_ai_output\mobilenetv2_center_detector_atonbuf.xSPI2.raw"
-if not exist "%OBB_RAW%" set "OBB_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\prod_model_v0.3_obb_int8\st_ai_output\mobilenetv2_obb_longterm_atonbuf.xSPI2.raw"
+if not exist "%CENTER_DETECTOR_RAW%" set "CENTER_DETECTOR_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\heatmap_cd_tiny\st_ai_output\heatmap_cd_atonbuf.AXISRAM2.raw"
+if not exist "%OBB_RAW%" set "OBB_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\prod_model_obb_compact_int8\st_ai_output\prod_model_obb_compact_int8_atonbuf.xSPI2.raw"
 
 REM CubeProgrammer v2.21 does not accept .raw extension with -w; stage as .bin
 set "CENTER_DETECTOR_BIN=%SCRIPT_DIR%Appli\Debug\center_detector_model_stage.bin"
@@ -101,56 +101,52 @@ if errorlevel 1 (
 
 echo.
 if "%FLASH_MODEL%"=="1" (
-    echo === Step 4a: Flash center detector model at 0x70200000 (required) ===
-    echo Center detector source: "%CENTER_DETECTOR_RAW%"
+    echo === Step 4a: Flash heatmap center detector initializer at 0x70200000 (required) ===
+    echo Heatmap center detector source: "%CENTER_DETECTOR_RAW%"
     for %%I in ("%CENTER_DETECTOR_RAW%") do echo Center detector source size: %%~zI bytes
     copy /y "%CENTER_DETECTOR_RAW%" "%CENTER_DETECTOR_BIN%" >nul
     if errorlevel 1 (
-        echo ERROR: Could not stage center detector model as .bin.
+        echo ERROR: Could not stage heatmap center detector model as .bin.
         exit /b 1
     )
     "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%CENTER_DETECTOR_BIN%" 0x70200000
     if errorlevel 1 (
-        echo ERROR: Center detector model flash failed.
+        echo ERROR: Heatmap center detector model flash failed.
         exit /b 1
     )
-    echo Center detector model flashed at 0x70200000.
+    echo Heatmap center detector model flashed at 0x70200000.
 
-    echo === Step 4b: Flash OBB model at 0x70700000 (required) ===
+    echo === Step 4b: Flash compact OBB model at 0x70700000 (required) ===
     echo OBB source: "%OBB_RAW%"
     for %%I in ("%OBB_RAW%") do echo OBB source size: %%~zI bytes
     copy /y "%OBB_RAW%" "%OBB_BIN%" >nul
     if errorlevel 1 (
-        echo ERROR: Could not stage OBB model as .bin.
+        echo ERROR: Could not stage compact OBB model as .bin.
         exit /b 1
     )
     "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%OBB_BIN%" 0x70700000
     if errorlevel 1 (
-        echo ERROR: OBB model flash failed.
+        echo ERROR: compact OBB model flash failed.
         exit /b 1
     )
-    echo OBB model flashed at 0x70700000.
-) else (
-    echo === Step 4: Skipping model image flash (FLASH_MODEL not set) ===
+    echo Compact OBB model flashed at 0x70700000.
 )
 
 if "%FLASH_MODEL%"=="1" (
     echo.
     echo === Step 4c: Extract model signatures for firmware update ===
-    python "%REPO_ROOT%ml\scripts\extract_model_signature.py" "%CENTER_DETECTOR_RAW%" > "%SIG_REPORT_DIR%\center_detector_signature.txt"
+    python "%REPO_ROOT%ml\scripts\extract_model_signature.py" "%CENTER_DETECTOR_RAW%" > "%SIG_REPORT_DIR%\heatmap_cd_signature.txt"
     if errorlevel 1 (
-        echo ERROR: Center detector signature extraction failed.
+        echo ERROR: Heatmap center detector signature extraction failed.
         exit /b 1
     )
     python "%REPO_ROOT%ml\scripts\extract_model_signature.py" "%OBB_RAW%" > "%SIG_REPORT_DIR%\obb_signature.txt"
     if errorlevel 1 (
-        echo ERROR: OBB signature extraction failed.
+        echo ERROR: compact OBB signature extraction failed.
         exit /b 1
     )
-    echo Center detector signature report: "%SIG_REPORT_DIR%\center_detector_signature.txt"
+    echo Heatmap center detector signature report: "%SIG_REPORT_DIR%\heatmap_cd_signature.txt"
     echo OBB signature report: "%SIG_REPORT_DIR%\obb_signature.txt"
-) else (
-    echo === Step 4c: Skipping model signature extraction ===
 )
 
 if "%FLASH_APP%"=="1" (

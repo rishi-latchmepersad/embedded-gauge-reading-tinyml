@@ -49,7 +49,10 @@ def _make_yuv422_bytes(
 ) -> bytes:
     """Build a packed YUYV buffer with one bright rectangular region."""
     # Each pair of pixels uses four bytes: Y0, U, Y1, V.
+    # U=128, V=128 gives neutral chroma (gray in RGB).
     pairs = np.zeros((height, width // 2, 4), dtype=np.uint8)
+    pairs[:, :, 1] = 128  # U — neutral
+    pairs[:, :, 3] = 128  # V — neutral
     pairs[:, :, 0] = background_luma
     pairs[:, :, 2] = background_luma
     pairs[88:120, 48:80, 0] = bright_luma
@@ -84,10 +87,10 @@ def test_estimate_board_crop_from_rgb_returns_none_for_blank_image() -> None:
     assert estimate_board_crop_from_rgb(image) is None
 
 
-def test_load_yuv422_capture_as_rgb_decodes_luma_to_grayscale(
+def test_load_yuv422_capture_as_rgb_decodes_full_color(
     tmp_path: Path,
 ) -> None:
-    """Raw board captures should decode to a grayscale RGB array."""
+    """Raw board captures should decode to a full-color RGB array with chroma."""
     raw_path = tmp_path / "synthetic_capture.yuv422"
     raw_bytes = _make_yuv422_bytes()
     raw_path.write_bytes(raw_bytes)
@@ -97,6 +100,7 @@ def test_load_yuv422_capture_as_rgb_decodes_luma_to_grayscale(
     assert image.shape == (224, 224, 3)
     assert int(image[0, 0, 0]) == 10
     assert int(image[100, 100, 0]) == 220
+    # Neutral chroma (U=128,V=128) → grayscale: all channels equal
     assert np.all(image[100, 100] == image[100, 100, 0])
 
 

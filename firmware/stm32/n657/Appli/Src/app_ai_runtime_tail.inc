@@ -25,7 +25,7 @@ bool App_AI_Model_Init(void)
 	AppAI_ResetInferenceBurstHistory();
 #endif
 	DebugConsole_Printf("[AI] Model runtime init OK.\r\n");
-	DebugConsole_Printf("[AI][TIP_FOCUS] compiled, enable=%u\r\n", (unsigned)APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE);
+	(void)DebugConsole_WriteString("[AI][PIPELINE] OBB + heatmap center detector compiled.\r\n");
 	return true;
 }
 
@@ -531,7 +531,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 {
 	const uint8_t *safe_frame_bytes = frame_bytes;
 	const LL_Buffer_InfoTypeDef *obb_output_info = NULL;
-	AppAI_ObbBox obb_box = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+	AppAI_ObbBox obb_box = {0};
 	AppAI_SourceCrop full_frame_crop = {0U, 0U,
 										(size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
 										(size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS};
@@ -556,9 +556,6 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		(void)DebugConsole_WriteString("[AI] Dry-run entry aborted: invalid frame buffer.\r\n");
 		return false;
 	}
-
-	memcpy(app_ai_dry_run_frame_scratch, frame_bytes, (size_t)APP_AI_CAPTURE_FRAME_BYTES);
-	safe_frame_bytes = app_ai_dry_run_frame_scratch;
 
 	if (!App_AI_Model_Init())
 	{
@@ -717,12 +714,15 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 				(unsigned long)cd_crop.height);
 		}
 
-	/* Primary: rim-vote centre search (same algorithm as baseline's
-	 * AppBaselineRuntime_EstimateDialCenterFromRimVotes).  Finds the
-	 * circular gauge rim by edge alignment, giving the same accuracy
-	 * as the baseline rim-geometry seed.  OBB pivot is the fallback. */
+	/* Compute the classical rim-vote centre as a reference. When it succeeds,
+	 * we still log it, but we force the retrained CNN path by passing
+	 * (-1,-1) into AppCenterDetector_Run and keep the rim-vote centre as the
+	 * trusted fallback. If the rim-vote fails, we fall back to the
+	 * EMA-smoothed OBB pivot. */
 	float override_cx;
 	float override_cy;
+	float fallback_cx;
+	float fallback_cy;
 	if (obb_crop_valid)
 	{
 		size_t rim_cx = 0U;
@@ -740,11 +740,9 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 				&rim_cx, &rim_cy, &rim_quality);
 		if (rim_ok)
 		{
-			override_cx = (float)rim_cx;
-			override_cy = (float)rim_cy;
 			{
-				const long cx10 = lroundf(override_cx * 10.0f);
-				const long cy10 = lroundf(override_cy * 10.0f);
+				const long cx10 = (long)rim_cx * 10L;
+				const long cy10 = (long)rim_cy * 10L;
 				const long rq100 = lroundf(rim_quality * 100.0f);
 				DebugConsole_Printf(
 					"[AI] Rim-vote centre: (%ld.%01ld,%ld.%01ld) "
@@ -753,6 +751,12 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 					labs(cy10) / 10L, labs(cy10) % 10L,
 					labs(rq100) / 100L, labs(rq100) % 100L);
 			}
+			/* Force the retrained CNN path here; the rim-vote centre is still
+			 * logged above as the classical reference for comparison. */
+			fallback_cx = (float)rim_cx;
+			fallback_cy = (float)rim_cy;
+			override_cx = -1.0f;
+			override_cy = -1.0f;
 		}
 		else
 		{
@@ -792,6 +796,8 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 					labs(cx10) / 10L, labs(cx10) % 10L,
 					labs(cy10) / 10L, labs(cy10) % 10L);
 			}
+			fallback_cx = override_cx;
+			fallback_cy = override_cy;
 		}
 	}
 	else
@@ -803,6 +809,8 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		override_cy =
 			(float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS
 			* APP_GAUGE_INNER_DIAL_CENTER_Y_RATIO;
+		fallback_cx = override_cx;
+		fallback_cy = override_cy;
 	}
 		AppCenterDetector_Result_t cd_result = {0};
 
@@ -813,7 +821,8 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 				APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
 				APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS,
 				&cd_result,
-				override_cx, override_cy))
+				override_cx, override_cy,
+				fallback_cx, fallback_cy))
 		{
 			if (cd_result.valid)
 			{
@@ -1759,6 +1768,8 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 
 	const size_t source_width = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
 	const size_t source_height = (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+	const size_t output_last_row =
+		(source_height > 0U) ? (source_height - 1U) : 0U;
 
 	/* Add additional validation for source dimensions */
 	if (source_width == 0U || source_height == 0U)
@@ -1768,7 +1779,7 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 		return false;
 	}
 
-	/* Minimum 3-channel float input (224*224*3) for RGB models like the
+	/* Minimum 3-channel float input (320*320*3) for RGB models like the
 	 * rectified scalar reader and the OBB front-end. Legacy int8 polar-path
 	 * tensors stay on their separate branch below. */
 	const size_t min_float_count = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * 3U;
@@ -2020,8 +2031,9 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 				if ((out_y == 0U) || ((out_y & 0x3FU) == 0U))
 				{
 					DebugConsole_Printf(
-						"[AI] Preprocess luma row %lu/223\r\n",
-						(unsigned long)out_y);
+						"[AI] Preprocess luma row %lu/%lu\r\n",
+						(unsigned long)out_y,
+						(unsigned long)output_last_row);
 				}
 
 				for (size_t out_x = 0U; out_x < output_width; ++out_x)
@@ -2095,8 +2107,9 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 				if ((out_y == 0U) || ((out_y & 0x3FU) == 0U))
 				{
 					DebugConsole_Printf(
-						"[AI] Preprocess luma row %lu/223\r\n",
-						(unsigned long)out_y);
+						"[AI] Preprocess luma row %lu/%lu\r\n",
+						(unsigned long)out_y,
+						(unsigned long)output_last_row);
 				}
 
 				if ((out_y < resize_pad_y) ||
@@ -2552,15 +2565,15 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToInt8Input(
 	return true;
 }
 
-/* V28 polar-vote preprocessing: YUV422 -> 224x224x7 int8 polar input.
+/* V28 polar-vote preprocessing: YUV422 -> 320x320x7 int8 polar input.
  *
  * Channels 0-2: polar-projected RGB (normalized 0-1, mapped to int8).
  * Channels 3-5: Sobel edge channels on polar luma (angular, radial gradients).
  * Channel 6: vote prior (weighted darkness + edge evidence with radial mask).
  *
- * Polar projection maps each (row, col) in the 224x224 output to source (x, y):
- *   angle = 2 * pi * col / 224
- *   radius = (row / 224) * max_radius
+ * Polar projection maps each (row, col) in the square output grid to source (x, y):
+ *   angle = 2 * pi * col / output_dim
+ *   radius = (row / output_dim) * max_radius
  *   source_y = center_y - radius * sin(angle)   [Y axis inverted]
 
  *
@@ -2680,29 +2693,29 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToPolarInput(
 	const float two_pi = 2.0f * 3.14159265358979323846f;
 	const size_t bins = (size_t)APP_AI_POLAR_VOTE_BINS;
 
-	/* Polar projection center and radius in the resized 224x224 coordinate
+	/* Polar projection center and radius in the resized square coordinate
 	 * space (matching the training pipeline crop -> resize_with_pad -> polar
 	 * flow).  The inverse resize_with_pad transform maps each polar pixel
 	 * back to the correct source frame coordinate. */
 	float center_x = 0.0f;
 	float center_y = 0.0f;
 	float max_radius = 0.0f;
-	float resize_scale = 1.0f;   /* 224 / max(crop_w, crop_h) */
+	float resize_scale = 1.0f;   /* output_dim / max(crop_w, crop_h) */
 	float pad_x_f = 0.0f;       /* horizontal padding in resized space */
 	float pad_y_f = 0.0f;       /* vertical padding in resized space */
 	float crop_x_min_f = 0.0f;  /* crop origin in frame coords */
 	float crop_y_min_f = 0.0f;
 	float crop_width_f = 0.0f;   /* crop dims needed for padded-area check */
 	float crop_height_f = 0.0f;
-	float resized_w = 0.0f;     /* crop dims after resize_with_pad (in 224 space) */
+	float resized_w = 0.0f;     /* crop dims after resize_with_pad (in output space) */
 	float resized_h = 0.0f;
-	/* Scratch for polar luma plane: 224x224 uint8 (~49 KB in BSS).
+	/* Scratch for polar luma plane: 320x320 uint8 (~100 KB in BSS).
 	 * Stores quantised luma as uint8 [0..255] instead of float [0..1]
-	 * to save ~148 KB per plane.  Gradients are recomputed on-the-fly
-	 * in a second pass instead of being stored in separate arrays,
-	 * eliminating two ~197 KB float arrays (~394 KB total savings). */
-	static uint8_t resized_rgb[224U * 224U * 3U] __attribute__((section(".npusram6"))); /* training-style resized crop */
-	static uint8_t polar_luma[224U * 224U] __attribute__((section(".npusram6")));  /* exact V28 polar luma scratch */
+	 * to keep the buffer footprint manageable even at 320x320.  Gradients are
+	 * recomputed on-the-fly in a second pass instead of being stored in separate
+	 * arrays, which still avoids two large float scratch planes. */
+	static uint8_t resized_rgb[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * 3U] __attribute__((section(".npusram6"))); /* training-style resized crop */
+	static uint8_t polar_luma[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS] __attribute__((section(".npusram6")));  /* exact V28 polar luma scratch */
 
 	if ((frame_bytes == NULL) || (input_ptr == NULL) || (input_info == NULL))
 	{
@@ -2761,23 +2774,23 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToPolarInput(
 			crop_height = source_height - crop_y_min;
 		}
 
-		/* Training pipeline: crop -> tf.image.resize_with_pad(224x224) ->
-		 * polar(center=112,112, r=112).  We replicate this by computing
+		/* Training pipeline: crop -> tf.image.resize_with_pad(output_dim x output_dim) ->
+		 * polar(center=output_dim/2, output_dim/2, r=output_dim/2).  We replicate this by computing
 		 * the inverse resize_with_pad transform so each polar pixel maps
 		 * back to the correct source frame coordinate. */
 		crop_x_min_f = (float)crop_x_min;
 		crop_y_min_f = (float)crop_y_min;
 		crop_width_f = (float)crop_width;
 		crop_height_f = (float)crop_height;
-		resize_scale = 224.0f / fmaxf(crop_width_f, crop_height_f);
+		resize_scale = (float)output_dim / fmaxf(crop_width_f, crop_height_f);
 		resized_w = crop_width_f * resize_scale;
 		resized_h = crop_height_f * resize_scale;
-		pad_x_f = (224.0f - resized_w) * 0.5f;
-		pad_y_f = (224.0f - resized_h) * 0.5f;
-		/* Polar center and max_radius in the resized 224x224 space. */
-		center_x = 112.0f;
-		center_y = 112.0f;
-		max_radius = 112.0f;
+		pad_x_f = ((float)output_dim - resized_w) * 0.5f;
+		pad_y_f = ((float)output_dim - resized_h) * 0.5f;
+		/* Polar center and max_radius in the resized square space. */
+		center_x = 0.5f * (float)output_dim;
+		center_y = 0.5f * (float)output_dim;
+		max_radius = 0.5f * (float)output_dim;
 
 		/* newlib-nano does not support %f in printf; use integer formatting. */
 		{
@@ -2792,7 +2805,7 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToPolarInput(
 		}
 	}
 
-	/* Step 1: build the resized 224x224 crop exactly like the offline
+	/* Step 1: build the resized square crop exactly like the offline
 	 * resize_with_pad path, using a temporary uint8 RGB buffer. */
 	(void)memset(input_ptr, 0, required_bytes);
 	(void)memset(resized_rgb, 0, sizeof(resized_rgb));
@@ -3490,11 +3503,14 @@ static void AppAI_BlankTipFocusLowerInset(int8_t *input, size_t width,
 	}
 
 	/* Blank the lower inset gauge and the dark blob in the lower center so the
-	 * CNN has to pay attention to the main dial. */
-	const int32_t mask_center_x = 112;
-	const int32_t mask_center_y = 150;
-	const int32_t mask_radius_x = 54;
-	const int32_t mask_radius_y = 42;
+	 * CNN has to pay attention to the main dial. Scale the legacy reference
+	 * ellipse so it stays aligned on the new 320x320 capture path. */
+	const float mask_width_scale = (float)width / 224.0f;
+	const float mask_height_scale = (float)height / 224.0f;
+	const int32_t mask_center_x = (int32_t)lroundf(112.0f * mask_width_scale);
+	const int32_t mask_center_y = (int32_t)lroundf(150.0f * mask_height_scale);
+	const int32_t mask_radius_x = (int32_t)lroundf(54.0f * mask_width_scale);
+	const int32_t mask_radius_y = (int32_t)lroundf(42.0f * mask_height_scale);
 	const int64_t radius_x_sq = (int64_t)mask_radius_x * (int64_t)mask_radius_x;
 	const int64_t radius_y_sq = (int64_t)mask_radius_y * (int64_t)mask_radius_y;
 	const int64_t ellipse_limit = radius_x_sq * radius_y_sq;

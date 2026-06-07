@@ -417,3 +417,13 @@ org.eclipse.core.runtime.OperationCanceledException
 	at org.eclipse.equinox.internal.p2.updatechecker.UpdateChecker.getAvailableRepositories(UpdateChecker.java:164)
 	at org.eclipse.equinox.internal.p2.updatechecker.UpdateChecker.checkForUpdates(UpdateChecker.java:144)
 	at org.eclipse.equinox.internal.p2.updatechecker.UpdateChecker$UpdateCheckThread.run(UpdateChecker.java:83)
+!SESSION 2026-06-03 22:28:00.080 -----------------------------------------------
+eclipse.buildId=Version 2.0.0
+java.version=21.0.8
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_TT
+Framework arguments:  -application org.eclipse.cdt.managedbuilder.core.headlessbuild -importAll D:\Projects\embedded-gauge-reading-tinyml\firmware\stm32\n657\Appli -cleanBuild n657_Appli
+Command-line arguments:  -os win32 -ws win32 -arch x86_64 -application org.eclipse.cdt.managedbuilder.core.headlessbuild -data D:\Projects\embedded-gauge-reading-tinyml\firmware\stm32\n657 -importAll D:\Projects\embedded-gauge-reading-tinyml\firmware\stm32\n657\Appli -cleanBuild n657_Appli
+
+!ENTRY org.eclipse.cdt.core 1 0 2026-06-03 22:28:03.499
+!MESSAGE Indexed 'n657_Appli' (0 sources, 0 headers) in 0.003 sec: 0 declarations; 0 references; 0 unresolved inclusions; 0 syntax errors; 0 unresolved names (0%)

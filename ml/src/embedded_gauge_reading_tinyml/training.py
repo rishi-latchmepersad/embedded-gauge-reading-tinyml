@@ -497,6 +497,48 @@ def _compute_crop_box(
     return (x_min, y_min, x_max, y_max)
 
 
+def _compute_fullframe_obb_params(
+    source_w: int,
+    source_h: int,
+    dial_cx: float,
+    dial_cy: float,
+    dial_rx: float,
+    dial_ry: float,
+    dial_rotation_deg: float,
+    canvas_h: int = 224,
+    canvas_w: int = 224,
+) -> np.ndarray:
+    """Map dial ellipse from source-image coords -> 224x224 canvas normalized.
+
+    Unlike the crop-based pipeline (where cx,cy are always ~0.5), this maps
+    into the full-frame canvas so cx,cy vary with photo composition. The model
+    must actually detect the gauge rather than predict the mean center.
+    """
+    scale: float = min(canvas_w / source_w, canvas_h / source_h)
+    scaled_w: float = source_w * scale
+    scaled_h: float = source_h * scale
+    pad_x: float = (canvas_w - scaled_w) * 0.5
+    pad_y: float = (canvas_h - scaled_h) * 0.5
+
+    canvas_cx: float = dial_cx * scale + pad_x
+    canvas_cy: float = dial_cy * scale + pad_y
+    canvas_w_: float = 2.0 * dial_rx * scale
+    canvas_h_: float = 2.0 * dial_ry * scale
+
+    rotation_rad: float = math.radians(dial_rotation_deg)
+    return np.array(
+        [
+            np.clip(canvas_cx / canvas_w, 0.0, 1.0),
+            np.clip(canvas_cy / canvas_h, 0.0, 1.0),
+            np.clip(canvas_w_ / canvas_w, 0.0, 1.0),
+            np.clip(canvas_h_ / canvas_h, 0.0, 1.0),
+            math.cos(2.0 * rotation_rad),
+            math.sin(2.0 * rotation_rad),
+        ],
+        dtype=np.float32,
+    )
+
+
 def _map_point_to_resized_crop_xy(
     *,
     point_xy: tuple[float, float],
@@ -930,6 +972,68 @@ def _build_training_examples(
         )
 
     return examples, dropped_out_of_sweep
+
+
+def _build_fullframe_obb_examples(
+    samples: list[Sample],
+    spec: GaugeSpec,
+    *,
+    image_height: int = 224,
+    image_width: int = 224,
+    strict_labels: bool = False,
+) -> tuple[list[TrainingExample], int]:
+    """Build OBB training examples from full frames (no dial-centered crop).
+
+    OBB params are computed in 224x224 canvas space using the full source
+    image. This creates variation in cx/cy across photos, forcing the model
+    to learn actual gauge detection instead of the mean-prediction degenerate
+    solution that plagued the crop-based pipeline.
+    """
+    examples: list[TrainingExample] = []
+    dropped: int = 0
+
+    for sample in samples:
+        try:
+            needle_fraction(sample, spec, strict=True)
+        except ValueError:
+            dropped += 1
+            continue
+
+        value: float = needle_value(sample, spec, strict=strict_labels)
+
+        source_img = load_rgb_image(Path(sample.image_path))
+        source_h, source_w = source_img.shape[:2]
+
+        obb_params = _compute_fullframe_obb_params(
+            source_w,
+            source_h,
+            float(sample.dial.cx),
+            float(sample.dial.cy),
+            float(sample.dial.rx),
+            float(sample.dial.ry),
+            float(sample.dial.rotation),
+            image_height,
+            image_width,
+        )
+
+        crop_box: tuple[float, float, float, float] = (
+            0.0,
+            0.0,
+            float(source_w),
+            float(source_h),
+        )
+
+        examples.append(
+            TrainingExample(
+                image_path=str(sample.image_path),
+                value=value,
+                crop_box_xyxy=crop_box,
+                needle_unit_xy=(0.0, 0.0),
+                obb_params=obb_params,
+            )
+        )
+
+    return examples, dropped
 
 
 def _load_hard_case_examples(
@@ -2063,6 +2167,33 @@ def _load_crop_with_obb_weight(
         image_width,
     )
     return image, target, {"obb_params": tf.cast(weight, tf.float32)}
+
+
+def _load_fullframe_obb_data(
+    image_path: tf.Tensor,
+    value: tf.Tensor,
+    obb_params: tf.Tensor,
+    crop_box_xyxy: tf.Tensor,
+    image_height: int,
+    image_width: int,
+    weight: tf.Tensor,
+) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
+    """Read full image, apply board-style preprocess, pass OBB targets in canvas space.
+
+    Purpose-built for full-frame OBB training. Unlike _load_crop_with_obb_weight
+    which crops to the dial region, this reads the entire image and scales it to
+    fit the 224x224 canvas, preserving the gauge's actual position in the frame.
+    """
+    image_bytes: tf.Tensor = tf.io.read_file(image_path)
+    image: tf.Tensor = tf.io.decode_image(
+        image_bytes,
+        channels=3,
+        expand_animations=False,
+    )
+    image = tf.ensure_shape(image, [None, None, 3])
+    image = _preprocess_board_style(image, image_height, image_width)
+    obb_target = tf.cast(obb_params, tf.float32)
+    return image, {"obb_params": obb_target}, {"obb_params": tf.cast(weight, tf.float32)}
 
 
 def _load_crop_with_interval_weight(

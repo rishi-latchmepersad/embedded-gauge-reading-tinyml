@@ -276,7 +276,7 @@ static void AppAI_LogObbResult(
 		return;
 	}
 
-	theta_deg = obb_box->theta_rad * 57.29577951308232f;
+	theta_deg = obb_box->angle_rad * 57.29577951308232f;
 	DebugConsole_Printf("[AI] OBB output: name=%s addr=%p len=%lu\r\n",
 						(output_buffer_info->name != NULL) ? output_buffer_info->name
 														   : "(unnamed)",
@@ -284,11 +284,16 @@ static void AppAI_LogObbResult(
 						(unsigned long)LL_Buffer_len(output_buffer_info));
 #if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
 	DebugConsole_Printf(
-		"[AI] OBB box(clamped): cx=%.6f cy=%.6f w=%.6f h=%.6f cos=%.6f sin=%.6f theta=%.2fdeg\r\n",
+		"[AI] OBB box(clamped): cx=%.6f cy=%.6f w=%.6f h=%.6f angle=%.2fdeg conf=%.4f\r\n",
 		obb_box->center_x, obb_box->center_y, obb_box->box_w,
-		obb_box->box_h, obb_box->angle_cos, obb_box->angle_sin,
-		theta_deg);
+		obb_box->box_h, theta_deg, obb_box->confidence);
 #endif
+}
+
+static float AppAI_ObbDequantize(int8_t q_value)
+{
+	return ((float)q_value - (float)APP_AI_OBB_OUTPUT_ZERO_POINT)
+		* APP_AI_OBB_OUTPUT_SCALE;
 }
 
 static bool AppAI_DecodeObbCropBox(
@@ -296,7 +301,7 @@ static bool AppAI_DecodeObbCropBox(
 	AppAI_SourceCrop *crop_out,
 	AppAI_ObbBox *obb_box_out)
 {
-	const float *output_ptr = NULL;
+	const int8_t *output_ptr = NULL;
 	const float source_width_f = (float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
 	const float source_height_f = (float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
 	const float input_size_f = (float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
@@ -308,9 +313,10 @@ static bool AppAI_DecodeObbCropBox(
 	float center_y = 0.0f;
 	float box_w = 0.0f;
 	float box_h = 0.0f;
-	float angle_cos = 0.0f;
-	float angle_sin = 0.0f;
-	float theta_rad = 0.0f;
+	float angle_rad = 0.0f;
+	float confidence = 0.0f;
+	float cos_2theta = 0.0f;
+	float sin_2theta = 0.0f;
 	float canvas_center_x = 0.0f;
 	float canvas_center_y = 0.0f;
 	float half_width = 0.0f;
@@ -319,35 +325,48 @@ static bool AppAI_DecodeObbCropBox(
 	float crop_y_min_f = 0.0f;
 	float crop_x_max_f = 0.0f;
 	float crop_y_max_f = 0.0f;
+	float decoded[APP_AI_OBB_OUTPUT_CHANNELS] = {0.0f};
 
 	if ((output_buffer_info == NULL) || (crop_out == NULL))
 	{
 		return false;
 	}
 
-	output_ptr = (const float *)LL_Buffer_addr_start(output_buffer_info);
-	if ((output_ptr == NULL) || (LL_Buffer_len(output_buffer_info) < (sizeof(float) * 6U)))
+	output_ptr = (const int8_t *)LL_Buffer_addr_start(output_buffer_info);
+	if ((output_ptr == NULL) || (LL_Buffer_len(output_buffer_info) < APP_AI_OBB_OUTPUT_CHANNELS))
 	{
 		return false;
 	}
 
-	if (!AppAI_IsFiniteFloat(output_ptr[0]) || !AppAI_IsFiniteFloat(output_ptr[1]) || !AppAI_IsFiniteFloat(output_ptr[2]) || !AppAI_IsFiniteFloat(output_ptr[3]) || !AppAI_IsFiniteFloat(output_ptr[4]) || !AppAI_IsFiniteFloat(output_ptr[5]))
+	for (size_t channel_index = 0U; channel_index < APP_AI_OBB_OUTPUT_CHANNELS; ++channel_index)
 	{
-		DebugConsole_WriteString("[AI] OBB output contains non-finite values.\r\n");
+		decoded[channel_index] = AppAI_ObbDequantize(output_ptr[channel_index]);
+	}
+
+	center_x = AppAI_ClampNormalizedFloat(decoded[0U]);
+	center_y = AppAI_ClampNormalizedFloat(decoded[1U]);
+	box_w = AppAI_ClampNormalizedFloat(decoded[2U]);
+	box_h = AppAI_ClampNormalizedFloat(decoded[3U]);
+	cos_2theta = decoded[4U];
+	sin_2theta = decoded[5U];
+	if (!AppAI_IsFiniteFloat(center_x) || !AppAI_IsFiniteFloat(center_y) ||
+		!AppAI_IsFiniteFloat(box_w) || !AppAI_IsFiniteFloat(box_h) ||
+		!AppAI_IsFiniteFloat(cos_2theta) || !AppAI_IsFiniteFloat(sin_2theta))
+	{
 		return false;
 	}
 
-#if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
-	DebugConsole_Printf(
-		"[AI] OBB raw: cx=%.6f cy=%.6f w=%.6f h=%.6f cos=%.6f sin=%.6f\r\n",
-		output_ptr[0], output_ptr[1], output_ptr[2], output_ptr[3],
-		output_ptr[4], output_ptr[5]);
-#endif
+	angle_rad = 0.5f * atan2f(sin_2theta, cos_2theta);
+	confidence = sqrtf((cos_2theta * cos_2theta) + (sin_2theta * sin_2theta));
+	if (!AppAI_IsFiniteFloat(angle_rad))
+	{
+		angle_rad = 0.0f;
+	}
+	if (!AppAI_IsFiniteFloat(confidence))
+	{
+		confidence = 0.0f;
+	}
 
-	center_x = AppAI_ClampNormalizedFloat(output_ptr[0]);
-	center_y = AppAI_ClampNormalizedFloat(output_ptr[1]);
-	box_w = AppAI_ClampNormalizedFloat(output_ptr[2]);
-	box_h = AppAI_ClampNormalizedFloat(output_ptr[3]);
 	if (box_w < APP_AI_OBB_MIN_BOX_RATIO)
 	{
 		box_w = APP_AI_OBB_MIN_BOX_RATIO;
@@ -365,20 +384,21 @@ static bool AppAI_DecodeObbCropBox(
 		box_h = 1.0f;
 	}
 
-	angle_cos = output_ptr[4];
-	angle_sin = output_ptr[5];
-	theta_rad = 0.5f * atan2f(angle_sin, angle_cos);
-
 	if (obb_box_out != NULL)
 	{
 		obb_box_out->center_x = center_x;
 		obb_box_out->center_y = center_y;
 		obb_box_out->box_w = box_w;
 		obb_box_out->box_h = box_h;
-		obb_box_out->angle_cos = angle_cos;
-		obb_box_out->angle_sin = angle_sin;
-		obb_box_out->theta_rad = theta_rad;
+		obb_box_out->angle_rad = angle_rad;
+		obb_box_out->confidence = confidence;
 	}
+
+#if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
+	DebugConsole_Printf(
+		"[AI] OBB decoded: cx=%.6f cy=%.6f w=%.6f h=%.6f angle=%.6f conf=%.6f\r\n",
+		center_x, center_y, box_w, box_h, angle_rad, confidence);
+#endif
 
 	canvas_center_x = center_x * input_size_f;
 	canvas_center_y = center_y * input_size_f;
@@ -386,8 +406,8 @@ static bool AppAI_DecodeObbCropBox(
 	half_height = 0.5f * box_h * input_size_f * APP_AI_OBB_CROP_SCALE;
 
 	{
-		const float cos_theta = cosf(theta_rad);
-		const float sin_theta = sinf(theta_rad);
+		const float cos_theta = cosf(angle_rad);
+		const float sin_theta = sinf(angle_rad);
 		const float corner_offsets[4][2] = {
 			{-half_width, -half_height},
 			{half_width, -half_height},
@@ -527,8 +547,8 @@ static bool AppAI_DecodeObbCropBox(
 		return false;
 	}
 
-	/* Keep the scalar crop inside the stable training-size family; if the OBB
-	 * box is too tall or too wide, let the rectifier stage try instead. */
+	/* Keep the OBB crop inside the stable training-size family; if the box is
+	 * too tall or too wide, fall back to the fixed training crop geometry. */
 	{
 		const float crop_width_ratio =
 			((training_crop_width > 0U) ? ((float)crop_out->width / (float)training_crop_width) : 0.0f);
@@ -542,9 +562,7 @@ static bool AppAI_DecodeObbCropBox(
 		if ((crop_width_ratio < APP_AI_OBB_TRAINING_CROP_MIN_RATIO) || (crop_width_ratio > APP_AI_OBB_TRAINING_CROP_MAX_RATIO) || (crop_height_ratio < APP_AI_OBB_TRAINING_CROP_MIN_RATIO) || (crop_height_ratio > APP_AI_OBB_TRAINING_CROP_MAX_RATIO))
 		{
 			/* When the OBB crop is outside the training window, fall back to the
-			 * exact fixed training crop geometry. The inner-dial center blending
-			 * that was here before shifted the crop away from what the scalar
-			 * model was trained on, causing large reading errors. */
+			 * exact fixed training crop geometry. */
 			const AppGaugeGeometry_Crop_t fixed_crop = AppGaugeGeometry_TrainingCrop(
 				(size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
 				(size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS);
@@ -1042,18 +1060,6 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		AppAI_ClearForcedCrop();
 		return false;
 	}
-	if (emit_stage_diagnostics && (stage == &app_ai_scalar_stage))
-	{
-		DebugConsole_Printf(
-			"[AI] Scalar input contract: name=%s addr=%p len=%lu nbits=%lu qu=%lu Qm=%lu Qn=%lu\r\n",
-			(input_info->name != NULL) ? input_info->name : "(unnamed)",
-			(void *)input_bytes_ptr, (unsigned long)input_len_bytes,
-			(unsigned long)input_info->nbits,
-			(unsigned long)input_info->Qunsigned,
-			(unsigned long)input_info->Qm,
-			(unsigned long)input_info->Qn);
-	}
-
 	if (forced_crop != NULL)
 	{
 		AppAI_SetForcedCrop(stage->stage_label, forced_crop->x_min,
@@ -1086,20 +1092,9 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		return false;
 	}
 #else
-	if ((stage == &app_ai_scalar_stage) && (input_info->nbits <= 8U))
+	if (input_info->nbits <= 8U)
 	{
-		/* Legacy int8 polar-vote model: 7-channel polar input. */
-		if (!AppAI_PreprocessYuv422FrameToPolarInput(frame_bytes, frame_size,
-														  input_bytes_ptr, input_len_bytes,
-														  input_info))
-		{
-			AppAI_ClearForcedCrop();
-			return false;
-		}
-	}
-	else if (input_info->nbits <= 8U)
-	{
-		/* Non-scalar int8 stages (rectifier, OBB): legacy 3-channel path. */
+		/* 8-bit NPU stages use the packed YUV422 -> RGB byte fill path. */
 		if (!AppAI_PreprocessYuv422FrameToInt8Input(frame_bytes, frame_size,
 													input_bytes_ptr, input_len_bytes,
 													input_info))
@@ -1124,23 +1119,20 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	}
 
 #if APP_AI_BYPASS_SCALAR_INFERENCE
-	if (stage == &app_ai_scalar_stage)
+	/* Keep the tensor fill path intact, but stop before model execution so we
+	 * can isolate whether the stall is in preprocessing or in LL_ATON. */
+	(void)DebugConsole_WriteString(
+		"[AI] Stage inference bypass active; returning after tensor fill.\r\n");
+	if (output_info_out != NULL)
 	{
-		/* Keep the tensor fill path intact, but stop before model execution so
-		 * we can isolate whether the stall is in preprocessing or in LL_ATON. */
-		(void)DebugConsole_WriteString(
-			"[AI] Scalar inference bypass active; returning after tensor fill.\r\n");
-		if (output_info_out != NULL)
-		{
-			*output_info_out = output_info;
-		}
-		if (output_value_out != NULL)
-		{
-			*output_value_out = 0.0f;
-		}
-		AppAI_ClearForcedCrop();
-		return true;
+		*output_info_out = output_info;
 	}
+	if (output_value_out != NULL)
+	{
+		*output_value_out = 0.0f;
+	}
+	AppAI_ClearForcedCrop();
+	return true;
 #endif
 
 	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS && (input_info->nbits > 8U))
@@ -1197,7 +1189,7 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 
 	(void)INA219_LogReading("AI-PRE");
 
-	if (emit_stage_diagnostics && (stage == &app_ai_scalar_stage) && (LL_Buffer_addr_start(output_info) != NULL) &&
+	if (emit_stage_diagnostics && (LL_Buffer_addr_start(output_info) != NULL) &&
 		(LL_Buffer_len(output_info) >= sizeof(uint32_t)))
 	{
 		uint32_t pre_output_bits = 0U;
@@ -1384,46 +1376,11 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	}
 
 	/* Cache the output value before xSPI2 reconfiguration, because the
-	 * internal buffer info pointers will become stale after reconfigure.
-	 * The production scalar path is a float regression head; the older int8
-	 * circular-vote helpers remain only for legacy exports. */
-	if ((stage == &app_ai_scalar_stage) && (output_info->nbits > 8U))
+	 * internal buffer info pointers will become stale after reconfigure. */
+	if (output_info->nbits > 8U)
 	{
 		(void)memcpy(&output_value, output_ptr, sizeof(output_value));
-		if (emit_stage_diagnostics)
-		{
-			(void)DebugConsole_WriteString(
-				"[AI] Scalar decode mode: float_regression\r\n");
-		}
 	}
-	else if (emit_stage_diagnostics && (stage == &app_ai_scalar_stage) &&
-			 AppAI_DecodeCircularVoteFromOutput(
-				 output_ptr,
-				 output_len_bytes,
-				 &output_value))
-	{
-		DebugConsole_Printf(
-			"[AI] Scalar decode mode: circular_vote bins=%lu\r\n",
-			(unsigned long)APP_AI_POLAR_VOTE_BINS);
-	}
-#if !defined(APP_AI_DISABLE_LEGACY_TOPK_DECODE)
-	else if (emit_stage_diagnostics && (stage == &app_ai_scalar_stage) &&
-			 AppAI_DecodeScalarTopKExpectationFromOutput(
-				 output_info,
-				 output_ptr,
-				 output_len_bytes,
-				 &output_value))
-	{
-		DebugConsole_Printf(
-			"[AI] Scalar decode mode (legacy fallback): topk_expectation topk=%lu temp=%lu.%01lu bins=%lu\r\n",
-			(unsigned long)APP_AI_SCALAR_DECODE_TOPK,
-			(unsigned long)APP_AI_SCALAR_DECODE_TEMPERATURE,
-			(unsigned long)((APP_AI_SCALAR_DECODE_TEMPERATURE * 10.0f)) % 10UL,
-			(unsigned long)((output_info->nbits <= 8U)
-							? output_len_bytes
-							: (output_len_bytes / sizeof(float))));
-	}
-#endif /* !APP_AI_DISABLE_LEGACY_TOPK_DECODE */
 	else if (emit_stage_diagnostics && (output_info->nbits <= 8U))
 	{
 		float scale_value = 1.0f;
@@ -1470,28 +1427,19 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	{
 		*output_value_out = output_value;
 	}
-	/* Guard scalar runtime handoff against corrupted tensor outputs. */
-	if (emit_stage_diagnostics && (stage == &app_ai_scalar_stage))
+	/* Guard the published inference value against corrupted tensor outputs. */
+	if (emit_stage_diagnostics)
 	{
 		if (!AppAI_IsFiniteFloat(output_value))
 		{
 			(void)DebugConsole_WriteString(
-				"[AI] Scalar output invalid: non-finite value.\r\n");
+				"[AI] Stage output invalid: non-finite value.\r\n");
 #if APP_AI_ENABLE_RUNTIME_METRICS
 			(void)INA219_LogReading("AI-ABORT");
 			Metrics_EndInference("AI", NAN);
 #endif
 			AppAI_ClearForcedCrop();
 			return false;
-		}
-		if (!AppAI_IsPlausibleInferenceValue(output_value))
-		{
-			char scalar_warn_line[96];
-			AppInferenceLog_FormatFloatMicros(
-				scalar_warn_line, sizeof(scalar_warn_line),
-				"[AI] Scalar output outside plausible range; continuing anyway: ",
-				output_value);
-			DebugConsole_WriteString(scalar_warn_line);
 		}
 	}
 

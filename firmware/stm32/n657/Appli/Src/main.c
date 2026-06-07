@@ -723,10 +723,13 @@ static void SystemIsolation_Config(void) {
 	/* USER CODE END RIF_Init 1 */
 	/* USER CODE BEGIN RIF_Init 2 */
 
-	/* Enable AXISRAM6 clock and take it out of shutdown so the CPU can access
-	 * the .npusram6 section (thread stacks, frame scratch) before ThreadX
-	 * tries to write initial stack frames into it during tx_thread_create(). */
-	RCC->MEMENR |= RCC_MEMENR_AXISRAM6EN;
+	/* Enable AXISRAM3+4+6 clocks and take them out of shutdown so the CPU can
+	 * access the .tip_focus_activations (AXISRAM3+4, AI thread stacks) and
+	 * .npusram6 (baseline stacks, frame scratch) sections before ThreadX tries
+	 * to write initial stack frames during tx_thread_create(). */
+	RCC->MEMENR |= RCC_MEMENR_AXISRAM3EN | RCC_MEMENR_AXISRAM4EN | RCC_MEMENR_AXISRAM6EN;
+	RAMCFG_SRAM3_AXI->CR &= ~RAMCFG_CR_SRAMSD;
+	RAMCFG_SRAM4_AXI->CR &= ~RAMCFG_CR_SRAMSD;
 	RAMCFG_SRAM6_AXI->CR &= ~RAMCFG_CR_SRAMSD;
 
 	/* USER CODE END RIF_Init 2 */

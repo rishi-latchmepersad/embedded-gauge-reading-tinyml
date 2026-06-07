@@ -33,7 +33,8 @@ extern "C"
     {
         char label[METRICS_LABEL_MAX_LEN]; /* "CNN", "BASELINE", etc. */
         uint32_t timestamp_ms;             /* When sample was taken */
-        uint32_t latency_us;               /* Inference duration in microseconds */
+        uint32_t latency_us;               /* End-to-end latency from capture to result */
+        uint32_t compute_us;               /* Worker compute time, excluding queue wait */
         float power_pre_w;                 /* Power before inference */
         float power_mid_w;                 /* Power during inference (if available) */
         float power_post_w;                /* Power after inference */
@@ -51,6 +52,12 @@ extern "C"
         float latency_avg_ms;
         float latency_min_ms;
         float latency_max_ms;
+        float queue_wait_avg_ms;
+        float queue_wait_min_ms;
+        float queue_wait_max_ms;
+        float compute_avg_ms;
+        float compute_min_ms;
+        float compute_max_ms;
         float power_delta_avg_w;
         float power_delta_min_w;
         float power_delta_max_w;
@@ -65,10 +72,16 @@ extern "C"
     void Metrics_Init(void);
 
     /**
-     * @brief Start a new inference timing session.
+     * @brief Start a new inference timing session at request capture time.
      * @param label Label for this inference (e.g., "CNN", "BASELINE")
      */
     void Metrics_StartInference(const char *label);
+
+    /**
+     * @brief Mark when the worker starts real compute on the queued frame.
+     * @param label Label matching an active Metrics_StartInference call
+     */
+    void Metrics_MarkComputeStart(const char *label);
 
     /**
      * @brief Mark a checkpoint during inference (for mid-inference power).
@@ -116,7 +129,7 @@ extern "C"
     /**
      * @brief Override the start time of an active inference slot.
      *
-     * Used by the async baseline pipeline: the capture thread calls
+     * Used by the async baseline and AI pipelines: the capture thread calls
      * Metrics_StartInference, but the worker thread may need to fix the
      * slot's start_time_us to the actual capture timestamp if the slot
      * was re-started by a subsequent capture before the worker finished.

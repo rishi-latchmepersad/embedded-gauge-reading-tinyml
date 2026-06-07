@@ -1361,56 +1361,50 @@ def build_mobilenetv2_regression_model(
     return model
 
 
-def build_mobilenetv2_sweep_logits_model(
-    image_height: int,
-    image_width: int,
+def build_compact_obb_model(
+    image_height: int = 224,
+    image_width: int = 224,
     *,
-    num_bins: int = 90,
-    pretrained: bool = True,
-    backbone_trainable: bool = False,
-    alpha: float = 0.35,
-    head_units: int = 64,
-    head_dropout: float = 0.3,
+    head_units: int = 96,
+    head_dropout: float = 0.15,
 ) -> keras.Model:
-    """Build a MobileNetV2 tiny model with a sweep-aligned logit head.
+    """Build a compact CNN that predicts oriented ellipse parameters (6 floats).
 
-    Predicts 90 logits covering the gauge sweep. Train with soft targets
-    via KL-divergence or cosine similarity. Decode at inference using
-    top-k expectation over softmax.
+    Uses the custom separable-conv backbone (~430K params) instead of
+    MobileNetV2 (~2.3M).  The 5x parameter reduction makes it train faster,
+    harder to overfit a small dataset, and easier to deploy on embedded targets.
+
+    Output: [cx, cy, w, h, cos(2θ), sin(2θ)] in [0,1]/[-1,1] normalized.
     """
-    inputs, x, base_model = _build_mobilenetv2_backbone(
-        image_height,
-        image_width,
-        pretrained=pretrained,
-        backbone_trainable=backbone_trainable,
-        alpha=alpha,
+    inputs, x = _build_feature_backbone(image_height, image_width)
+
+    x = keras.layers.LayerNormalization(name="obb_pooled_norm")(x)
+    x = keras.layers.Dense(head_units, activation="swish", name="obb_dense")(x)
+    x = keras.layers.Dropout(head_dropout, name="obb_dropout")(x)
+
+    center_xy = keras.layers.Dense(
+        2, activation="sigmoid", name="obb_center_xy",
+    )(x)
+    size_wh = keras.layers.Dense(
+        2, activation="sigmoid", name="obb_size_wh",
+    )(x)
+    angle_raw = keras.layers.Dense(
+        2, name="obb_angle_raw",
+    )(x)
+    angle_sincos = keras.layers.UnitNormalization(
+        axis=-1, name="obb_angle_sincos",
+    )(angle_raw)
+    obb_params = keras.layers.Concatenate(name="obb_params")(
+        [center_xy, size_wh, angle_sincos],
     )
-    x = keras.layers.GlobalAveragePooling2D(name="sweep_logits_gap")(x)
-    x = keras.layers.Dropout(head_dropout, name="sweep_logits_dropout_1")(x)
-    x = keras.layers.Dense(
-        head_units,
-        activation="swish",
-        name="sweep_logits_dense",
-    )(x)
-    x = keras.layers.Dropout(head_dropout, name="sweep_logits_dropout_2")(x)
-    sweep_logits = keras.layers.Dense(
-        num_bins,
-        activation="linear",
-        name="sweep_logits",
-    )(x)
 
     model = keras.Model(
         inputs=inputs,
-        outputs=sweep_logits,
-        name=_mobilenetv2_model_name(
-            regression_kind="sweep_logits",
-            alpha=alpha,
-            head_units=head_units,
-        ),
+        outputs={"obb_params": obb_params},
+        name=f"compact_obb_localizer_h{head_units}",
     )
-    setattr(model, "_mobilenet_backbone", base_model)
-    setattr(model, "_num_bins", num_bins)
     return model
+
 
 
 def build_mobilenetv2_angle_vote_model(
@@ -4553,4 +4547,159 @@ def build_mobilenetv2_uncertainty_model(
         name="mobilenetv2_sota_uncertainty",
     )
     setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv2_heatmap_center_model(
+    image_height: int = 224,
+    image_width: int = 224,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 0.35,
+    heatmap_size: int = 56,
+    temperature: float = 10.0,
+) -> keras.Model:
+    """Build a U-Net-style center detector that predicts a 2D heatmap then
+    extracts (cx, cy) via softargmax.
+
+    The MobileNetV2 encoder stays frozen (based on our ablation finding that
+    finetuning destroys CD generalisation).  Skip connections from three
+    intermediate resolutions feed a lightweight decoder that predicts a single-
+    channel heatmap at ``heatmap_size`` resolution.  ``SpatialSoftArgmax2D``
+    converts that heatmap into differentiable (cx, cy) coordinates.
+
+    Outputs:
+        center_xy: (B, 2) — normalised (cx, cy) in [0, 1].
+        heatmap:   (B, H, H, 1) — sigmoid heatmap for auxiliary supervision.
+    """
+    inputs = keras.Input(
+        shape=(image_height, image_width, 3), name="image"
+    )
+
+    # The training pipeline emits [0, 1] floats; MobileNetV2 expects [-1, 1].
+    x = keras.layers.Rescaling(
+        1.0 / 127.5, offset=-1.0, name="preprocess"
+    )(inputs)
+
+    backbone = keras.applications.MobileNetV2(
+        include_top=False,
+        weights="imagenet" if pretrained else None,
+        input_shape=(image_height, image_width, 3),
+        alpha=alpha,
+    )
+    backbone.trainable = backbone_trainable
+
+    # Extract intermediate feature maps for U-Net skip connections.
+    #   block_2_add   → 56×56   (stride 4)
+    #   block_4_add   → 28×28   (stride 8)
+    #   block_12_add  → 14×14   (stride 16, before stride-32 downsampling)
+    skip_layer_names = [
+        "block_2_add",
+        "block_4_add",
+        "block_12_add",
+    ]
+    skip_outputs = [
+        backbone.get_layer(name).output for name in skip_layer_names
+    ]
+
+    encoder = keras.Model(
+        inputs=backbone.inputs,
+        outputs=skip_outputs + [backbone.output],
+        name="mobilenetv2_heatmap_encoder",
+    )
+
+    encoded = encoder(x, training=backbone_trainable)
+    s_56 = encoded[0]   # 56×56 × C1  (8 channels at alpha=0.35)
+    s_28 = encoded[1]   # 28×28 × C2  (16 channels)
+    s_14 = encoded[2]   # 14×14 × C3  (32 channels)
+    bottlneck = encoded[3]  # 7×7 × 1280
+
+    # ---- Decoder: progressive upsampling with skip connections ----
+    # Stage 1:  7×7 → 14×14
+    d = keras.layers.Conv2D(
+        256, 3, padding="same", use_bias=False, name="dec_conv1"
+    )(bottlneck)
+    d = keras.layers.BatchNormalization(
+        momentum=0.9, epsilon=1e-3, name="dec_bn1"
+    )(d)
+    d = keras.layers.Activation("swish")(d)
+    d = keras.layers.UpSampling2D(2, interpolation="bilinear", name="dec_up1")(
+        d
+    )
+    d = keras.layers.Concatenate(name="dec_cat1")([d, s_14])
+    d = keras.layers.Conv2D(
+        128, 3, padding="same", use_bias=False, name="dec_conv2"
+    )(d)
+    d = keras.layers.BatchNormalization(
+        momentum=0.9, epsilon=1e-3, name="dec_bn2"
+    )(d)
+    d = keras.layers.Activation("swish")(d)
+
+    # Stage 2: 14×14 → 28×28
+    d = keras.layers.UpSampling2D(2, interpolation="bilinear", name="dec_up2")(
+        d
+    )
+    d = keras.layers.Concatenate(name="dec_cat2")([d, s_28])
+    d = keras.layers.Conv2D(
+        64, 3, padding="same", use_bias=False, name="dec_conv3"
+    )(d)
+    d = keras.layers.BatchNormalization(
+        momentum=0.9, epsilon=1e-3, name="dec_bn3"
+    )(d)
+    d = keras.layers.Activation("swish")(d)
+
+    # Stage 3: 28×28 → 56×56
+    d = keras.layers.UpSampling2D(2, interpolation="bilinear", name="dec_up3")(
+        d
+    )
+    d = keras.layers.Concatenate(name="dec_cat3")([d, s_56])
+    d = keras.layers.Conv2D(
+        32, 3, padding="same", use_bias=False, name="dec_conv4"
+    )(d)
+    d = keras.layers.BatchNormalization(
+        momentum=0.9, epsilon=1e-3, name="dec_bn4"
+    )(d)
+    d = keras.layers.Activation("swish")(d)
+
+    # Final refinement conv
+    d = keras.layers.Conv2D(
+        32, 3, padding="same", use_bias=False, name="dec_conv5"
+    )(d)
+    d = keras.layers.BatchNormalization(
+        momentum=0.9, epsilon=1e-3, name="dec_bn5"
+    )(d)
+    d = keras.layers.Activation("swish")(d)
+
+    # Single-channel sigmoid heatmap
+    heatmap = keras.layers.Conv2D(
+        1, 1, activation="sigmoid", name="heatmap"
+    )(d)
+
+    # Differentiable soft-argmax → (cx, cy) in heatmap-pixel coords
+    center_xy_raw = SpatialSoftArgmax2D(
+        heatmap_size=heatmap_size,
+        num_keypoints=1,
+        temperature=temperature,
+        name="center_xy_raw",
+    )(heatmap)
+    # Normalise to [0, 1] so the MSE loss has a stable scale matching the
+    # metadata labels (which are also in normalised [0, 1]).
+    center_xy_vec = keras.layers.Reshape((2,), name="center_xy_vec")(
+        center_xy_raw
+    )
+    center_xy = keras.layers.Rescaling(
+        1.0 / float(max(heatmap_size - 1, 1)),
+        name="center_xy",
+    )(center_xy_vec)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={
+            "center_xy": center_xy,
+            "heatmap": heatmap,
+        },
+        name=f"mobilenetv2_heatmap_cd_a{int(round(alpha*100)):03d}_hm{heatmap_size}",
+    )
+    setattr(model, "_mobilenet_backbone", backbone)
     return model

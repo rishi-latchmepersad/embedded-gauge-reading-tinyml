@@ -107,8 +107,11 @@ typedef struct {
  * too tight on the N6 board. Keep extra headroom here so SD bring-up and file
  * maintenance do not trip a silent stack overflow. */
 #define FX_APP_THREAD_STACK_SIZE         8192
-/* Main thread priority */
-#define FX_APP_THREAD_PRIO               14
+/* Main thread priority.
+ * Keep FileX above the compute-heavy baseline/AI workers so the blue capture
+ * cue can turn off on time, while still staying below the highest bring-up
+ * thread. */
+#define FX_APP_THREAD_PRIO               11U
 /* USER CODE BEGIN PD */
 #define CAPTURED_IMAGES_DIRECTORY_NAME   "captured_images"
 #define CAPTURED_IMAGE_MAX_PATH_LENGTH   96U
@@ -1097,7 +1100,8 @@ static void AppFileX_FlashCaptureSuccessBlue(void) {
 	}
 
 	HAL_GPIO_WritePin(GPIOG, GPIO_PIN_8, GPIO_PIN_RESET);
-	DelayMilliseconds_ThreadX(3000U);
+	/* Hold the blue capture cue for the requested 2 seconds. */
+	DelayMilliseconds_ThreadX(2000U);
 	HAL_GPIO_WritePin(GPIOG, GPIO_PIN_8, GPIO_PIN_SET);
 }
 /* USER CODE END 1 */

@@ -30,7 +30,7 @@
 
 /* Thread configuration */
 #define INA219_THREAD_STACK_SIZE    1024U
-#define INA219_THREAD_PRIORITY      15U      /* Low priority */
+#define INA219_THREAD_PRIORITY      10U      /* Must outrank the pipeline workers */
 #define INA219_SAMPLE_PERIOD_MS     250U     /* Sample every 250 ms for power stats */
 
 /* Private variables ---------------------------------------------------------*/
@@ -316,9 +316,10 @@ bool INA219_LogReading(const char *label)
 
 	(void)label;
 
-	/* Legacy: reads and stores the measurement silently.
-	 * Continuous power stats are now reported by Metrics_PowerSample
-	 * and printed as [POWER][label] after the latency line. */
+	/* Feed the current measurement into the active pipeline window so the
+	 * min/avg/max summary includes explicit stage checkpoints as well as the
+	 * background sampler thread. */
+	Metrics_PowerSample(measurement.power_w * 1000.0f);
 
 	return true;
 }

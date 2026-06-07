@@ -36,7 +36,7 @@
 - Use `poetry` for env management and scripts.
 - Prefer `pytest` for tests.
 - Use WSL for ML work, with the GPU preferred.
-- Always restart WSL before starting a new session. Sometimes it hangs.
+- Prepare explicit WSL handoff scripts in `tmp/` for model jobs and let DeepSeek run those directly; keep the workflow script-driven instead of manual and stateful.
 - Always run jobs in bash scripts inside WSL, and tail the logs so you can see when they hang or fail.
 - Use the `d:/Projects/embedded-gauge-reading-tinyml/tmp/` directory for all temporary files and folders (e.g., `tmp_*`, `artifacts/tmp_*`). This replaces any `tmp/` or `tmp_*/` folders that were previously in the project root.
 

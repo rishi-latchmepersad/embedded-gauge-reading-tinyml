@@ -59,10 +59,11 @@ typedef struct
 bool App_AI_Model_Init(void);
 
 /**
- * @brief Run a one-shot inference using a captured 224x224 YUV422 frame.
+ * @brief Run a one-shot inference using a captured 320x320 YUV422 frame.
  *
- * The helper converts the frame into the model float32 RGB input buffer,
- * runs the generated LL_ATON runtime once, and logs the output summary.
+ * The helper converts the colour frame into the model float32 RGB input
+ * buffer, runs the generated LL_ATON runtime once, and logs the output
+ * summary.
  *
  * @param frame_bytes Pointer to the captured frame bytes.
  * @param frame_size Number of valid bytes in the captured frame.

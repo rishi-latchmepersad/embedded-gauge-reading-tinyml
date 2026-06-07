@@ -69,9 +69,12 @@ ml/data/board_captures_labeled.csv
 ml/data/board_captures_labeled_v2.csv
 ml/data/merged_geometry_board_manifest.csv
 ml/data/center_training_crops/
+ml/data/center_training_board_mimic/
 ml/data/center_training_manual/
 ml/data/heatmap_training/
 ml/data/obb_board_crops/
+ml/data/heatmap_cd*/
+ml/data/yolo_obb_320/
 ml/data/*_annotated_centers.csv
 
 # Generated reports and local logs
@@ -98,6 +101,8 @@ firmware/stm32/N657X0_bringup/AppliNonSecure/build/*
 #ignore ML artifacts etc.
 ml/artifacts/*
 !ml/artifacts/.gitkeep
+ml/*.pt
+ml/calibration_image_sample_data_*.npy
 ml/__pycache__/*
 ml/.pytest_cache/*
 __pycache__/*
@@ -105,6 +110,8 @@ __pycache__/*
 st_ai_output/*
 firmware/stm32/n657/st_ai_output/*
 !firmware/stm32/n657/st_ai_output/.gitkeep
+ml/datasets/
+ml/runs/
 
 # Temporary directories and files
 tmp_*
@@ -122,6 +129,20 @@ ml/.venv/
 
 # ML debug outputs
 ml/debug/
+
+# Generated CD training datasets (from OBB-centered pipeline)
+ml/data/center_training_board_mimic_obb_v2/
+ml/data/center_training_board_mimic_gt_v2/
+ml/data/center_training_full/
+
+# STM32CubeIDE metadata (never commit IDE-generated project metadata)
+firmware/stm32/n657/.metadata/
+firmware/stm32/n657/Appli/.metadata/
+
+# STM32CubeIDE build artifacts (not just Debug/)
+firmware/stm32/n657/n657_Appli/
+firmware/stm32/n657/FSBL/Debug/
+firmware/stm32/n657/Debug/
 
 # Local Windows placeholder artifact
 /nul

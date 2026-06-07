@@ -58,7 +58,11 @@
  * on bright board captures where the dial face is well-lit but not blown out,
  * causing valid needle pixels to be skipped and the detector to miss entirely. */
 #define APP_BASELINE_SATURATION_THRESHOLD 235U
-#define APP_BASELINE_MIN_BRIGHT_PIXELS 1024U
+/* Keep the minimum bright-pixel floor at roughly the same ~2% of frame area
+ * that the old 224x224 budget used, so the gate scales with the new 320x320
+ * capture size instead of hard-coding a pixel count. */
+#define APP_BASELINE_MIN_BRIGHT_PIXELS \
+	(((CAMERA_CAPTURE_WIDTH_PIXELS * CAMERA_CAPTURE_HEIGHT_PIXELS) + 24U) / 49U)
 #define APP_BASELINE_SCAN_BORDER_PIXELS 8U
 #define APP_BASELINE_ANGLE_BINS 360U
 #define APP_BASELINE_RAY_SAMPLES 32U
@@ -432,25 +436,27 @@ bool AppBaselineRuntime_RequestEstimate(const uint8_t *frame_ptr,
 		return false;
 	}
 
-	(void)memcpy((void *)camera_baseline_frame_snapshot, frame_ptr,
+	/* Start timing before the snapshot copy so the latency includes the full
+	 * request-to-result path. */
+	camera_baseline_request_capture_time_us = Metrics_GetMicros();
+	Metrics_StartInference("BASELINE");
+	(void)memcpy((void *)camera_inference_frame_snapshot, frame_ptr,
 				 (size_t)frame_length);
-	(void)memcpy(first8, camera_baseline_frame_snapshot,
+	(void)memcpy(first8, camera_inference_frame_snapshot,
 				 (size_t)((frame_length < 8U) ? frame_length : 8U));
 	DebugConsole_Printf(
-		"[BASELINE] Snapshot copied: src=%p dst=%p len=%lu first8=[%02X %02X %02X %02X %02X %02X %02X %02X]\r\n",
-		(const void *)frame_ptr, (void *)camera_baseline_frame_snapshot,
+		"[BASELINE] Shared snapshot copied: src=%p dst=%p len=%lu first8=[%02X %02X %02X %02X %02X %02X %02X %02X]\r\n",
+		(const void *)frame_ptr, (void *)camera_inference_frame_snapshot,
 		(unsigned long)frame_length, first8[0], first8[1], first8[2],
 		first8[3], first8[4], first8[5], first8[6], first8[7]);
 
-	camera_baseline_request_capture_time_us = Metrics_GetMicros();
-	Metrics_StartInference("BASELINE");
-
-	camera_baseline_request_frame_ptr = camera_baseline_frame_snapshot;
+	camera_baseline_request_frame_ptr = camera_inference_frame_snapshot;
 	camera_baseline_request_frame_length = frame_length;
 	camera_baseline_request_generation++;
 
 	if (tx_semaphore_put(&camera_baseline_request_semaphore) != TX_SUCCESS)
 	{
+		Metrics_EndInference("BASELINE", NAN);
 		DebugConsole_Printf(
 			"[BASELINE] Failed to signal baseline request semaphore.\r\n");
 		return false;
@@ -500,6 +506,10 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 
 		/* Log pre-baseline power (idle/background) */
 		(void)INA219_LogReading("BASELINE-PRE");
+
+		/* Mark the start of actual compute so the metrics can separate queue
+		 * wait from the baseline's processing time. */
+		Metrics_MarkComputeStart("BASELINE");
 
 		if (!AppBaselineRuntime_EstimateFromFrame(frame_ptr,
 												  (size_t)frame_length, &estimate))
@@ -631,6 +641,10 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 	{
 		return false;
 	}
+
+	/* Record a mid-window power snapshot before the refinement pass so the
+	 * baseline can be compared against the AI pipeline's mid-inference sample. */
+	Metrics_Checkpoint("MID");
 
 	/* Keep the live selector conservative by default: trust the fixed-crop
 	 * anchor first, then the inner dial center, and only fall back to the

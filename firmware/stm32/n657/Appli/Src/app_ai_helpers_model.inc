@@ -576,50 +576,13 @@ static bool AppAI_EnsureXspi2ModelImageReadyForStage(
 
 	if (!AppAI_Xspi2ModelImageMatchesMappedFlashForStage(stage))
 	{
-		/* The scalar stage can recover by provisioning from SD when the flashed
-		 * blob does not match the compiled metadata. */
-		if (stage == &app_ai_scalar_stage)
-		{
-			DebugConsole_WriteString(
-				"[AI] xSPI2 scalar signature mismatch detected.\r\n");
-#if APP_AI_ENABLE_SCALAR_SD_REPROVISION
-			DebugConsole_WriteString(
-				"[AI] xSPI2 scalar signature mismatch; attempting SD reprovision.\r\n");
-			/* Do not block the AI worker for minutes waiting on FileX. If media
-			 * is not ready yet, fail fast and let the next inference cycle retry. */
-			if (!AppFileX_IsMediaReady())
-			{
-				DebugConsole_WriteString(
-					"[AI] xSPI2 scalar reprovision skipped: FileX media not ready.\r\n");
-				return false;
-			}
-			if (!AppAI_ProgramXspi2ModelImageFromSd())
-			{
-				DebugConsole_WriteString(
-					"[AI] xSPI2 scalar SD reprovision failed.\r\n");
-				return false;
-			}
-			app_ai_loaded_xspi2_stage = NULL;
-			if (!AppAI_Xspi2ModelImageMatchesMappedFlashForStage(stage))
-			{
-				DebugConsole_WriteString(
-					"[AI] xSPI2 scalar signature mismatch persists after reprovision.\r\n");
-				return false;
-			}
-#else
-			DebugConsole_WriteString(
-				"[AI] scalar SD reprovision disabled; reflash scalar blob via flash script.\r\n");
-			return false;
-#endif
-		}
-		else
-		{
-			/* Non-scalar stages still fail fast on signature mismatch. */
-			DebugConsole_Printf(
-				"[AI] xSPI2 stage '%s' signature mismatch; aborting stage load.\r\n",
-				stage->stage_label);
-			return false;
-		}
+		/* The board now treats xSPI2 blobs as flashed-only assets. Any mismatch
+		 * means the model package on flash is stale or the wrong stage was
+		 * provisioned, so fail fast and let flash_boot.bat refresh it. */
+		DebugConsole_Printf(
+			"[AI] xSPI2 stage '%s' signature mismatch; aborting stage load.\r\n",
+			stage->stage_label);
+		return false;
 	}
 
 	if (AppAI_ShouldLogStageDiagnostics(stage))

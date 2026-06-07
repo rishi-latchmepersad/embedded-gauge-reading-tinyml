@@ -99,7 +99,8 @@ extern "C" {
 #define CAMERA_CAPTURE_RAW_CROP_HSTART_PIXELS   ((IMX335_SENSOR_WIDTH_PIXELS - CAMERA_CAPTURE_WIDTH_PIXELS) / 2U)
 #define CAMERA_CAPTURE_RAW_CROP_VSTART_LINES    ((IMX335_SENSOR_HEIGHT_LINES - CAMERA_CAPTURE_HEIGHT_PIXELS) / 2U)
 /* Pipe0 raw-capture frames store one 16-bit padded pixel per sample, so the
- * preview code should read them as a 224x224 source image and upscale only the view. */
+ * preview code should read them as a 320x320 source image and upscale only
+ * the view. */
 #define CAMERA_CAPTURE_RAW_SOURCE_WIDTH_PIXELS    CAMERA_CAPTURE_WIDTH_PIXELS
 #define CAMERA_CAPTURE_RAW_SOURCE_HEIGHT_LINES    CAMERA_CAPTURE_HEIGHT_PIXELS
 #define CAMERA_CAPTURE_RAW_BMP_PREVIEW_SCALE      2U

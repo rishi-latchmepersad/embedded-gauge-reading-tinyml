@@ -67,13 +67,16 @@ static TX_QUEUE inference_log_queue;
 static ULONG inference_log_queue_storage[INFERENCE_LOG_QUEUE_DEPTH];
 
 static TX_THREAD camera_ai_thread;
+/* Borrow the unused tip-focus activation RAM so the 320x320 polar scratch can
+ * stay in NPU_SRAM6 without overrunning the 448 KB section limit. */
 static ULONG camera_ai_thread_stack[CAMERA_AI_THREAD_STACK_SIZE_BYTES
-		/ sizeof(ULONG)] __attribute__((section(".npusram6")));
+		/ sizeof(ULONG)] __attribute__((section(".tip_focus_activations")));
 static bool camera_ai_thread_created = false;
 static TX_SEMAPHORE camera_ai_request_semaphore;
 static bool camera_ai_sync_created = false;
 static volatile const uint8_t *camera_ai_request_frame_ptr = NULL;
 static volatile ULONG camera_ai_request_frame_length = 0U;
+static volatile uint64_t camera_ai_request_capture_time_us = 0ULL;
 static volatile bool camera_ai_request_in_flight = false;
 static bool app_inference_runtime_initialized = false;
 
@@ -199,16 +202,20 @@ bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
 		return false;
 	}
 
-	(void) memcpy(camera_ai_frame_snapshot, frame_ptr, (size_t) frame_length);
-	(void) DebugConsole_WriteString("[AI] Dry-run snapshot copied.\r\n");
+	/* Anchor AI timing before the snapshot copy so the latency includes the
+	 * full request-to-result path, not just worker execution. */
+	camera_ai_request_capture_time_us = Metrics_GetMicros();
 	Metrics_StartInference("AI");
+	(void) memcpy(camera_inference_frame_snapshot, frame_ptr, (size_t) frame_length);
+	(void) DebugConsole_WriteString("[AI] Shared snapshot copied.\r\n");
 	(void) DebugConsole_WriteString("[AI] Queueing dry-run request.\r\n");
 
 	camera_ai_request_in_flight = true;
-	camera_ai_request_frame_ptr = camera_ai_frame_snapshot;
+	camera_ai_request_frame_ptr = camera_inference_frame_snapshot;
 	camera_ai_request_frame_length = frame_length;
 	if (tx_semaphore_put(&camera_ai_request_semaphore) != TX_SUCCESS) {
 		camera_ai_request_in_flight = false;
+		Metrics_EndInference("AI", NAN);
 		DebugConsole_Printf(
 				"[AI] Failed to signal dry-run request semaphore.\r\n");
 		return false;
@@ -239,8 +246,10 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 
 		frame_ptr = (const uint8_t *) camera_ai_request_frame_ptr;
 		frame_length = camera_ai_request_frame_length;
+		const uint64_t frame_capture_time_us = camera_ai_request_capture_time_us;
 		camera_ai_request_frame_ptr = NULL;
 		camera_ai_request_frame_length = 0U;
+		camera_ai_request_capture_time_us = 0ULL;
 
 		(void) DebugConsole_WriteString("[AI] Worker dequeued frame.\r\n");
 
@@ -250,6 +259,15 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 			camera_ai_request_in_flight = false;
 			continue;
 		}
+
+		/* Keep the AI start time pinned to the queued frame capture moment. */
+		if (frame_capture_time_us != 0ULL) {
+			Metrics_OverrideStartTime("AI", frame_capture_time_us);
+		}
+
+		/* Mark the start of worker-side compute so queue wait is visible in the
+		 * metrics while the AI model time stays comparable to the baseline. */
+		Metrics_MarkComputeStart("AI");
 
 		if (!App_AI_RunDryInferenceFromYuv422(frame_ptr,
 				(size_t) frame_length)) {

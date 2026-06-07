@@ -119,7 +119,7 @@ def load_yuv422_capture_as_rgb(
     image_width: int = DEFAULT_IMAGE_SIZE,
     image_height: int = DEFAULT_IMAGE_SIZE,
 ) -> RGBImage:
-    """Load a packed YUV422 YUYV capture and expose it as grayscale RGB."""
+    """Load a packed YUV422 YUYV capture and convert to full-color RGB."""
     raw_bytes = capture_path.read_bytes()
     expected_bytes = image_width * image_height * 2
     if len(raw_bytes) != expected_bytes:
@@ -128,13 +128,30 @@ def load_yuv422_capture_as_rgb(
             f"got {len(raw_bytes)} bytes, expected {expected_bytes}."
         )
 
-    yuyv_pairs = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(
+    yuyv = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(
         image_height, image_width // 2, 4
     )
-    luma = np.empty((image_height, image_width), dtype=np.uint8)
-    luma[:, 0::2] = yuyv_pairs[:, :, 0]
-    luma[:, 1::2] = yuyv_pairs[:, :, 2]
-    return np.repeat(luma[:, :, None], 3, axis=2)
+    # YUYV: [Y0, U, Y1, V] per 4 bytes — U/V shared across pixel pair
+    y0 = yuyv[:, :, 0].astype(np.float32)
+    y1 = yuyv[:, :, 2].astype(np.float32)
+    u  = yuyv[:, :, 1].astype(np.float32) - 128.0
+    v  = yuyv[:, :, 3].astype(np.float32) - 128.0
+
+    r0 = np.clip(y0 + 1.402 * v, 0, 255).astype(np.uint8)
+    g0 = np.clip(y0 - 0.344 * u - 0.714 * v, 0, 255).astype(np.uint8)
+    b0 = np.clip(y0 + 1.772 * u, 0, 255).astype(np.uint8)
+    r1 = np.clip(y1 + 1.402 * v, 0, 255).astype(np.uint8)
+    g1 = np.clip(y1 - 0.344 * u - 0.714 * v, 0, 255).astype(np.uint8)
+    b1 = np.clip(y1 + 1.772 * u, 0, 255).astype(np.uint8)
+
+    rgb = np.empty((image_height, image_width, 3), dtype=np.uint8)
+    rgb[:, 0::2, 0] = r0
+    rgb[:, 0::2, 1] = g0
+    rgb[:, 0::2, 2] = b0
+    rgb[:, 1::2, 0] = r1
+    rgb[:, 1::2, 1] = g1
+    rgb[:, 1::2, 2] = b1
+    return rgb
 
 
 def load_yuv422_luma(

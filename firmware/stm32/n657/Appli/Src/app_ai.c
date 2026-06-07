@@ -37,6 +37,7 @@
 #include "debug_console.h"
 #include "app_inference_calibration.h"
 #include "app_inference_log_utils.h"
+#include "app_memory_budget.h"
 #include "app_gauge_geometry.h"
 #include "app_baseline_runtime.h"
 #include "app_inner_celsius_mask.h"
@@ -48,11 +49,22 @@
 #include "ll_aton_rt_user_api.h"
 #include "ll_aton.h"
 #include "ll_aton_runtime.h"
+#if defined(__has_include)
+#if __has_include("ll_aton_lib_sw_operators.c")
+/* ST's relocatable exports still call a few pure software tensor operators.
+ * Pull the pack source in here so the generated networks can link without
+ * making the firmware project depend on extra build-system edits. */
+#include "ll_aton_lib_sw_operators.c"
+#else
+#error "Missing ST AI software-operator source in the pack include path."
+#endif
+#else
+#include "ll_aton_lib_sw_operators.c"
+#endif
 #include "app_filex.h"
 #include "stm32n6xx_nucleo_xspi.h"
 #include "npu_cache.h"
 #include "stm32n6xx_hal.h"
-#include "ai_network_tip_focus_v4_112_int8.h"
 #include "app_center_detector.h"
 
 /*
@@ -126,12 +138,12 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define APP_AI_CACHE_LINE_BYTES 32U
-#define APP_AI_CAPTURE_FRAME_WIDTH_PIXELS 224U
-#define APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS 224U
-#define APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL 2U
+#define APP_AI_CAPTURE_FRAME_WIDTH_PIXELS CAMERA_CAPTURE_WIDTH_PIXELS
+#define APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS CAMERA_CAPTURE_HEIGHT_PIXELS
+#define APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL CAMERA_CAPTURE_BYTES_PER_PIXEL
 #define APP_AI_CAPTURE_FRAME_BYTES \
 	(APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL)
-/* Rectified scalar reader: 224x224x3 float RGB input. The offline prod v0.8
+/* Rectified scalar reader: 320x320x3 float RGB input. The offline prod v0.8
  * recipe uses the luma-refined crop to feed this float path, then applies the
  * external calibration/postprocess in firmware. */
 #define APP_AI_MODEL_INPUT_FLOAT_COUNT \
@@ -181,6 +193,9 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 /* Circular decode constants from gauge_calibration_parameters.toml.
  * The gauge sweeps clockwise from 135 deg (2.356 rad) over 270 deg (4.712 rad).
  * Value range: -30 C to +50 C. */
+/* Keep the circular vote at 224 bins even as the square image geometry moves
+ * to 320x320; the decode helper still expects the original angular resolution.
+ */
 #define APP_AI_POLAR_VOTE_BINS 224U
 #define APP_AI_POLAR_VOTE_MIN_ANGLE_RAD 2.356f
 #define APP_AI_POLAR_VOTE_SWEEP_RAD 4.712f
@@ -201,15 +216,15 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 /* Dead-zone mask constant: logits outside the gauge sweep are set to this
  * large negative value so they become zero after softmax. */
 #define APP_AI_POLAR_MASK_LOGIT (-1.0e9f)
-/* Scalar model image path (deprecated — retained for the scalar stage spec). */
+/* Scalar model image path (deprecated â€” retained for the scalar stage spec). */
 #define APP_AI_SCALAR_XSPI2_MODEL_IMAGE_PATH \
 	"packages/mobilenetv2_rectified_scalar_finetune_v2/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8_atonbuf.xSPI2.raw"
 #define APP_AI_CENTER_DETECTOR_XSPI2_MODEL_IMAGE_PATH \
-	"packages/center_detector_v4_int8/st_ai_output/mobilenetv2_center_detector_atonbuf.xSPI2.raw"
+	"packages/heatmap_cd_tiny/st_ai_output/heatmap_cd_atonbuf.AXISRAM2.raw"
 #define APP_AI_RECTIFIER_XSPI2_MODEL_IMAGE_PATH \
 	"atonbuf.rectifier.xSPI2.raw"
 #define APP_AI_OBB_XSPI2_MODEL_IMAGE_PATH \
-	"packages/prod_model_v0.3_obb_int8/st_ai_output/mobilenetv2_obb_longterm_atonbuf.xSPI2.raw"
+	"packages/prod_model_obb_compact_int8/st_ai_output/prod_model_obb_compact_int8_atonbuf.xSPI2.raw"
 #define APP_AI_XSPI2_MODEL_IMAGE_PATH APP_AI_CENTER_DETECTOR_XSPI2_MODEL_IMAGE_PATH
 #define APP_AI_XSPI2_PROGRAM_CHUNK_BYTES 4096U
 #define APP_AI_XSPI2_ERASE_BLOCK_BYTES (64U * 1024U)
@@ -246,6 +261,10 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 /* Keep the OBB decoder from collapsing into a tiny crop when the localizer
  * gets uncertain. */
 #define APP_AI_OBB_MIN_BOX_RATIO 0.05f
+/* Compact OBB regressor quantization parameters from the generated ST pack. */
+#define APP_AI_OBB_OUTPUT_SCALE 0.00390625f
+#define APP_AI_OBB_OUTPUT_ZERO_POINT (-128)
+#define APP_AI_OBB_OUTPUT_CHANNELS 6U
 /* The OBB crop should still be a real crop, not a 1x1 or 8x8 window. */
 #define APP_AI_OBB_MIN_CROP_SIZE_PIXELS 48.0f
 #define APP_AI_SOURCE_CROP_BOX_MIN_CROP_SIZE_PIXELS 8.0f
@@ -308,8 +327,8 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 #define APP_AI_XSPI2_RECTIFIER_CHIP_OFFSET (APP_AI_XSPI2_RECTIFIER_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
 #define APP_AI_XSPI2_OBB_BASE_ADDR 0x70700000UL
 #define APP_AI_XSPI2_OBB_CHIP_OFFSET (APP_AI_XSPI2_OBB_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
-/* Center detector model: reuses the scalar flash slot at 0x70200000.
- * The scalar model has been replaced by the center detector. */
+/* Center detector model: xSPI2 staging slot at 0x70200000.
+ * The runtime copies the staged initializer blob into AXISRAM2 before init. */
 #define APP_AI_XSPI2_CENTER_DETECTOR_BASE_ADDR APP_AI_XSPI2_SCALAR_BASE_ADDR
 #define APP_AI_XSPI2_CENTER_DETECTOR_CHIP_OFFSET (APP_AI_XSPI2_CENTER_DETECTOR_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
 /* Legacy alias used by the single-stage logging helpers; points to center detector. */
@@ -380,14 +399,6 @@ __attribute__((section(".xspi2_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
 uint8_t _mem_pool_xSPI2_scalar_full_finetune_from_best_piecewise_calibrated_int8[32U] = {
 	0U,
 };
-/* Center detector pool alias: shares the same xSPI2 flash address (0x70200000)
- * as the (now-deprecated) scalar model.  Both weight blobs cannot be present
- * simultaneously; the center detector blob replaces the scalar blob in flash.
- * The alias avoids a second 32-byte placeholder at a different address, which
- * would shift every weight offset in the generated NPU code. */
-__asm__(".global _mem_pool_xSPI2_mobilenetv2_center_detector\n"
-	".set _mem_pool_xSPI2_mobilenetv2_center_detector, "
-	"_mem_pool_xSPI2_scalar_full_finetune_from_best_piecewise_calibrated_int8");
 /* Rectifier pool placed in its own section so the linker script can map it to
  * the rectifier flash region at 0x70600000 ??? matching FLASH_RECTIFIER in
  * flash_boot.bat.  The NPU resolves all weight addresses as:
@@ -398,9 +409,9 @@ uint8_t _mem_pool_xSPI2_mobilenetv2_rectifier_hardcase_finetune[32U] = {
 	0U,
 };
 /* OBB localizer pool lives in its own section so the linker can map it to the
- * prodv0.3 flash slot without disturbing the rectifier blob. */
+ * dedicated compact OBB flash slot without disturbing the rectifier blob. */
 __attribute__((section(".xspi2_obb_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
-uint8_t _mem_pool_xSPI2_mobilenetv2_obb_longterm[32U] = {
+uint8_t _mem_pool_xSPI2_prod_model_obb_compact_int8[32U] = {
 	0U,
 };
 
@@ -438,8 +449,6 @@ __attribute__((aligned(APP_AI_CACHE_LINE_BYTES)))
 static uint8_t app_ai_scalar_row_scratch[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL];
 __attribute__((aligned(APP_AI_CACHE_LINE_BYTES)))
 static uint8_t app_ai_scalar_output_row_scratch[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * 3U * sizeof(float)];
-__attribute__((aligned(APP_AI_CACHE_LINE_BYTES)))
-static uint8_t app_ai_dry_run_frame_scratch[APP_AI_CAPTURE_FRAME_BYTES] __attribute__((section(".npusram6")));
 volatile size_t app_ai_scalar_preprocess_last_row = (size_t)SIZE_MAX;
 /* Trace the scalar resize loop only every so often so we can tell whether it
  * is progressing without flooding UART in the hot path. */
@@ -447,20 +456,20 @@ volatile size_t app_ai_scalar_preprocess_last_row = (size_t)SIZE_MAX;
 /* Keep each preprocessing pass small enough that we can reshape the scalar
  * path without one huge monolithic row loop. */
 #define APP_AI_SCALAR_PREPROCESS_ROWS_PER_CHUNK 8U
-/* Start/tail signatures for the rectified scalar package raw.
+/* Start/tail signatures for the heatmap center-detector initializer blob.
  * Update these when a new model is exported by running:
  *   python3 -c "
- *     d=open('st_ai_output/packages/mobilenetv2_rectified_scalar_finetune_v2/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8_atonbuf.xSPI2.raw','rb').read()
+ *     d=open('st_ai_output/packages/heatmap_cd_tiny/st_ai_output/heatmap_cd_atonbuf.AXISRAM2.raw','rb').read()
  *     print('start:', bytes(d[:16]).hex())
  *     print('tail: ', bytes(d[-16:]).hex())" */
-/* Rectified scalar model: package raw (3,218,865 bytes) flashed at 0x70200000. */
+/* Heatmap center-detector model: package raw (69,457 bytes) flashed at 0x70200000. */
 static const uint8_t app_ai_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0xEFU, 0x1BU, 0x2BU, 0xE0U, 0xD7U, 0xE5U, 0xECU, 0x06U,
-	0x04U, 0xFFU, 0x33U, 0xECU, 0x1BU, 0xDDU, 0x14U, 0x05U,
+	0xB5U, 0x3FU, 0x43U, 0x0AU, 0x50U, 0xD3U, 0x0AU, 0x08U,
+	0xBCU, 0x1BU, 0xB6U, 0xB1U, 0xD6U, 0xDDU, 0x0FU, 0x0CU,
 };
 static const uint8_t app_ai_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
-	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x83U,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x90U,
 };
 /* Rectified scalar v2 xSPI2 signatures used when the board boots with the
  * prod v0.8 scalar blob already flashed at 0x70200000. Size: 3,218,865 bytes. */
@@ -472,12 +481,12 @@ static const uint8_t app_ai_rectifier_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BY
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x80U,
 };
-/* prodv0.3 OBB xSPI2 signatures for the canonical v34 blob.
+/* Compact OBB regressor xSPI2 signatures.
  * The board verifies against these bytes when the SD-side cache is not
- * populated, so keep them aligned with the package raw file. */
+ * populated, so keep them aligned with the package raw file (117,505 bytes). */
 static const uint8_t app_ai_obb_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0xF2U, 0x17U, 0x29U, 0xE2U, 0xDCU, 0xEBU, 0xEDU, 0x04U,
-	0x09U, 0x01U, 0x35U, 0xEBU, 0x14U, 0xDEU, 0x0FU, 0x02U,
+	0xB6U, 0xA6U, 0xD3U, 0xE8U, 0xEAU, 0xD9U, 0xCEU, 0x27U,
+	0xE1U, 0xDEU, 0xF8U, 0x0AU, 0xE9U, 0xF4U, 0x2FU, 0x29U,
 };
 static const uint8_t app_ai_obb_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
@@ -542,13 +551,13 @@ LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 	mobilenetv2_rectifier_hardcase_finetune);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
-	mobilenetv2_obb_longterm);
+	prod_model_obb_compact_int8);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 	mobilenetv2_source_crop_box_v1_stripped_int8);
-/* Center detector replaces the scalar CNN as the sole inference authority.
- * Its weight blob lives at 0x70200000 (the old scalar slot). */
+/* Heatmap center detector replaces the scalar CNN as the sole inference
+ * authority. Its weight blob lives at 0x70200000 (the old scalar slot). */
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
-	mobilenetv2_center_detector);
+	heatmap_cd);
 
 typedef struct AppAI_ModelStageSpec AppAI_ModelStageSpec;
 
@@ -578,9 +587,8 @@ typedef struct
 	float center_y;
 	float box_w;
 	float box_h;
-	float angle_cos;
-	float angle_sin;
-	float theta_rad;
+	float angle_rad;
+	float confidence;
 } AppAI_ObbBox;
 
 typedef struct
@@ -591,25 +599,12 @@ typedef struct
 	size_t height;
 } AppAI_SourceCrop;
 
-static const AppAI_ModelStageSpec app_ai_scalar_stage = {
-	.stage_label = "scalar",
-	.model_image_path = APP_AI_SCALAR_XSPI2_MODEL_IMAGE_PATH,
-	.nn_instance = &NN_Instance_scalar_full_finetune_from_best_piecewise_calibrated_int8,
-	.network_init_fn =
-		LL_ATON_EC_Network_Init_scalar_full_finetune_from_best_piecewise_calibrated_int8,
-	.inference_init_fn =
-		LL_ATON_EC_Inference_Init_scalar_full_finetune_from_best_piecewise_calibrated_int8,
-	.uses_rectifier_box = false,
-	.xspi2_chip_offset = APP_AI_XSPI2_SCALAR_CHIP_OFFSET,
-	.xspi2_base_addr = APP_AI_XSPI2_SCALAR_BASE_ADDR,
-};
-
 static const AppAI_ModelStageSpec app_ai_obb_stage = {
 	.stage_label = "obb",
 	.model_image_path = APP_AI_OBB_XSPI2_MODEL_IMAGE_PATH,
-	.nn_instance = &NN_Instance_mobilenetv2_obb_longterm,
-	.network_init_fn = LL_ATON_EC_Network_Init_mobilenetv2_obb_longterm,
-	.inference_init_fn = LL_ATON_EC_Inference_Init_mobilenetv2_obb_longterm,
+	.nn_instance = &NN_Instance_prod_model_obb_compact_int8,
+	.network_init_fn = LL_ATON_EC_Network_Init_prod_model_obb_compact_int8,
+	.inference_init_fn = LL_ATON_EC_Inference_Init_prod_model_obb_compact_int8,
 	.uses_rectifier_box = false,
 	.xspi2_chip_offset = APP_AI_XSPI2_OBB_CHIP_OFFSET,
 	.xspi2_base_addr = APP_AI_XSPI2_OBB_BASE_ADDR,
@@ -618,14 +613,7 @@ static const AppAI_ModelStageSpec app_ai_obb_stage = {
 static bool AppAI_ShouldLogStageDiagnostics(
 	const AppAI_ModelStageSpec *stage)
 {
-#if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
-	if (stage == &app_ai_scalar_stage)
-	{
-		return false;
-	}
-#else
 	(void)stage;
-#endif
 	return true;
 }
 
