@@ -47,6 +47,11 @@ typedef struct
 } AppAI_SourceCropBox;
 #endif /* APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE */
 
+/* Tip-focus geometry heatmap stage.
+ * This is the active live-board geometry model wrapper, so expose it through
+ * the public AI header for the runtime and the ThreadX bootstrap. */
+#include "ai_network_tip_focus_v4_112_int8.h"
+
 /**
  * @brief Initialize the generated AI runtime package.
  *
@@ -97,8 +102,7 @@ bool AppAI_Xspi2EnsureMemoryMappedMode(void);
 bool App_AI_GetLastInferenceResult(float *value_out);
 
 /**
- * @brief Verify that tip-focus weights are programmed in xSPI2 flash
- *        (legacy debug-only; tip-focus stage is disabled by default in prod v0.8).
+ * @brief Verify that tip-focus weights are programmed in xSPI2 flash.
  *
  * Reads the signature bytes from xSPI2 at 0x70400000 and compares
  * against the expected network_atonbuf.xSPI2.raw header.
