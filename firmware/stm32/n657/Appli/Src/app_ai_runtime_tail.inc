@@ -1,5 +1,37 @@
 /* This file is included by the parent translation unit. */
 
+/* ── Stack watermark helper ────────────────────────────────────────────── */
+
+static void AppAI_StackWatermark_Log(const char *tag)
+{
+    TX_THREAD *thr = tx_thread_identify();
+    if (thr == NULL) return;
+    uint32_t cur_sp;
+    __asm volatile("MRS %0, psp" : "=r"(cur_sp));
+    uint32_t start_addr = (uint32_t)thr->tx_thread_stack_start;
+    uint32_t end_addr   = (uint32_t)(thr->tx_thread_stack_end) + (uint32_t)sizeof(ULONG);
+    uint32_t peak_addr  = (uint32_t)thr->tx_thread_stack_highest_ptr;
+    uint32_t total     = (uint32_t)(end_addr - start_addr);
+    uint32_t used      = (uint32_t)(end_addr - cur_sp);
+    uint32_t peak_used = (uint32_t)(end_addr - peak_addr);
+    DebugConsole_Printf(
+        "[AI][STACK] %s: thread=%s total=%lu used=%lu peak=%lu "
+        "free=%lu\r\n",
+        (tag != NULL) ? tag : "",
+        thr->tx_thread_name,
+        (unsigned long)total,
+        (unsigned long)used,
+        (unsigned long)peak_used,
+        (unsigned long)(total - peak_used));
+}
+
+#if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
+/* The live camera worker now runs the tip-focus geometry model directly, so
+ * keep a small forward declaration here for the dedicated decode helper. */
+static bool AppAI_TipFocus_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
+	size_t frame_size);
+#endif
+
 bool App_AI_Model_Init(void)
 {
 	if (app_ai_runtime_initialized)
@@ -20,12 +52,20 @@ bool App_AI_Model_Init(void)
 		return false;
 	}
 
+#if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
+	if (!AppAI_TipFocus_Init())
+	{
+		AppAI_LogInitFailure("tip-focus model");
+		return false;
+	}
+#endif
+
 	app_ai_runtime_initialized = true;
 #if APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
 	AppAI_ResetInferenceBurstHistory();
 #endif
 	DebugConsole_Printf("[AI] Model runtime init OK.\r\n");
-	(void)DebugConsole_WriteString("[AI][PIPELINE] OBB + heatmap center detector compiled.\r\n");
+	(void)DebugConsole_WriteString("[AI][PIPELINE] Tip-focus geometry heatmap compiled.\r\n");
 	return true;
 }
 
@@ -300,7 +340,13 @@ static bool AppAI_RuntimeInitStepwise(void)
 	uint32_t t = 0U;
 
 	ATON_DISABLE_CLR_CONFCLR(INTCTRL, 0);
-	ATON_INTCTRL_STD_INTORMSK_SET(ATON_STRENG_INT_MASK(ATON_STRENG_NUM, 0, 0));
+	/* Enable streaming engine completions (bits 0-15) AND epoch controller 0
+	 * completions (bits 28-30) on ATON IRQ line 0.  The OBB model is an epoch
+	 * blob — without the EC interrupt routed, RunEpochBlock returns WFE and
+	 * the WFE semaphore is never released. */
+	ATON_INTCTRL_STD_INTORMSK_SET(
+		ATON_STRENG_INT_MASK(ATON_STRENG_NUM, 0, 0)
+		| (0x70000000U));
 	ATON_INTCTRL_STD_INTANDMSK_SET(0xFFFFFFFFU);
 #if (ATON_INT_NR > 32)
 	ATON_INTCTRL_STD_INTORMSK_H_SET(0xFFFFFFFFU);
@@ -532,6 +578,10 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	const uint8_t *safe_frame_bytes = frame_bytes;
 	const LL_Buffer_InfoTypeDef *obb_output_info = NULL;
 	AppAI_ObbBox obb_box = {0};
+	/* Initialise gauge_center to -1 so the joint-model path is only taken
+	 * when the decode actually populated the fields. */
+	obb_box.gauge_center_x = -1.0f;
+	obb_box.gauge_center_y = -1.0f;
 	AppAI_SourceCrop full_frame_crop = {0U, 0U,
 										(size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
 										(size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS};
@@ -563,19 +613,24 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		return false;
 	}
 
-	if (!AppCenterDetector_Init())
-	{
-		(void)DebugConsole_WriteString("[AI] Dry-run entry aborted during center-detector init.\r\n");
-		return false;
-	}
+	/* The tip-focus model is now the live path, so the legacy centre-detector
+	 * block below only matters when that stage is disabled for fallback or
+	 * comparison builds. */
 	AppAI_LogR9("post_model_init");
 
+#if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
+	return AppAI_TipFocus_RunDryInferenceFromYuv422(safe_frame_bytes,
+		frame_size);
+#endif
+
+	AppCenterDetector_Init();  /* best-effort, failure logged internally */
+
 	/* -----------------------------------------------------------------------
-	 *  Pipeline: OBB → (optional luma refinement) → center-detector crop
+	 *  Legacy fallback pipeline: OBB → (optional luma refinement) →
+	 *  center-detector crop
 	 *
-	 *  Use fully independent copies at each stage so the crop that reaches
-	 *  the center detector cannot be corrupted by fallback logic in the
-	 *  OBB decode or any other path.
+	 *  This only runs when the tip-focus path is compiled out. It remains
+	 *  here as a comparison / fallback path for older board experiments.
 	 * ----------------------------------------------------------------------- */
 	AppAI_SourceCrop obb_crop = fixed_training_crop;  /* set iff obb produces a valid box */
 	bool obb_crop_valid = false;
@@ -586,10 +641,10 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 			&app_ai_obb_stage, safe_frame_bytes, frame_size,
 			&full_frame_crop, &obb_output_info, &obb_output_value);
 
-		/* Decode the OBB output into obb_crop (may still fall back to fixed
-		 * training crop inside DecodeObbCropBox — that is OK). */
+		/* Decode the QARepVGG-Pro heatmap output into obb_crop and obb_box.
+		 * Single-model replacement for the old OBB + centre-detector pipeline. */
 		if (obb_ok &&
-			AppAI_DecodeObbCropBox(obb_output_info, &obb_crop, &obb_box))
+			AppAI_DecodeQarepvggObb(obb_output_info, &obb_crop, &obb_box))
 		{
 			obb_crop_valid = true;
 			AppAI_LogObbResult(obb_output_info, &obb_box);
@@ -714,16 +769,44 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 				(unsigned long)cd_crop.height);
 		}
 
-	/* Compute the classical rim-vote centre as a reference. When it succeeds,
-	 * we still log it, but we force the retrained CNN path by passing
-	 * (-1,-1) into AppCenterDetector_Run and keep the rim-vote centre as the
-	 * trusted fallback. If the rim-vote fails, we fall back to the
-	 * EMA-smoothed OBB pivot. */
+	/* Compute the final centre.  The QARepVGG-Pro model provides a
+	 * direct gauge-centre prediction (gauge_center_x/y) from its heatmap
+	 * output via 1-D parabolic sub-pixel refinement.  When the model is
+	 * used, the centre-detector CNN is skipped and the polar vote runs
+	 * directly at the predicted centre. */
 	float override_cx;
 	float override_cy;
 	float fallback_cx;
 	float fallback_cy;
-	if (obb_crop_valid)
+
+	/* Check whether the QARepVGG-Pro model produced a valid gauge-centre channel. */
+	const bool joint_center_valid =
+		obb_crop_valid
+		&& (obb_box.gauge_center_x >= 0.0f)
+		&& (obb_box.gauge_center_y >= 0.0f);
+
+	if (joint_center_valid)
+	{
+		/* Joint model predicted the needle-pivot centre directly.
+		 * No EMA, no pivot offset — the model is trained to output the
+		 * exact gauge centre in normalised [0,1] coords. */
+		override_cx = obb_box.gauge_center_x
+			* (float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+		override_cy = obb_box.gauge_center_y
+			* (float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+		fallback_cx = override_cx;
+		fallback_cy = override_cy;
+		{
+			const long cx10 = lroundf(override_cx * 10.0f);
+			const long cy10 = lroundf(override_cy * 10.0f);
+			DebugConsole_Printf(
+				"[AI] Joint model gauge centre: (%ld.%01ld,%ld.%01ld) "
+				"(skipping centre-detector CNN)\r\n",
+				labs(cx10) / 10L, labs(cx10) % 10L,
+				labs(cy10) / 10L, labs(cy10) % 10L);
+		}
+	}
+	else if (obb_crop_valid)
 	{
 		size_t rim_cx = 0U;
 		size_t rim_cy = 0U;
@@ -738,6 +821,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 				APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS,
 				dial_radius_px,
 				&rim_cx, &rim_cy, &rim_quality);
+		AppAI_StackWatermark_Log("rim-vote");
 		if (rim_ok)
 		{
 			{
@@ -751,12 +835,37 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 					labs(cy10) / 10L, labs(cy10) % 10L,
 					labs(rq100) / 100L, labs(rq100) % 100L);
 			}
-			/* Force the retrained CNN path here; the rim-vote centre is still
-			 * logged above as the classical reference for comparison. */
-			fallback_cx = (float)rim_cx;
-			fallback_cy = (float)rim_cy;
-			override_cx = -1.0f;
-			override_cy = -1.0f;
+			/* Use EMA-smoothed OBB centre regardless of rim-vote result.
+			 * The CNN (7 px error) is now reliable enough; rim-vote is
+			 * logged above for debug but no longer overrides the pipeline. */
+			const float raw_cx =
+				obb_box.center_x * (float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+			const float raw_cy =
+				obb_box.center_y * (float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+			if (app_ai_smoothed_obb_cx < 0.0f)
+			{
+				app_ai_smoothed_obb_cx = raw_cx;
+				app_ai_smoothed_obb_cy = raw_cy;
+			}
+			else
+			{
+				app_ai_smoothed_obb_cx =
+					(APP_AI_OBB_CENTER_EMA_ALPHA * raw_cx) +
+					((1.0f - APP_AI_OBB_CENTER_EMA_ALPHA) * app_ai_smoothed_obb_cx);
+				app_ai_smoothed_obb_cy =
+					(APP_AI_OBB_CENTER_EMA_ALPHA * raw_cy) +
+					((1.0f - APP_AI_OBB_CENTER_EMA_ALPHA) * app_ai_smoothed_obb_cy);
+			}
+			const float x_off =
+				APP_GAUGE_OBB_PIVOT_X_OFFSET_RATIO
+				* (float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+			const float y_off =
+				APP_GAUGE_OBB_PIVOT_Y_OFFSET_RATIO
+				* (float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+			override_cx = app_ai_smoothed_obb_cx + x_off;
+			override_cy = app_ai_smoothed_obb_cy + y_off;
+			fallback_cx = override_cx;
+			fallback_cy = override_cy;
 		}
 		else
 		{
@@ -802,15 +911,19 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	}
 	else
 	{
-		/* No OBB → fixed training-crop centre. */
-		override_cx =
+		/* No OBB → force the CNN heatmap (-1,-1) with the fixed
+		 * training-crop centre as fallback.  The rim-vote is too
+		 * expensive (full-frame scan, ~10 s) to run inside the AI
+		 * pipeline; the CNN heatmap is designed to produce the
+		 * correct centre in one forward pass. */
+		fallback_cx =
 			(float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS
 			* APP_GAUGE_INNER_DIAL_CENTER_X_RATIO;
-		override_cy =
+		fallback_cy =
 			(float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS
 			* APP_GAUGE_INNER_DIAL_CENTER_Y_RATIO;
-		fallback_cx = override_cx;
-		fallback_cy = override_cy;
+		override_cx = -1.0f;
+		override_cy = -1.0f;
 	}
 		AppCenterDetector_Result_t cd_result = {0};
 
@@ -2317,8 +2430,17 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToInt8Input(
 {
 	const size_t source_width = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
 	const size_t source_height = (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
-	const size_t output_width = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
-	const size_t output_height = (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+	/* Derive output dimensions from the model's input tensor memory shape
+	 * (NHWC: {batch, height, width, channels}).  Each model stage may have a
+	 * different input resolution (e.g. OBB is 224×224, heatmap is 320×320). */
+	const size_t output_width =
+		(input_info->mem_shape != NULL && input_info->mem_ndims >= 3U)
+			? (size_t)input_info->mem_shape[2U]
+			: (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+	const size_t output_height =
+		(input_info->mem_shape != NULL && input_info->mem_ndims >= 3U)
+			? (size_t)input_info->mem_shape[1U]
+			: (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
 	const size_t required_bytes = output_width * output_height * 3U;
 	size_t crop_x_min = 0U;
 	size_t crop_y_min = 0U;
@@ -2714,8 +2836,8 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToPolarInput(
 	 * to keep the buffer footprint manageable even at 320x320.  Gradients are
 	 * recomputed on-the-fly in a second pass instead of being stored in separate
 	 * arrays, which still avoids two large float scratch planes. */
-	static uint8_t resized_rgb[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * 3U] __attribute__((section(".npusram6"))); /* training-style resized crop */
-	static uint8_t polar_luma[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS] __attribute__((section(".npusram6")));  /* exact V28 polar luma scratch */
+	static uint8_t resized_rgb[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * 3U] __attribute__((section(".tip_focus_activations"))); /* training-style resized crop */
+	static uint8_t polar_luma[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS] __attribute__((section(".npusram6_polar")));  /* overlaid on OBB AXISRAM6 region, CD-stage only */
 
 	if ((frame_bytes == NULL) || (input_ptr == NULL) || (input_info == NULL))
 	{
@@ -3472,12 +3594,13 @@ static void AppAI_ReadRgbFromYuv422Pixel(const uint8_t *frame_bytes,
 		return;
 	}
 
-	const float y = ((float)frame_bytes[y_index] - 16.0f) * 1.1643836f;
+	/* Full-range BT.601 — matches training preprocessing. */
+	const float y = (float)frame_bytes[y_index];
 	const float u = (float)frame_bytes[u_index] - 128.0f;
 	const float v = (float)frame_bytes[v_index] - 128.0f;
-	const float r = (y + (1.5960268f * v)) / 255.0f;
-	const float g = (y - (0.3917623f * u) - (0.8129677f * v)) / 255.0f;
-	const float b = (y + (2.0172322f * u)) / 255.0f;
+	const float r = (y + (1.402f * v)) / 255.0f;
+	const float g = (y - (0.344136f * u) - (0.714136f * v)) / 255.0f;
+	const float b = (y + (1.772f * u)) / 255.0f;
 #endif
 
 	if (r_out != NULL)
@@ -4039,6 +4162,291 @@ static float AppAI_TipFocus_MedianFilter(float new_value)
 	app_ai_tip_focus_last_published = new_median;
 	return new_median;
 }
+
+#if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
+/**
+ * @brief Compute the peak value and spatial spread of one quantized heatmap.
+ *
+ * The replay guardrails use heatmap spread as one of the main strictness
+ * checks, so the board runtime keeps the same dequantized statistic here.
+ */
+static bool AppAI_TipFocus_HeatmapStats(
+	const int8_t *heatmap,
+	int32_t size,
+	float *peak_out,
+	float *spread_out)
+{
+	float total_weight = 0.0f;
+	float mean_x = 0.0f;
+	float mean_y = 0.0f;
+	float peak_value = 0.0f;
+
+	if ((heatmap == NULL) || (peak_out == NULL) || (spread_out == NULL) || (size <= 0))
+	{
+		return false;
+	}
+
+	for (int32_t py = 0; py < size; ++py)
+	{
+		for (int32_t px = 0; px < size; ++px)
+		{
+			const float prob =
+				(((float)heatmap[(py * size) + px]) + 128.0f) * 0.00390625f;
+
+			if (prob > peak_value)
+			{
+				peak_value = prob;
+			}
+
+			total_weight += prob;
+			mean_x += prob * (float)px;
+			mean_y += prob * (float)py;
+		}
+	}
+
+	if (total_weight <= 0.0f)
+	{
+		return false;
+	}
+
+	mean_x /= total_weight;
+	mean_y /= total_weight;
+
+	{
+		float spread_accum = 0.0f;
+
+		for (int32_t py = 0; py < size; ++py)
+		{
+			for (int32_t px = 0; px < size; ++px)
+			{
+				const float prob =
+					(((float)heatmap[(py * size) + px]) + 128.0f) * 0.00390625f;
+				const float dx = (float)px - mean_x;
+				const float dy = (float)py - mean_y;
+
+				spread_accum += prob * ((dx * dx) + (dy * dy));
+			}
+		}
+
+		*peak_out = peak_value;
+		*spread_out = sqrtf(spread_accum / total_weight);
+	}
+
+	return true;
+}
+
+/**
+ * @brief Run the tip-focus heatmap model end-to-end on one YUV422 frame.
+ */
+static bool AppAI_TipFocus_RunDryInferenceFromYuv422(
+	const uint8_t *frame_bytes, size_t frame_size)
+{
+	const LL_Buffer_InfoTypeDef *input_info =
+		(const LL_Buffer_InfoTypeDef *)AppAI_TipFocus_GetInputBufferInfo();
+	int8_t *input_buffer = AppAI_TipFocus_GetInputBuffer();
+	const int8_t *center_heatmap = NULL;
+	const int8_t *tip_heatmap = NULL;
+	float center_x_112 = 0.0f;
+	float center_y_112 = 0.0f;
+	float tip_x_112 = 0.0f;
+	float tip_y_112 = 0.0f;
+	float center_peak = 0.0f;
+	float tip_peak = 0.0f;
+	float center_spread_px = 0.0f;
+	float tip_spread_px = 0.0f;
+	float confidence = 0.0f;
+	float angle_degrees = 0.0f;
+	float angle_delta_degrees = 0.0f;
+	float temperature_c = 0.0f;
+	float published_temperature_c = 0.0f;
+	const float heatmap_to_pixel_scale =
+		223.0f / (float)(APP_AI_TIP_FOCUS_HEATMAP_SIZE - 1U);
+	const float expected_center_tip_distance_px =
+		APP_GAUGE_INNER_DIAL_RADIUS_FRAME_RATIO
+		* (float)(APP_AI_TIP_FOCUS_HEATMAP_SIZE * 2U);
+	bool valid = true;
+
+	if ((input_info == NULL) || (input_buffer == NULL))
+	{
+		DebugConsole_WriteString("[AI] Tip-focus init failed: missing model buffers.\r\n");
+		return false;
+	}
+
+	if (!AppAI_PreprocessYuv422FrameToInt8Input(
+			frame_bytes, frame_size,
+			(uint8_t *)input_buffer,
+			(size_t)LL_Buffer_len(input_info),
+			input_info))
+	{
+		DebugConsole_WriteString("[AI] Tip-focus preprocess failed.\r\n");
+		return false;
+	}
+
+	if (!AppAI_TipFocus_Run())
+	{
+		DebugConsole_WriteString("[AI] Tip-focus model run failed.\r\n");
+		return false;
+	}
+
+	center_heatmap = AppAI_TipFocus_GetCenterHeatmap();
+	tip_heatmap = AppAI_TipFocus_GetTipHeatmap();
+	confidence = (((float)AppAI_TipFocus_GetConfidenceRaw()) + 128.0f) * 0.00390625f;
+
+	if ((center_heatmap == NULL) || (tip_heatmap == NULL))
+	{
+		DebugConsole_WriteString("[AI] Tip-focus outputs missing.\r\n");
+		return false;
+	}
+
+	valid = AppAI_TipFocus_HeatmapStats(
+		center_heatmap,
+		(int32_t)APP_AI_TIP_FOCUS_HEATMAP_SIZE,
+		&center_peak,
+		&center_spread_px) &&
+		AppAI_TipFocus_HeatmapStats(
+			tip_heatmap,
+			(int32_t)APP_AI_TIP_FOCUS_HEATMAP_SIZE,
+			&tip_peak,
+			&tip_spread_px);
+
+	if (valid)
+	{
+		valid =
+			AppAI_SoftArgmaxGlobal(center_heatmap,
+				(int32_t)APP_AI_TIP_FOCUS_HEATMAP_SIZE,
+				&center_x_112, &center_y_112) &&
+			AppAI_SoftArgmaxGlobal(tip_heatmap,
+				(int32_t)APP_AI_TIP_FOCUS_HEATMAP_SIZE,
+				&tip_x_112, &tip_y_112);
+	}
+
+	if (valid)
+	{
+		const float center_x_px = center_x_112 * heatmap_to_pixel_scale;
+		const float center_y_px = center_y_112 * heatmap_to_pixel_scale;
+		const float tip_x_px = tip_x_112 * heatmap_to_pixel_scale;
+		const float tip_y_px = tip_y_112 * heatmap_to_pixel_scale;
+		const float dx = tip_x_px - center_x_px;
+		const float dy = tip_y_px - center_y_px;
+		const float center_tip_distance_px = sqrtf((dx * dx) + (dy * dy));
+		const float confidence_floor = APP_AI_TIP_FOCUS_CONFIDENCE_FLOOR;
+		const float edge_margin_px =
+			fminf(
+				fminf(center_x_px, 223.0f - center_x_px),
+				fminf(center_y_px, 223.0f - center_y_px));
+		const float tip_edge_margin_px =
+			fminf(
+				fminf(tip_x_px, 223.0f - tip_x_px),
+				fminf(tip_y_px, 223.0f - tip_y_px));
+		const float min_edge_margin_px =
+			fminf(edge_margin_px, tip_edge_margin_px);
+		const float center_tip_distance_ratio =
+			(expected_center_tip_distance_px > 0.0f)
+				? (center_tip_distance_px / expected_center_tip_distance_px)
+				: 0.0f;
+
+		angle_degrees = atan2f(dy, dx) * (180.0f / 3.14159265358979f);
+		if (angle_degrees < 0.0f)
+		{
+			angle_degrees += 360.0f;
+		}
+
+		angle_delta_degrees = fmodf(angle_degrees - APP_AI_TIP_FOCUS_COLD_ANGLE_DEG, 360.0f);
+		if (angle_delta_degrees < 0.0f)
+		{
+			angle_delta_degrees += 360.0f;
+		}
+
+		temperature_c =
+			(APP_AI_TIP_FOCUS_SLOPE * angle_delta_degrees)
+			+ APP_AI_TIP_FOCUS_INTERCEPT;
+
+		valid =
+			(center_peak >= APP_AI_TIP_FOCUS_CONFIDENCE_FLOOR) &&
+			(tip_peak >= 0.35f) &&
+			(confidence >= confidence_floor) &&
+			(center_spread_px <= 55.0f) &&
+			(tip_spread_px <= 55.0f) &&
+			(min_edge_margin_px >= 4.0f) &&
+			(center_tip_distance_ratio >= 0.35f) &&
+			(center_tip_distance_ratio <= 1.40f) &&
+			(angle_delta_degrees <= APP_AI_TIP_FOCUS_SWEEP_DEG) &&
+			AppAI_IsFiniteFloat(temperature_c) &&
+			(temperature_c >= APP_AI_TIP_FOCUS_TEMP_MIN_C) &&
+			(temperature_c <= APP_AI_TIP_FOCUS_TEMP_MAX_C);
+
+		if (valid)
+		{
+			temperature_c = AppAI_TipFocus_MedianFilter(temperature_c);
+			app_ai_tip_focus_consecutive_invalid = 0U;
+			app_ai_last_inference_value = temperature_c;
+			app_ai_last_inference_valid = true;
+
+			{
+				const long center_x10 = lroundf(center_x_px * 10.0f);
+				const long center_y10 = lroundf(center_y_px * 10.0f);
+				const long tip_x10 = lroundf(tip_x_px * 10.0f);
+				const long tip_y10 = lroundf(tip_y_px * 10.0f);
+				const long angle100 = lroundf(angle_degrees * 100.0f);
+				const long delta100 = lroundf(angle_delta_degrees * 100.0f);
+				const long temp100 = lroundf(temperature_c * 100.0f);
+				const long conf100 = lroundf(confidence * 100.0f);
+				const long center_peak100 = lroundf(center_peak * 100.0f);
+				const long tip_peak100 = lroundf(tip_peak * 100.0f);
+				const long center_spread100 = lroundf(center_spread_px * 100.0f);
+				const long tip_spread100 = lroundf(tip_spread_px * 100.0f);
+				const long dist_ratio100 = lroundf(center_tip_distance_ratio * 100.0f);
+
+				DebugConsole_Printf(
+					"[AI] Tip-focus ok: center=(%ld.%01ld,%ld.%01ld) tip=(%ld.%01ld,%ld.%01ld) "
+					"angle=%ld.%02lddeg delta=%ld.%02lddeg temp=%ld.%02ldC conf=%ld.%02ld "
+					"peak=%ld.%02ld/%ld.%02ld spread=%ld.%02ld/%ld.%02ld dist=%ld.%02ld\r\n",
+					labs(center_x10) / 10L, labs(center_x10) % 10L,
+					labs(center_y10) / 10L, labs(center_y10) % 10L,
+					labs(tip_x10) / 10L, labs(tip_x10) % 10L,
+					labs(tip_y10) / 10L, labs(tip_y10) % 10L,
+					labs(angle100) / 100L, labs(angle100) % 100L,
+					labs(delta100) / 100L, labs(delta100) % 100L,
+					labs(temp100) / 100L, labs(temp100) % 100L,
+					labs(conf100) / 100L, labs(conf100) % 100L,
+					labs(center_peak100) / 100L, labs(center_peak100) % 100L,
+					labs(tip_peak100) / 100L, labs(tip_peak100) % 100L,
+					labs(center_spread100) / 100L, labs(center_spread100) % 100L,
+					labs(tip_spread100) / 100L, labs(tip_spread100) % 100L,
+					labs(dist_ratio100) / 100L, labs(dist_ratio100) % 100L);
+			}
+
+			(void)INA219_LogReading("AI-DONE");
+			Metrics_EndInference("AI", temperature_c);
+			return true;
+		}
+	}
+
+	app_ai_tip_focus_consecutive_invalid++;
+	if (app_ai_tip_focus_consecutive_invalid >= APP_AI_TIP_FOCUS_MAX_INVALID_FRAMES)
+	{
+		app_ai_tip_focus_consecutive_invalid = 0U;
+	}
+
+	if (app_ai_tip_focus_last_published_valid)
+	{
+		published_temperature_c = app_ai_tip_focus_last_published;
+		app_ai_last_inference_value = published_temperature_c;
+		app_ai_last_inference_valid = true;
+		DebugConsole_WriteString(
+			"[AI] Tip-focus rejected; holding last published temperature.\r\n");
+		(void)INA219_LogReading("AI-DONE");
+		Metrics_EndInference("AI", published_temperature_c);
+		return true;
+	}
+
+	app_ai_last_inference_valid = false;
+	DebugConsole_WriteString(
+		"[AI] Tip-focus rejected and no stable history is available.\r\n");
+	Metrics_EndInference("AI", NAN);
+	return false;
+}
+#endif /* APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE */
 
 bool App_AI_GetLastInferenceResult(float *value_out)
 {

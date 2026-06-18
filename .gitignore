@@ -63,6 +63,7 @@ ml/data/captured_images/_live_rectified_probe/
 
 # Generated dataset outputs
 ml/data/captured_images/
+ml/data/captured_images_320/
 ml/data/preprocessed_crops/
 ml/data/labelled/*.zip
 ml/data/board_captures_labeled.csv
@@ -76,6 +77,15 @@ ml/data/obb_board_crops/
 ml/data/heatmap_cd*/
 ml/data/yolo_obb_320/
 ml/data/*_annotated_centers.csv
+
+# Annotation tool image copies (generated from captured_images)
+ml/data/annotate_30/images/
+ml/data/annotate_30/annotated_previews/
+ml/data/annotate_30/images.txt
+ml/data/annotate_30/
+ml/data/annotate_batch2/images/
+ml/data/annotate_batch2/image_list.txt
+ml/data/annotate_batch2/
 
 # Generated reports and local logs
 docs/int8_drift_decision_report.md
@@ -119,6 +129,11 @@ tmp/*
 !tmp/.gitkeep
 ml/tmp/*
 !ml/tmp/.gitkeep
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
 
 # Python virtual environments
 .venv/

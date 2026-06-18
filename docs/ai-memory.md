@@ -1,4 +1,997 @@
-﻿# AI Memory
+# AI Memory
+
+## Live board pipeline now runs the tip-focus geometry model (2026-06-18)
+
+- The firmware AI pipeline is now wired to the tip-focus geometry heatmap
+  model instead of the older OBB + center-detector cascade.
+- Runtime wiring:
+  - `App_AI_Model_Init()` initializes the tip-focus wrapper first.
+  - `App_AI_RunDryInferenceFromYuv422()` returns through the tip-focus decode
+    path on the live board.
+  - `app_threadx.c` still invokes the boot dry run hook, which now exercises
+    the same tip-focus model wrapper.
+- Board model shape:
+  - input: `224x224x3` int8
+  - outputs: `112x112` center heatmap, `112x112` tip heatmap, scalar
+    confidence
+- Selected calibration candidate:
+  - `D_robust_linear`
+  - `cold_angle_degrees = 135.0`
+  - `intercept = -33.14101213857672`
+  - `slope = 0.3118859767261175`
+- Firmware guardrails now check:
+  - center / tip heatmap peak floors
+  - heatmap spread
+  - edge margin
+  - center-tip distance ratio
+  - angle sweep bounds
+  - temperature range
+- The old OBB / center-detector cascade remains only as fallback code in the
+  file, not as the primary live path.
+
+## V26 width sweep definitive optimum (2026-06-17)
+
+- Sweeping the 112x112 refine width across `32`, `48`, `64`, and `80`
+  filters confirmed that `48` filters is the definitive optimum.
+- Results:
+  - `32` filters (`v26a`):
+    - accepted MAE: `3.908 C`
+    - center spread: `30.59 px`
+    - tip spread: `28.27 px`
+    - strict acceptance: `27.7%`
+    - activation: `392 KB`
+  - `48` filters (`v26c`):
+    - accepted MAE: `3.841 C`
+    - center spread: `27.69 px`
+    - tip spread: `26.61 px`
+    - strict acceptance: `34.0%`
+    - activation: `588 KB`
+  - `64` filters (`v26d`):
+    - accepted MAE: `3.695 C`
+    - center spread: `27.89 px`
+    - tip spread: `26.49 px`
+    - strict acceptance: `31.9%`
+    - activation: `784 KB`
+  - `80` filters (`v26e`):
+    - accepted MAE: `3.776 C`
+    - center spread: `27.86 px`
+    - tip spread: `26.47 px`
+    - strict acceptance: `31.9%`
+    - activation: `980 KB`
+- Interpretation:
+  - `32 -> 48` is the only big jump in strict behavior and spread.
+  - `48 -> 64 -> 80` gives diminishing returns.
+  - The raw worst error stays around `95-96 C` for all widened heads, so the
+    remaining issue is robustness / stabilization, not more width.
+- Current best strict baseline: `v26c`.
+- Current best raw MAE within the widened-head family: `v26d`, but it is not
+  the best strict model.
+
+## V26 head-width sweep optimum (2026-06-17)
+
+- Sweeping the 112x112 refine head width found a clear Pareto point at
+  `48` filters.
+- Results:
+  - `v26a` (32 filters):
+    - accepted MAE: `3.908 C`
+    - center spread: `30.59 px`
+    - tip spread: `28.27 px`
+    - strict acceptance: `27.7%`
+    - activation: `392 KB`
+  - `v26c` (48 filters):
+    - accepted MAE: `3.841 C`
+    - center spread: `27.69 px`
+    - tip spread: `26.61 px`
+    - strict acceptance: `34.04%`
+    - activation: `588 KB`
+  - `v26d` (64 filters, 15 epochs):
+    - accepted MAE: `3.695 C`
+    - center spread: `27.89 px`
+    - tip spread: `26.49 px`
+    - strict acceptance: `31.9%`
+    - acceptance rate: `66.0%`
+    - activation: `784 KB`
+- Interpretation:
+  - `48` filters is the Pareto-optimal point for strict acceptance versus
+    efficiency.
+  - `64` filters gives diminishing returns and hurts acceptance.
+  - The raw worst error around `96 C` on the widened-head regime suggests the
+    larger head family still needs stabilization if we want robustness.
+- Current best strict baseline: v26c.
+- Current best raw MAE within the widened head family: v26d, but with worse
+  strict behavior.
+
+## V26c widened refine block breakthrough (2026-06-17)
+
+- Widening the 112x112 refine block to 48 filters produced the largest single
+  step improvement in the series so far on spread and strict acceptance.
+- Results versus v26a:
+  - accepted MAE improved from `3.908 C` to `3.841 C`
+  - center spread improved from `30.59 px` to `27.69 px`
+  - tip spread improved from `28.27 px` to `26.61 px`
+  - strict acceptance improved from `27.66%` to `34.04%`
+  - hard-case center spread reached `30.63 px`
+  - hard-case tip spread reached `30.01 px`
+  - activation footprint grew from `392 KB` to `588 KB` but is still safely
+    under budget
+- The tradeoff is that the raw worst error regressed to `96.4 C`, which means
+  the wider head still needs stabilization.
+- This is likely not a dead end. The spread and strict gains are strong enough
+  that a follow-up with a little more unfrozen adaptation or a slightly lower
+  LR is justified.
+- Current best model for strict acceptance and spread: v26c.
+- Current best model for raw robustness remains v26a until the outlier is
+  tamed.
+
+## V26b multiscale fusion collapse (2026-06-17)
+
+- Enabling `decoder_multiscale_fusion=True` on top of v26a caused a full
+  regression back to pre-v18 behavior.
+- Results versus v26a:
+  - accepted MAE worsened from `3.91 C` to `5.14 C`
+  - center spread worsened from `30.59 px` to `43.01 px`
+  - tip spread worsened from `28.27 px` to `36.71 px`
+  - strict acceptance dropped from `27.66%` to `0.0%`
+  - raw worst error returned to `100.8 C`
+- Interpretation:
+  - the multiscale skip projections are not transfer-safe in the current
+    last-two-blocks-unfrozen recipe
+  - the skip layers begin from random `he_normal` weights and inject garbage
+    into the trained decoder path before the backbone can adapt enough
+- Current best baseline remains v26a.
+- The next safe growth path is to keep the transfer-compatible shape fixed and
+  spend extra capacity inside the 112x112 high-resolution head instead of
+  adding multiscale skip fusion.
+
+## V26a subpixel refinement head breakthrough (2026-06-17)
+
+- Adding a tiny sub-pixel refinement head produced the best model in the
+  series so far without changing the activation footprint.
+- Results versus v23b:
+  - accepted MAE improved from `3.939 C` to `3.908 C`
+  - center spread stayed essentially flat: `30.60 px` -> `30.59 px`
+  - tip spread stayed essentially flat: `28.13 px` -> `28.27 px`
+  - strict acceptance improved from `21.28%` to `27.66%`
+  - center MAE improved from `16.03 px` to `15.91 px`
+  - raw worst error improved from `30.57 C` to `29.92 C`
+- The key win is the strict metric: the explicit residual offset head helps
+  place peaks more precisely without forcing the backbone to overfit or the
+  decoder to sharpen harder.
+- This is the first model that improves strict acceptance while also staying
+  at least neutral on spread and MAE.
+- Current best baseline: v26a.
+- The next safe place to spend extra capacity is the high-resolution head:
+  - modestly widen or deepen the 112x112 refinement block
+  - add light multi-scale skip fusion into the high-res head
+  - try a spatial local-offset branch alongside the current global subpixel
+    correction
+- The literature and our runs both point away from spending more capacity in
+  the low-resolution bottleneck or reintroducing a broad distillation anchor.
+
+## Literature signal for strict localization (2026-06-17)
+
+- The recent gauge and keypoint literature points to the same pattern we are
+  seeing empirically:
+  - keep high-resolution features alive into the head / decoder
+  - use explicit geometry supervision and sub-pixel correction
+  - make the final reading formula depend on fitted structure, not just raw
+    classification
+  - focus training on hard negatives / hard cases
+- Papers that support this direction:
+  - PM-SwinUnet + Scale and Pointer Fitting + improved angle calculation:
+    strong segmentation plus fitting, with `mIoU 0.941`, `mPA 0.976`, and
+    average relative error `0.0092`
+  - Reference Heatmap Transformer: reference heatmaps and multi-scale fusion
+    improve precise landmark heatmaps under difficult conditions
+  - Sub-pixel keypoint refinement: learned offsets improve localization
+    precision beyond the coarse heatmap peak
+  - Coordinate decoding / structured heatmap regression: better encoding and
+    decoding reduce quantization error and optimization mismatch
+  - Box-aware centerness heatmaps: generalized centerness and focal-style
+    training sharpen the center prediction without extra manual labels
+- For our gauge model, the literature says the strict metric should improve
+  most from:
+  - sharper upstream features
+  - a small explicit offset/refinement head
+  - fitting-based geometry extraction
+  - hard-example emphasis
+- The literature does not support more decoder sharpening by itself as the
+  highest-leverage move once the feature quality ceiling is reached.
+- The strongest growth path suggested by the literature is:
+  - a deeper high-resolution trunk at the final 112x112 stage, HRNet-style
+  - explicit detail enhancement at the high-resolution head, DE-HRNet-style
+  - an unbiased / sub-pixel coordinate decoding step, DARK / UDP-style
+  - a small learned offset refinement branch, like the sub-pixel keypoint
+    refinement work
+- In other words: grow the model where it is already spatially precise, not
+  where the spatial signal is already compressed.
+- For the gauge task specifically, the best next architectural growth is a
+  high-resolution detail branch plus explicit scale/pointer fitting, following
+  the PM-SwinUnet and PriKMet pattern rather than just widening the existing
+  112x112 head.
+
+## V25a three-block underfit at very low LR (2026-06-17)
+
+- Unfreezing `last_three_blocks` at `5e-9` for a 10-epoch unfrozen phase was
+  too conservative to beat v23b.
+- Results versus v23b:
+  - accepted MAE worsened from `3.94 C` to `4.25 C`
+  - center spread worsened from `30.60 px` to `31.19 px`
+  - tip spread worsened from `28.13 px` to `28.36 px`
+  - strict acceptance dropped from `21.3%` to `12.8%`
+  - center MAE stayed essentially flat at `16.05 px`
+- The model barely moved away from the frozen v20 start, which suggests the
+  LR / epoch budget was too small for three blocks to adapt meaningfully.
+- Takeaway:
+  - more unfrozen blocks need proportionally more epochs or a higher LR
+  - at the current 10-epoch budget, fewer blocks at moderate LR still beat
+    more blocks at very low LR
+  - v23b remains the best baseline unless we scale the training budget up
+    when we scale the unfreeze scope
+
+## V24 coordinate-weight sweep optimum (2026-06-17)
+
+- Sweeping the direct center/tip coordinate supervision confirmed that `2.0x`
+  is the unique optimum around the v23b baseline.
+- Results:
+  - `1.5x` (v24a):
+    - accepted MAE: `4.02 C`
+    - center spread: `31.25 px`
+    - tip spread: `28.62 px`
+    - strict acceptance: `12.8%`
+  - `2.0x` (v23b):
+    - accepted MAE: `3.94 C`
+    - center spread: `30.60 px`
+    - tip spread: `28.13 px`
+    - strict acceptance: `21.3%`
+    - raw worst error: `30.6 C`
+  - `2.5x` (v24c):
+    - accepted MAE: `3.94 C`
+    - center spread: `31.19 px`
+    - tip spread: `28.99 px`
+    - strict acceptance: `19.2%`
+    - raw worst error: `107.1 C`
+- Interpretation:
+  - `1.5x` is too weak and lets the backbone drift more.
+  - `2.5x` is too aggressive and reintroduces an outlier collapse on hard
+    samples.
+  - `2.0x` is the sweet spot and should remain the baseline for future
+    experiments.
+
+## V23b anchor removal breakthrough (2026-06-17)
+
+- Removing the distillation anchor entirely and doubling the direct
+  center/tip coordinate weights produced the best geometry result so far.
+- Results versus v20 / v21 / v22 / v23a:
+  - accepted MAE improved to `3.94 C`
+  - center spread improved to `30.60 px`
+  - tip spread improved to `28.13 px`
+  - strict acceptance improved to `21.28%`
+  - center rejections dropped to `32`
+  - tip rejections dropped to `12`
+  - raw worst error collapsed to `30.6 C`
+  - center MAE stayed around `16.03 px`
+- This is the clearest sign yet that the frozen-reference distillation was the
+  real bottleneck. The reference heatmaps are broad, so anchoring to them kept
+  the unfrozen backbone from fully tightening the peaks.
+- With the anchor removed, the model can use the late-unfrozen backbone to
+  learn tighter features while the stronger coordinate supervision keeps the
+  peak positions aligned to ground truth.
+- V23b is now the current best candidate and the new baseline for future
+  experiments.
+
+## V22 stronger-anchor follow-up (2026-06-17)
+
+- Lowering the LR to `1e-8` and strengthening the distillation anchor from
+  `0.15` to `0.30` partially recovered accuracy, but it pulled the model back
+  toward the broad-heatmap reference.
+- Results versus v20 / v21:
+  - accepted MAE improved a bit over v21: `4.18 C -> 4.07 C`
+  - center spread worsened versus v21: `30.70 px -> 31.46 px`
+  - tip spread worsened versus v21: `27.98 px -> 28.39 px`
+  - strict acceptance fell versus v21: `14.89% -> 10.64%`
+  - hard-case center spread worsened versus v21: `31.81 px -> 32.09 px`
+- The stronger anchor is now clearly too conservative. It preserves the v20
+  geometry more than it lets the backbone learn the tighter v21 feature
+  routing.
+- The better balance so far is still v21:
+  - `last_two_blocks` unfrozen
+  - `1e-7` unfrozen LR
+  - moderate anchor strength
+- The next ablation should reduce the distillation anchor further, toward
+  `0.05` or even `0.0`, and compensate by increasing the direct
+  center/tip coordinate supervision so the model stays aligned to ground truth
+  instead of to the broad reference heatmaps.
+
+## V21 late-unfreeze breakthrough (2026-06-17)
+
+- Unfreezing the `last_two_blocks` of the backbone on top of the v20 frozen
+  checkpoint finally broke the spread ceiling that the decoder-side sharpening
+  had been hitting.
+- Results versus v20:
+  - center spread improved from `39.04 px` to `30.70 px`
+  - tip spread improved from `30.87 px` to `27.98 px`
+  - strict acceptance improved from `2.13%` to `14.89%`
+  - acceptance rate improved from `80.9%` to `85.1%`
+  - accepted MAE worsened from `3.50 C` to `4.18 C`
+  - center MAE worsened from `10.95 px` to `16.05 px`
+  - hard-case center spread improved from `34.23 px` to `31.81 px`
+- This is the first result that clearly shows the frozen backbone was the
+  bottleneck for the residual-sharpen stack.
+- The accuracy drift suggests the unfreeze step is too aggressive at
+  `1e-7`, or the distillation / location-preserving anchor is too weak.
+- The next ablation should keep `last_two_blocks` unfrozen, but try a slower
+  LR such as `1e-8` or `5e-9`, and strengthen the positional anchor so the
+  model keeps the spread win without losing temperature accuracy.
+
+## V20 fullres residual saturation (2026-06-17)
+
+- Increasing the residual branch depth from `2` to `3` did not move the
+  frontier.
+- v18, v19, and v20 all converged to the same plateau:
+  - center spread: about `39.0 px`
+  - tip spread: about `30.9 px`
+  - strict acceptance: `2.13%`
+  - accepted MAE: about `3.5 C`
+- That means the full-resolution residual sharpen block is saturated.
+- The bottleneck is no longer output-side sharpening. The decoder is now
+  limited by the quality of the features it receives from the backbone /
+  mid-resolution stages.
+- The next promising directions are:
+  - increase backbone capacity with joint training from scratch
+  - or unfreeze the backbone late, but add a location-preserving anchor so the
+    model does not drift away from the stable v14 geometry
+
+## V19 residual-scale plateau (2026-06-17)
+
+- v19 at residual scale `0.07` converged to essentially the same point as
+  v18 at `0.10`.
+- The repeated result is:
+  - center spread about `39.0 px`
+  - tip spread about `30.9 px`
+  - strict acceptance `2.13%`
+  - center rejections `46`
+  - tip rejections `15`
+- This confirms the residual sharpen block is a reproducible source of
+  strict-guardrail improvement, but the `0.07` to `0.10` scale range is now
+  saturated.
+- The next useful move is not another small scale sweep. We should change the
+  residual branch structure or add a second transfer-safe sharpening stage
+  while keeping the v14-compatible shape fixed.
+
+## V19 residual-scale sweep from v18 (2026-06-17)
+
+- v19 is a one-parameter sweep off the v18 breakthrough.
+- It keeps the exact same transfer-safe shape as v18:
+  - `backbone_alpha=0.35`
+  - `decoder_width_multiplier=1.0`
+  - `hybrid_residual` final upsample
+  - zero-start full-resolution residual sharpen branch
+- The only change is a slightly gentler residual scale (`0.07` instead of
+  `0.10`), with the goal of recovering accepted MAE while preserving the first
+  non-zero strict acceptance.
+- The handoff script is
+  `tmp/deepseek_train_geometry_heatmap_v4_112_axis_simcc_residualsharpen_v19.sh`.
+
+## V18 breakthrough on strict guardrails (2026-06-17)
+
+- v18 is the first geometry heatmap run to achieve non-zero strict guardrail
+  acceptance.
+- Results versus v14:
+  - accepted MAE worsened from `3.161 C` to `3.500 C`
+  - acceptance stayed flat at `80.9%`
+  - center spread improved from `40.33 px` to `39.01 px`
+  - tip spread improved from `31.54 px` to `30.92 px`
+  - hard-case center spread improved to `34.21 px`
+  - strict acceptance moved from `0.0%` to `2.13%`
+- The key takeaway is that the zero-start full-resolution residual sharpen
+  branch is finally changing the guardrails in the right direction without
+  collapsing transfer.
+- The current best next step is to sweep the residual scale around `0.10`
+  while keeping the v14-compatible shape fixed.
+
+## V18 shape-compatible spread attempt (2026-06-17)
+
+- After the v17 collapse, the only safe way forward is to keep the v14
+  transfer shape intact and add capacity only in transfer-compatible places.
+- v18 does that by:
+  - keeping `backbone_alpha=0.35`
+  - keeping `decoder_width_multiplier=1.0`
+  - keeping the `hybrid_residual` final upsample
+  - adding a zero-start residual sharpening branch after the existing
+    full-resolution refine block
+- The goal is to let the model learn sharper heatmap peaks without breaking
+  the checkpoint transfer path that made v14 stable.
+- The next handoff script is
+  `tmp/deepseek_train_geometry_heatmap_v4_112_axis_simcc_residualsharpen_v18.sh`.
+
+## V17 collapse confirms transfer-compatibility constraint (2026-06-17)
+
+- The first v17 multiscale attempt collapsed immediately: accepted MAE jumped to
+  about `42 C` and acceptance fell to `0%`.
+- The failure mode matches the earlier wide-decoder collapses:
+  - `backbone_alpha=0.5`
+  - `decoder_width_multiplier=2.0`
+  - multiscale fusion introduced new channel counts that no longer matched the
+    v14 checkpoint
+  - weight transfer therefore covered little of the decoder, leaving the model
+    effectively random under a frozen backbone
+- The lesson is now sharper than before:
+  - if the backbone is frozen, we must preserve weight-transfer compatibility
+    with the stable v14 shape
+  - widening only works when the new layers can inherit meaningful weights or
+    the backbone is allowed to adapt jointly
+  - the v14 architecture (`alpha=0.35`, `decoder_width_multiplier=1.0`,
+    `hybrid_residual`, single refine block) remains the only stable
+    wide-configuration baseline we have
+- Next experiments should keep the v14-compatible channel layout and spend
+  capacity only in transfer-safe additions, not in a full shape change.
+
+## V17 multiscale decoder plan after v16 drift (2026-06-17)
+
+- The last v16 unfrozen fine-tune at `1e-7` confirmed an important tradeoff:
+  spread kept improving, but accepted MAE drifted upward as the model kept
+  unlearning temperature accuracy.
+- By epoch 10, v16 reached the best spread so far:
+  - center spread: `39.03 px`
+  - tip spread: `30.62 px`
+  - but accepted MAE worsened to `3.575 C`
+- That means long unfrozen polishing is not the right lever by itself.
+- The next run should move the spread work into the architecture instead:
+  - multiscale 14x14 / 28x28 / 56x56 skip fusion in the decoder
+  - paper-style geometry supervision with `axis_simcc` and pointer-mask loss
+  - a wider backbone/decoder while staying inside the SRAM budget
+  - frozen-only training first, so the new decoder learns without drifting the
+    v14 accuracy anchor
+- The trainer now exposes `--decoder-multiscale-fusion`, and the next handoff
+  script is `tmp/deepseek_train_geometry_heatmap_v4_112_axis_simcc_multiscale_v17.sh`.
+
+## V11 spread-weight saturation (2026-06-16)
+
+- Increasing `heatmap_spread_loss_weight` from `0.2` to `0.5` did not move the core spread metrics.
+- The change did improve raw robustness:
+  - best-ever raw worst error: `18.6 C`
+  - zero `>20 C` raw failures
+  - slightly better raw MAE and RMSE
+- Acceptance slipped a bit (`85.1% -> 83.0%`), and the accepted MAE stayed essentially flat.
+- The strongest takeaway is that spread is now looking architecture-limited, not loss-limited.
+- The next useful levers are:
+  - learnable final upsampling or a different decoder head
+  - a wider backbone if we want richer bottleneck features
+  - otherwise accept the current spread and focus on export / board integration
+
+## V12 all-data geometry sweep setup (2026-06-16)
+
+- The next geometry heatmap run should use the union of the full-geometry manifests:
+  - `ml/data/merged_geometry_board_manifest_plus_hardcase_v1.csv`
+  - `ml/data/geometry_reader_manifest_v2_clean.csv`
+- That merged set gives us the full labeled geometry pool for v12 without depending on the center-only AI annotation CSV, which still lacks tip labels.
+- In practice the merged v12 manifest currently resolves to `421` usable rows because the clean-manifest-only leftovers are marked `quality_flag=exclude` and stay out of training.
+- v12 also upweights the `19`-image `hard_cases.csv` pool with a repeat factor of `6`, which keeps the hard-case emphasis close to the previous booster while using the fuller hard-case set.
+- v12 starts from `ml/artifacts/training/geometry_heatmap_v4_112_axis_simcc_spread_sharpen_v11/best_model.keras` so it continues from the latest good checkpoint instead of the older canonical source model.
+- The repo currently has two different hard-case pools:
+  - `ml/data/hard_cases.csv` with 19 images
+  - `ml/data/hard_cases_remaining_focus.csv` with 9 images
+- If we need the fuller hard-case replay pool, `hard_cases.csv` is the closer match to the "around 15" expectation.
+- The v12 launcher should point the trainer at the merged full-geometry manifest and keep the current v8-style architecture baseline instead of widening the decoder again.
+
+## V10 two-refine overfit signal (2026-06-16)
+
+- The two-layer full-resolution refine block (`v10`) improved accepted MAE slightly and nudged the hard-case spreads down a bit, but it brought the raw outlier back and pushed raw MAE to `5.529 C`.
+- The selected candidate shifted from `spread_45` to `spread_55`, which is a warning sign that the model is getting looser under the relaxed guardrail even while the accepted subset looks a little better.
+- The single-refine `v8` architecture remains the better baseline because it preserves raw robustness while staying close on accepted MAE.
+- The next ablation to try is `v8` with a stronger spread penalty, starting with `heatmap_spread_loss_weight=0.5`, rather than adding more refine depth.
+
+## Final upsample nearest regression (2026-06-16)
+
+- The `nearest` final-upsample ablation (`v9`) regressed hard: raw MAE, raw RMSE, and worst-case error all got worse, and the spread gains from v8 disappeared.
+- The current best architecture is back to `v8`: bilinear final upsample plus the identity-initialized full-resolution refine block, with `clipnorm=10` and `spread_target=12`.
+- The next smallest architectural ablation is to deepen the refine stage at 112x112. We are now testing a two-layer full-resolution sharpen block rather than changing the upsample kernel again.
+- The goal is to see whether a second local 3x3 pass can recover more spatial detail without reopening the failed wide-decoder path.
+
+## Geometry heatmap full-resolution refinement (2026-06-16)
+
+- The `heatmap_spread_target_px=12` run (`v7`) showed the first real architectural signal: raw MAE improved sharply and the worst outliers collapsed, but the heatmap spread still plateaued around `42.6 px`.
+- The next justified change is a tiny full-resolution sharpening block before the 1x1 heatmap heads rather than widening the whole decoder.
+- We chose a single `Conv2D(8, 3x3, relu)` at `112x112` so the model gets one learned spatial pass at full resolution while staying far below the SRAM budget.
+- The goal of this change is to reduce spread and help strict guardrails accept more samples without repeating the frozen wide-decoder collapse.
+
+## Geometry heatmap width-change lesson (2026-06-16)
+
+- The `geometry_heatmap_v4_112_axis_simcc_spread_sharpen_v5` width bump to `decoder_width_multiplier=1.5` failed catastrophically when the decoder was effectively left to learn without a proper adaptation phase.
+- The failure mode was not just "wider is bad" but "wider decoder + frozen backbone + too few adaptation epochs collapses heatmaps."
+- The next fair width test must either:
+  - rebuild the wider model from the source checkpoint and include an unfrozen phase with a low learning rate, or
+  - abandon width for now and try a different head/decoder design.
+- The stable baseline remains `geometry_heatmap_v4_112_axis_simcc_spread_sharpen_v4`, which reached about `2.702 C` accepted MAE but still had `0.0%` strict guardrail acceptance because the heatmaps are too spread out.
+
+## Hard-case geometry follow-up (2026-06-16)
+
+- The current best deployment model is still the geometry heatmap v4_112 tip-focus INT8 candidate at about `4.11 C` accepted MAE on the untouched test replay.
+- I measured the widened MobileNetV2 geometry family again and confirmed the peak int8 activation stays under the 2 MB target all the way up to `alpha=1.40`:
+  - `alpha=1.00` peak int8 bytes: `1,225,824`
+  - `alpha=1.30` peak int8 bytes: `1,838,736`
+  - `alpha=1.40` peak int8 bytes: `1,838,736`
+- The hard-case replay is still the blocker. On the 8 hard cases with full geometry labels, the tip-focus model scores about `26.20 C` raw MAE with the stock loose crops, but tightening the crop proposal with the generated OBB crop boxes drops the same raw MAE to about `11.58 C`.
+- The remaining hard-case image `capture_2026-04-24_22-30-21.png` has a temperature label but no full tip label in the geometry manifests, so it still cannot be used for heatmap training without manual annotation.
+- I staged a new overnight launcher:
+  - `tmp/deepseek_train_geometry_heatmap_v4_112_merged_board_tip_focus_a140_hardfocus_v1.sh`
+  - It uses the board-validated tip-focus source checkpoint, `alpha=1.4`, `decoder_width_multiplier=2.0`, `sigma_pixels=2.0`, `inner_celsius_mask`, and hard-case replay.
+- The current live OBB-center localization run is still training, so I have not started the new geometry job yet.
+
+## Geometry heatmap v4 axis-SimCC board fine-tune and loss fix (2026-06-16)
+
+- The board fine-tune wrapper `tmp/deepseek_train_geometry_heatmap_v4_112_axis_simcc_board_finetune_v1.sh` is now the active geometry experiment.
+- I had to fix two path-resolution bugs before it would run cleanly:
+  - `resume-from` in `ml/scripts/train_geometry_heatmap_v4_112_quant_native.py` was not being resolved through the trainer's repo-root helper.
+  - The launcher paths need the `ml/` prefix because the trainer resolves them from the repo root, while the compare harness wants paths relative to `ml/`.
+- The bigger training bug was in `ml/src/embedded_gauge_reading_tinyml/heatmap_losses.py`: Keras BCE on rank-3 heatmaps collapses the last spatial axis, so the focal and BCE heatmap losses were multiplying `[B,112,112]` weights by `[B,112]` losses. I replaced that with explicit elementwise BCE and verified the regression with `pytest tests/test_heatmap_losses.py` (`16 passed`).
+- The fine-tune completed with the unfrozen stage selected, but the hard-case replay still had `acceptance_rate=0.0` and `accepted_mae=nan` under the current guardrails.
+- Final saved checkpoint:
+  - `ml/artifacts/training/geometry_heatmap_v4_112_axis_simcc_board_finetune_v1/best_model.keras`
+  - Selected stage: `unfrozen`
+  - Selected replay candidate: `shadow_spread_45`
+  - Validation replay accepted MAE: `4.4208 C`
+- Direct hard-case comparison on the 8 usable board hard cases showed the new checkpoint is only a small raw improvement over the previous best:
+  - `new_best` raw MAE: `23.2650 C`
+  - previous `axis_simcc_gap` raw MAE: `23.8284 C`
+  - raw <5 C rate: `12.5%`
+  - accepted MAE: `nan` because none of the hard cases passed the strict guardrails
+- So this run is now the best raw hard-case model so far among the saved geometry checkpoints we compared, but it is still nowhere near the <5 C target and needs another recipe change.
+
+## Geometry heatmap v4 selection and width budget (2026-06-16)
+
+- The quant-native `geometry_heatmap_v4_112` trainer was saving checkpoints against the strict replay summary, which stayed `nan` whenever the default guardrails rejected everything. I fixed the replay callback so it now ranks the strict candidate and the relaxed shadow candidates together, then saves the best usable one.
+- The new selection helper lives in `ml/src/embedded_gauge_reading_tinyml/geometry_heatmap_replay_selection.py`, and the trainer now logs both the strict replay view and the selected replay candidate name.
+- I also added raw-temperature fallback metrics so the replay score stays finite even when strict accepted rows are empty.
+- A quick activation sweep showed the geometry model has more width headroom than we thought:
+  - `alpha=0.35` and `alpha=0.50` both peak at about `612,912` int8 bytes.
+  - `alpha=0.75` and `alpha=1.00` both peak at about `1,225,824` int8 bytes.
+  - All of those are still under the rough `2 MB` SRAM target.
+- The practical next training step is to try a wider backbone, starting with `alpha=0.50` or `alpha=0.75`, now that the width increase does not appear to break the board SRAM budget.
+- Fresh WSL launcher scripts should create the log file before calling `tail -f` on it. I hit a race where a brand-new log path made `tail` exit immediately, so the safe pattern is `touch "$LOG_FILE"` right after `mkdir -p "$LOG_DIR"`.
+- The current merged-board `alpha=0.50` unfrozen-first rerun is live under `geometry_heatmap_v4_112_merged_board_from_best_v4_a050_unfrozen_v2`; early epochs still look collapsed, so this is mainly a launcher/packaging validation run rather than a promising recipe yet.
+
+## Geometry heatmap v4 is the stronger direction (2026-06-16)
+
+- The explicit geometry heatmap family is outperforming the polar branch on validation. The best recovery candidates on `geometry_heatmap_v4_112_int8_recovery` are around `3.08 C` accepted MAE, with `candidate_08_tip_focus__pt0.25_c0.05_t0.20_cf0.05_wu3` currently the best single candidate I found.
+- The auxiliary-coordinate branch is also competitive, but it is not the top validation recipe. The best aux candidate I found was `candidate_11_w05_large_huber__aw0.5_hslarge_lthuber` at about `3.09 C` accepted MAE.
+- The merged manifest already exists at `ml/data/merged_geometry_board_manifest.csv` and contains `409` clean rows and `11` review rows, with the board captures merged into the same geometry format as the dial-label data.
+- I patched `ml/scripts/train_geometry_heatmap_v4_112_quant_native.py` and `ml/scripts/qat_finetune_geometry_heatmap_v4_112.py` so they honor `TF_GPU_MEMORY_LIMIT_MB` using the same logical-device cap pattern as the polar trainer.
+- The next heatmap handoff script is `tmp/deepseek_train_geometry_heatmap_v4_112_merged_board_tip_focus.sh`. It targets the merged board manifest, batch size `8`, and the tip-focus losses that matched the strongest validation candidate.
+- The merged-board geometry heatmap run initially hit a Pillow memory fault because the loader converted the full raw JPEG before cropping it. I fixed `geometry_heatmap_v2_utils.py` to crop first, then convert to RGB, and the relaunched job reached `Epoch 1/40`.
+- The geometry trainer now exposes worker-backed `Sequence` loading (`--sequence-workers`, `--sequence-max-queue-size`) so PIL crop loads can overlap instead of bottlenecking one Python thread. The next relaunch script is `tmp/deepseek_train_geometry_heatmap_v4_112_merged_board_tip_focus_v2.sh`.
+- The polar `v9` run is still live in the background, but the evidence now says the geometry heatmap path deserves the next serious board-transfer attempt.
+
+## Pretrained CoordConv OBB+center pivot (2026-06-16)
+
+- The generic from-scratch `mobilenet_v2_obb_geometry` run at `224x224 + alpha=1.0` fit the training split but transferred poorly: train gauge MAE collapsed while validation gauge MAE stayed around `49C`, so that path is not the right overnight bet.
+- The stronger geometry candidate in the repo is the pretrained `MobileNetV2 + CoordConv` OBB+center localizer in `ml/scripts/train_obb_center_mobilenetv2.py`.
+- I wired that trainer to accept environment overrides so WSL handoff scripts can set the input size, width multiplier, and batch size without editing the script.
+- Current launch recipe:
+  - `IMAGE_HEIGHT=320`
+  - `IMAGE_WIDTH=320`
+  - `MOBILENET_ALPHA=0.5`
+  - `BATCH_SIZE=8`
+  - `EPOCHS=80`
+  - `LEARNING_RATE=1e-3`
+  - `pretrained=True`
+  - `backbone_trainable=False`
+- The live run is `tmp/deepseek_train_obb_center_mobilenetv2_cpu_320_a050_v1.sh`.
+- Early training is healthy: after 8 epochs, validation `center_xy_mae` reached `0.0524` in normalized coordinates and validation `obb_params_mae` reached `0.0438`, which is far more promising than the from-scratch geometry path.
+- This is now the preferred geometry/localization backbone for the board-transfer path, and the next step after it stabilizes is to use its outputs to tighten the downstream reading model and hard-case evaluation.
+
+## WSL TensorFlow GPU deadlock workaround (2026-06-16)
+
+- The WSL GPU wheel for TensorFlow 2.20.0 consistently deadlocked this host during `build-model` and sometimes even during CPU-mode runtime setup, with the Python process stuck in `dxgglobal_acquire_process_adapter_lock`.
+- Hiding GPUs with launcher flags alone was not enough. `--device cpu`, `CUDA_VISIBLE_DEVICES=-1`, and skipping `tf.config.set_visible_devices()` still left the GPU-enabled wheel vulnerable to the WSL adapter lock.
+- The working fix was to replace the Poetry env's `tensorflow` package with the CPU-only wheel:
+  - `poetry run pip uninstall -y tensorflow`
+  - `poetry run pip install --no-deps tensorflow-cpu==2.20.0`
+- After that swap, `import tensorflow as tf` reports `tf.__version__ == 2.20.0`, `tf.test.is_built_with_cuda() == False`, and `tf.config.list_physical_devices("GPU") == []`.
+- The current CPU fallback launcher is `tmp/deepseek_train_mobilenetv2_obb_geometry_hardtail_224_a100_cpu_v1.sh`.
+- The live run using that wheel made it through model build and into epoch 1, so future WSL training jobs should prefer the CPU wheel unless we have a different GPU-capable environment.
+
+## OBB geometry width ceiling sweep (2026-06-15)
+
+- I measured the single-branch MobileNetV2 OBB geometry family at `224x224` and `320x320` to see how far we can widen the backbone while staying inside the assumed ~2 MB int8 SRAM envelope.
+- Measured peak activation tensor sizes for the full-frame OBB geometry family:
+  - `224x224`, `alpha=0.35` or `0.5`: `612,912` bytes.
+  - `224x224`, `alpha=0.75` or `1.0`: `1,225,824` bytes.
+  - `320x320`, `alpha=0.35` or `0.5`: `1,244,208` bytes.
+  - `320x320`, `alpha=0.75` or `1.0`: `2,488,416` bytes, which is over the 2 MB target.
+- The safe scaling takeaway is:
+  - `320x320 + alpha=0.5` is a good ceiling for a single-branch geometry/localizer model.
+  - `320x320 + alpha=0.75` is too wide for the SRAM budget.
+  - `224x224 + alpha=1.0` also fits, but it gives up some spatial context.
+- This measurement is for the single-branch geometry builder, so it should be treated as a lower-bound estimate for dual-branch blur-aware/sequence models. Those models are likely to have higher live memory pressure because they run the backbone twice.
+- The next width sweep should therefore focus on the single-branch OBB geometry family, not the dual-branch sequence model.
+- The next handoff script for that sweep is `tmp/deepseek_train_mobilenetv2_bluraware_obb_geometry_hardtail_320_a050_v1.sh`.
+- The warm-start import for the alpha=0.5 sweep was too slow / stall-prone on this WSL setup, so the better follow-up is a fresh-pretrained variant that skips `--init-model` and keeps `--no-gpu-memory-growth` enabled.
+- The fresh-pretrained follow-up script is `tmp/deepseek_train_mobilenetv2_bluraware_obb_geometry_hardtail_320_a050_pretrained_v1.sh`.
+- The `320x320 + alpha=0.5` fresh-pretrained attempt still built too slowly to be useful on this host, so the next practical capacity bump is `224x224 + alpha=1.0`, which still fits the SRAM budget while reducing build/runtime pressure.
+- The next handoff script for that pivot is `tmp/deepseek_train_mobilenetv2_bluraware_obb_geometry_hardtail_224_a100_pretrained_v1.sh`.
+- The blur-aware dual-branch path is still heavier than we want for this machine, so the better capacity-up target is the single-branch OBB geometry model at `224x224 + alpha=1.0`.
+- The next handoff script for that final pivot is `tmp/deepseek_train_mobilenetv2_obb_geometry_hardtail_224_a100_pretrained_v1.sh`.
+- If the pretrained loader still stalls, the fallback is to train the same `224x224 + alpha=1.0` single-branch OBB geometry model from scratch using `--no-mobilenet-pretrained`.
+- The scratch fallback script is `tmp/deepseek_train_mobilenetv2_obb_geometry_hardtail_224_a100_scratch_v1.sh`.
+
+## OBB sequence hard-tail 320x320 scale-up (2026-06-15)
+
+- The current live GPU run is `tmp/deepseek_train_mobilenetv2_bluraware_obb_sequence_geometry_hardtail_320_v1.sh`.
+- It keeps the proven blur-aware OBB sequence hard-tail recipe, but raises the input crop to `320x320` so the backbone can see more context without breaking the warm-start weights.
+- Current run settings:
+  - `model_family=mobilenet_v2_obb_sequence_geometry`
+  - `image_size=320x320`
+  - `batch_size=2`
+  - `alpha=0.35`
+  - `head_units=96`
+  - `warm_start=v43`
+- The run is stable so far, but the first epoch is XLA-heavy and slow on the available WSL GPU. TensorFlow reports a `GTX 1650 Ti` device with about `2242 MB` visible, while `nvidia-smi` shows the process using about `3814 MiB` during the compile-heavy phase.
+- The important lesson is that `320x320` is still viable in this setup, but it leaves little headroom. If we need more throughput later, we should reduce the crop size or simplify the training graph before widening the model further.
+
+## Polar board-friendly QAT v6 widening pass (2026-06-15)
+
+- The board-friendly polar model can spend extra capacity in the deep 20x20 bridge without increasing the board-side activation peak.
+- Current widened student shape for `polar_size=160`, `stem_filters=64`, `base_filters=64`:
+  - Deep bridge: `20x20x192` residual blocks.
+  - Decoder keeps the final high-resolution stage at `160x160x64`.
+  - Peak int8 activation still lands at `160x160x64 = 1,638,400` bytes, which stays inside the ~2 MB SRAM budget.
+- The v6 trainer now adds an ordinal `gauge_value_state` head on top of the angular profile so the network learns temperature ordering, not just the scalar regression target.
+- The latest launcher is `tmp/deepseek_train_polar_v3_geometry_board_qat_v6.sh`.
+- The v6 recipe uses the v5 model as teacher, keeps the 160x160 polar input, and keeps the GPU cap at 3.8 GB.
+- The widened model is too memory-hungry for batch 8 on the 4 GB GPU when XLA is active. Batch 4 is the safe training setting, and the v7 launcher uses it.
+- `jit_compile=False` is now set in the trainer to reduce allocator pressure during fit.
+
+## Polar board-friendly QAT width-up pass (2026-06-15)
+
+- The board-friendly mask model can safely grow from `48/48` to `64/64` without breaking the 2 MB SRAM activation budget.
+- Measured largest int8 activations at `polar_size=160`:
+  - `48/48` -> `160x160x48 = 1,228,800` bytes.
+  - `64/64` -> `160x160x64 = 1,638,400` bytes.
+  - `80/80` -> `160x160x80 = 2,048,000` bytes, which is too close to the limit for comfort.
+- The next launch recipe should therefore use `64/64` as the student width, not `80/80`.
+- The new v5 handoff uses the v4 model as teacher, adds teacher-driven hard-example mining, keeps the 160x160 polar input, and tightens the geometry supervision with the sharpened mask/profile/angle-vector losses.
+- The latest launcher is `tmp/deepseek_train_polar_v3_geometry_board_qat_v5.sh`.
+
+## Polar board-friendly QAT recovery pass (2026-06-15)
+
+- The latest board-friendly polar run was underfitting badly: train MAE stayed around 16C, validation MAE around 17.6C, and hard cases around 16.1C, with predictions collapsing near 20C.
+- The next recipe drops the noisy `annotate_30/manual_annotations.csv` notes from training and keeps them only for evaluation.
+- The mask branch now uses a normalized angle-first polar profile loss instead of the older 2D heatmap objective, and the training wrapper also emits a deterministic angle-vector auxiliary target from the predicted mask so the model has to learn the actual needle orientation.
+- The board-friendly backbone defaults were widened from 24 to 32 filters, dropout was removed from the board path, the angular mask target was sharpened slightly, and the center/radius jitter was reduced to keep the supervision cleaner.
+- The training wrapper now exposes both the small auxiliary scalar profile head and the new angle-vector geometry head, so the board value path gets extra direct supervision in addition to the fixed geometric decode.
+- The latest recipe now uses a curriculum: first pretrain on the cleaner CVAT + manual center subset, then fine-tune on the full mixed pool with a lower learning rate. That should reduce the board-data noise from dominating the geometry learning.
+- The AI board-capture labels are still useful, but they are now weighted below the clean geometry labels so they help domain adaptation without overpowering the sharper supervision.
+- The `ai_annotated_board_captures.csv` manifest is mixed: the trainer currently uses the 266 value-labelled board captures for scalar supervision and skips the 163 center-only rows unless a value lookup is available.
+- Training should still keep the 3.8 GB TensorFlow GPU cap, and the hard-case holdout remains a separate evaluation slice.
+
+## Polar board-friendly QAT handoff (2026-06-14)
+
+- `ml/scripts/train_polar_v3_geometry.py` now sets `TF_GPU_MEMORY_LIMIT_MB` before TensorFlow initializes the GPU, matching the repo's other WSL-safe trainers.
+- The trainer now uses value-bin balancing, combined heatmap loss for the needle mask, a slightly larger board-friendly backbone, and a smaller center-jitter regime.
+- `tmp/deepseek_train_polar_v3_geometry_board_qat.sh` is the WSL handoff launcher for the actual GPU run.
+- The launcher installs Poetry deps, checks that TensorFlow sees a GPU, then backgrounds the training job with `setsid` + `disown`.
+- Default run config: `board_friendly=true`, `polar_size=160`, `epochs=100`, `batch_size=8`, `learning_rate=1e-3`, `center_jitter_px=2.0`, `mask_sigma=2.0`, `augment_repeats=3`, `geometry_pretrain_epochs=30`, `mask_loss_weight=0.5`, `temp_loss_weight=1.0`, `profile_aux_loss_weight=0.25`, `angle_vector_aux_loss_weight=2.0`, `angle_vector_temperature=3.0`, `qat_output_noise_stddev=0.01`.
+- The trainer now ingests the AI board-capture manifest plus the manual center manifests and `annotate_30/manual_annotations.csv` by joining them to scalar manifests and synthesizing full polar `Sample` rows. Hard cases stay as a separate holdout, and the train/val split is key-based across the combined non-hard pool so the same image cannot leak between sources.
+- Current smoke counts after the hard-case filter: `ai_board_captures=105`, `manual_centers=106`, `manual30=13`, `hard_cases=26`. The manual-30 notes sometimes parse values outside the gauge sweep, so those are clamped to the calibrated range before synthesizing the needle vector.
+
+## QARepVGG-Pro board deployment reality check (2026-06-14)
+
+- The deployed N657 package is `qarepvgg_pro_a175_int8`, but the generated header says its origin model is `qarepvgg_pro_a1_25_int8` and its input tensor is still `320x320x3 = 307200` bytes.
+- The firmware already contains a stage-specific workaround for the faulting transfer: `app_ai_helpers_decode.inc` CPU-copies the OBB stage buffer from `0x342e0000` to `0x34270000` so the failing SE2 dequantize epoch can be skipped.
+- So the claim that there is "no workaround" for this model path is too strong. The real issue is that the current schedule still contains a 307 KB SE DMA path, not that the entire QARepVGG-Pro family is fundamentally impossible on N657.
+- A 160x160 retrain with a stride-4 stem is a plausible experiment for shrinking early feature maps, but it is still a model change, not a proven silicon workaround, and it would need a fresh export plus firmware contract review.
+
+## 2026-06-14 Model-selection lesson
+
+- Keep the pretrained fine-tuning baseline separate from the final NPU deployment target.
+- The current best pretrained OBB + center baseline is **MobileNetV2 + CoordConv α=0.75** from `ml/scripts/train_obb_center_mobilenetv2.py`.
+- That run is the strongest documented balance so far: it stays under the 2.5 MB INT8 budget and reached about **9.6 px center MAE** on the test split.
+- The smaller α=0.35 variant was too weak on center accuracy, so do not regress to it unless we absolutely need extra headroom.
+- For the actual STM32N657 package, prefer a compact deployment graph with smaller early feature maps so we do not rediscover the same DMA and activation-footprint problems.
+- Always validate the exact export path, wrapper, and firmware contract before calling a model board-ready.
+
+## N6 Stream Engine BUFBL+OFLOW_FRM errata — OBB inference hang (2026-06-11)
+
+### Root cause
+The STM32N6 NPU streaming engines (SE0-SE9) fault with `BUFBL` (buffer bandwidth limit, IRQ bit 0) and
+`OFLOW_FRM` (frame overflow, IRQ bit 3) when performing **bus→stream (dir=0, input) DMA transfers
+of ~300 KB or larger** in raw mode with `SINGLE=1` (stop after one frame).  The fault occurs
+immediately when the unit is enabled, before any useful data moves.
+
+The scaled OBB model's epoch 2 hits this with a `320×320×3 = 307 200` byte input DMA on **SE2**.
+The compact OBB model hits the same fault on **SE8** (input DMA, same size).  Both engines,
+and likely all 10 SE units, trigger the fault for large bus→stream transfers.
+
+### Why the scaled model hangs while the compact model runs
+- Both models fault identically on their input SE.
+- **Scaled model**: `wait_mask = 0x100` (SE8, the *output* engine).  SE2 faults → ISR fires → semaphore
+  signalled → WFE returns → `triggered_events` check fails (SE8 never triggers because it depends on
+  SE2 data that never arrives) → retry WFE → blocks forever.
+- **Compact model**: `wait_mask = 0x08` (SE3, the *output* engine).  SE8 (input) faults, but the
+  runtime advances to later epochs anyway (status=1 reported but execution continues), probably
+  because SE3 fires a spurious or timed-out completion event.  The compact model produces valid
+  output despite repeated epoch faults.
+- **Key insight**: the runtime (`LL_ATON_RT_RunEpochBlock`) accumulates `triggered_events` in
+  `nn_instance->exec_state.triggered_events` via the ISR handler, not by reading live hardware
+  registers post-WFE.  If the ISR never fires for the waited-for engine (because no interrupt is
+  enabled), `triggered_events` stays at 0 and the WFE/semaphore loop hangs.
+
+### ISR event mechanism (ll_aton_runtime.c:885-911)
+- Global IRQ is read, filtered to `wait_mask` bits only.
+- For each matching bit, the SE's IRQ register is **read-then-cleared** and bit `(1 << i)` is
+  OR'd into `triggered_events`.
+- The ISR signals the OSAL semaphore, waking any pending `LL_ATON_OSAL_WFE()`.
+- Then `RunEpochBlock` checks `(triggered_events & wait_mask) == wait_mask`.  If true, epoch ends
+  cleanly; if false, it returns `WFE` and the main loop retries with another `OSAL_WFE()` call.
+
+### `LL_Streng_TensorInit` event configuration (ll_aton.c:725-762)
+- `EVENT.SET` defaults to `0` (no completion trigger).
+- For **dir=1 (output)** engines: `t_streng_event = 0`, then `EN_OFLOW_FRM` is set to 1.
+  → Output engines **do** fire the ISR when their frame limiter is hit.
+- For **dir=0 (input)** engines: `t_streng_event = ATON_STRENG_EVENT_DT` (which has
+  `EVENT_SET_DT = 0`, `EN_OFLOW_FRM_DT = 0`), then only `EN_ILLCFG = 1` is added.
+  → Input engines **do NOT** fire the ISR on OFLOW_FRM.  Only ILLCFG fires (if truly illegal
+  config), but BUFBL+OFLOW_FRM on a valid config with correct parameters is a hardware behaviour,
+  not an illegal-config condition.
+
+### Attempted fixes (all failed for the scaled model)
+| Attempt | Change | Result |
+|---------|--------|--------|
+| `offset_limit = 0` | Disable SE address limiter in epoch 2 | No change — same fault |
+| `frame_count = 960` | Split DMA into 320 lines × 960 bytes | No change — same fault |
+| `wait_mask = 0x00` | Skip WFE entirely | Terminates epoch array (0 is the sentinel) |
+| `wait_mask = 0x04` (SE2) | Wait for the faulting engine itself | ISR doesn't fire for input SE (no OFLOW_FRM enabled) |
+| `wait_mask = 0x100` (SE8) | Original, with CPU pre-copy | SE8 may or may not fire; inconsistent |
+| Tiny 4‑byte SE2 DMA | Avoid large transfer that triggers BUFBL | SE2 completes cleanly but ISR still doesn't fire (no OFLOW_FRM IRQ for dir=0) |
+| Full pipeline + OFLOW_FRM manual enable on SE2 | Enable OFLOW_FRM interrupt for SE2 in epoch 2 | Epoch 2 completes, but epoch 3 hangs (SE3 input, same issue) |
+| Bulk OFLOW_FRM enable (319 patches) | Regex-insert `EN_OFLOW_FRM=1` after every `LL_Streng_TensorInit` call | Epoch 0 completes, epoch 1 hangs (multiple SEs fire in wrong order, semaphore consumed by wrong engine) |
+
+### What actually works
+1. **Compact OBB model** (`obb_compact_320_int8`, 95K params, ~117 KB blob, 6-value regressor):
+   produces valid gauge crops and the full pipeline runs end-to-end.  Epoch faults are reported
+   (status=1) but execution continues.
+2. **Center-detector model** (`heatmap_cd_v4s_80`, DS-CNN v4): never uses SE input DMA in its
+   first epoch (uses ARITH units only), so it never hits the errata.
+
+### Paths forward
+1. **Ship the compact model** — it works today.  Accuracy may be lower than the scaled model.
+2. **Regenerate the scaled model** with different `stedgeai` optimisation options (`--optimization time`
+   or `--optimization ram`) that might produce a schedule avoiding large bus→stream SE DMA in the
+   first epoch (e.g., using ARITH for the dequantize instead of SE+DMA).
+3. **Pre‑dequantize on the CPU** and strip epoch 2 from the epoch-block array (requires modifying the
+   generated C array and epoch counter, and ensuring all downstream epochs handle the raw int8 data).
+4. **Retrain with 224×224** input (150 KB DMA, which works on the center-detector).
+5. **Contact ST** — provide the BUFBL+OFLOW_FRM reproduction recipe and ask for errata
+   confirmation and/or a fixed X-CUBE-AI release.  Key data: SE2/SE8 CTRL=0x00080104,
+   IRQ=0x00000009 (input, 307 200-byte raw DMA, STM32N657, X-CUBE-AI 10.2.0, ThreadX OSAL).
+
+## MobileNetV2 OBB + Center joint model — dual-head transfer learning (2026-06-11)
+
+### Motivation
+The scaled OBB hangs on the NPU (BUFBL errata); the compact OBB (custom CNN, 95K) had
+poor cy accuracy (39.5 px). The two-stage pipeline (OBB → crop → center-detector) adds
+latency and complexity. We need a **single model under 2.5 MB** that predicts both the
+gauge bounding box and the needle-pivot center directly from the 320×320 full frame.
+
+### Approach
+**MobileNetV2 (α=0.35, ImageNet pretrained) with dual heads**:
+- Shared backbone frozen (410 K params)
+- OBB head → [cx, cy, w, h, cos(2θ), sin(2θ)]
+- Center head → [cx, cy]
+- Joint Huber loss (OBB δ=0.05, center δ=0.02, center weight 2.0)
+- Positional augmentation shifts phone-photo gauges to random cy ∈ [0.15, 0.95]
+- Strong photometric augmentation (brightness ±0.30, contrast [0.5, 1.5])
+
+### Training data
+Same 796 examples as `train_obb_board_only_320.py`:
+- 333 PXL phone photos (3472×4624, full geometry)
+- 76 board captures (224×224, full geometry)
+- 93 YUV422 board captures (320×320, June 7)
+- 13 annotate_30 + 26 annotate_batch2 + 255 AI-annotated
+- Train/Val/Test: 477/159/160
+
+### Results
+| Metric | Old Compact OBB | New MNv2 OBB+Center |
+|--------|----------------|---------------------|
+| TFLite int8 size | 158 KB | **780 KB** |
+| OBB cx MAE (norm) | 0.039 | 0.058 |
+| OBB cy MAE (norm) | 0.124 | **0.036** |
+| OBB center px @320 | cx=12.4, cy=39.5 | cx=19.3, cy=**10.9** |
+| Euclidean center px | 43.7 | **23.9** |
+| Center detector needed? | Yes (separate model) | **No (joint head)** |
+
+### Key improvements
+- **cy error fixed**: 39.5 px → 10.9 px (positional augmentation works)
+- **Single model**: no two-stage pipeline needed; OBB + center in one NPU pass
+- **Fits comfortably**: 780 KB vs 2.5 MB budget (3× headroom)
+- **Firmware-compatible quantization**: input scale=0.00392 zp=−128, output scale=0.00391/0.00405 zp=−128/−120
+
+### Remaining issues
+- cx error still 19.3 px (worse than old compact OBB's 12.4 px)
+- Overall euclidean 23.9 px vs <10 px target
+- α=0.35 may lack capacity for precise center localization
+
+### Next improvement candidates
+1. **MobileNetV2 α=0.50 with QAT** — would need careful pruning/post-training to stay under 2.5 MB
+2. **Fine-tune the backbone** — ablation previously showed frozen>fine-tuned, but that was on a different dataset
+3. **Add rotation augmentation** — slight random rotations with angle-updating for OBB params
+4. **Cascade**: use this model for rough OBB, then the DS-CNN v4-S center detector on the cropped region for final precision
+
+## MobileNetV2 + CoordConv v2 — deeper head, rotation aug, two-phase training (2026-06-12)
+
+### Changes from v1
+- **CoordConv**: injects normalised x/y coordinate channels before the backbone so
+  GAP on a 10×10 feature map no longer destroys absolute position information.
+  A 1×1 conv projects 5 channels (RGB + x + y) back to 3 for MobileNetV2.
+- **α=0.50** backbone (was 0.35) — 706 K params, more representational capacity.
+- **Deeper head**: Dense(256, swish) → Dropout(0.25) → Dense(96, swish) → Dropout(0.15)
+  → OBB + Center heads (was single Dense(128)).
+- **Rotation augmentation**: random ±0.05 rad rotation around image centre with
+  correct OBB centre and angle label updates.
+- **Two-phase training**: 100 epochs frozen backbone + attempted 50-epoch fine-tune
+  (LR 1e-5).  Fine-tune regressed immediately — restored Phase 2 epoch 1.
+
+### Results
+| Metric | v1 (α=0.35, no CC) | v2 (α=0.50, CoordConv) | Δ |
+|--------|:---:|:---:|:---:|
+| OBB cx MAE (norm) | 0.058 | **0.033** | −43% |
+| OBB cy MAE (norm) | 0.036 | 0.036 | 0% |
+| cx error @320 (px) | 19.3 | **10.4** | −46% |
+| cy error @320 (px) | 10.9 | 11.3 | +4% |
+| Euclidean (px) | 23.9 | **17.2** | −28% |
+| TFLite size | 780 KB | **1516 KB** | +94% |
+| TFLite under 2.5 MB? | ✓ | ✓ | |
+
+### Key takeaways
+1. **CoordConv is critical** — injecting position information before GAP
+   improved cx accuracy by 46% (19.3 → 10.4 px).  The model can finally
+   distinguish left/right gauge positions.
+2. **Fine-tuning still regresses** — even with 477 augmented samples and
+   LR 1e-5, backbone unfreezing caused immediate val-loss degradation.
+   The frozen-backbone-only approach is confirmed as optimal for datasets
+   under ~500 examples.
+3. **Rotation augmentation** + deeper head contributed modest improvements
+   but the CoordConv is the dominant factor.
+4. **Size headroom**: 1516 KB of 2.5 MB = 984 KB remaining.  Could add
+   more head capacity or widen backbone further.
+
+### Artifacts
+- Run: `ml/artifacts/training/obb_center_mnv2_20260612_062120/`
+- Keras: `best_model.keras` (12 MB), `best_model_ft.keras` (18 MB — phase 2 epoch 1)
+- TFLite int8: `obb_center_mnv2_int8.tflite` (1516 KB)
+- Training script: `ml/scripts/train_obb_center_mobilenetv2.py`
+- Model builder: `models.py::build_mobilenetv2_obb_center_model()`
+
+### Artifacts
+- Training run: `ml/artifacts/training/obb_center_mnv2_20260611_204802/`
+- Best Keras model: `best_model.keras`
+- TFLite int8: `obb_center_mnv2_int8.tflite` (780 KB)
+- Training script: `ml/scripts/train_obb_center_mobilenetv2.py`
+- Model builder: `models.py::build_mobilenetv2_obb_center_model()`
+
+### Bug fix: MobileNetV2 preprocessing
+The existing `_build_mobilenetv2_backbone()` uses `Rescaling(1.0/127.5, offset=-1.0)`
+which expects uint8 [0,255] input but our pipeline feeds [0,1]. This squeezed the
+input to [-1, −0.992] instead of [-1, 1], degrading pretrained feature quality.
+`build_mobilenetv2_obb_center_model()` uses `Rescaling(2.0, offset=-1.0)` for
+correct [0,1]→[−1,1] mapping. This bug affects all existing MobileNetV2 models
+in the codebase but hasn't been visibly problematic because BatchNorm adapts.
+
+### GPU memory config
+Training scripts must set the TF GPU memory limit **before** any TF/Keras imports:
+```python
+import os as _os
+_GPU_MEMORY_LIMIT_MB = int(_os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "3900"))
+import tensorflow as tf
+gpus = tf.config.list_physical_devices("GPU")
+if gpus:
+    tf.config.set_logical_device_configuration(
+        gpus[0],
+        [tf.config.LogicalDeviceConfiguration(memory_limit=_GPU_MEMORY_LIMIT_MB)],
+    )
+del _os, _GPU_MEMORY_LIMIT_MB
+```
+Override via `TF_GPU_MEMORY_LIMIT_MB=3900` env var.  Default 3900 MB on 4 GB GPUs.
+The `ml/src/.../__init__.py` cannot set this (TF initialises the GPU before
+the package import runs).
+
+## Firmware deployment — Joint OBB+Center MNv2 (2026-06-12)
+
+### Pipeline change
+**Before**: OBB model → crop → center-detector CNN → polar vote → temperature
+**After**:  Joint model → OBB box + gauge centre → polar vote → temperature
+
+The joint model outputs 8 int8 values: [cx_obb, cy_obb, w, h, cos2θ, sin2θ, cx_ctr, cy_ctr].
+The gauge centre (channels 6,7) is used directly for the polar vote — the separate
+center-detector CNN is no longer needed.
+
+### Firmware files modified
+
+| File | Change |
+|------|--------|
+| `app_ai.c` | New `APP_AI_OBB_XSPI2_MODEL_IMAGE_PATH`, `APP_AI_OBB_OUTPUT_CHANNELS=8`, pool placeholder `_mem_pool_xSPI2_obb_center_mnv2_int8`, ATON instance `obb_center_mnv2_int8`, stage spec, `AppAI_ObbBox` extended with `gauge_center_x/y` fields |
+| `app_ai_helpers_decode.inc` | `AppAI_DecodeObbCropBox` now decodes channels 6,7 as gauge centre (when `APP_AI_OBB_OUTPUT_CHANNELS >= 8`) |
+| `app_ai_runtime_tail.inc` | Gauge centre initialised to −1; when valid, used as override for polar vote (skips CD CNN); `AppCenterDetector_Init()` call is best-effort (non-fatal) |
+| `app_center_detector.c/h` | Unchanged — still works with override centres from joint model |
+| `flash_boot.bat` | OBB path → `obb_center_mnv2_int8` package; CD model flash is optional; signature extraction for CD is conditional |
+
+### Cube.AI packaging
+Windows-only step.  Run from the repo root:
+```
+python ml/scripts/package_obb_center_mnv2_for_n6.py
+```
+This runs `stedgeai.exe generate` + `npu_driver.py`, copies the `.c/.h/.raw` files
+into `firmware/stm32/n657/st_ai_output/packages/obb_center_mnv2_int8/`, and prints
+the xSPI2 start/tail signature bytes that must be copied into `app_ai.c`.
+
+After packaging:
+1. Copy the printed signature bytes into `app_ai_obb_xspi2_signature_start[]` and `_tail[]` in `app_ai.c`
+2. In STM32CubeIDE: remove `ai_network_obb_scaled_320_int8.c` from the project, add the generated `obb_center_mnv2_int8.c` and `obb_center_mnv2_int8.h`
+3. Rebuild the project
+4. Run `flash_boot.bat`
+
+### xSPI2 flash layout (unchanged)
+- `0x70000000`: FSBL
+- `0x70100000`: Signed application
+- `0x70200000`: (optional) Heatmap CD model DS-CNN v4-S
+- `0x70700000`: **Joint OBB+Center MNv2 model** (~1516 KB)
+
+### Key files modified
+- `firmware/stm32/n657/st_ai_output/packages/obb_scaled_320_int8/st_ai_output/obb_scaled_320_int8.c`
+  — epoch 2 `wait_mask`, `LL_ATON_Start_EpochBlock_2` rewritten with tiny SE2 DMA, plus bulk
+  OFLOW_FRM regex patch (319 insertions).
+- `firmware/stm32/n657/Appli/Src/app_ai_helpers_decode.inc`
+  — CPU pre‑copy bypass (`memcpy` 0x342E0000 → 0x34270000, 307 200 bytes) before OBB inference.
+- `firmware/stm32/n657/Appli/Src/app_ai.c`
+  — `LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE`, OBB stage spec, memory pools, and
+  xSPI2 signatures switched between scaled and compact models across several iterations.
+- `firmware/stm32/n657/flash_boot.bat` — OBB blob path changed between scaled/compact.
+- `firmware/stm32/n657/Appli/Src/aton_osal_threadx.c`
+  — added `LL_ATON_OSAL_DrainWfeSemaphore()` and `LL_ATON_OSAL_GetWfeSemaphoreCount()`.
+
+### Bulk OFLOW_FRM patch regex
+```powershell
+$pattern = 'LL_Streng_TensorInit\((\d+),\s*&(\w+),\s*\d+\s*\)\s*;'
+$replacement = 'LL_Streng_TensorInit($1, &$2, 1);`r`n  { uint32_t _ev = ATON_STRENG_EVENT_GET($1); _ev = ATON_STRENG_EVENT_SET_EN_OFLOW_FRM(_ev, 1); ATON_STRENG_EVENT_SET($1, _ev); }'
+```
+Applied to `obb_scaled_320_int8.c` — 319 calls patched.  Builds but doesn't fix the hang
+(semaphore consumed by wrong engine ordering).
+
+## OBB board-specific retrain (2026-06-09)
+
+### Problem
+The existing OBB model predicts `cy=0.49` (gauge at frame center) but the actual gauge center on the board is at `cy=0.91` (lower portion of 320×320 frame). The model was trained on 341 phone photos (gauge centered) + 76 board captures (gauge at bottom). It learned the phone distribution and ignores the board mounting geometry.
+
+### Solution
+Retrain OBB on a better mix of data with **positional augmentation**:
+1. **PXL phone photos** (333 examples) — accurate geometry labels, positional augmentation shifts gauge to random cy positions [0.30, 0.95]
+2. **Board captures from manifest** (76 examples) — full geometry labels
+3. **320×320 YUV board captures** (93 examples, June 7, 2026) — real board mounting at cy~0.45
+4. **annotate_30** (13 examples) — manual center labels
+5. **annotate_batch2** (26 examples) — manual center labels
+6. **ai_annotated_board_captures** (266 labeled examples; 163 center-only rows remain) — AI board capture labels
+
+**Total: 796 unique examples** (Train: 477, Val: 159, Test: 160)
+
+### Key changes to `ml/scripts/train_obb_board_only_320.py`
+- Added `_load_pxl_photo_examples()` — loads PXL photos from manifest with full geometry
+- Added `_load_yuv_board_captures()` — loads 320×320 YUV422 files with manual labels
+- Added `_load_yuv422_image()` — converts YUYV format to RGB
+- Updated `_load_fullframe_obb_data_colour()` — handles both standard images and YUV files
+- Added positional augmentation constants: `POSITIONAL_AUG_CY_MIN=0.30`, `POSITIONAL_AUG_CY_MAX=0.95`
+
+### Data distribution
+- **cy range**: [0.299, 1.000] — covers full frame including board mounting position
+- **cy mean**: 0.531
+- **YUV captures**: cy=0.453 (gauge in lower-middle portion)
+
+### Next steps
+1. Add positional augmentation to training pipeline (shift gauge to random cy/cx during training)
+2. Train OBB model with augmented data
+3. Export TFLite int8 and package for Cube.AI
+4. Flash to board and verify cy prediction matches actual mounting position
 
 ## Board reference and retrain check (2026-06-04)
 
@@ -534,13 +1527,13 @@ cy_320 = row_160 * scale
 - `heatmaps/train/` and `heatmaps/val/` — 80×80 float32 .npy heatmaps (legacy; 160×160 heatmaps generated on-the-fly by v4 training script)
 - `metadata.json` — dataset manifest with train/val splits, center coordinates, sigma
 
-**Key source file:** `ml/data/ai_annotated_centers.csv` (372 entries)
-- Columns: `image_path, center_x, center_y`
+**Key source file:** `ml/data/ai_annotated_board_captures.csv` (429 entries: 266 `board_labeled`, 163 `center_only`)
+- Columns: `image_path, center_x, center_y, temperature_c, bbox_x_min, bbox_y_min, bbox_x_max, bbox_y_max, label_quality, temperature_source, bbox_source`
 - Paths are relative to `ml/data/` (e.g. `captured_images/ann_13-00-52.png`)
 - Center coordinates are in the original DCMIPP crop image space (224×224, based on coordinate range 19–193)
-- Contains all 372 gaue images that were fed through the automated OBB → center pipeline
+- Contains the AI board-capture rows that feed the automated OBB → center pipeline
+- `board_labeled` rows carry full temperature/bbox labels; `center_only` rows are still waiting for manual temperature review
 - This is the SOURCE for the augmentation pipeline — `augment_heatmap_cd.py` reads this CSV, loads each image, DCMIPP-crops to 320×320, runs YOLO OBB to get the gauge quadrilateral, warps to rectified view, transforms the center through the warp, and generates the Gaussian heatmap target
-- 354 of 372 had OBB detections (18 failed OBB — blank/no gauge visible); those 354 became the 320 augmented samples after deduplication and validation
 
 **Dataset composition (672 total):**
 | Source | Count | Description |
@@ -556,7 +1549,7 @@ cy_320 = row_160 * scale
 
 | Script | Purpose |
 |--------|---------|
-| `ml/scripts/augment_heatmap_cd.py` | DCMIPP-crop→OBB→warp→heatmap for board captures. Uses PyTorch YOLO `best.pt` for OBB. Reads `ai_annotated_centers.csv`. |
+| `ml/scripts/augment_heatmap_cd.py` | DCMIPP-crop→OBB→warp→heatmap for board captures. Uses PyTorch YOLO `best.pt` for OBB. Reads `ai_annotated_board_captures.csv`. |
 | `ml/scripts/pseudo_label_heatmap_cd.py` | Pseudo-label unlabelled board_crops and PNGs using trained DS-CNN v2. Threshold 0.4. Added 30 samples. |
 | `ml/scripts/train_heatmap_cd_ds_v4.py` | **BEST training script.** Builds DS-CNN v4 with CoordConv + ReLU6 + 160×160 output. Generates heatmaps on-the-fly from metadata center_xy_norm. Includes data augmentation. |
 
@@ -684,3 +1677,713 @@ Output: int8, shape [1, 6, 2100], scale=0.0075790291, zero_point=-95
 - `app_ai_helpers_decode.inc` was simplified to decode that compact regressor directly instead of the older anchor-based YOLO tensor path.
 - `mingw32-make -j 8 all` built cleanly, and `flash_boot.bat` flashed the FSBL, centre-detector raw, compact OBB raw, and signed app successfully to the board after the quantization alignment.
 - The remaining validation step is a live UART smoke test after power cycling the board, so we can confirm the end-to-end AI path on real captures.
+
+## Session 2026-06-07: CD model retrained on axis-aligned crops + baseline rim-override fix
+
+### CD model retrained (DS-CNN v4)
+- **Root cause of low activations (peak 0.047 vs threshold 0.05):** The CD model was trained on perspective-rectified gauge closeups (homography warp from ellipse rotation), but the firmware feeds axis-aligned letterbox crops. The YOLO OBB outputs [cx, cy, w, h, confidence, aux] without rotation, so the firmware can't reproduce the training perspective warp.
+- **Fix:** Retrained DS-CNN v4 on axis-aligned letterbox crops matching the firmware pipeline (222×175 crop window → letterbox-resized to 320×320). The training script `prepare_heatmap_cd_320_dataset.py` was modified to skip the perspective warp and use direct axis-aligned letterbox crops instead.
+- **Results (TFLite int8, 70-sample PXL-val holdout):**
+  - Mean: **1.90 px @320** (was 3.66 px on old rectified pipeline — **48% improvement**)
+  - Median: **~0.78 px @320**
+  - Model size: 502 KB int8
+  - Well under the 5 px target
+- `CENTER_DET_MIN_PEAK_VALUE` lowered from 0.05 → 0.02 in `app_center_detector.c:60` as belt-and-suspenders.
+
+### Baseline rim-center override fix
+- `app_baseline_runtime.c:790`: Added `AppBaselineRuntime_PassesAcceptanceGate(&rim_geometry_hypothesis)` to the rim override condition. Previously rim unconditionally replaced the priority-selected estimate, then often failed the acceptance gate (poor peak ratio when rim finds wrong centre), killing the entire baseline. Now when rim fails, the priority-selected candidate (board-prior/fixed-crop) goes through the acceptance gate instead.
+
+### Current live accuracy (~8°C physical)
+| Pipeline | Reading | Notes |
+|----------|---------|-------|
+| Baseline | 4.1°C (250°) | rim-center-polar, centre=(160,142), smoothed |
+| AI (rim-vote fallback) | 10.2–10.8°C (272°) | rim-vote centre=(172,152), OBB valid |
+| AI (CD CNN, once deployed) | TBD | Expect ~10°C range, may shift slightly with CNN centre |
+
+The ~5°C gap between baseline (4.1°C) and AI (10.8°C) is from different centres: baseline rim-vote finds (160,142), AI rim-vote finds (172,152). Both use the same polar-vote framework.
+
+## Session 2026-06-07: DS-CNN v4 firmware integration (OCTOSPI1 init + build fix)
+
+### Summary
+- Integrated DS-CNN v4 heatmap CD model (502 KB, 160×160 output) into firmware to replace `heatmap_cd_tiny` (69 KB, 80×80).
+- Required adding OCTOSPI1 (xSPI1) hyperRAM init because v4 needs 5.051 MB activations (2.34 MB in xSPI1 hyperRAM + 2.71 MB in AXISRAM2-6) — exceeds on-chip SRAM (2.8 MB).
+
+### Changes made
+
+**Linker** (`STM32N657X0HXQ_LRUN.ld`):
+- ROM 580K→600K, RAM 443K→423K for DS-CNN v4 `.rodata`
+- Added `XSPI1_RAM` region (0x90000000, 8 MB) and `.xspi1_pool` section for hyperRAM scratch
+
+**`app_ai.c`:**
+- Added `_mem_pool_xSPI2_heatmap_cd` (`.xspi2_pool`) and `_mem_pool_xSPI1_heatmap_cd` (`.xspi1_pool`) 32-byte placeholders for ATON network init
+- Updated xSPI2 signatures with DS-CNN v4 start/tail bytes
+
+**`app_ai_helpers_core.inc`:**
+- Added `AppAI_Xspi1ConfigPins()` — GPIOO (PIN_0/2/3/4) + GPIOP (PIN_0-7) AF9_XSPIM_P1 config
+- Added `AppAI_Xspi1Init()` — enables XSPI1 + XSPIM clocks, XSPIM direct mode, XSPI1 HyperBus init (prescaler 2), memory-mapped mode, probe at 0x90000000
+- **Build fix:** `LL_GPIO_AF_9` → `GPIO_AF9_XSPIM_P1` (HAL extension constant, avoids need for LL GPIO include)
+
+**`app_ai_runtime_tail.inc`:**
+- Calls `AppAI_Xspi1Init()` before `AppCenterDetector_Init()` in pipeline entry
+
+**`app_center_detector.c`:**
+- Heatmap 80→160; simplified init (direct xSPI2 verify + ATON init); removed AXISRAM2 copy path
+
+**`flash_boot.bat`:**
+- CENTER_DETECTOR_RAW path updated to `.xSPI2.raw`
+
+**Packaging script** (`ml/scripts/package_heatmap_cd_ds_v4_for_n6.py`):
+- Switched from `stm32n6_reloc_int2.mpool` → `stm32n6_reloc.mpool` with xSPI1/xSPI2 pools; uses absolute pool path; outputs `atonbuf.xSPI2.raw`
+
+### Build status
+- First build: **0 errors**, 72 warnings (text=599,648/600K, bss=1,211,544 within budget)
+- Flash succeeded: FSBL @0x70000000, DS-CNN v4 @0x70200000 (529,457 B), YOLO OBB @0x70700000 (2,742,577 B), signed app @0x70100000 (587.59 KB)
+
+### Board run results
+- **First run**: firmware boots, captures frames, baseline pipeline completes. **HardFault at PC=0x3400DD4C** when `AppAI_Xspi1Init()` probes 0x90000000 — OCTOSPI1 not initialized (CubeMX didn't generate MSP init for XSPI1 since it's not in `.ioc`).
+- **Fix attempt 1**: HAL init only — still HardFaulted (GPIO/XSPIM never configured).
+- **Fix attempt 2**: Added direct GPIO/XSPIM init in `AppAI_Xspi1Init()` — rebuilt and reflashed. No more HardFault.
+- **Board run (attempt 2)**: Baseline pipeline runs fine (27.1°C estimate, centre=(160,142), bright-relaxed mode). AI pipeline fails: `[AI] XSPI1 memory-mapped mode failed.` — `HAL_XSPI_MemoryMapped` returns `HAL_ERROR` because the HAL state machine requires `HAL_XSPI_STATE_CMD_CFG` but `HAL_XSPI_Init` leaves state as `HAL_XSPI_STATE_HYPERBUS_INIT`.
+- **Root cause of memory-mapped mode failure**: For HyperBus, the HAL requires three steps between `Init` and `MemoryMapped`:
+  1. `HAL_XSPI_Init` → state `HYPERBUS_INIT`
+  2. `HAL_XSPI_HyperbusCfg` → state `READY` (sets RW recovery, access time, latency mode)
+  3. `HAL_XSPI_HyperbusCmd` → state `CMD_CFG` (sets address space, data width, DQS/RWDS mode)
+  4. `HAL_XSPI_MemoryMapped` → state `BUSY_MEM_MAPPED`
+  Steps 2 and 3 were missing, causing the state check in step 4 to fail.
+- **Fix applied**: Added `HAL_XSPI_HyperbusCfg` with 8-cycle access time, variable latency mode, and `HAL_XSPI_HyperbusCmd` with 32-bit address, 8-line data, DQS enabled.
+
+### Remaining issues
+All three XSPI1 init bugs fixed. All XSPI1/HyperRAM code has been removed since the N657 Nucleo board has no HyperRAM onboard.
+Firmware pipeline has been reconfigured for Compact OBB 320 + DS-CNN v4-S (all on-chip, no HyperRAM).
+- Verify CD inference produces valid 160×160 heatmap peak
+- Expect CD centre closer to rim-vote centre (160,142)
+
+## ════════════════════════════════════════════════════════════
+## Session 2026-06-07: No-HyperRAM On-Chip Pipeline Redesign
+## ════════════════════════════════════════════════════════════
+
+### Critical Constraint: NO HyperRAM
+- The N657 nucleo board does **NOT** have xSPI1 hyperRAM populated.
+- All NPU activation memory must come from on-chip AXISRAM2-6.
+- The Cube.AI combined virtual pool is **2,883,584 bytes (2.82 MB)**.
+- Models execute **sequentially** — they share the same pool, so peak = max(OBB, CD).
+
+### DS-CNN v4 CANNOT fit without hyperRAM
+- Original DS-CNN v4 needs 5.051 MB total activations (2.34 MB xSPI1 + 2.71 MB on-chip).
+- The on-chip portion alone (2.71 MB) nearly fills the pool — no room for OBB.
+- **Solution:** DS-CNN v4-S (Slim) — halved channels, same 160×160 output.
+
+### New Model Pair (2026-06-07 trained)
+
+#### Compact OBB at 320×320
+| Property | Value |
+|----------|-------|
+| Training script | `ml/scripts/train_obb_fullframe_320.py` |
+| Artifact dir | `ml/artifacts/training/obb_fullframe_320_20260607_183447/` |
+| Architecture | Same as `build_compact_obb_model()` (95.5K params, fully-conv→GAP→Dense→6-vec) |
+| Input | 320×320×3 RGB (colour, nearest-neighbor resize+pad to match firmware) |
+| Output | `[cx, cy, w, h, cos2θ, sin2θ]` int8 |
+| TFLite int8 | **157.8 KB** |
+| Test OBB MAE | 0.092 (normalized) |
+| Test center px @320 | cx=11.8, cy=12.4, euclidean=17.2 px |
+| Train/Val/Test | 291/63/63 (341 phone + 76 board captures) |
+| Preprocessing | RGB colour (not luma-only) nearest-neighbor resize + zero-pad to 320×320 |
+| Est. activations | **~1.5-2.0 MB** int8 (primary tensor: 160×160×32) |
+
+**Note:** 17 px center error is for the OBB box center, not the gauge dial center. The OBB detects the whole gauge ellipse; the 17 px box error is well within the ~100 px gauge radius. The downstream CD heatmap model refines to sub-pixel accuracy.
+
+#### DS-CNN v4-S (Slim, halved channels)
+| Property | Value |
+|----------|-------|
+| Training script | `ml/scripts/train_heatmap_cd_ds_v4s.py` |
+| Artifact dir | `ml/artifacts/heatmap_cd_ds_v4s/` |
+| Architecture | Same U-Net as v4 but channels halved: enc 32→64→96→192, dec 192→96→64→32 |
+| CoordConv | Yes (unchanged) |
+| Activation | ReLU6 (unchanged) |
+| Skip connections | s1 at 80×80, s2 at 40×40 (unchanged) |
+| Input | 320×320×3 uint8, scale=0.00784, zp=127 |
+| Output | 160×160×1 uint8 heatmap, scale=0.003906, zp=0 |
+| TFLite int8 | **320.5 KB** |
+| Trainable params | ~75K (from ~233K in v4) |
+| Train/Val | 602/70 (PXL-val holdout, axis-aligned crops) |
+
+**Evaluation on 70-sample PXL-val holdout:**
+
+| Method | Mean (160×160) | @320 | Median (160×160) | @320 |
+|--------|---------------|------|-------------------|------|
+| Keras (soft-argmax) | 1.22 px | **2.45 px** | 0.48 px | **0.97 px** |
+| TFLite fp32 (soft-argmax) | 1.22 px | **2.45 px** | 0.48 px | **0.97 px** |
+| TFLite int8 (soft-argmax) | 1.85 px | **3.71 px** | 1.11 px | **2.23 px** |
+| TFLite int8 (sub-pixel) | 1.78 px | **3.58 px** | 1.26 px | **2.53 px** |
+
+All TFLite int8 metrics well under the **5 px @320 target**. The sub-pixel refinement (`CENTER_DET_MIN_PEAK_VALUE` lowered to 0.02) is ready for firmware.
+
+### Combined Memory Budget (Sequential, No HyperRAM)
+
+| Phase | Model | xSPI2 Weights | AXISRAM2-6 Activations (est.) |
+|-------|-------|--------------|-------------------------------|
+| 1 | Compact OBB 320 | 158 KB | ~1.7 MB |
+| 2 | DS-CNN v4-S | 321 KB | ~2.3 MB |
+| **Peak** | | **479 KB** | **~2.3 MB of 2.82 MB** |
+
+Both fit comfortably in the 2.82 MB NPU pool. Remaining ~500 KB margin for CD input buffer (307 KB in TIP_FOCUS_RAM, outside NPU pool) and OBB output buffer.
+
+### Pipeline (Matches Existing Board Logic)
+
+```
+IMX335 → DCMIPP → 320×320 YUV422
+                       │
+                       ▼ YUV→RGB
+            Compact OBB 320 (NPU, int8, ~5s)
+            → [cx,cy,w,h,cos2θ,sin2θ]
+                       │
+                       ▼ axis-aligned letterbox crop to 320×320
+                       │ (same AppAI_DecodeObbCropBox + AppCenterDetector_FillInputFromCrop)
+            DS-CNN v4-S (NPU, int8, ~200ms)
+            → 160×160 heatmap
+                       │
+                       ▼ argmax + 1D parabolic sub-pixel
+            Center (cx_320, cy_320)
+                       │
+                       ▼
+            Polar vote → needle angle → temperature
+```
+
+### Firmware Changes Required (Minimal)
+
+1. **Remove XSPI1 init code** — `AppAI_Xspi1ConfigPins()`, `AppAI_Xspi1Init()`, HAL HyperBus config in `app_ai_helpers_core.inc` and `app_ai_runtime_tail.inc`. No more hyperRAM = no more hyperRAM state-machine bugs.
+2. **Update xSPI2 signatures** in `app_ai.c` — new start/tail bytes for both model `.raw` blobs.
+3. **Update `flash_boot.bat`** — point at new raw files, but flash addresses unchanged:
+   - OBB compact @ `0x70700000` (replaces big YOLO)
+   - CD v4-S @ `0x70200000` (replaces DS-CNN v4)
+4. **No changes** to decode path, letterbox logic, polar vote, or temperature mapping.
+
+### Known Limitations / Next Steps
+
+- **OBB 320 accuracy** at 17 px center MAE is acceptable but could improve with more board capture data (currently 76 board vs 341 phone photos)
+- **DS-CNN v4-S sub-pixel** performs similarly to soft-argmax (quantized heatmap peaks less Gaussian at slim channel counts). Median 2.53 px @320 is still well under target.
+- **NPU packaging** for v4-S must use on-chip-only `.mpool` (e.g., `stm32n6_reloc_int2.mpool`) — NOT the xSPI1-enabled pool
+- **`flash_boot.bat`** needs CENTER_DETECTOR_RAW path updated; OBB_RAW path already points at the compact OBB slot
+- **UART smoke test** pending — verify CD inference produces valid heatmap with peak >0.02
+
+## Session 2026-06-07: Firmware Reconfiguration — Compact OBB 320 + DS-CNN v4-S
+
+### All XSPI1/HyperRAM code removed
+- `app_ai_helpers_core.inc`: Removed `AppAI_Xspi1ConfigPins()` and `AppAI_Xspi1Init()` (~157 lines)
+- `app_ai_runtime_tail.inc`: Removed `AppAI_Xspi1Init()` call in dry-run entry
+- `STM32N657X0HXQ_LRUN.ld`: Removed `XSPI1_RAM` region and `.xspi1_pool` section
+
+### OBB model: YOLO11n-320 → Compact OBB 320
+- `app_ai.c`: Updated `APP_AI_OBB_XSPI2_MODEL_IMAGE_PATH`, ATON declare, stage spec, pool, timeout (45s→15s)
+- `app_ai_helpers_decode.inc`: Removed `AppAI_DecodeYoloObbCropBox` YOLO decoder (~160 lines)
+- `app_ai_helpers_core.inc`: Updated forward declaration to `AppAI_DecodeObbCropBox`
+- `app_ai_runtime_tail.inc`: Switched decoder call to `AppAI_DecodeObbCropBox` (compact direct regression)
+- New: `ai_network_obb_compact_320_int8.c` wrapper for generated model
+- User must remove `ai_network_yolo_obb_320.c` from CubeIDE project and add new wrapper
+
+### CD model: DS-CNN v4 → DS-CNN v4-S
+- `app_ai.c`: Updated image path, xSPI2 pool comment, signatures (placeholders, TODO after packaging)
+- `app_center_detector.c`: Updated signature comment (placeholders, TODO after packaging)
+- Created local mpool `stm32n6_onchip.mpool` (no xSPI1, max_onchip_sram=3072 KB)
+
+### flash_boot.bat
+- Updated `CENTER_DETECTOR_RAW` → `heatmap_cd_ds_v4s/...`
+- Updated `OBB_RAW` → `obb_compact_320_int8/...`
+
+### Packaging scripts created
+- `ml/scripts/package_obb_compact_320_for_n6.py`
+- `ml/scripts/package_heatmap_cd_ds_v4s_for_n6.py`
+
+### Next manual steps
+1. Run packaging scripts (Windows, Cube.AI environment)
+2. Update signature bytes in `app_ai.c` and `app_center_detector.c` from packaging output
+3. In CubeIDE: remove `ai_network_yolo_obb_320.c`, add `ai_network_obb_compact_320_int8.c`
+4. Verify `heatmap_cd.c` and `heatmap_cd.h` in `st_ai_output/packages/heatmap_cd_ds_v4s/st_ai_output/` exist
+5. Rebuild + reflash
+
+## Session 2026-06-13/14: QARepVGG-Pro — reparameterizable anchor-free heatmap backbone
+
+### Motivation
+Replace MobileNetV2 α0.50 backbone with a ReLU-only dense expansion-contraction architecture that:
+- Can be **reparameterized** (multi-branch train → single 3×3 conv infer) for NPU efficiency
+- Supports **anchor-free heatmap regression** (40×40 grid → parabolic sub-pixel decoder) instead of scalar OBB
+- Stays under **2.5 MB int8** (α=1.5 → ~1.9 MB TFLite est.)
+- Uses **only ReLU** (no SiLU/Hard-Swish/ReLU6 that cause NPU→CPU fallback on STM32N6)
+
+### QARepVGG v1/v2 (Mini, proven)
+- **v1 (256×256)**: Warmup best val_loss=0.00944 (epoch 58); TFLite int8 = 761 KB
+  - Board captures: 14.25 px centre, 0.24° angle
+  - Mixed: 21.73 px FP32 / 24.6 px TFLite int8
+  - **Beats** MobileNetV2 α0.35 (43.7 px, 780 KB TFLite)
+- **v2 (320×320, working QAT)**: Warmup best val_loss=0.00763; QAT best val_loss=0.00796 (no degradation)
+  - TFLite int8 = 759 KB
+  - Board captures: **16.9 px centre**, 0.13° angle
+  - **QAT fix**: removed custom layer classes + identity BN branches → `tfmot.quantize_model()` works natively
+
+### QARepVGG-Pro design
+**Architecture**: `tf_models.py:QARepVGG-Pro`
+- Width multiplier α (default 1.5): stem=48, s1=96, s2=144, s3=192, s4=240, proj=96
+- 7 RepVGG blocks: s1[×2], s2[×2], s3[×2], s4[×1] with 8× downsampling
+- Training: `_qa_block_multi()` — 3×3 Conv+BN + 1×1 Conv+BN + optional identity BN
+- Inference: `_qa_block_fused()` — single 3×3 Conv(use_bias=True) after reparameterization
+- Decoder: 2× upsample + 3×3 refine conv + three 1×1 heads (heatmap, box_size, angle)
+- SE blocks optional (default enabled for s2/s3/s4)
+
+**Parameter counts (α=1.5)**:
+| State | Params | FP32 | INT8 est. |
+|-------|--------|------|-----------|
+| Multi-branch (warmup) | 1,810,037 | 6.9 MB | — |
+| Fused (reparameterized) | 1,641,605 | 6.3 MB | ~1.9 MB |
+
+**Fusion fix — TF SAME padding asymmetry (critical bug)**:
+- TF's `padding='same'` for stride=2 adds asymmetric padding (pad_before=0, pad_after=1)
+- This means the 3×3 kernel's centre reads input[1,1] for output pixel (0,0), but the 1×1 branch reads input[0,0]
+- **Fix**: `_pad_kernel_1x1_to_3x3(w, stride)` — stride=1 uses centre pad [[1,1],...], stride=2 uses top-left pad [[0,2],...] (weight at kernel index (0,0) instead of (1,1))
+- **Verified**: max diff 0.006 (pure float32 rounding — different FP32 operation order vs multi-branch BN separation)
+
+### QAT workflow
+```
+Train multi-branch (FP32 warmup)
+  → reparameterize_model() → fused single-conv model
+  → tfmot.quantize_model() on fused model (no custom layers, no identity BN)
+  → QAT fine-tune
+  → TFLite int8 export
+```
+
+### Key files modified
+- `ml/src/embedded_gauge_reading_tinyml/tf_models.py`:
+  - `_fuse_bn_weights()`, `_pad_kernel_1x1_to_3x3()`, `_make_identity_kernel()` → numpy-based
+  - `_extract_fused_conv()` — accepts stride param, uses numpy
+  - `reparameterize_model()` — builds fused model, copies stem/decoder weights, sets fused conv weights
+  - `build_qarepvgg_multi()` — α-scalable multi-branch model
+  - `decode_heatmap_peak()` — parabolic sub-pixel decoder
+
+### Next steps
+1. **Launch QARepVGG-Pro (α=1.5) training** with multi-branch warmup
+2. **After warmup**: run `reparameterize_model()` → QAT → TFLite export
+3. **Evaluate** on board captures + mixed test set; compare against Mini v2 (759 KB) and MNv2 V2 baseline (17.2 px)
+4. **If α=1.5 under 2.5 MB**: freeze; else try α=1.25 or α=2.0
+5. **Wire sub-pixel decoder** into firmware C pipeline
+
+## Session 2026-06-14: QARepVGG-Pro α=1.75 Cube.AI Packaging + Firmware Bridge
+
+### Model packaged
+- `qarepvgg_pro_a175_int8`: 2,240,705 bytes raw blob (2.14 MiB weights, 87% of 2.5 MB budget)
+- Cube.AI packaging: `ml/scripts/package_qarepvgg_pro_for_n6.py` — stedgeai generate + npu_driver relocatable build
+- **Output tensor layout** (from c_info.json): all 3 outputs are **ch-first** (`channel_first: true`)
+  - Output 0: `Transpose_53_out_0` — angle [1,2,40,40], scale=0.045616087, zp=0
+  - Output 1: `Transpose_59_out_0` — box_size [1,2,40,40], scale=0.0078125, zp=0
+  - Output 2: `Transpose_50_out_0` — heatmap [1,1,40,40], scale=0.046526767, zp=2
+- Memory layout for 2-ch ch-first: ch0[0..1599], ch1[1600..3199], spatial index = y*40+x
+- Raw blob at `firmware/.../st_ai_output/packages/qarepvgg_pro_a175_int8/st_ai_output/`
+
+### xSPI2 signatures (16 bytes)
+```
+Start: F9 EB F9 FC 08 FB F6 04 FE F3 F1 0E 0C 03 01 01
+Tail:  63 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+sha256[:16] = f7065e4f6b3a98f6
+```
+
+### Files changed
+| File | Change |
+|------|--------|
+| `app_ai.c` | Updated OBB quant constants (HEATMAP_SCALE=0.046527, zp=2; ANGLE_SCALE=0.045616, zp=0); updated xSPI2 signature arrays; implemented `AppAI_DecodeQarepvggObb` bridge function |
+| `app_qarepvgg_decode.inc` | Fixed ch-last→ch-first memory layout for box/angle decoders; updated docstring shapes to ch-first notation |
+| `package_qarepvgg_pro_for_n6.py` | Executed — generated .c/.h/.raw; copies to firmware package dir; prints signatures |
+
+### Remaining manual steps
+1. **CubeIDE**: Add `ai_network_qarepvgg_pro_a175_int8.c` to project; remove old `ai_network_obb_center_mnv2_int8.c`
+2. **Rebuild + flash**: Rebuild via CubeIDE, run `flash_boot.bat`, power-cycle with BOOT0=BOOT1=0
+3. **UART smoke test**: Verify QARepVGG-Pro produces valid heatmap + OBB box on live captures
+
+## AI board-capture manifest fill-in pass (2026-06-15)
+
+- I reviewed the AI-annotated capture set with the image viewer and filled the
+  obvious burst-aligned board captures by eye.
+- `ml/data/ai_annotated_board_captures.csv` now has 429 rows with 266
+  `board_labeled` entries and 163 `center_only` rows left for later review.
+- The newly filled rows use `manual_visual_review` as provenance for both the
+  temperature and bounding-box source fields.
+- `ml/scripts/train_polar_v3_geometry.py` now pulls those `board_labeled`
+  rows into the polar training pool alongside the 352-image PXL geometry set.
+- I sanity-checked the renamed manifest with the image viewer before updating
+  the repo references.
+- I left the remaining `center_only` rows alone when the gauge was too small,
+  the shot was too noisy, or the temperature would have been a guess.
+- The latest polar QAT curriculum now runs a longer clean pretrain before the
+  mixed-label fine-tune, lowers the fine-tune LR multiplier, boosts the sweep
+  endpoints in the sample weights, and disables the scalar profile head for the
+  next geometry-only run.
+- Current next-run defaults in the handoff script are `geometry_pretrain_epochs=50`,
+  `angle_vector_temperature=5.0`, `angle_vector_aux_loss_weight=4.0`,
+  `finetune_learning_rate_multiplier=0.05`, `mask_loss_weight=0.75`, and
+  `profile_head_units=0`.
+- The next board recipe widens the polar student to `stem_filters=48` and
+  `base_filters=48`, which still leaves the largest int8 activation under about
+  1.23 MB, and adds soft-label distillation from the prior best clean model at
+  `polar_v3_geometry_board_qat_v3/model.keras` with a blend weight of `0.15`.
+
+## Polar activation budget check (2026-06-15)
+
+- I measured the current board-friendly polar model with `polar_size=160`,
+  `stem_filters=64`, `base_filters=64`, `bridge_filters=192`, and
+  `bridge_blocks=3`.
+- The peak activation tensor is the final `160 x 160 x 64` feature map, which
+  is 1,638,400 elements. That is about 1.64 MB if the board stores it as int8.
+- A `base_filters=72` variant still fits on paper at 1,843,200 elements
+  (about 1.84 MB), but it leaves very little margin for workspace and planner
+  scratch.
+- A `base_filters=80` variant crosses the 2 MB line at 2,048,000 elements, so
+  that is not a safe board target.
+- The safest way to add capacity is to widen the low-resolution bridge
+  (`20 x 20`) and keep the final decoder width at 64.
+- Example bridge-only widenings I checked: `bridge_filters=256`,
+  `bridge_blocks=5` and `bridge_filters=320`, `bridge_blocks=6` both keep the
+  same 1.64 MB peak activation because the high-resolution decoder width does
+  not change.
+- The next polar QAT run should use the same 64/64 stem/base width but widen
+  the bridge explicitly to `bridge_filters=256` and `bridge_blocks=5`, which
+  gives the model more low-resolution capacity without changing the peak
+  160x160x64 activation tensor.
+- `deepseek_train_polar_v3_geometry_board_qat_v8` is now the active run.
+  It uses `batch_size=3`, `profile_head_units=0`, `mask_loss_weight=0.75`,
+  `angle_vector_temperature=5.0`, `angle_vector_aux_loss_weight=4.0`,
+  `geometry_pretrain_epochs=50`, `distill_blend_weight=0.15`, and teacher
+  distillation from `polar_v3_geometry_board_qat_v3/model.keras`.
+- The v8 activation estimate logged in training is `1.56 MiB` peak board-side
+  activation (`160 x 160 x 64 = 1,638,400` bytes), which stays below the
+  2.0 MiB SRAM budget while leaving the 20x20 bridge much wider than before.
+- I added a board-friendly decoder widening path so we can spend extra capacity
+  at the 40x40 stage without increasing the peak 160x160 activation tensor.
+- The next candidate wrapper is `tmp/deepseek_train_polar_v3_geometry_board_qat_v9.sh`.
+  It keeps `stem_filters=64` and `base_filters=64`, widens the bridge to
+  `bridge_filters=384` with `bridge_blocks=7`, and widens the 40x40 decoder
+  stage with `decoder_mid_filters=128` and `decoder_mid_blocks=2`.
+- The activation math still stays board-safe because the peak tensor remains
+  `160 x 160 x 64`, which is about `1.56 MiB`. The extra capacity is spent at
+  lower resolutions where the feature maps are much cheaper.
+- I have not launched the v9 run yet because v8 is still training and making
+  progress. If v8 stalls, the next move is to start v9 with the wider bridge
+  and widened 40x40 decoder.
+
+## Geometry heatmap v4 lessons (2026-06-16)
+
+- The 112x112 geometry heatmap run with `peak_target=0.30` was too permissive:
+  live center/tip peaks sat around `0.47-0.61`, so the peak-shaping loss never
+  really activated and the heatmaps stayed diffuse.
+- The current best-so-far replay metric in that run was the frozen-stage epoch 8
+  checkpoint at about `12.54 C` accepted MAE; the unfrozen stage regressed to
+  about `14.54 C`.
+- The next candidate should use a sharper supervision mix: focal heatmap loss,
+  `sigma_pixels=1.5`, `peak_target=0.70`, lower output noise, and a wider
+  decoder.
+- A `decoder_width_multiplier=4.0` geometry heatmap head still fits the board
+  budget on paper because the largest activation is the `112 x 112 x 128`
+  decoder tensor, which is about `1.53 MiB` int8.
+- Keep `backbone_alpha=0.35` for source-model transfer unless we explicitly want
+  to reinitialize the backbone from ImageNet.
+- For these WSL TensorFlow launches, a fresh session between runs is safer than
+  reusing a long-lived shell when the GPU runtime starts acting stale.
+- In practice, `wsl --shutdown` between training runs is often the cleanest way
+  to reset the GPU runtime here. Several of the stalled geometry launches looked
+  like stale-session issues rather than model bugs, so treat each new job as a
+  fresh WSL start unless we have evidence the environment stayed healthy.
+- The hard-case board manifest is smaller than it first looked: `hard_cases_remaining_focus.csv`
+  currently maps to only 8 geometry-labeled samples in `merged_geometry_board_manifest.csv`.
+  The ninth capture (`capture_2026-04-24_22-30-21.png`) is only present as a
+  center-only board annotation, so hard-case geometry replay comparisons should
+  expect 8 usable samples unless we source a fuller geometry label elsewhere.
+- A fresh hard-case comparison on those 8 usable board samples still showed the
+  saved checkpoints far from target:
+  `axis_simcc_gap` raw MAE 23.83 C, `qat_v2_reference` raw MAE 36.75 C, and
+  `board_dw3_best` raw MAE 44.20 C. The SimCC gap model was best of the three,
+  but none were remotely close to the <5 C goal on the board hard cases.
+- One SimCC checkpoint (`candidate_s4_w10_t2`) currently fails to deserialize
+  in this checkout because `_HorizontalReduceTranspose` is missing from the
+  available source. Treat that artifact as unavailable unless we recreate or
+  restore the missing layer definition.
+- The geometry builder in `models_geometry.py` was accidentally ignoring the
+  `pretrained` flag and always constructing the MobileNetV2 backbone with
+  ImageNet weights. That meant the supposed `random` launches were not truly
+  random and were still paying the ImageNet load cost. The fix is to use
+  `weights="imagenet" if pretrained else None`.
+- Even after fixing the `pretrained` flag, the 112x112 geometry constructor is
+  still slow enough to matter on this WSL box. The `source_model` path spent
+  multiple minutes in the source checkpoint load, and the `imagenet` path also
+  spends several minutes in the target-model build before epoch 1. I added
+  timing logs around the target build and reference clone in
+  `train_geometry_heatmap_v4_112_quant_native.py` so the next run can tell us
+  whether the bottleneck is backbone construction, decoder width, or Keras
+  deserialization.
+- The new pointer-mask consistency loss is wired into
+  `train_geometry_heatmap_v4_112_quant_native.py` and the one-batch smoke run
+  completed cleanly on the resume checkpoint from
+  `geometry_heatmap_v4_112_axis_simcc_board_finetune_v1/best_model.keras`.
+  The debug pass reported finite losses and gradients, including
+  `pointer_mask_loss=3.6908`, so the new geometry supervision is numerically
+  healthy.
+- That same smoke run reported the largest single activation estimate as
+  `0.38 MiB int8` (`1.53 MiB float32`) at `geometry_decoder_up_4`
+  with shape `(None, 112, 112, 32)`, which means we still have room to widen
+  the decoder further while staying inside the ~2 MiB SRAM activation budget.
+  The next worthwhile ablation is to try a wider decoder while keeping the
+  frozen-only schedule and the new pointer-mask loss.
+- The widened source-transfer follow-up confirmed the practical capacity limit:
+  `decoder_width_multiplier=4.0` looked board-safe on activation size but OOMed
+  the 4 GB GPU training setup, while `decoder_width_multiplier=2.0` trained
+  cleanly and still fit the board budget with a peak activation estimate of
+  `0.77 MiB int8` (`3.06 MiB float32`) at `geometry_decoder_up_4`
+  with shape `(None, 112, 112, 64)`.
+- The latest full `geometry_heatmap_v4_112_axis_simcc_pointer_mask_source_wide_v1`
+  run completed with the frozen stage selected, but hard-case replay still
+  collapsed to zero accepted samples. The final reported hard-case metrics were
+  `accepted MAE = nan` and `acceptance_rate = 0.0000`, so the wider model is a
+  valid training path but not yet a usable gauge reader.
+- That run did show the replay candidate improving over the first few epochs
+  (`accepted MAE` falling from about `48 C` to about `16-19 C` by epochs 9-11),
+  but the guardrails never accepted a sample, which means the current blocker is
+  still supervision / replay behavior rather than raw model width.
+
+## Geometry heatmap v12 regression (2026-06-17)
+
+- The all-data manifest experiment expanded the training pool from 333 usable
+  examples to 421 examples, but it regressed sharply on every important reading
+  metric except center spread.
+- v12 improved center spread slightly (`42.41 px -> 41.59 px`), but accepted
+  MAE, raw MAE, raw RMSE, tip spread, center MAE, tip MAE, and angle MAE all
+  got materially worse.
+- The likely cause is label noise or domain mismatch in the added samples, not
+  a lack of capacity. The model early-stopped in both phases, so it did not
+  recover with more epochs.
+- The current best default remains the v11 data mix. Any v13 run should either
+  revert to that mix or apply a quality filter / reweighting strategy before
+  using the extra examples.
+- The current gauge models are still small relative to the board budget. We
+  have room to grow a little in activation footprint, but the v12 regression
+  says capacity is not the first thing to buy right now. Data quality and
+  supervision structure matter more than raw size.
+- The 19 board hard cases are trusted samples and should stay in the pool.
+  The PXL-labeled images are also trusted. The v12 regression should be treated
+  as a manifest composition / weighting / split issue, not as a reason to drop
+  those subsets.
+- v13 should keep the clean v11-style validation split fixed and add the extra
+  board / PXL / hard-case rows as train-only rows. The new manifest builder
+  does exactly that, so the additional examples are used for learning without
+  moving validation again.
+- The v13 geometry model also has a learnable final 56x56->112x112 upsample
+  path. It uses a transposed-conv resize initialized to bilinear weights, so
+  we get a more expressive final decoder without changing the board-facing
+  output shape or the peak activation footprint.
+- Visual spot-checks on the current v13 manifest looked good: the sampled
+  train, val, and test rows all had plausible center/tip placements, and one
+  `review` row also looked visually consistent even though the current trainer
+  still filters `quality_flag != clean` rows out of training.
+- v13 with the transpose-conv final upsample reduced spread further than the
+  bilinear baseline, with the best non-collapsed center/tip spread numbers so
+  far, but it also regressed raw MAE badly and brought back a 108 C outlier.
+  The frozen stage remained the selected stage, which suggests the learnable
+  upsample helps sharpening but still needs a more stable optimization recipe
+  before it is deployment-worthy.
+- v14 should try a bilinear-anchored residual upsample instead of a pure
+  transpose-conv final stage. The new hybrid path keeps the stable bilinear
+  resize as the anchor and learns only a small residual correction, which is
+  the most promising way we have right now to keep the spread improvements
+  without losing raw accuracy.
+- The active v14 launch uses the hybrid residual upsample and the v13 trusted
+  train manifest. It starts from the v13 best checkpoint by default, but the
+  source checkpoint path can be overridden if we need to point at a different
+  spread-sharpened model artifact later.
+
+## Geometry heatmap v27 head saturation (2026-06-18)
+
+- v27a increased the full-resolution head depth to 3, and v27b increased the
+  coordinate anchoring to 3x, but both runs regressed strict acceptance versus
+  v26c.
+- v26c remains the best model in this family:
+  - accepted MAE: `3.841 C`
+  - center spread: `27.69 px`
+  - tip spread: `26.61 px`
+  - strict acceptance: `34.0%`
+- v27a with depth=3 regressed to:
+  - accepted MAE: `3.936 C`
+  - center spread: `28.17 px`
+  - tip spread: `26.54 px`
+  - strict acceptance: `21.3%`
+- v27b with 3x coord weights regressed to:
+  - accepted MAE: `3.833 C`
+  - center spread: `27.86 px`
+  - tip spread: `26.62 px`
+  - strict acceptance: `29.8%`
+- The raw worst error stayed pinned around `95-96 C` across v26c, v27a, and
+  v27b, which suggests a structural failure mode in the widened head regime
+  rather than a tuning issue.
+- The current interpretation is that the 48-filter head is structurally
+  saturated. Extra depth adds noise, and stronger coordinate weighting trades
+  away strict spread gains.
+- v26c remains the definitive best checkpoint for deployment evaluation,
+  QAT export, and board replay.
+- Any further gain likely requires a more fundamental architectural shift than
+  more capacity in the current head design.
+
+## Geometry heatmap v28 local_offset breakthrough (2026-06-18)
+
+- v28 replaces the subpixel refinement path with a spatial `local_offset`
+  head, and it is the first run that clearly breaks through the last strict
+  acceptance ceiling.
+- v26c vs v28:
+  - accepted MAE: `3.841 C` -> `3.891 C` (roughly flat)
+  - center spread: `27.69 px` -> `24.25 px`
+  - tip spread: `26.61 px` -> `26.88 px`
+  - strict acceptance: `34.0%` -> `74.5%`
+  - center MAE: `16.31 px` -> `15.75 px`
+  - raw worst error: `96.4 C` -> `31.1 C`
+  - hard-case center spread: `30.63 px` -> `25.53 px`
+  - hard-case tip spread: `30.01 px` -> `27.93 px`
+- The key improvement is the spatial offset map itself:
+  - a `112x112x4` per-pixel offset head gives the decoder local correction
+    capability that the scalar subpixel head could not provide.
+  - peak activation increases only modestly, by about `+49 KB`, so this is a
+    very efficient use of the available SRAM budget.
+- The current trainer already includes scalar confidence, confidence-floor,
+  pointer-mask, local-offset, axis-SimCC, and subpixel-supervision paths in
+  the loss stack. So a plain new "confidence head" is probably redundant; the
+  only confidence-related idea that would be meaningfully new is a spatial
+  uncertainty or per-pixel reliability map.
+- The eliminated `96 C` outlier is especially important:
+  - this was the persistent failure mode across the widened-head runs.
+  - v28 stabilizes the model across the full validation set rather than just
+    improving the average case.
+- v28 is the new definitive baseline for the geometry family.
+- The next question is no longer whether we need more width in the same head;
+  the answer is that the spatial offset branch already unlocked the major
+  gain. Any follow-up should focus on preserving this strict-gain behavior
+  while checking whether accepted MAE can be nudged back below v26c without
+  giving up the 74.5% strict acceptance.
+
+## Geometry heatmap v29 detail-branch width sweep (2026-06-18)
+
+- v29 widened the high-resolution detail branch from `48f` to `64f`, while
+  keeping the successful `local_offset` spatial map. The result was a clean
+  negative control: no strict gain, no spread gain, and worse accepted MAE.
+- v28 vs v29:
+  - accepted MAE: `3.891 C` -> `4.171 C`
+  - center spread: `24.25 px` -> `24.28 px`
+  - tip spread: `26.88 px` -> `26.40 px`
+  - strict acceptance: `74.5%` -> `74.5%`
+  - center MAE: `15.75 px` -> `15.95 px`
+  - raw worst error: `31.1 C` -> `30.4 C`
+  - hard-case center spread: `25.53 px` -> `25.56 px`
+- Interpretation:
+  - the `local_offset` branch is the dominant contributor to the v28 gain.
+  - widening the detail branch beyond `48f` does not improve the strict metric.
+  - the current v28 shape is effectively saturated for this branch design.
+- The definitive best model in this line remains `v28` with `48f + local_offset`
+  and `batch_size=4`.
+- The next useful experiment should change structure, not width. If we continue
+  this family, the best remaining literature-backed move is a crop-based
+  second-stage refiner or a lightweight HRNet-lite detail path, not a wider
+  version of the same branch.
+
+## Geometry heatmap v30 depthwise residual regression (2026-06-18)
+
+- v30 tried a depthwise-separable residual addition on top of the v28
+  `local_offset` path, but it regressed across every meaningful metric.
+- v28 vs v30:
+  - accepted MAE: `3.891 C` -> `4.126 C`
+  - center spread: `24.25 px` -> `24.80 px`
+  - tip spread: `26.88 px` -> `27.77 px`
+  - strict acceptance: `74.5%` -> `68.1%`
+  - center MAE: `15.75 px` -> `16.24 px`
+  - raw worst error: `31.1 C` -> `32.7 C`
+- Interpretation:
+  - the zero-init depthwise residual at `0.05` scale adds noise faster than
+    it adds usable sharpening signal.
+  - 10 unfrozen epochs is not enough for that branch to become helpful in the
+    current transfer regime.
+- The definitive best model remains `v28`:
+  - `48f` detail branch
+  - `local_offset` spatial map
+  - `subpixel` refinement still present in the successful configuration
+  - `batch_size=4`
+- The current conclusion is that the v28 design is already near the edge of
+  what this transfer setup can exploit. If we keep experimenting, the next
+  move should be a more structural change such as a crop-based second-stage
+  refiner rather than another residual tweak on the same path.
+
+## Geometry heatmap v31 longer-training plateau (2026-06-18)
+
+- v31 doubled the unfrozen training time from `10` to `20` epochs, but it
+  followed the same tradeoff pattern we have already seen many times:
+  slightly tighter spread, worse coordinate accuracy.
+- v28 vs v31:
+  - accepted MAE: `3.891 C` -> `4.079 C`
+  - center spread: `24.25 px` -> `23.94 px`
+  - tip spread: `26.88 px` -> `26.09 px`
+  - strict acceptance: `74.5%` -> `72.3%`
+  - center MAE: `15.75 px` -> `16.13 px`
+  - raw worst error: `31.1 C` -> `31.2 C`
+- Interpretation:
+  - longer training is not unlocking a new basin; it is just tightening the
+    peaks a bit while moving the predictions away from the true positions.
+  - the raw worst error also stays essentially unchanged, so extra epochs are
+    not resolving the remaining failure mode.
+- The conclusion is now stronger than before:
+  - `v28` is the converged optimum for this architecture family.
+  - the current design space is saturated after roughly 30 runs.
+  - the model is ready for board deployment work rather than more architecture
+    churn.
+
+## Literature-guided next direction (2026-06-18)
+
+- The current literature signal is consistent across several families of
+  keypoint-localization models:
+  - HRNet maintains high-resolution representations end to end and improves
+    spatial precision by fusing multiple resolutions repeatedly.
+  - Lite-HRNet, EfficientHRNet, LE-HRNet, and Dite-HRNet all point to the
+    same conclusion: preserve high-resolution detail, but use lightweight
+    blocks or dynamic weighting so the model stays efficient on constrained
+    hardware.
+  - DE-HRNet specifically adds a detail enhancement module and a lightweight
+    dynamic upsampler to recover lost local detail during upsampling.
+  - DARK and UDP reduce quantization bias in heatmap/keypoint decoding and are
+    strong evidence for keeping unbiased subpixel decoding in our stack.
+  - SAR shows that maintaining a spatial location map and regressing
+    coordinates/confidence from that map is better than collapsing to a
+    globally pooled vector too early.
+- Gauge-specific papers also support a structural, coarse-to-fine view of the
+  task rather than pure scalar regression:
+  - recent gauge work models the dial as a keypoint skeleton and reads the
+    landmarks with a dedicated pose architecture.
+  - another recent gauge paper uses a two-stage CNN pipeline with a first
+    structural stage and a second landmark-reading stage, and trains well from
+    synthetic data plus strong augmentation.
+- Given the v27 saturation result, the next promising use of our remaining
+  activation budget is not more width in the same head. The better bet is a
+  coarse-to-fine refinement path, and v28 now confirms that a spatial offset
+  branch is the right kind of refinement:
+  - keep the v26c-style coarse geometry head,
+  - add a small high-resolution detail branch or local crop refiner,
+  - keep the subpixel/UDP/DARK-style unbiased decoding where it helps,
+  - use spatial-aware coordinate/confidence supervision on the refined crop.
+- This should fit comfortably inside the current board budget if kept
+  lightweight, and it has a better literature basis than further widening or
+  deepening the saturated 112x112 head.
+
+## Ranked next steps from literature (2026-06-18)
+
+1. Add a crop-based second-stage refiner around the predicted center or tip.
+   This is the strongest literature-backed move because HRNet-style and
+   DE-HRNet-style designs consistently win by preserving or reintroducing
+   local detail rather than just widening the existing head.
+2. Add uncertainty or confidence calibration on top of the current v28 path.
+   Recent localization papers suggest confidence-aware outputs can improve
+   reliability and strict acceptance without requiring a much larger model.
+3. Add a lightweight geometry / rectification stage only if we need better
+   tilt and viewpoint robustness across more gauge types. Gauge-specific
+   papers favor structural pose estimation and homography-based correction.
+4. Use masked pretraining or synthetic pretraining if we later obtain more
+   unlabeled images. MAE-style pretraining is useful, but it is a training
+   strategy rather than the highest-priority architectural change.
+5. Do not keep widening the current 112x112 head. The v27-v30 ablations show
+   that this branch is already saturated and extra capacity in that exact
+   design space does not improve strict performance.

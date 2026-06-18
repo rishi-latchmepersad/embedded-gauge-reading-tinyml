@@ -7,17 +7,9 @@
  */
 /* USER CODE END Header */
 
-/* Keep the legacy tip-focus geometry and source-crop-box blocks disabled.
- * The live board now uses OBB -> center detector -> polar vote ->
- * temperature, but the center detector itself reads the stable training crop
- * directly so it stays in the domain it was trained on. The OBB/luma path is
- * still useful for diagnostics and future fallback logic. These defines must
- * appear before app_ai.h includes the tip-focus header, which uses #ifndef
- * guards that respect pre-include definitions. */
-#ifdef APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
-#undef APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
-#endif
-#define APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE 0U
+/* Keep the legacy source-crop-box block disabled. The live board now uses the
+ * tip-focus geometry heatmap model directly, while the older OBB / center-
+ * detector cascade stays in the file only as a fallback path. */
 #ifdef APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
 #undef APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
 #endif
@@ -66,6 +58,7 @@
 #include "npu_cache.h"
 #include "stm32n6xx_hal.h"
 #include "app_center_detector.h"
+#include "app_qarepvgg_decode.inc"
 
 /*
  * The STM32N6 ATON runtime library expects this wait-mask state symbol when
@@ -113,9 +106,9 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 #ifndef APP_AI_RESET_NETWORK_EACH_INFERENCE
 #define APP_AI_RESET_NETWORK_EACH_INFERENCE 0
 #endif
-/* The OBB stage is the live crop front-end for the center-detector pipeline.
- * Keep it behind a switch so we can still isolate it quickly if a future board
- * build needs a scalar-only fallback. */
+/* The OBB stage is now fallback-only. The live board inference path routes
+ * through the tip-focus geometry heatmap model first, but we keep the old
+ * crop front-end behind a switch so it can still be re-enabled for debug. */
 #ifndef APP_AI_ENABLE_OBB_STAGE
 #define APP_AI_ENABLE_OBB_STAGE 1U
 #endif
@@ -197,10 +190,10 @@ uint32_t volatile __ll_current_wait_mask = 0U;
  * to 320x320; the decode helper still expects the original angular resolution.
  */
 #define APP_AI_POLAR_VOTE_BINS 224U
-#define APP_AI_POLAR_VOTE_MIN_ANGLE_RAD 2.356f
-#define APP_AI_POLAR_VOTE_SWEEP_RAD 4.712f
-#define APP_AI_POLAR_VOTE_MIN_VALUE_C (-30.0f)
-#define APP_AI_POLAR_VOTE_MAX_VALUE_C 50.0f
+#define APP_AI_POLAR_VOTE_MIN_ANGLE_RAD 3.927f   /* 225° — 7:30 o'clock (scale start) */
+#define APP_AI_POLAR_VOTE_SWEEP_RAD 4.712f       /* 270° sweep clockwise */
+#define APP_AI_POLAR_VOTE_MIN_VALUE_C (-30.0f)   /* inner scale minimum */
+#define APP_AI_POLAR_VOTE_MAX_VALUE_C 50.0f      /* inner scale maximum */
 /* Match the offline V28 recipe by searching a small center neighborhood
  * before building the polar tensor. The exact training helper uses a
  * 3x3 sweep around the nominal pivot, which is enough to absorb a few
@@ -220,11 +213,11 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 #define APP_AI_SCALAR_XSPI2_MODEL_IMAGE_PATH \
 	"packages/mobilenetv2_rectified_scalar_finetune_v2/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8_atonbuf.xSPI2.raw"
 #define APP_AI_CENTER_DETECTOR_XSPI2_MODEL_IMAGE_PATH \
-	"packages/heatmap_cd_tiny/st_ai_output/heatmap_cd_atonbuf.AXISRAM2.raw"
+	"packages/heatmap_cd_v4s_80/st_ai_output/heatmap_cd_atonbuf.xSPI2.raw" /* DS-CNN v4-S 80×80, ~268 KB */
 #define APP_AI_RECTIFIER_XSPI2_MODEL_IMAGE_PATH \
 	"atonbuf.rectifier.xSPI2.raw"
 #define APP_AI_OBB_XSPI2_MODEL_IMAGE_PATH \
-	"packages/prod_model_obb_compact_int8/st_ai_output/prod_model_obb_compact_int8_atonbuf.xSPI2.raw"
+	"packages/qarepvgg_pro_a175_int8/st_ai_output/qarepvgg_pro_a175_int8_atonbuf.xSPI2.raw" /* QARepVGG-Pro α=1.75, ~2228 KB */
 #define APP_AI_XSPI2_MODEL_IMAGE_PATH APP_AI_CENTER_DETECTOR_XSPI2_MODEL_IMAGE_PATH
 #define APP_AI_XSPI2_PROGRAM_CHUNK_BYTES 4096U
 #define APP_AI_XSPI2_ERASE_BLOCK_BYTES (64U * 1024U)
@@ -238,7 +231,7 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 /* Keep the OBB localizer bounded, but give it enough time to finish on the
  * 60 s capture cadence. The earlier 10 s cap forced a fallback before the
  * deployed localizer could converge on harder frames. */
-#define APP_AI_OBB_INFERENCE_TIMEOUT_MS 45000U
+#define APP_AI_OBB_INFERENCE_TIMEOUT_MS 15000U  /* Scaled OBB is a single NPU pass, much faster than YOLO */
 /* Keep the live OBB path aligned with the offline board replay window. The
  * older 0.60 threshold was too strict and pushed valid crops into fallback. */
 #define APP_AI_OBB_TRAINING_CROP_MIN_RATIO 0.15f
@@ -261,10 +254,24 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 /* Keep the OBB decoder from collapsing into a tiny crop when the localizer
  * gets uncertain. */
 #define APP_AI_OBB_MIN_BOX_RATIO 0.05f
-/* Compact OBB regressor quantization parameters from the generated ST pack. */
-#define APP_AI_OBB_OUTPUT_SCALE 0.00390625f
-#define APP_AI_OBB_OUTPUT_ZERO_POINT (-128)
-#define APP_AI_OBB_OUTPUT_CHANNELS 6U
+/* QARepVGG-Pro α=1.75 — heatmap-based OBB + centre detector.
+ * Outputs 3 tensors (int8, ch-first):
+ *   heatmap  [1,40,40,1] — logits (pre-sigmoid) → parabolic peak → (cx, cy)
+ *   box_size [1,40,40,2] — (w, h) per cell, read at peak
+ *   angle    [1,40,40,2] — (sin2θ, cos2θ) per cell, read at peak
+ * Centre decoding via 1-D parabolic Taylor refinement (see app_qarepvgg_decode.inc).
+ * Quantisation from Cube.AI c_info.json (2026-06-14 packaging). */
+#define APP_AI_OBB_OUTPUT_SCALE      0.003921569f      /* input scale (unused for multi-output) */
+#define APP_AI_OBB_OUTPUT_ZERO_POINT (-128)            /* input zp (unused for multi-output) */
+#define APP_AI_OBB_HEATMAP_SCALE     0.047995351f      /* Transpose_50_out_0 (α=1.25) */
+#define APP_AI_OBB_HEATMAP_ZP        14
+#define APP_AI_OBB_BOX_SCALE         0.0078125f        /* Transpose_59_out_0 */
+#define APP_AI_OBB_BOX_ZP            0
+#define APP_AI_OBB_ANGLE_SCALE       0.042166740f      /* Transpose_53_out_0 (α=1.25) */
+#define APP_AI_OBB_ANGLE_ZP          1
+#define APP_AI_OBB_OUTPUT_CHANNELS   3U  /* 3 tensors decoded by AppAI_DecodeQarepvggOutput */
+#define APP_AI_OBB_HEATMAP_SIZE      40U
+#define APP_AI_OBB_HEATMAP_PIXELS    (APP_AI_OBB_HEATMAP_SIZE * APP_AI_OBB_HEATMAP_SIZE)  /* 1600 */
 /* The OBB crop should still be a real crop, not a 1x1 or 8x8 window. */
 #define APP_AI_OBB_MIN_CROP_SIZE_PIXELS 48.0f
 #define APP_AI_SOURCE_CROP_BOX_MIN_CROP_SIZE_PIXELS 8.0f
@@ -327,8 +334,9 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 #define APP_AI_XSPI2_RECTIFIER_CHIP_OFFSET (APP_AI_XSPI2_RECTIFIER_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
 #define APP_AI_XSPI2_OBB_BASE_ADDR 0x70700000UL
 #define APP_AI_XSPI2_OBB_CHIP_OFFSET (APP_AI_XSPI2_OBB_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
-/* Center detector model: xSPI2 staging slot at 0x70200000.
- * The runtime copies the staged initializer blob into AXISRAM2 before init. */
+/* Center detector model (DS-CNN v4): xSPI2 weights at 0x70200000.
+ * The NPU reads weights directly from xSPI2 flash; activation scratch uses
+ * xSPI1 hyperRAM (0x90000000) + on-chip AXISRAM2-6. */
 #define APP_AI_XSPI2_CENTER_DETECTOR_BASE_ADDR APP_AI_XSPI2_SCALAR_BASE_ADDR
 #define APP_AI_XSPI2_CENTER_DETECTOR_CHIP_OFFSET (APP_AI_XSPI2_CENTER_DETECTOR_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
 /* Legacy alias used by the single-stage logging helpers; points to center detector. */
@@ -399,7 +407,14 @@ __attribute__((section(".xspi2_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
 uint8_t _mem_pool_xSPI2_scalar_full_finetune_from_best_piecewise_calibrated_int8[32U] = {
 	0U,
 };
-/* Rectifier pool placed in its own section so the linker script can map it to
+/* Heatmap CD model xSPI2 pool: same slot (0x70200000) as the scalar.
+ * DS-CNN v4-S weights are pre-flashed here; the generated heatmap_cd.c
+ * references _mem_pool_xSPI2_heatmap_cd for weight addressing. */
+__attribute__((section(".xspi2_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
+uint8_t _mem_pool_xSPI2_heatmap_cd[32U] = {
+	0U,
+};
+/* Compact OBB 320 localizer pool lives in the dedicated OBB flash slot (0x70700000). so the linker script can map it to
  * the rectifier flash region at 0x70600000 ??? matching FLASH_RECTIFIER in
  * flash_boot.bat.  The NPU resolves all weight addresses as:
  *   _mem_pool_xSPI2_mobilenetv2_rectifier_hardcase_finetune + internal_offset
@@ -408,10 +423,23 @@ __attribute__((section(".xspi2_rectifier_pool"), aligned(APP_AI_CACHE_LINE_BYTES
 uint8_t _mem_pool_xSPI2_mobilenetv2_rectifier_hardcase_finetune[32U] = {
 	0U,
 };
-/* OBB localizer pool lives in its own section so the linker can map it to the
- * dedicated compact OBB flash slot without disturbing the rectifier blob. */
+/* QARepVGG-Pro α=1.75 pool lives in the dedicated OBB flash slot (0x70700000).
+ * The generated network references:
+ *   _mem_pool_xSPI2_qarepvgg_pro_a175_int8 — weight-addressing.
+ * 32-byte placeholder ensures the symbol resolves at link time.
+ * Actual weight blob (~2228 KB, qarepvgg_pro_a175_int8_atonbuf.xSPI2.raw) is
+ * flashed separately via flash_boot.bat. */
 __attribute__((section(".xspi2_obb_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
-uint8_t _mem_pool_xSPI2_prod_model_obb_compact_int8[32U] = {
+uint8_t _mem_pool_xSPI2_qarepvgg_pro_a175_int8[32U] = {
+	0U,
+};
+
+/* QARepVGG-Pro activation overflow (1024 KB) in xSPI1 HyperRAM.
+ * The N657 Nucleo has no physical HyperRAM — this symbol resolves
+ * at 0x90000000 via the .xspi1_obb_pool linker section.
+ * NPU access to 0x90000000 will bus-fault at runtime. */
+__attribute__((section(".xspi1_obb_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
+uint8_t _mem_pool_xSPI1_qarepvgg_pro_a175_int8[32U] = {
 	0U,
 };
 
@@ -462,14 +490,15 @@ volatile size_t app_ai_scalar_preprocess_last_row = (size_t)SIZE_MAX;
  *     d=open('st_ai_output/packages/heatmap_cd_tiny/st_ai_output/heatmap_cd_atonbuf.AXISRAM2.raw','rb').read()
  *     print('start:', bytes(d[:16]).hex())
  *     print('tail: ', bytes(d[-16:]).hex())" */
-/* Heatmap center-detector model: package raw (69,457 bytes) flashed at 0x70200000. */
+/* Heatmap center-detector model (DS-CNN v4-S): 332,045 bytes flashed at 0x70200000.
+ * Signatures unchanged from DS-CNN v4 — same first/last 16 bytes. */
 static const uint8_t app_ai_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0xB5U, 0x3FU, 0x43U, 0x0AU, 0x50U, 0xD3U, 0x0AU, 0x08U,
-	0xBCU, 0x1BU, 0xB6U, 0xB1U, 0xD6U, 0xDDU, 0x0FU, 0x0CU,
+	0x80U, 0x80U, 0x81U, 0x82U, 0x83U, 0x83U, 0x84U, 0x85U,
+	0x86U, 0x87U, 0x87U, 0x88U, 0x89U, 0x8AU, 0x8BU, 0x8BU,
 };
 static const uint8_t app_ai_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
-	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x90U,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x80U,
 };
 /* Rectified scalar v2 xSPI2 signatures used when the board boots with the
  * prod v0.8 scalar blob already flashed at 0x70200000. Size: 3,218,865 bytes. */
@@ -481,16 +510,16 @@ static const uint8_t app_ai_rectifier_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BY
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x80U,
 };
-/* Compact OBB regressor xSPI2 signatures.
- * The board verifies against these bytes when the SD-side cache is not
- * populated, so keep them aligned with the package raw file (117,505 bytes). */
+/* QARepVGG-Pro α=1.75 xSPI2 signatures.  Update after running:
+ *   python ml/scripts/package_qarepvgg_pro_for_n6.py
+ * The script prints the 16 start/tail bytes for this raw blob. */
 static const uint8_t app_ai_obb_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0xB6U, 0xA6U, 0xD3U, 0xE8U, 0xEAU, 0xD9U, 0xCEU, 0x27U,
-	0xE1U, 0xDEU, 0xF8U, 0x0AU, 0xE9U, 0xF4U, 0x2FU, 0x29U,
+	0xF6U, 0xFBU, 0x1DU, 0xF5U, 0xFFU, 0xF1U, 0xFAU, 0x07U,
+	0xFDU, 0xF6U, 0x0FU, 0x04U, 0x07U, 0xEAU, 0xFEU, 0x0FU,
 };
 static const uint8_t app_ai_obb_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
+	0x70U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
-	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x7FU,
 };
 
 /* Source-crop-box xSPI2 signatures for atonbuf.source_crop_box.xSPI2.raw. */
@@ -550,8 +579,10 @@ LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 	scalar_full_finetune_from_best_piecewise_calibrated_int8);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 	mobilenetv2_rectifier_hardcase_finetune);
+/* QARepVGG-Pro α=1.75 — single-model OBB + heatmap centre detector.
+ * Outputs 3 int8 tensors decoded by app_qarepvgg_decode.inc. */
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
-	prod_model_obb_compact_int8);
+	qarepvgg_pro_a175_int8);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 	mobilenetv2_source_crop_box_v1_stripped_int8);
 /* Heatmap center detector replaces the scalar CNN as the sole inference
@@ -583,12 +614,16 @@ typedef struct
 
 typedef struct
 {
-	float center_x;
-	float center_y;
+	float center_x;    /* OBB box center x (normalised [0,1]) */
+	float center_y;    /* OBB box center y (normalised [0,1]) */
 	float box_w;
 	float box_h;
 	float angle_rad;
 	float confidence;
+	/* QARepVGG-Pro gauge-center prediction from heatmap (needle pivot, normalised [0,1]).
+	 * Set to -1.0 when the model does not provide a valid centre. */
+	float gauge_center_x;
+	float gauge_center_y;
 } AppAI_ObbBox;
 
 typedef struct
@@ -600,11 +635,11 @@ typedef struct
 } AppAI_SourceCrop;
 
 static const AppAI_ModelStageSpec app_ai_obb_stage = {
-	.stage_label = "obb",
+	.stage_label = "qarepvgg_pro",
 	.model_image_path = APP_AI_OBB_XSPI2_MODEL_IMAGE_PATH,
-	.nn_instance = &NN_Instance_prod_model_obb_compact_int8,
-	.network_init_fn = LL_ATON_EC_Network_Init_prod_model_obb_compact_int8,
-	.inference_init_fn = LL_ATON_EC_Inference_Init_prod_model_obb_compact_int8,
+	.nn_instance = &NN_Instance_qarepvgg_pro_a175_int8,
+	.network_init_fn = LL_ATON_EC_Network_Init_qarepvgg_pro_a175_int8,
+	.inference_init_fn = LL_ATON_EC_Inference_Init_qarepvgg_pro_a175_int8,
 	.uses_rectifier_box = false,
 	.xspi2_chip_offset = APP_AI_XSPI2_OBB_CHIP_OFFSET,
 	.xspi2_base_addr = APP_AI_XSPI2_OBB_BASE_ADDR,
@@ -614,6 +649,100 @@ static bool AppAI_ShouldLogStageDiagnostics(
 	const AppAI_ModelStageSpec *stage)
 {
 	(void)stage;
+	return true;
+}
+
+/* QARepVGG-Pro bridge — replaces AppAI_DecodeObbCropBox.
+ * output_buffers_info array: [0]=angle, [1]=box, [2]=heatmap, [3]=NULL terminator.
+ * All tensors are int8, ch-first, at NPU RAM5 base (0x342E0000). */
+static bool AppAI_DecodeQarepvggObb(
+    const LL_Buffer_InfoTypeDef *output_info,
+    AppAI_SourceCrop            *obb_crop,
+    AppAI_ObbBox                *obb_box)
+{
+	if ((output_info == NULL) || (obb_crop == NULL) || (obb_box == NULL))
+	{
+		return false;
+	}
+
+	/* output_info points to index 0 (Transpose_53_out_0 = angle).
+	 * Index 1 = Transpose_59_out_0 = box, index 2 = Transpose_50_out_0 = heatmap. */
+	const LL_Buffer_InfoTypeDef *angle_info   = &output_info[QAREPVGG_OUTPUT_IDX_ANGLE];
+	const LL_Buffer_InfoTypeDef *box_info     = &output_info[QAREPVGG_OUTPUT_IDX_BOX];
+	const LL_Buffer_InfoTypeDef *heatmap_info = &output_info[QAREPVGG_OUTPUT_IDX_HEATMAP];
+
+	/* Verify all three entries are present (non-NULL name). */
+	if ((angle_info->name == NULL) || (box_info->name == NULL) || (heatmap_info->name == NULL))
+	{
+		return false;
+	}
+
+	const int8_t *heatmap_raw = (const int8_t *)LL_Buffer_addr_start(heatmap_info);
+	const int8_t *box_raw     = (const int8_t *)LL_Buffer_addr_start(box_info);
+	const int8_t *angle_raw   = (const int8_t *)LL_Buffer_addr_start(angle_info);
+
+	if ((heatmap_raw == NULL) || (box_raw == NULL) || (angle_raw == NULL))
+	{
+		return false;
+	}
+
+	QarepvggOutput q_out;
+	AppAI_DecodeQarepvggOutput(&q_out,
+		heatmap_raw, box_raw, angle_raw,
+		APP_AI_OBB_HEATMAP_SCALE,   APP_AI_OBB_HEATMAP_ZP,
+		APP_AI_OBB_BOX_SCALE,       APP_AI_OBB_BOX_ZP,
+		APP_AI_OBB_ANGLE_SCALE,     APP_AI_OBB_ANGLE_ZP);
+
+	if (!q_out.valid)
+	{
+		return false;
+	}
+
+	/* Populate OBB box with normalised [0,1] values. */
+	obb_box->center_x = q_out.center_x;
+	obb_box->center_y = q_out.center_y;
+	obb_box->box_w    = q_out.box_w;
+	obb_box->box_h    = q_out.box_h;
+
+	/* θ = 0.5 * atan2(sin2θ, cos2θ) — gauge rotation in radians. */
+	obb_box->angle_rad    = atan2f(q_out.sin2theta, q_out.cos2theta) * 0.5f;
+	obb_box->confidence   = q_out.peak_value;
+	obb_box->gauge_center_x = q_out.center_x;
+	obb_box->gauge_center_y = q_out.center_y;
+
+	/* Populate pixel crop from centre + box size, with OBB crop scale. */
+	float cx_px = q_out.center_x * (float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+	float cy_px = q_out.center_y * (float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+	float bw_px = q_out.box_w    * (float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+	float bh_px = q_out.box_h    * (float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+
+	float crop_w = bw_px * APP_AI_OBB_CROP_SCALE;
+	float crop_h = bh_px * APP_AI_OBB_CROP_SCALE;
+
+	/* Clamp crop to frame bounds. */
+	float x_min_f = cx_px - crop_w * 0.5f;
+	float y_min_f = cy_px - crop_h * 0.5f;
+
+	if (x_min_f < 0.0f) { x_min_f = 0.0f; }
+	if (y_min_f < 0.0f) { y_min_f = 0.0f; }
+	if ((x_min_f + crop_w) > (float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS)
+	{
+		crop_w = (float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS - x_min_f;
+	}
+	if ((y_min_f + crop_h) > (float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS)
+	{
+		crop_h = (float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS - y_min_f;
+	}
+	if ((crop_w < APP_AI_OBB_MIN_CROP_SIZE_PIXELS) || (crop_h < APP_AI_OBB_MIN_CROP_SIZE_PIXELS))
+	{
+		return false;   /* degenerate crop — reject */
+	}
+
+	obb_crop->x_min  = (size_t)(x_min_f + 0.5f);
+	obb_crop->y_min  = (size_t)(y_min_f + 0.5f);
+	obb_crop->width  = (size_t)(crop_w + 0.5f);
+	obb_crop->height = (size_t)(crop_h + 0.5f);
+
 	return true;
 }
 
