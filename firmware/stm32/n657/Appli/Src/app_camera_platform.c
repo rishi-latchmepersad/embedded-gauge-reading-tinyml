@@ -679,7 +679,7 @@ void CameraPlatform_ReapplyImx335TestPattern(void) {
 
 /**
  * @brief Configure the capture pipe using ST's camera middleware crop/downsize helpers.
- * @retval true when the output path is ready for a 320x320 YUV422 frame.
+ * @retval true when the output path is ready for a 224x224 YUV422 frame.
  */
 bool CameraPlatform_PrepareDcmippSnapshot(void) {
 	DCMIPP_HandleTypeDef *capture_dcmipp =

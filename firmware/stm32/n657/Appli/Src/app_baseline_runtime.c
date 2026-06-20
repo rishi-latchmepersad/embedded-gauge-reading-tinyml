@@ -59,8 +59,8 @@
  * causing valid needle pixels to be skipped and the detector to miss entirely. */
 #define APP_BASELINE_SATURATION_THRESHOLD 235U
 /* Keep the minimum bright-pixel floor at roughly the same ~2% of frame area
- * that the old 224x224 budget used, so the gate scales with the new 320x320
- * capture size instead of hard-coding a pixel count. */
+ * that the 224x224 capture budget uses, so the gate scales with frame size
+ * instead of hard-coding a pixel count. */
 #define APP_BASELINE_MIN_BRIGHT_PIXELS \
 	(((CAMERA_CAPTURE_WIDTH_PIXELS * CAMERA_CAPTURE_HEIGHT_PIXELS) + 24U) / 49U)
 #define APP_BASELINE_SCAN_BORDER_PIXELS 8U
@@ -774,14 +774,20 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 	/* Rim-centre override: if the rim-vote found the true centre (~108,108)
 	 * and the polar vote there returned a valid Celsius-sweep angle, prefer
 	 * it over any priority-selected candidate. The rim search is the most
-	 * principled centre estimator — its result should win when valid. */
+	 * principled centre estimator — its result should win when valid.
+	 *
+	 * Important: the rim estimate must clear the acceptance gate before
+	 * overriding. When the rim-vote finds a wrong centre (e.g. outer bezel),
+	 * its polar-vote peak separation is poor and the entire baseline would
+	 * fail. In that case the priority-selected candidate is kept instead. */
 	if (rim_geometry_ok && rim_geometry_hypothesis.valid)
 	{
 		const float rim_angle_deg =
 			AppBaselineRuntime_NormalizeAngleDegrees(
 				rim_geometry_hypothesis.angle_rad * (180.0f / APP_BASELINE_PI));
 		if (AppBaselineRuntime_IsAngleInCelsiusSweep(rim_angle_deg) &&
-			!AppBaselineRuntime_IsAngleInSubdialBand(rim_angle_deg))
+			!AppBaselineRuntime_IsAngleInSubdialBand(rim_angle_deg) &&
+			AppBaselineRuntime_PassesAcceptanceGate(&rim_geometry_hypothesis))
 		{
 			*estimate_out = rim_geometry_hypothesis;
 			estimate_out->source_label = "rim-center-polar";
@@ -1199,8 +1205,10 @@ static bool AppBaselineRuntime_EstimateFromRimGeometryHypothesis(
 	AppGaugeGeometry_TrainingCropCenter(width_pixels, height_pixels,
 										&center_x, &center_y);
 
-	/* Scan area centered on the inner dial, sized to cover the rim region. */
-	const size_t scan_radius = (size_t)(dial_radius_px * 1.8f);
+	/* Scan area centered on the inner dial, tight enough to avoid false
+	 * circles from the outer bezel or background clutter.  1.0× dial radius
+	 * gives the rim-vote a roughly ±69 px window on a 224x224 frame. */
+	const size_t scan_radius = (size_t)(dial_radius_px * 1.0f);
 	const size_t scan_x_min = (center_x > scan_radius) ? (center_x - scan_radius) : 0U;
 	const size_t scan_x_max = (center_x + scan_radius < width_pixels) ? (center_x + scan_radius) : width_pixels;
 	const size_t scan_y_min = (center_y > scan_radius) ? (center_y - scan_radius) : 0U;
@@ -1212,6 +1220,25 @@ static bool AppBaselineRuntime_EstimateFromRimGeometryHypothesis(
 														   &center_x, &center_y, NULL))
 	{
 		return false;
+	}
+
+	/* Guard: if the rim-vote center wandered more than 25 px from the known
+	 * inner dial center, it likely locked onto the outer bezel or background
+	 * clutter.  Fall back to the expected center rather than reporting a
+	 * wrong needle angle. */
+	{
+		size_t expected_cx = 0U;
+		size_t expected_cy = 0U;
+		AppGaugeGeometry_TrainingCropCenter(width_pixels, height_pixels,
+											&expected_cx, &expected_cy);
+		const float dx = (float)center_x - (float)expected_cx;
+		const float dy = (float)center_y - (float)expected_cy;
+		const float center_dist = sqrtf(dx * dx + dy * dy);
+		if (center_dist > 25.0f)
+		{
+			center_x = expected_cx;
+			center_y = expected_cy;
+		}
 	}
 
 	return AppBaselineRuntime_EstimateFromCenterHypothesis(frame_bytes,
@@ -2203,6 +2230,32 @@ static float AppBaselineRuntime_ReadLuma(const uint8_t *frame_bytes,
 }
 
 /**
+ * @brief Read the minimum (darkest) luma in a 3x3 neighbourhood.
+ * Equivalent to 1-iteration morphological dilation of dark features.
+ * Thickens thin dark lines (needles) by ~1 px each side so that spoke
+ * sampling at a slightly wrong angle still hits the needle.
+ */
+static float AppBaselineRuntime_ReadLumaMin3x3(const uint8_t *frame_bytes,
+	size_t frame_width, size_t frame_height, long cx, long cy)
+{
+	float min_luma = 255.0f;
+	for (long dy = -1; dy <= 1; dy++)
+	{
+		const long sy = cy + dy;
+		if (sy < 0 || (size_t)sy >= frame_height) continue;
+		for (long dx = -1; dx <= 1; dx++)
+		{
+			const long sx = cx + dx;
+			if (sx < 0 || (size_t)sx >= frame_width) continue;
+			const float luma = AppBaselineRuntime_ReadLuma(
+				frame_bytes, frame_width, (size_t)sx, (size_t)sy);
+			if (luma < min_luma) min_luma = luma;
+		}
+	}
+	return min_luma;
+}
+
+/**
  * @brief Read the U and V components from one packed YUV422 pixel pair.
  */
 static void AppBaselineRuntime_ReadChroma(const uint8_t *frame_bytes,
@@ -2537,11 +2590,11 @@ bool AppBaselineRuntime_EstimatePolarNeedle(
 	float runner_up_score = -1.0f;
 	size_t best_bin = 0U;
 	const bool bright_relaxed = camera_baseline_current_frame_is_bright;
-	const float edge_threshold = bright_relaxed ? 5.5f : 8.0f;
-	const float main_continuity_threshold = bright_relaxed ? 0.24f : 0.35f;
-	const float main_hub_threshold = bright_relaxed ? 0.15f : 0.25f;
-	const float hot_continuity_threshold = bright_relaxed ? 0.22f : 0.28f;
-	const float hot_hub_threshold = bright_relaxed ? 0.12f : 0.18f;
+	const float edge_threshold = bright_relaxed ? 4.0f : 8.0f;
+	const float main_continuity_threshold = bright_relaxed ? 0.14f : 0.35f;
+	const float main_hub_threshold = bright_relaxed ? 0.10f : 0.25f;
+	const float hot_continuity_threshold = bright_relaxed ? 0.14f : 0.28f;
+	const float hot_hub_threshold = bright_relaxed ? 0.08f : 0.18f;
 	const float final_spoke_continuity_threshold = bright_relaxed ? 0.10f : 0.22f;
 
 	if ((estimate_out == NULL) || (frame_bytes == NULL) || (source_label == NULL))
@@ -2818,7 +2871,9 @@ bool AppBaselineRuntime_EstimatePolarNeedle(
 
 				/* Classical CV: measure spoke continuity along this angle.
 				 * The needle forms a continuous dark spoke from center to edge.
-				 * Dial markings are isolated edges without continuity. */
+				 * Dial markings are isolated edges without continuity.
+				 * Use 3x3 min-filter (dilation) so thin needles are caught
+				 * even when the angle is off by 1-2 degrees. */
 				float continuity = 0.0f;
 				const size_t continuity_samples = 12U;
 				size_t valid_samples = 0U;
@@ -2834,8 +2889,8 @@ bool AppBaselineRuntime_EstimatePolarNeedle(
 					if (sx >= 0 && (size_t)sx < frame_width_pixels &&
 						sy >= 0 && (size_t)sy < frame_height_pixels)
 					{
-						const float sample_luma = AppBaselineRuntime_ReadLuma(
-							frame_bytes, frame_width_pixels, (size_t)sx, (size_t)sy);
+						const float sample_luma = AppBaselineRuntime_ReadLumaMin3x3(
+							frame_bytes, frame_width_pixels, frame_height_pixels, sx, sy);
 						continuity += ((255.0f - sample_luma) / 255.0f);
 						valid_samples++;
 					}
@@ -3184,7 +3239,9 @@ bool AppBaselineRuntime_EstimatePolarNeedle(
 			/* Spoke-continuity validation: verify there's a continuous dark spoke
 			 * along the detected angle from center to outer dial edge.
 			 * This rejects isolated edge peaks (dial markings) that don't form
-			 * a continuous spoke. Needle should have dark continuity. */
+			 * a continuous spoke. Needle should have dark continuity.
+			 * Use 3x3 min-filter (dilation) so thin needles register even when
+			 * the detected angle is off by 1-2 degrees from the true needle. */
 			{
 				const float cos_a = cosf(best_angle);
 				const float sin_a = sinf(best_angle);
@@ -3192,10 +3249,6 @@ bool AppBaselineRuntime_EstimatePolarNeedle(
 				float chroma_u_sum = 0.0f, chroma_v_sum = 0.0f;
 				float chroma_u_sq_sum = 0.0f, chroma_v_sq_sum = 0.0f;
 				size_t chroma_samples = 0U;
-				/* Increased from 10 to 20 samples (2026-05-02) for more accurate
-				 * spoke continuity measurement. More samples help distinguish
-				 * between real needles (strong continuity along full length)
-				 * and dial markings (weaker or partial continuity). */
 				const size_t continuity_samples = 20U;
 				size_t valid_samples = 0U;
 
@@ -3210,8 +3263,8 @@ bool AppBaselineRuntime_EstimatePolarNeedle(
 					if (sx >= 0 && (size_t)sx < frame_width_pixels &&
 						sy >= 0 && (size_t)sy < frame_height_pixels)
 					{
-						const float sample_luma = AppBaselineRuntime_ReadLuma(
-							frame_bytes, frame_width_pixels, (size_t)sx, (size_t)sy);
+						const float sample_luma = AppBaselineRuntime_ReadLumaMin3x3(
+							frame_bytes, frame_width_pixels, frame_height_pixels, sx, sy);
 						spoke_continuity += ((255.0f - sample_luma) / 255.0f);
 						valid_samples++;
 
@@ -3219,7 +3272,9 @@ bool AppBaselineRuntime_EstimatePolarNeedle(
 						 * has near-neutral chroma (U≈128, V≈128) at every sample.
 						 * A false peak crossing a coloured bezel/shadow edge has
 						 * high chroma variance along the ray.  Track U/V sum and
-						 * sum-of-squares to compute variance after the loop. */
+						 * sum-of-squares to compute variance after the loop.
+						 * Read chroma at the original (non-dilated) centre so we
+						 * measure the actual pixel colour, not a dilated neighbour. */
 						{
 							float u_val = 128.0f, v_val = 128.0f;
 							AppBaselineRuntime_ReadChroma(frame_bytes,
@@ -3254,7 +3309,7 @@ bool AppBaselineRuntime_EstimatePolarNeedle(
 						/* Clamp to avoid negative-from-float-epsilon. */
 						const float cv = (u_var > 0.0f ? u_var : 0.0f) +
 										(v_var > 0.0f ? v_var : 0.0f);
-						chroma_penalty = 1.0f / (1.0f + (cv / 500.0f));
+						chroma_penalty = 1.0f / (1.0f + (cv / 1500.0f));
 					}
 
 					const float effective_continuity = spoke_continuity * chroma_penalty;

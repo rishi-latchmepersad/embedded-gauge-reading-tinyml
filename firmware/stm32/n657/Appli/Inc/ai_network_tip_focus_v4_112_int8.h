@@ -1,18 +1,19 @@
-/* Guarded wrapper API for the tip-focus geometry heatmap model
- * (tip_focus_v4_112_int8, LL_ATON NPU runtime).
+/* Guarded wrapper API for the tip-focus SimCC coordinate model
+ * (simcc_gauge_v2_spatial_qat_sc128_int8, LL_ATON NPU runtime).
  *
  * The underlying generated package uses the LL_ATON NPU runtime API family
  * (matching the other models in this project).
  * This wrapper manages the NN instance and exposes buffer accessors.
  *
  * Output order (generated NPU order):
- *   output[0] = tip_heatmap    [1,112,112,1] int8
- *   output[1] = center_heatmap [1,112,112,1] int8
- *   output[2] = confidence     [1,1]          int8
+ *   output[0] = confidence     [1,1]    int8
+ *   output[1] = center_x_simcc [1,112]  int8
+ *   output[2] = center_y_simcc [1,112]  int8
+ *   output[3] = tip_x_simcc    [1,112]  int8
+ *   output[4] = tip_y_simcc    [1,112]  int8
  *
- * NOTE: The ML replay semantic order is center/tip/confidence.
- * The wrapper intentionally keeps the generated order and names the accessors
- * explicitly to prevent accidental reversal.
+ * The accessors below expose semantic names so the firmware can decode the
+ * four 1-D heads in the same order as the replay helper and training stack.
  */
 
 #ifndef AI_NETWORK_TIP_FOCUS_V4_112_INT8_H
@@ -47,8 +48,8 @@
 /**
  * @brief Initialize the tip-focus NPU network interface.
  *
- * Calls LL_ATON_EC_Network_Init_Default() and
- * LL_ATON_EC_Inference_Init_Default() to prepare the NPU runtime.
+ * Calls the generated LL_ATON network and inference init hooks for the
+ * sc128 tip-focus model to prepare the NPU runtime.
  *
  * @retval true  NPU interface is ready for inference.
  * @retval false Initialisation failed (see UART log for details).
@@ -70,22 +71,37 @@ bool AppAI_TipFocus_Init(void);
 bool AppAI_TipFocus_Run(void);
 
 /**
- * @brief Get the tip heatmap output buffer.
- * @return Pointer to int8 [112,112] tip-heatmap values (row-major).
+ * @brief Get the center X SimCC output buffer.
+ * @return Pointer to int8 [112] center-X coordinate probabilities.
  *         NULL if no inference has completed yet.
  */
-const int8_t *AppAI_TipFocus_GetTipHeatmap(void);
+const int8_t *AppAI_TipFocus_GetCenterXSimcc(void);
 
 /**
- * @brief Get the center heatmap output buffer.
- * @return Pointer to int8 [112,112] center-heatmap values (row-major).
+ * @brief Get the center Y SimCC output buffer.
+ * @return Pointer to int8 [112] center-Y coordinate probabilities.
  *         NULL if no inference has completed yet.
  */
-const int8_t *AppAI_TipFocus_GetCenterHeatmap(void);
+const int8_t *AppAI_TipFocus_GetCenterYSimcc(void);
+
+/**
+ * @brief Get the tip X SimCC output buffer.
+ * @return Pointer to int8 [112] tip-X coordinate probabilities.
+ *         NULL if no inference has completed yet.
+ */
+const int8_t *AppAI_TipFocus_GetTipXSimcc(void);
+
+/**
+ * @brief Get the tip Y SimCC output buffer.
+ * @return Pointer to int8 [112] tip-Y coordinate probabilities.
+ *         NULL if no inference has completed yet.
+ */
+const int8_t *AppAI_TipFocus_GetTipYSimcc(void);
 
 /**
  * @brief Get the raw int8 confidence value.
- * @return The int8 confidence output (dequantised: val * 0.00390625 - 128).
+ * @return The raw int8 confidence output (dequantise with scale 0.00390625
+ *         and zero-point -128).
  *         -128 if no inference has completed yet.
  */
 int8_t AppAI_TipFocus_GetConfidenceRaw(void);
@@ -109,8 +125,8 @@ int8_t *AppAI_TipFocus_GetInputBuffer(void);
 const void *AppAI_TipFocus_GetInputBufferInfo(void);
 
 /**
- * @brief Dry-run self-test: fills input with determinisitic values, runs one
- *        inference, and logs heatmap statistics.
+ * @brief Dry-run self-test: fills input with deterministic values, runs one
+ *        inference, and logs SimCC coordinate statistics.
  *
  * Call once after boot to verify the model loads and produces repeatable
  * output without requiring camera frames.
@@ -125,8 +141,10 @@ bool AppAI_TipFocus_DryRun(void);
 /* Stub declarations so callers can compile unconditionally. */
 static inline bool AppAI_TipFocus_Init(void) { return true; }
 static inline bool AppAI_TipFocus_Run(void) { return true; }
-static inline const int8_t *AppAI_TipFocus_GetTipHeatmap(void) { return NULL; }
-static inline const int8_t *AppAI_TipFocus_GetCenterHeatmap(void) { return NULL; }
+static inline const int8_t *AppAI_TipFocus_GetCenterXSimcc(void) { return NULL; }
+static inline const int8_t *AppAI_TipFocus_GetCenterYSimcc(void) { return NULL; }
+static inline const int8_t *AppAI_TipFocus_GetTipXSimcc(void) { return NULL; }
+static inline const int8_t *AppAI_TipFocus_GetTipYSimcc(void) { return NULL; }
 static inline int8_t  AppAI_TipFocus_GetConfidenceRaw(void) { return -128; }
 static inline int8_t *AppAI_TipFocus_GetInputBuffer(void) { return NULL; }
 static inline const void *AppAI_TipFocus_GetInputBufferInfo(void) { return NULL; }

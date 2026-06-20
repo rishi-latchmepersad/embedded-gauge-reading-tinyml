@@ -20,7 +20,7 @@
 
 /* Inner Celsius dial center ratios — the inner dial sits in the bottom-left
  * of the full gauge crop, not the geometric center. These ratios give center
- * ~(160,143) on a 320x320 frame, which is the correct pivot for the polar
+ * ~(112,100) on a 224x224 frame, which is the correct pivot for the polar
  * needle vote on the inner Celsius scale.
  *
  * Y_RATIO was 0.5000f (center of frame) but the inner dial is higher up.
@@ -37,7 +37,7 @@
  */
 /* Inner Celsius dial radius as a fraction of the frame dimension.
  * The baseline derives this from training-crop height × 0.56, which
- * on a 320x320 frame produces about 98.4 px.  Using a fixed frame ratio
+ * on a 224x224 frame produces about 68.9 px.  Using a fixed frame ratio
  * keeps the polar-vote scan ring stable regardless of lighting.
  * The OBB box size is lighting-dependent and cannot supply a
  * reliable radius for the polar annulus. */

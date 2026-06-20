@@ -53,7 +53,7 @@ def find_gauge_center(image_path: Path) -> tuple[float, float] | None:
 def main():
     project_root = Path(__file__).resolve().parents[2]
     captured_dir = project_root / "ml" / "data" / "captured_images"
-    manifest_path = project_root / "ml" / "data" / "ai_annotated_centers.csv"
+    manifest_path = project_root / "ml" / "data" / "ai_annotated_board_captures.csv"
 
     # Find all 224x224 PNG images
     image_paths = []

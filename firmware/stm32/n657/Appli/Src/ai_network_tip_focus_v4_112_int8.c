@@ -1,11 +1,11 @@
-/* Thin build wrapper for tip_focus_v4_112_int8 NPU network.
+/* Thin build wrapper for the SimCC tip-focus NPU network.
  *
- * The generated network.c is #included directly so the NPU scheduling
- * code and the _Default-suffixed buffer-info functions are compiled
- * into this translation unit.
+ * The generated network.c is #included directly so the NPU scheduling code
+ * and the sc128-suffixed buffer-info functions are compiled into this
+ * translation unit.
  *
- * This file also defines the AppAI_TipFocus_* API that app_ai.c calls
- * to initialise, run, and read outputs from the tip-focus model.
+ * This file also defines the AppAI_TipFocus_* API that app_ai.c calls to
+ * initialise, run, and read outputs from the tip-focus model.
  */
 
 #define LL_ATON_PLATFORM LL_ATON_PLAT_STM32N6
@@ -105,13 +105,12 @@ static void AppAI_TipFocus_LogR9(const char *label)
     __asm volatile("mov r9, %0" : : "r"(r9_before) : "r9");
 }
 
-/* Declare and create the NN interface + instance for the Default network.
- * The _Default-suffixed functions (LL_ATON_EC_Network_Init_Default, ...)
- * are provided by the included network.c below.
- */
-LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(Default);
+/* Declare and create the NN interface + instance for the generated sc128
+ * network. The included package exports the suffixed symbols directly. */
+LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
+    simcc_gauge_v2_spatial_qat_sc128_int8);
 
-#include "../../st_ai_output/packages/tip_focus_v4_112_int8_n6_npu/st_ai_output/network.c"
+#include "../../st_ai_output/packages/simcc_gauge_v2_spatial_qat_sc128_int8_n6_npu/st_ai_output/simcc_gauge_v2_spatial_qat_sc128_int8.c"
 
 /* ---------------------------------------------------------------------------
  * AppAI_TipFocus_* public API
@@ -134,7 +133,18 @@ bool AppAI_TipFocus_Init(void)
         return false;
     }
 
-    LL_ATON_RT_Init_Network(&NN_Instance_Default);
+    /* Put xSPI2 into memory-mapped mode before we hand the network over to
+     * the LL_ATON runtime.  The run path also reasserts this state, but doing
+     * it here keeps the init sequence consistent with the other stage loaders
+     * and avoids any early flash reads from tripping over indirect mode. */
+    if (!AppAI_Xspi2EnsureMemoryMappedMode())
+    {
+        DebugConsole_WriteString(
+            "[AI][TIP_FOCUS] Init aborted: xSPI2 MM mode failed.\r\n");
+        return false;
+    }
+
+    LL_ATON_RT_Init_Network(&NN_Instance_simcc_gauge_v2_spatial_qat_sc128_int8);
     return true;
 }
 
@@ -145,9 +155,11 @@ bool AppAI_TipFocus_Run(void)
     AppAI_TipFocus_LogR9("entry");
 
     const LL_Buffer_InfoTypeDef *input_info =
-        LL_ATON_Input_Buffers_Info(&NN_Instance_Default);
+        LL_ATON_Input_Buffers_Info(
+            &NN_Instance_simcc_gauge_v2_spatial_qat_sc128_int8);
     const LL_Buffer_InfoTypeDef *output_info =
-        LL_ATON_Output_Buffers_Info(&NN_Instance_Default);
+        LL_ATON_Output_Buffers_Info(
+            &NN_Instance_simcc_gauge_v2_spatial_qat_sc128_int8);
     const uint8_t *input_ptr = NULL;
     const uint8_t *output_ptr = NULL;
     size_t input_len = 0U;
@@ -201,7 +213,7 @@ bool AppAI_TipFocus_Run(void)
     __ISB();
 
 #if APP_AI_RESET_NETWORK_EACH_INFERENCE
-    LL_ATON_RT_Reset_Network(&NN_Instance_Default);
+    LL_ATON_RT_Reset_Network(&NN_Instance_simcc_gauge_v2_spatial_qat_sc128_int8);
 #endif
 
     /* The ST-generated resize helpers in network.c use R9 as the base
@@ -224,7 +236,8 @@ bool AppAI_TipFocus_Run(void)
             return false;
         }
 
-        status = LL_ATON_RT_RunEpochBlock(&NN_Instance_Default);
+        status = LL_ATON_RT_RunEpochBlock(
+            &NN_Instance_simcc_gauge_v2_spatial_qat_sc128_int8);
         epoch_count++;
         if (status == LL_ATON_RT_WFE) {
             LL_ATON_OSAL_WFE();
@@ -243,46 +256,71 @@ bool AppAI_TipFocus_Run(void)
 int8_t *AppAI_TipFocus_GetInputBuffer(void)
 {
     const LL_Buffer_InfoTypeDef *info =
-        LL_ATON_Input_Buffers_Info(&NN_Instance_Default);
+        LL_ATON_Input_Buffers_Info(
+            &NN_Instance_simcc_gauge_v2_spatial_qat_sc128_int8);
     if (info == NULL) return NULL;
     return (int8_t *)LL_Buffer_addr_start(info);
 }
 
 const void *AppAI_TipFocus_GetInputBufferInfo(void)
 {
-    return (const void *)LL_ATON_Input_Buffers_Info(&NN_Instance_Default);
+    return (const void *)LL_ATON_Input_Buffers_Info(
+        &NN_Instance_simcc_gauge_v2_spatial_qat_sc128_int8);
 }
 
 /* Raw output order from the generated package:
- *   info[0] = tip_heatmap    [1,112,112,1] int8
- *   info[1] = center_heatmap [1,112,112,1] int8
- *   info[2] = confidence     [1,1]          int8
+ *   info[0] = confidence     [1,1]   int8
+ *   info[1] = center_x_simcc [1,112] int8
+ *   info[2] = center_y_simcc [1,112] int8
+ *   info[3] = tip_x_simcc    [1,112] int8
+ *   info[4] = tip_y_simcc    [1,112] int8
  *
- * The firmware-facing accessors below return semantic names, so the
- * caller always sees tip first and center second when decoding angle.
+ * The firmware-facing accessors below return semantic names so the caller
+ * always decodes the same axis order as the replay helper.
  */
-const int8_t *AppAI_TipFocus_GetTipHeatmap(void)
+const int8_t *AppAI_TipFocus_GetCenterXSimcc(void)
 {
     const LL_Buffer_InfoTypeDef *info =
-        LL_ATON_Output_Buffers_Info(&NN_Instance_Default);
-    if (info == NULL) return NULL;
-    return (const int8_t *)LL_Buffer_addr_start(&info[0]);
-}
-
-const int8_t *AppAI_TipFocus_GetCenterHeatmap(void)
-{
-    const LL_Buffer_InfoTypeDef *info =
-        LL_ATON_Output_Buffers_Info(&NN_Instance_Default);
+        LL_ATON_Output_Buffers_Info(
+            &NN_Instance_simcc_gauge_v2_spatial_qat_sc128_int8);
     if (info == NULL) return NULL;
     return (const int8_t *)LL_Buffer_addr_start(&info[1]);
+}
+
+const int8_t *AppAI_TipFocus_GetCenterYSimcc(void)
+{
+    const LL_Buffer_InfoTypeDef *info =
+        LL_ATON_Output_Buffers_Info(
+            &NN_Instance_simcc_gauge_v2_spatial_qat_sc128_int8);
+    if (info == NULL) return NULL;
+    return (const int8_t *)LL_Buffer_addr_start(&info[2]);
+}
+
+const int8_t *AppAI_TipFocus_GetTipXSimcc(void)
+{
+    const LL_Buffer_InfoTypeDef *info =
+        LL_ATON_Output_Buffers_Info(
+            &NN_Instance_simcc_gauge_v2_spatial_qat_sc128_int8);
+    if (info == NULL) return NULL;
+    return (const int8_t *)LL_Buffer_addr_start(&info[3]);
+}
+
+const int8_t *AppAI_TipFocus_GetTipYSimcc(void)
+{
+    const LL_Buffer_InfoTypeDef *info =
+        LL_ATON_Output_Buffers_Info(
+            &NN_Instance_simcc_gauge_v2_spatial_qat_sc128_int8);
+    if (info == NULL) return NULL;
+    return (const int8_t *)LL_Buffer_addr_start(&info[4]);
 }
 
 int8_t AppAI_TipFocus_GetConfidenceRaw(void)
 {
     const LL_Buffer_InfoTypeDef *info =
-        LL_ATON_Output_Buffers_Info(&NN_Instance_Default);
+        LL_ATON_Output_Buffers_Info(
+            &NN_Instance_simcc_gauge_v2_spatial_qat_sc128_int8);
     if (info == NULL) return -128;
-    const int8_t *buf = (const int8_t *)LL_Buffer_addr_start(&info[2]);
+    const int8_t *buf = (const int8_t *)LL_Buffer_addr_start(&info[0]);
     if (buf == NULL) return -128;
     return *buf;
 }
@@ -292,7 +330,8 @@ bool AppAI_TipFocus_DryRun(void)
     /* Zero the input buffer so the self-test starts from a known frame,
      * then run one inference and discard the published outputs. */
     const LL_Buffer_InfoTypeDef *input_info =
-        LL_ATON_Input_Buffers_Info(&NN_Instance_Default);
+        LL_ATON_Input_Buffers_Info(
+            &NN_Instance_simcc_gauge_v2_spatial_qat_sc128_int8);
     int8_t *input = NULL;
     size_t input_len = 0U;
 

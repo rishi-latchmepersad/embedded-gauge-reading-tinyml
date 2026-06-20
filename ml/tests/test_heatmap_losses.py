@@ -8,7 +8,10 @@ import pytest
 from embedded_gauge_reading_tinyml.heatmap_losses import (
     center_priority_heatmap_loss,
     combined_heatmap_loss,
+    focal_heatmap_loss,
+    heatmap_spread_hinge_loss,
     mean_predicted_heatmap_peak,
+    polar_profile_loss,
     softargmax_coordinate_loss,
     softargmax_coordinate_mae,
     weighted_center_heatmap_loss,
@@ -59,6 +62,17 @@ def test_weighted_heatmap_bce_is_finite() -> None:
     assert loss >= 0.0
 
 
+def test_focal_heatmap_loss_is_finite_and_shift_sensitive() -> None:
+    """The focal objective should stay finite and worsen when the peak moves."""
+
+    y_true = _make_batch_heatmap(x_normalized=0.42, y_normalized=0.58)
+    identical = focal_heatmap_loss(y_true, y_true).numpy()
+    shifted = focal_heatmap_loss(y_true, _make_batch_heatmap(x_normalized=0.48, y_normalized=0.58)).numpy()
+    assert np.isfinite(identical)
+    assert np.isfinite(shifted)
+    assert shifted > identical
+
+
 def test_softargmax_coordinate_loss_is_zero_for_identical_heatmaps() -> None:
     """Softargmax coordinate loss should vanish when heatmaps match."""
 
@@ -91,6 +105,32 @@ def test_combined_heatmap_loss_is_positive_for_shifted_peak() -> None:
     y_true = _make_batch_heatmap(x_normalized=0.60, y_normalized=0.40)
     y_pred = _make_batch_heatmap(x_normalized=0.64, y_normalized=0.40)
     loss = combined_heatmap_loss(y_true, y_pred).numpy()
+    assert loss > 0.5
+
+
+def test_polar_profile_loss_is_zero_for_identical_heatmaps() -> None:
+    """The polar profile loss should vanish when the angular profile matches."""
+
+    y_true = _make_batch_heatmap(x_normalized=0.45, y_normalized=0.25)
+    loss = polar_profile_loss(y_true, y_true).numpy()
+    assert loss == pytest.approx(0.0, abs=1e-7)
+
+
+def test_polar_profile_loss_ignores_vertical_shift() -> None:
+    """The polar profile loss should only care about the angle column."""
+
+    y_true = _make_batch_heatmap(x_normalized=0.40, y_normalized=0.20)
+    y_pred = _make_batch_heatmap(x_normalized=0.40, y_normalized=0.70)
+    loss = polar_profile_loss(y_true, y_pred).numpy()
+    assert loss == pytest.approx(0.0, abs=1e-7)
+
+
+def test_polar_profile_loss_penalizes_angle_shift() -> None:
+    """Moving the needle column should increase the profile loss."""
+
+    y_true = _make_batch_heatmap(x_normalized=0.30, y_normalized=0.50)
+    y_pred = _make_batch_heatmap(x_normalized=0.36, y_normalized=0.50)
+    loss = polar_profile_loss(y_true, y_pred).numpy()
     assert loss > 0.5
 
 
@@ -134,3 +174,22 @@ def test_mean_predicted_heatmap_peak_reports_peak_value() -> None:
     y_pred = _make_batch_heatmap(x_normalized=0.50, y_normalized=0.50)
     peak = mean_predicted_heatmap_peak(y_pred, y_pred).numpy()
     assert peak > 0.9
+
+
+def test_heatmap_spread_hinge_loss_is_zero_below_the_target() -> None:
+    """A sharp heatmap should not pay a spread penalty."""
+
+    y_pred = _make_batch_heatmap(x_normalized=0.50, y_normalized=0.50, sigma_pixels=0.8)
+    loss = heatmap_spread_hinge_loss(y_pred, max_spread_px=10.0).numpy()
+    assert loss == pytest.approx(0.0, abs=1e-7)
+
+
+def test_heatmap_spread_hinge_loss_penalizes_broad_heatmaps() -> None:
+    """A broad heatmap should pay more spread loss than a sharp one."""
+
+    y_sharp = _make_batch_heatmap(x_normalized=0.50, y_normalized=0.50, sigma_pixels=0.8)
+    y_broad = np.ones_like(y_sharp, dtype=np.float32)
+    sharp_loss = heatmap_spread_hinge_loss(y_sharp, max_spread_px=10.0).numpy()
+    broad_loss = heatmap_spread_hinge_loss(y_broad, max_spread_px=10.0).numpy()
+    assert broad_loss > sharp_loss
+    assert broad_loss > 1.0

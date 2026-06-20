@@ -22,7 +22,6 @@
 #include "app_camera_config.h"
 #include "app_camera_diagnostics.h"
 #include "app_camera_platform.h"
-#include "app_baseline_runtime.h"
 #include "app_gauge_geometry.h"
 #include "app_filex.h"
 #include "app_inference_runtime.h"
@@ -748,13 +747,6 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 #endif
 
 	if (camera_capture_use_cmw_pipeline) {
-		if (!AppBaselineRuntime_RequestEstimate((const uint8_t *) image_ptr,
-					(ULONG) image_length)) {
-			DebugConsole_Printf(
-					"[BASELINE] Failed to queue classical baseline estimate.\r\n");
-		}
-	}
-
 	if (storage_ready) {
 		(void) DebugConsole_WriteString(
 				"[CAMERA][CAPTURE] step: build-name\r\n");
@@ -796,6 +788,7 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 		}
 	}
 
+	}
 	result = true;
 
 cleanup:

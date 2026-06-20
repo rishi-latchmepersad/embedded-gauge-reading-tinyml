@@ -241,12 +241,12 @@ UINT App_ThreadX_Start(void) {
 	}
 
 	{
-		const UINT baseline_start_status = AppBaselineRuntime_Start();
-		if (baseline_start_status != TX_SUCCESS) {
+		const UINT baseline_runtime_status = AppBaselineRuntime_Start();
+		if (baseline_runtime_status != TX_SUCCESS) {
 			DebugConsole_Printf(
-					"[BASELINE] Failed to start classical baseline runtime, status=%lu\r\n",
-					(unsigned long) baseline_start_status);
-			return baseline_start_status;
+					"[BASELINE] Failed to start baseline runtime, status=%lu\r\n",
+					(unsigned long) baseline_runtime_status);
+			return baseline_runtime_status;
 		}
 	}
 

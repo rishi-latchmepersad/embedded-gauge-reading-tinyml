@@ -51,8 +51,9 @@ static float AppAI_ScorePolarAlignmentCandidate(
 static void AppAI_SetForcedCrop(const char *label, size_t x_min,
 								size_t y_min, size_t width, size_t height);
 static void AppAI_ClearForcedCrop(void);
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 static bool AppAI_DecodeObbCropBox(const LL_Buffer_InfoTypeDef *output_buffer_info,
-								   AppAI_SourceCrop *crop_out, AppAI_ObbBox *obb_box_out);
+									   AppAI_SourceCrop *crop_out, AppAI_ObbBox *obb_box_out);
 #if APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
 static bool AppAI_DecodeSourceCropBox(
 	const LL_Buffer_InfoTypeDef *output_buffer_info,
@@ -78,6 +79,7 @@ static bool AppAI_PreprocessYuv422FrameToPolarInput(
 	const uint8_t *frame_bytes, size_t frame_size,
 	uint8_t *input_ptr, size_t input_len_bytes,
 	const LL_Buffer_InfoTypeDef *input_info);
+#endif
 int mcu_cache_clean_range(uint32_t start_addr, uint32_t end_addr)
 {
 	return AppAI_ApplyCacheRange(start_addr, end_addr, true, false);
@@ -335,3 +337,5 @@ static bool AppAI_Xspi2ReadStageProbe(const AppAI_ModelStageSpec *stage,
 	return AppAI_Xspi2ReadFlashProbe(stage->xspi2_chip_offset, flash_offset,
 									 expected_bytes, expected_length);
 }
+
+

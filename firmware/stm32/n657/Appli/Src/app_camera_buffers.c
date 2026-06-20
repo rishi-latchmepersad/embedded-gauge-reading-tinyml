@@ -20,10 +20,10 @@ uint8_t *camera_capture_result_buffer = NULL;
 uint8_t camera_capture_buffers[CAMERA_CAPTURE_BUFFER_COUNT][CAMERA_CAPTURE_BUFFER_SIZE_BYTES]
 		__attribute__((section(".noncacheable"), aligned(__SCB_DCACHE_LINE_SIZE)));
 
-/* Keep a private AI snapshot so preprocessing can run without racing the
- * capture DMA buffer that the camera thread continues to own. The AI and
- * baseline workers both read the same immutable capture, so one shared
- * snapshot is enough as long as it stays alive until both workers finish. */
+/* Keep a private frame snapshot so preprocessing can run without racing the
+ * capture DMA buffer that the camera thread continues to own. The AI worker
+ * owns this copy, and the baseline worker reuses it only after the AI path
+ * has finished with the frame. */
 uint8_t camera_inference_frame_snapshot[CAMERA_CAPTURE_BUFFER_SIZE_BYTES]
 		__attribute__((section(".tip_focus_activations"), aligned(__SCB_DCACHE_LINE_SIZE)));
 

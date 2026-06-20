@@ -7,4 +7,4 @@
 #define LL_ATON_DBG_BUFFER_INFO_EXCLUDED 1
 #endif
 
-#include "../../st_ai_output/packages/heatmap_cd_tiny/st_ai_output/heatmap_cd.c"
+#include "../../st_ai_output/packages/heatmap_cd_v4s_80/st_ai_output/heatmap_cd.c"

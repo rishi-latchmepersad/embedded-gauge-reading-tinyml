@@ -60,7 +60,8 @@ Usage:
   bash scripts/wsl_ml.sh train-mobilenetv2-geometry-from-rectified-v5 [geometry args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-geometry-literature [geometry literature args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-geometry-localizer-only [geometry localizer args...]
-  bash scripts/wsl_ml.sh train-mobilenetv2-obb-localizer [obb localizer args...]
+  bash scripts/wsl_ml.sh train-mobilenetv2-obb-localizer [legacy obb localizer args...]
+  bash scripts/wsl_ml.sh train-center-simcc-kd-qat [center-simcc training args...]
   bash scripts/wsl_ml.sh train-mobilenetv2-keypoint-from-rectified-v5 [keypoint args...]
   bash scripts/wsl_ml.sh eval-mobilenetv2-geometry-cascade [geometry cascade eval args...]
   bash scripts/wsl_ml.sh eval-mobilenetv2-geometry-cascade-strict-reader [geometry cascade strict-reader args...]
@@ -68,6 +69,7 @@ Usage:
   bash scripts/wsl_ml.sh sweep-obb-localizer-strict-reader-crop-scale [obb crop-scale sweep args...]
   bash scripts/wsl_ml.sh eval-rectified-scalar [rectified eval args...]
   bash scripts/wsl_ml.sh eval-rectified-captures [capture eval args...]
+  bash scripts/wsl_ml.sh eval-center-simcc-qat [center-simcc eval args...]
   bash scripts/wsl_ml.sh sweep-rectified-scalar-crop-scale [sweep args...]
   bash scripts/wsl_ml.sh calibrate-obb-scalar-firmware [calibration args...]
   bash scripts/wsl_ml.sh export-prod-v0-2 [prod v0.2 export args...]
@@ -304,8 +306,12 @@ case "${cmd}" in
     exec bash scripts/run_mobilenetv2_geometry_localizer_only_v30.sh "$@"
     ;;
   train-mobilenetv2-obb-localizer)
-    # Train the OBB localizer used as the first stage in the two-stage cascade.
+    # Legacy 320 OBB localizer, kept around for archival experiments.
     exec bash scripts/run_mobilenetv2_obb_localizer_v31.sh "$@"
+    ;;
+  train-center-simcc-kd-qat)
+    # Train the active center-detector + SimCC student with optional KD and QAT.
+    exec "${POETRY_BIN}" run python scripts/train_center_simcc_kd_qat.py "$@"
     ;;
   train-mobilenetv2-bluraware-obb-geometry)
     # Train the blur-aware OBB-geometry model with raw + sharpened views.
@@ -330,6 +336,10 @@ case "${cmd}" in
   eval-rectified-captures)
     # Evaluate the rectifier + scalar-reader chain on raw board captures.
     exec bash scripts/run_rectified_scalar_capture_eval.sh "$@"
+    ;;
+  eval-center-simcc-qat)
+    # Evaluate the active center-detector + SimCC student on a labeled split.
+    exec "${POETRY_BIN}" run python scripts/eval_center_simcc_qat.py "$@"
     ;;
   eval-obb-scalar-board-probe)
     # Evaluate the OBB localizer + scalar-reader chain on the board probe set.

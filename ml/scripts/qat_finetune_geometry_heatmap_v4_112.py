@@ -8,6 +8,7 @@ checkpoint, applies tfmot quantization-aware training, fine-tunes, and exports.
 from __future__ import annotations
 
 import argparse
+import os as _os
 import json
 import sys
 from pathlib import Path
@@ -15,9 +16,20 @@ from typing import Any, Iterable
 
 import numpy as np
 
-# Force tf_keras as keras for tfmot compatibility
-import tf_keras as keras
+# Cap GPU allocation before TensorFlow initializes the runtime, then load the
+# tf_keras stack so tfmot sees the same configured device.
 import tensorflow as tf
+_GPU_MEMORY_LIMIT_MB = int(_os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "3800"))
+gpus = tf.config.list_physical_devices("GPU")
+if gpus:
+    tf.config.set_logical_device_configuration(
+        gpus[0],
+        [tf.config.LogicalDeviceConfiguration(memory_limit=_GPU_MEMORY_LIMIT_MB)],
+    )
+del _os, _GPU_MEMORY_LIMIT_MB
+
+# Force tf_keras as keras for tfmot compatibility.
+import tf_keras as keras
 import tensorflow_model_optimization as tfmot
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -178,8 +190,8 @@ def main() -> None:
 
     # Step 1: Load Keras v3 model to extract weights
     print("[QAT] Loading Keras v3 model for weight transfer...")
-    import keras as keras_v3
-    v3_model = keras_v3.models.load_model(str(model_path), compile=False, safe_mode=False)
+    from embedded_gauge_reading_tinyml.geometry_heatmap_tflite_utils import load_geometry_heatmap_keras_model
+    v3_model = load_geometry_heatmap_keras_model(model_path)
     print(f"  Loaded: {type(v3_model).__name__}")
 
     # Step 2: Rebuild in tf_keras

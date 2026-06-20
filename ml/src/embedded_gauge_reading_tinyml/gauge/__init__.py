@@ -11,6 +11,8 @@ from .processing import (  # Re-export gauge utilities from processing module.
     needle_angle_clockwise_rad,  # Share raw angle computation helper.
     needle_fraction,  # Share normalized sweep fraction helper.
     needle_value,  # Share value conversion helper.
+    needle_value_from_angle_deg,
+    needle_value_from_angle_rad,
     value_to_fraction,
     CALIBRATION_TOML_PATH,
 )
@@ -25,5 +27,7 @@ __all__ = [  # Define the public symbols for this package.
     "needle_angle_clockwise_rad",  # Raw angle helper.
     "needle_fraction",  # Normalized fraction helper.
     "needle_value",  # Value scaling helper.
+    "needle_value_from_angle_deg",
+    "needle_value_from_angle_rad",
     "value_to_fraction",
 ]

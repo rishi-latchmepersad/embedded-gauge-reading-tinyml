@@ -16,7 +16,6 @@
 #include <string.h>
 
 #include "app_ai.h"
-#include "app_baseline_runtime.h"
 #include "app_camera_buffers.h"
 #include "app_camera_platform.h"
 #include "app_filex.h"
@@ -67,10 +66,10 @@ static TX_QUEUE inference_log_queue;
 static ULONG inference_log_queue_storage[INFERENCE_LOG_QUEUE_DEPTH];
 
 static TX_THREAD camera_ai_thread;
-/* Borrow the unused tip-focus activation RAM so the 320x320 polar scratch can
- * stay in NPU_SRAM6 without overrunning the 448 KB section limit. */
+/* Use NPU_SRAM6 (AXISRAM6, clock-enabled in main.c) so ThreadX can write
+ * initial stack frames without bus-faulting into unclocked memory. */
 static ULONG camera_ai_thread_stack[CAMERA_AI_THREAD_STACK_SIZE_BYTES
-		/ sizeof(ULONG)] __attribute__((section(".tip_focus_activations")));
+		/ sizeof(ULONG)] __attribute__((section(".npusram6")));
 static bool camera_ai_thread_created = false;
 static TX_SEMAPHORE camera_ai_request_semaphore;
 static bool camera_ai_sync_created = false;

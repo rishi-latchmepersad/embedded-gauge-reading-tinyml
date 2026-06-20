@@ -2,7 +2,7 @@ import csv
 from pathlib import Path
 
 project_root = Path("/mnt/d/Projects/embedded-gauge-reading-tinyml")
-auto_manifest = project_root / "ml" / "data" / "ai_annotated_centers.csv"
+auto_manifest = project_root / "ml" / "data" / "ai_annotated_board_captures.csv"
 final_manifest = project_root / "ml" / "data" / "manual_annotated_centers.csv"
 
 # Manual annotations for images that failed auto-detection

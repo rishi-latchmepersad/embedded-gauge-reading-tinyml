@@ -88,6 +88,30 @@ def needle_value(sample: Sample, spec: GaugeSpec, *, strict: bool = True) -> flo
     return value  # Return calibrated value.
 
 
+def needle_value_from_angle_rad(
+    angle_rad: float,
+    spec: GaugeSpec,
+    *,
+    strict: bool = True,
+) -> float:
+    """Return gauge value directly from an angle in radians."""
+
+    fraction: float = angle_rad_to_fraction(angle_rad, spec, strict=strict)
+    return fraction_to_value(fraction, spec)
+
+
+def needle_value_from_angle_deg(
+    angle_deg: float,
+    spec: GaugeSpec,
+    *,
+    strict: bool = True,
+) -> float:
+    """Return gauge value directly from an angle in degrees."""
+
+    angle_rad: float = math.radians(angle_deg)
+    return needle_value_from_angle_rad(angle_rad, spec, strict=strict)
+
+
 def needle_unit_xy_from_value(value: float, spec: GaugeSpec) -> tuple[float, float]:
     """Convert a calibrated gauge value back into the corresponding unit needle vector."""
     fraction: float = value_to_fraction(value, spec)

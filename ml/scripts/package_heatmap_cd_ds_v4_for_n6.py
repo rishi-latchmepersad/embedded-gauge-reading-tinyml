@@ -34,7 +34,7 @@ STAGING_BUILD: Path = REPO_ROOT / "tmp" / "stedgeai_heatmap_cd_build"
 TEMP_WORKSPACE: Path = REPO_ROOT / "tmp" / "stedgeai_heatmap_cd_ws"
 TEMP_OUTPUT: Path = REPO_ROOT / "tmp" / "stedgeai_heatmap_cd_out"
 TEMP_NEURAL_ART_PROFILE: Path = REPO_ROOT / "tmp" / "stedgeai_heatmap_cd_neural_art_reloc.json"
-EXPECTED_RAW: Path = STAI_OUTPUT_DIR / f"{MODEL_NAME}_atonbuf.AXISRAM2.raw"
+EXPECTED_RAW: Path = STAI_OUTPUT_DIR / f"{MODEL_NAME}_atonbuf.xSPI2.raw"
 XSPI2_PROBE_BYTES: int = 16
 
 
@@ -86,10 +86,10 @@ def _find_generated_c(model_name: str) -> Path:
 def _find_generated_raw() -> Path:
 	"""Find the relocatable initializer blob produced by the NPU driver."""
 	for search_dir in (STAGING_BUILD, TEMP_OUTPUT, TEMP_WORKSPACE):
-		matches = sorted(search_dir.glob("**/atonbuf.AXISRAM2.raw"))
+		matches = sorted(search_dir.glob("**/atonbuf.xSPI2.raw"))
 		if matches:
 			return matches[0]
-	raise FileNotFoundError("Could not find generated atonbuf.AXISRAM2.raw")
+	raise FileNotFoundError("Could not find generated atonbuf.xSPI2.raw")
 
 
 def _print_signature(raw_path: Path) -> None:
@@ -107,15 +107,15 @@ def _print_signature(raw_path: Path) -> None:
 
 
 def _write_neural_art_profile(src_profile: Path, dst_profile: Path) -> Path:
-	"""Clone the relocatable neural-art profile and swap in the int2 pool."""
+	"""Clone the relocatable neural-art profile; swap pool to an absolute path for the v4 model."""
 	profile_text = src_profile.read_text(encoding="utf-8")
-	int2_pool = _to_windows_path(
-		PACK_ROOT / "scripts" / "N6_reloc" / "test" / "mpools" / "stm32n6_reloc_int2.mpool"
+	abs_pool = _to_windows_path(
+		PACK_ROOT / "scripts" / "N6_reloc" / "test" / "mpools" / "stm32n6_reloc.mpool"
 	)
-	int2_pool_json = int2_pool.replace("\\", "\\\\")
+	abs_pool_json = abs_pool.replace("\\", "\\\\")
 	profile_text = profile_text.replace(
 		'"memory_pool": "./mpools/stm32n6_reloc.mpool"',
-		f'"memory_pool": "{int2_pool_json}"',
+		f'"memory_pool": "{abs_pool_json}"',
 	)
 	profile_text = profile_text.replace(
 		"--Oauto-sched --all-buffers-info",
@@ -130,10 +130,9 @@ def main() -> None:
 	stedgeai_exe = PACK_ROOT / "Utilities" / "windows" / "stedgeai.exe"
 	pack_python = PACK_ROOT / "Utilities" / "windows" / "python.exe"
 	npu_driver = PACK_ROOT / "scripts" / "N6_reloc" / "npu_driver.py"
-	# Use the internal-memory relocatable pool so the deployed heatmap package
-	# does not depend on xSPI1 HyperRAM, which the current board bring-up does
-	# not initialize.
-	mpool = PACK_ROOT / "scripts" / "N6_reloc" / "test" / "mpools" / "stm32n6_reloc_int2.mpool"
+	# Use the full relocatable pool (with xSPI1 HyperRAM and xSPI2 octoFlash)
+	# so the DS-CNN v4 model (502 KB, 160x160 heatmap) has enough memory.
+	mpool = PACK_ROOT / "scripts" / "N6_reloc" / "test" / "mpools" / "stm32n6_reloc.mpool"
 	neural_art_profile = PACK_ROOT / "scripts" / "N6_reloc" / "test" / "neural_art_reloc.json"
 
 	for path in (TFLITE_MODEL, stedgeai_exe, pack_python, npu_driver, mpool, neural_art_profile):
@@ -240,7 +239,7 @@ def main() -> None:
 	shutil.copy2(generated_raw, EXPECTED_RAW)
 	print(f"[PACKAGE]   {generated_raw.name} -> {EXPECTED_RAW}", flush=True)
 
-	ws_raw = STAI_WS_DIR / f"neural_art__{MODEL_NAME}" / "atonbuf.AXISRAM2.raw"
+	ws_raw = STAI_WS_DIR / f"neural_art__{MODEL_NAME}" / "atonbuf.xSPI2.raw"
 	ws_raw.parent.mkdir(parents=True, exist_ok=True)
 	shutil.copy2(generated_raw, ws_raw)
 

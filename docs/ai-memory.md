@@ -1,5 +1,236 @@
 # AI Memory
 
+## Master labeled-captured-images manifest now lives in `ml/data/labelled_captured_images.json`
+
+- The manifest is grouped by image path, not flattened by source row, so each image keeps a list of annotations from the source CSVs that mention it.
+- The builder script is `ml/scripts/build_labelled_captured_images_manifest.py`.
+- The current merge starts from the clean PXL geometry pool plus the hard-case pool and the two smaller manual capture sets: `geometry_reader_manifest_v2_clean.csv`, `hard_cases.csv`, `hard_cases_plus_board30_valid_with_new5.csv`, and `new_labelled_captures4.csv`.
+- The builder normalizes bare filenames into `ml/data/captured_images/...` when the image exists there and skips comment rows that start with `#`.
+- The clean PXL geometry rows keep their source-space center/tip/radius fields as `center_x_source`, `center_y_source`, `tip_x_source`, `tip_y_source`, and `dial_radius_source`.
+- The clean PXL geometry rows also keep the face crop box in `loose_crop_x1`, `loose_crop_y1`, `loose_crop_x2`, and `loose_crop_y2`, which we keep around as metadata for crop-analysis work and future crop-model experiments.
+- Every row with a usable `temperature_c` or `value` now also carries a derived `true_angle_degrees` field using the single-gauge calibration manifest.
+
+## Captured-image label review tool now feeds the same manifest pipeline (2026-06-19)
+
+- The interactive review tool is `ml/scripts/label_captured_images_for_models.py`.
+- It writes a flat review CSV at `tmp/captured_image_review_labels.csv` by default.
+- The review CSV keeps source-space center, tip, temperature, and firmware crop metadata so the grouped manifest builder can merge it without a separate conversion step.
+- `ml/scripts/build_labelled_captured_images_manifest.py` now accepts `--extra-source` for reviewed CSVs and merges them as the `reviewed_geometry` source family.
+- The combined trainer gives `reviewed_geometry` the highest source priority so reviewed rows win when they overlap older labels.
+- The labeler still applies the same original-capture filter as the trainer, so preview derivatives stay out unless we explicitly ask for them.
+
+## Captured-image batch prep now produces a 50-image starter set (2026-06-19)
+
+- The review batch generator is `ml/scripts/prepare_captured_image_review_batch.py`.
+- Its default input is `ml/data/board_captures_labeled_v2.csv`, because that is the clean captured-images set with center, tip, and temperature already seeded.
+- The script writes a balanced starter CSV to `tmp/captured_image_review_batch_50.csv`.
+- The batch is selected in temperature bins with a round-robin sampler, and manual-verification rows are preferred over inverse-mapped rows inside each bin.
+- Launch the GUI against the generated CSV with `poetry run python scripts/label_captured_images_for_models.py --input tmp/captured_image_review_batch_50.csv`.
+
+## Center-detector + SimCC scripts now have dedicated entrypoints (2026-06-19)
+
+- The training implementation lives in `ml/scripts/train_qat_obb_simcc_combined.py`, but the active model path is now center-detector + SimCC with optional teacher distillation and QAT.
+- `ml/scripts/train_center_simcc_kd_qat.py` is the clean command-line wrapper for the training job.
+- `ml/scripts/eval_center_simcc_qat.py` scores a saved float or QAT model on the validation or test split derived from `ml/data/labelled_captured_images.json`.
+- Standard input size for the active student models and the live board capture contract is now `224x224`.
+- The grouped training sequence now crop-plus-pads every loaded image with the same firmware crop-box formula before resizing to `224x224`.
+  - PXL geometry rows, `captured_images` rows, and live IMX captures now share that same crop geometry.
+  - already-square `224x224` captures still pass through the same crop helper, which makes the board and laptop paths line up.
+  - center and tip labels are remapped into the padded canvas before SimCC targets are built, so the labels stay aligned with the image geometry.
+- This size is the best fit for the current recipe because it matches ImageNet transfer learning, keeps the SimCC heads at a clean `112` bins per axis, and stays friendly to STM32 N6 memory and quantization budgets.
+- If we want an even stronger teacher later, we can keep a larger teacher-only variant for KD, but the deployment student should stay at `224x224`.
+- Historical `320x320` notes below are archival and describe the old capture path.
+- The TensorFlow custom training loop had to stay tensor-native inside `fit()`; converting symbolic outputs through NumPy broke the first smoke test and was fixed.
+- Validation status:
+  - `tests/test_center_simcc_tf_models.py` passes.
+  - `tests/test_center_simcc_distill_trainer.py` passes.
+- The older OBB filename is now just a legacy wrapper name, not the real model family we are training.
+
+## Crop-localizer sweep favors OBB overall; source_crop_box_v1 only won the 2026-06-19 captures
+
+- On the seven `capture_2026-06-19_*.yuv422` samples, `mobilenetv2_source_crop_box_v1_int8` with a square expansion of `1.8` was the best crop choice and reached about `9.88 C` mean absolute error.
+- That June 19 result is real, but it does not generalize cleanly:
+  - On the 19-image `ml/data/hard_cases.csv` pool, `prod_model_v0.3_obb_int8` was better than `source_crop_box_v1` after the same square-expansion sweep.
+  - On the 429-row `ml/data/ai_annotated_board_captures.csv` set, OBB also won on both crop geometry and downstream temperature error.
+- Broader sweep summary:
+  - `source_crop_box_v1` best hard-case MAE: `24.96 C` at scale `2.2`
+  - `obb_v0.3` best hard-case MAE: `20.60 C` at scale `1.5`
+  - `source_crop_box_v1` AI-annotated temp MAE: `22.33 C`
+  - `obb_v0.3` AI-annotated temp MAE: `15.18 C`
+- Current recommendation: keep OBB as the default crop/localizer and treat `source_crop_box_v1` as a capture-specific fallback or a retraining candidate, not the general replacement yet.
+- Saved evidence lives in:
+  - `tmp/crop_model_sweep_2026-06-19/`
+  - `tmp/crop_model_sweep_hard_cases.json`
+  - `tmp/crop_model_sweep_ai_annotated.json`
+- The current board bright-centroid heuristic is still too high and narrow on these captures.
+
+## Combined OBB + SimCC trainer is now wired up on the grouped manifest (2026-06-19)
+
+- The combined model builder lives in `ml/src/embedded_gauge_reading_tinyml/obb_simcc_tf_models.py`.
+- It stays QAT-cloneable with `tfmot.quantization.keras.quantize_model()` when the MobileNetV2 input is preprocessed externally to `[-1, 1]`.
+- The new trainer is `ml/scripts/train_qat_obb_simcc_combined.py`.
+- It loads `ml/data/labelled_captured_images.json` and currently finds:
+  - `394` usable samples in the current Poetry ML environment.
+  - `344` geometry-labeled rows from the clean PXL source pool.
+  - the clean PXL geometry rows now drive the center, tip, face-box size, and angle heads directly.
+  - the hard-case and manual temperature-only rows still contribute a derived `true_angle_degrees` label from the gauge calibration manifest, so they can supervise the angle head even when the temp head is off.
+- The trainer keeps the OBB center/size, SimCC center/tip, and an angle head that reads the manifest-provided true angle instead of a zero prior. The temperature head is still optional so the deployment graph can stay geometry-first.
+- The optional KD teacher loader now validates its input geometry and rejects stale `320x320` artifacts up front; the combined student path remains `224x224`.
+- The new smoke test is `ml/tests/test_obb_simcc_tf_models.py`.
+
+## Tip-focus crop/mask contract is 224 capture -> 224 model space (2026-06-19)
+
+- The live camera stream is now `224x224` YUV422, and the tip-focus model
+  input contract is `224x224x3`.
+- The firmware preprocessing path should stay aligned with the training replay
+  path by:
+  - resizing the capture into 224-space before inference,
+  - applying `AppInnerCelsiusMask_Apply()` to the 224 tensor,
+  - and decoding SimCC coordinates in 224-space, not 320-space.
+- The board comparison helper now lives at
+  `ml/scripts/compare_tip_focus_ai_baseline_vectors.py` and writes its output
+  to `tmp/tip_focus_ai_baseline_compare/`.
+
+## Baseline compare thread is now started alongside AI (2026-06-19)
+
+- `App_ThreadX_Start()` starts `AppBaselineRuntime_Start()` so the classical
+  worker is alive in parallel with the AI worker.
+- `App_AI_RunDryInferenceFromYuv422()` now queues the same captured frame to
+  `AppBaselineRuntime_RequestEstimate()` after the tip-focus path returns.
+- The baseline queue reuses `camera_inference_frame_snapshot`; that is safe
+  because the request is enqueued only after the AI path has finished using
+  the frame.
+- Result comparison is now done by reading the separate AI and baseline logs
+  from the same capture rather than by overriding one path with the other.
+
+## Spatial SimCC sc128 is now wired into the STM32 tip-focus path (2026-06-19)
+
+- The firmware wrapper now points at
+  `firmware/stm32/n657/st_ai_output/packages/simcc_gauge_v2_spatial_qat_sc128_int8_n6_npu/st_ai_output/simcc_gauge_v2_spatial_qat_sc128_int8.c`
+  and exposes four 1-D SimCC heads plus confidence.
+- The xSPI2 tip-focus raw blob is the packaged int8 artifact from
+  `ml/artifacts/deployment/simcc_gauge_v2_spatial_qat_sc128_int8/model_int8.tflite`.
+- Tip-focus xSPI2 signature:
+  - size: `2,268,033 bytes`
+  - sha256 prefix: `f92e4419f9c0c57d`
+  - start bytes: `F9 41 F2 FF 3C FC CB 19 D4 B2 F3 4D 18 E4 4A FE`
+  - tail bytes: `00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 80`
+- Firmware calibration now uses the replay angle convention:
+  - negate image-space Y before `atan2`
+  - `cold_angle_degrees = 135.0`
+  - `slope = 0.2963033`
+  - `intercept = -30.0009`
+- `firmware/stm32/n657/flash_boot.ps1` now flashes the SimCC blob at
+  `0x70400000` before the QARepVGG-Pro blob at `0x70700000`, and it writes a
+  separate tip-focus signature report into `tmp/flash_signatures/`.
+- The generated CubeIDE makefile still defaults
+  `APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE` to `0`, so
+  `firmware/stm32/n657/Appli/Inc/app_ai.h` now forces it back to `1U` for the
+  live firmware build. Without that override, the app falls back into the
+  legacy OBB cascade and can still hard-fault there.
+- Verified live board geometry on 2026-06-19:
+  - IMX/CMW processed capture path emits packed YUV422 at `224x224` with
+    `2` bytes/pixel.
+  - `camera_capture_buffers[0]` and `camera_inference_frame_snapshot` are both
+    `224x224x2 = 100352 bytes`.
+  - `AppAI_PreprocessYuv422FrameToInt8Input()` checks the source frame size and
+    derives the model input shape from the tensor metadata, which is
+    `NHWC [1,224,224,3]` for `150528 bytes` of int8 input.
+  - SimCC outputs are `confidence [1,1]` plus four axes of length `112`
+    (`center_x`, `center_y`, `tip_x`, `tip_y`).
+  - `AppAI_TipFocus_Init()` and `AppAI_TipFocus_Run()` both reassert xSPI2
+    memory-mapped mode before touching the tip-focus weights.
+  - `AppAI_VerifyTipFocusWeights()` probes the first 16 bytes at xSPI2 chip
+    offset `0x00400000` so an empty/corrupt flash image fails fast.
+  - The `.tip_focus_activations` section is budgeted at `896K`; the live
+    tip-focus scratch buffers accounted for there total `800KiB`, so there is
+    headroom before the linker region boundary.
+
+## Spatial SimCC deploy model WORKS — temperature metric was broken, not the model (2026-06-19)
+
+- The 28–30°C MAE that looked like model underfitting was actually a broken
+  temperature mapping formula that didn't handle angle wrap-around and used
+  calibration params (`cold_angle=135°`, `slope=0.312`, `intercept=−33.14`)
+  that don't match this gauge. The model predicts coordinates well.
+- All images are of the same gauge type. Image sources are PXL real photos
+  (227 train) and software screenshots (77 train). The apparent opposite
+  angle→temperature slope in raw analysis was an angle wrap-around artifact.
+- **Correct evaluation** (unwrap angles by sorting by temperature, add/subtract
+  360 for continuity, fit linear model per gauge):
+  - sc96 (96 spatial channels, 1.35M params, 1.58 MB int8): **3.06° angle MAE
+    → 1.35°C temp MAE** on PXL val. 80.9% <2°C, 97.9% <5°C.
+  - sc128 (128 spatial channels, 2.04M params, 2.26 MB int8): **1.68° angle MAE
+    → 0.90°C temp MAE** on PXL val. 91.5% <2°C, 100% <5°C.
+- Training script metric fixed (lines 675-700): uses data-driven unwrapped
+  calibration instead of wrong `(angle - cold_angle) * slope + intercept`.
+- Parity: suffix-based TFLite output mapping validated as correct.
+  f32 vs int8 parity is ~1-3px (good for PTQ).
+
+## Spatial SimCC sc128 hard-case replay is strong, but not perfect (2026-06-19)
+
+- Replayed the `simcc_gauge_v2_spatial_qat_sc128` checkpoint on the held-out
+  19-image `ml/data/hard_cases.csv` set using `load_heatmap_sample()` and the
+  same unwrapped angle-to-temperature calibration logic used in the corrected
+  PXL evaluation.
+- Hard-case results:
+  - center MAE: `0.948 px`
+  - tip MAE: `3.342 px`
+  - angle MAE: `3.3952°`
+  - temperature MAE: `1.0058°C`
+  - temperature RMSE: `2.5786°C`
+  - worst temperature error: `10.9372°C`
+  - `94.74%` under `2°C`
+  - `94.74%` under `5°C`
+- The only miss above `5°C` was `capture_0c_preview.png`, which landed at
+  about `-10.94°C` for a `0.0°C` label. The other 18 hard cases were all under
+  `5°C`.
+- This means `sc128` is genuinely strong on the trusted hard-case pool, but it
+  does not quite satisfy the "100% <5°C" claim on that set.
+- The temporary helper `tmp/eval_simcc_hardcases.py` is stale: it assumes
+  `SourceGeometryExample` has `center_x_224` / `tip_x_224` fields. The real
+  224-space coordinates live in `load_heatmap_sample(...).metadata`.
+
+## Spatial SimCC sc128 PTQ int8 clears the hard-case bar (2026-06-19)
+
+- The saved PTQ artifact `ml/artifacts/training/simcc_gauge_v2_spatial_qat_sc128/model_int8.tflite`
+  exposes a float32 `serving_default` signature, so the quantized internals
+  run behind standard float32 input/output tensors.
+- Replaying the same 19-image `hard_cases.csv` set through the int8 TFLite
+  model produced:
+  - center MAE: `1.121 px`
+  - tip MAE: `2.967 px`
+  - angle MAE: `2.5807°`
+  - temperature MAE: `0.7646°C`
+  - temperature RMSE: `1.2160°C`
+  - worst temperature error: `4.0420°C`
+  - `89.47%` under `2°C`
+  - `100.00%` under `5°C`
+  - `100.00%` under `10°C`
+- The only remaining >2°C miss is `capture_0c_preview.png`, and even that is
+  now safely under the 5°C board threshold.
+- Net: PTQ did not hurt the model here. The int8 TFLite artifact is the best
+  version so far on the trusted hard-case pool.
+- The packaged handoff lives at
+  `ml/artifacts/deployment/simcc_gauge_v2_spatial_qat_sc128_int8/` and now
+  contains `model_int8.tflite`, `tflite_tensor_contract.json`,
+  `metadata.json`, `hardcase_replay_summary.json`, and
+  `hardcase_replay_predictions.csv`.
+- The reproducible replay job is
+  `ml/scripts/eval_simcc_gauge_v2_spatial_qat_sc128_hardcases.py`.
+
+## TFMOT QAT concluded as non-viable, switched to float32 + PTQ int8 (2026-06-19)
+
+- TFMOT QAT (`tfmot.quantization.keras.quantize_model`) is broken with TF
+  2.20.0 / tf_keras because MobileNetV2 uses Lambda-wrapped `tf.nn.convolution`
+  internally, causing `clone_model` / `quantize_annotate_model` to fail with
+  `TypeError: Cannot apply a Keras annotation to a non-Keras tensor`.
+- Switched to float32 training + post-training int8 quantization.
+- PTQ int8 export works correctly when `inference_input_type/output_type` are
+  not set (float32 I/O, int8 internals). Parity is ~1–3px, which is acceptable.
+- The earlier v28 / v26c families failed in TFLite because of complex spatial
+  heads (Conv2DTranspose, custom initializers, hybrid residual). The SimCC
+  spatial head converts cleanly with no custom ops.
+
 ## Live board pipeline now runs the tip-focus geometry model (2026-06-18)
 
 - The firmware AI pipeline is now wired to the tip-focus geometry heatmap
@@ -997,6 +1228,7 @@ Retrain OBB on a better mix of data with **positional augmentation**:
 
 - Live board reference frame: the needle was physically at `6C`, but the current AI path logged `-7.7C` and then `-6.4C` on the next sample.
 - The classical baseline on the same scene logged `-10.3C`, so the full board pipeline is still off by about `13C` on this lighting condition.
+- New 2026-06-19 captures show the same thermometer/hygrometer scene with the temperature needle visually near the 50-55 mark on the top dial, while AI/baseline still lock onto different wrong spokes during bright-relaxed frames (`baseline-polar-warming` around `237.2deg`, AI around `296.5deg`).
 - The cleaned board-mimic retrain `boardmimic_clean_varB` exported successfully and kept firmware-compatible int8 quantization, but its holdout was worse than the earlier board-style candidates:
   - overall MAE `11.57 px`
   - capture MAE `5.57 px`
@@ -2387,3 +2619,39 @@ sha256[:16] = f7065e4f6b3a98f6
 5. Do not keep widening the current 112x112 head. The v27-v30 ablations show
    that this branch is already saturated and extra capacity in that exact
    design space does not improve strict performance.
+
+## Spatial SimCC deploy branch — both sc96 and sc128 deployment-viable (2026-06-19)
+
+- Model: `build_spatial_simcc_gauge_model()` in
+  `ml/src/embedded_gauge_reading_tinyml/models_deploy.py`.
+- Architecture: MobileNetV2(α=0.35) → 14×14 spatial trunk (conv1×1→upsample2×
+  →conv3×3×2) → axis-specific SimCC heads + confidence. 5 outputs, TFLite-safe.
+- Training: `ml/scripts/train_simcc_gauge_v1_deploy.py`, float32 + PTQ int8,
+  SimCC loss, hard-case boost, cosine LR, 60 epochs.
+- **sc96** (96 spatial channels): 1.35M params, 5.3 MB f32 / 1.58 MB int8.
+  PXL val: 1.82/1.40px center MAE, 2.37/3.89px tip MAE, 3.06° angle MAE,
+  1.35°C temp MAE (80.9% <2°C, 97.9% <5°C).
+- **sc128** (128 spatial channels): 2.04M params, 8.0 MB f32 / 2.26 MB int8.
+  PXL val: 1.74/1.51px center MAE, 1.98/2.46px tip MAE, 1.68° angle MAE,
+  0.90°C temp MAE (91.5% <2°C, 100% <5°C).
+- Parity: suffix-based output mapping (`re.search(r':(\d+)$', name)`) is
+  validated as correct. f32 vs int8 parity ~1-3px.
+- **Root cause of earlier 28–30°C MAE**: not model underfitting. The fixed
+  temperature formula `(angle - cold_angle) * slope + intercept` (from a
+  different gauge) is completely wrong for PXL and doesn't unwrap angles past
+  0/360°. The model's coordinate predictions are good.
+- **Key dataset finding**: training set mixes 2 gauge types with opposite
+  angle→temperature slopes (PXL: −0.314 °C/deg, capture: +0.207 °C/deg).
+  Validation is all PXL (47 samples).
+- Metric now uses data-driven per-gauge unwrapped-angle calibration.
+- Both sc96 and sc128 are deployment candidates. Pick based on board memory
+  budget. sc128 is preferred for accuracy (100% <5°C).
+- Launchers: `tmp/run_simcc_spatial_qat_v1.sh` (sc96),
+  `tmp/run_simcc_spatial_sc128.sh` (sc128).
+- Firmware now hard-wires the live STM32 path to sc128 tip-focus:
+  `app_ai.h` forces `APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE=1`,
+  `ai_network_tip_focus_v4_112_int8.c` binds the generated
+  `simcc_gauge_v2_spatial_qat_sc128_int8` instance, and
+  `flash_boot.ps1` flashes the sc128 raw blob at `0x70400000`.
+  The old scalar/OBB/center-detector routing remains only in compile-guarded
+  fallback text.

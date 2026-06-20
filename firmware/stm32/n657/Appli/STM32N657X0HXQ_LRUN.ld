@@ -44,11 +44,11 @@ _Min_Stack_Size = 0x8000; /* required amount of stack (32KB -- main() init path 
 /* Memories definition */
 MEMORY
 {
-  ROM    (rx)     : ORIGIN = 0x34000400,   LENGTH = 520K
-  /* Shrink RAM to 503K (AXISRAM1 only) so BSS cannot grow into AXISRAM2
+  ROM    (rx)     : ORIGIN = 0x34000400,   LENGTH = 600K
+  /* Shrink RAM to 443K (AXISRAM1 only) so BSS cannot grow into AXISRAM2
      where the OBB model input buffer lives at 0x34110000.
-     ROM grew to 520K to accommodate tip-focus .rodata (epoch descriptors).  */
-  RAM    (xrw)    : ORIGIN = 0x34082400,   LENGTH = 503K
+     ROM grew to 600K to accommodate DS-CNN v4 heatmap CD .rodata.  */
+  RAM    (xrw)    : ORIGIN = 0x34099400,   LENGTH = 423K
   /* Scalar model blob at 0x70200000 (matches FLASH_SCALAR in flash_boot.bat). */
   EXTRAM (rw)           : ORIGIN = 0x70200000,   LENGTH = 3200K
   /* Rectifier model blob at 0x70600000 (matches FLASH_RECTIFIER in flash_boot.bat).
@@ -56,15 +56,25 @@ MEMORY
    * correct flash region. */
   EXTRAM_RECTIFIER (rw) : ORIGIN = 0x70600000,   LENGTH = 256K
   EXTRAM_OBB (rw)       : ORIGIN = 0x70700000,   LENGTH = 4096K
+  /* HyperRAM scratch for QARepVGG-Pro (1 MB activation overflow).
+   * The N657 Nucleo has no physical HyperRAM; this section exists
+   * for linker resolution only.  NPU access to 0x90000000 will
+   * bus-fault at runtime. */
+  XSPI1_RAM (rw)         : ORIGIN = 0x90000000,   LENGTH = 32M
   /* Source-crop-box model blob at 0x70B00000 (matches FLASH_SOURCE_CROP_BOX in flash_boot.bat). */
   EXTRAM_SOURCE_CROP_BOX (rw) : ORIGIN = 0x70B00000,   LENGTH = 512K
   /* Non-secure alias A/B test — DCMIPP with MSEC=1 writes to 0x24xxxxxx.
    * Placed at top of AXISRAM1 non-secure alias, away from code/data. */
   RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 384K
-  /* AXISRAM6 -- unused by both NPU models; destination for displaced large
-     BSS arrays (thread stacks, frame scratch) that would otherwise push BSS
-     past 0x34100000 into the OBB input buffer region.  */
-  NPU_SRAM6 (xrw) : ORIGIN = 0x34350000,   LENGTH = 448K
+  /* AXISRAM6 — polar_luma (100K, CD stage only) is overlaid on the bottom
+   * of the OBB activation region (0x34350000).  Both use the same memory but
+   * at different times: OBB runs first (writes scratch here), then the CD
+   * stage overrwrites it with fresh polar_luma before the polar vote.
+   * polar_luma was moved here from .tip_focus_activations because the 4K tail
+   * overflowed past TIP_FOCUS_RAM (0x342E0000) into AXISRAM5 where the CD
+   * NPU activation metadata lives, corrupting ATON state across runs. */
+  NPU_SRAM6_POLAR (xrw) : ORIGIN = 0x34350000, LENGTH = 100K
+  NPU_SRAM6 (xrw)       : ORIGIN = 0x3439C000, LENGTH = 144K
    /* Tip-focus geometry model: weights ~2 MiB, placed in unused xSPI2 flash
     * at 0x70400000 (matches model's c_info.json offset_start).
     * Flash_boot.bat programs tip_focus_weights.raw here. */
@@ -156,6 +166,16 @@ SECTIONS
     KEEP(*(.xspi2_obb_pool))
     . = ALIGN(32);
   } >EXTRAM_OBB
+
+  /* QARepVGG-Pro activation overflow pool (HyperRAM, 0x90000000).
+   * The N657 Nucleo has no physical HyperRAM; this section exists
+   * for linker symbol resolution only.  NPU access will bus-fault. */
+  .xspi1_obb_pool (NOLOAD) :
+  {
+    . = ALIGN(32);
+    KEEP(*(.xspi1_obb_pool))
+    . = ALIGN(32);
+  } >XSPI1_RAM
 
   /* Source-crop-box model pool: placed at the source-crop-box flash region (0x70B00000).
    * Separating this ensures _mem_pool_xSPI2_mobilenetv2_source_crop_box_*
@@ -271,7 +291,9 @@ SECTIONS
     __bss_end__ = _ebss;
   } >RAM :data
 
-  /* Tip-focus activations scratch buffer (~632 KiB) placed in AXISRAM3+4.
+  /* Tip-focus activations scratch buffer (800 KiB — camera_snapshot,
+   * center_det_input_buf, resized_rgb) placed in AXISRAM3+4.
+   * polar_luma is in .npusram6_polar to avoid 4K overflow past TIP_FOCUS_RAM.
    * Defined with __attribute__((section(".tip_focus_activations"))). */
   .tip_focus_activations (NOLOAD) :
   {
@@ -282,8 +304,8 @@ SECTIONS
     . = ALIGN(32);
   } >TIP_FOCUS_RAM
 
-  /* AXISRAM6 section for large BSS arrays displaced from main RAM to avoid
-     overlapping the OBB model input buffer in AXISRAM2 (0x34110000).  */
+  /* AXISRAM6 section — AI thread stack lives here, after polar_luma (below)
+   * and the OBB activation region (which both share the same 304K below). */
   .npusram6 (NOLOAD) :
   {
     . = ALIGN(32);
@@ -293,6 +315,18 @@ SECTIONS
     . = ALIGN(32);
     __enpusram6 = .;
   } >NPU_SRAM6
+
+  /* polar_luma — temporally overlaid on OBB activation region at 0x34350000.
+   * OBB writes scratch here during its stage, then the CD stage overwrites
+   * with fresh polar_luma before the polar vote.  Never in use at the same
+   * time as the OBB NPU inference. */
+  .npusram6_polar (NOLOAD) :
+  {
+    . = ALIGN(32);
+    KEEP(*(.npusram6_polar))
+    KEEP(*(.npusram6_polar*))
+    . = ALIGN(32);
+  } >NPU_SRAM6_POLAR
 
   /* User_heap_stack section, used to check that there is enough "RAM" Ram  type memory left */
   ._user_heap_stack :

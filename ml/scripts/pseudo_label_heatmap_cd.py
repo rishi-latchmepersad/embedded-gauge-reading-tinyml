@@ -2,7 +2,7 @@
 Pseudo-label unlabelled gauge images to augment heatmap CD training.
 
 Sources:
-  1. PNGs in captured_images/ NOT in ai_annotated_centers.csv (68 files, 224×224)
+  1. PNGs in captured_images/ NOT in ai_annotated_board_captures.csv (68 files, 224×224)
      → DCMIPP → OBB → warp → DS-CNN v2 → pseudo-label heatmap
   2. Rectified probe crops (39 files, 224×224 RGB, already rectified)
      → resize to 320×320 → DS-CNN v2 → pseudo-label heatmap
@@ -46,7 +46,7 @@ DATA_DIR = ML_ROOT / "data"
 CD_DATA_DIR = DATA_DIR / "heatmap_cd_320"
 OBB_PT = ML_ROOT / "artifacts" / "yolo_obb_320" / "train" / "weights" / "best.pt"
 CD_MODEL = ML_ROOT / "artifacts" / "heatmap_cd_ds_v2" / "final.keras"
-CSV_PATH = DATA_DIR / "ai_annotated_centers.csv"
+CSV_PATH = DATA_DIR / "ai_annotated_board_captures.csv"
 
 
 def dcmipp_crop_resize(

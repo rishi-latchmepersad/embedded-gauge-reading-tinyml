@@ -44,7 +44,7 @@ ML_ROOT = SCRIPT_DIR.parent
 DATA_DIR = ML_ROOT / "data"
 CD_DATA_DIR = DATA_DIR / "heatmap_cd_320"
 OBB_PT = ML_ROOT / "artifacts" / "yolo_obb_320" / "train" / "weights" / "best.pt"
-CSV_PATH = DATA_DIR / "ai_annotated_centers.csv"
+CSV_PATH = DATA_DIR / "ai_annotated_board_captures.csv"
 
 random.seed(SEED)
 np.random.seed(SEED)

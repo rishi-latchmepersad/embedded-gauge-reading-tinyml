@@ -126,7 +126,12 @@ def load_heatmap_sample(
     image_path = base_path / crop.source_image_path
     with Image.open(image_path) as image:
         crop_box = (crop.crop_x1, crop.crop_y1, crop.crop_x2, crop.crop_y2)
-        crop_image = image.convert("RGB").crop(crop_box).resize((input_size, input_size), Image.Resampling.LANCZOS)
+        # Crop before converting so large source frames do not allocate a full
+        # RGB buffer when we only need the dial region.
+        crop_image = image.crop(crop_box).convert("RGB").resize(
+            (input_size, input_size),
+            Image.Resampling.LANCZOS,
+        )
         crop_array = np.asarray(crop_image, dtype=np.float32) / 255.0
 
     if inner_celsius_mask:

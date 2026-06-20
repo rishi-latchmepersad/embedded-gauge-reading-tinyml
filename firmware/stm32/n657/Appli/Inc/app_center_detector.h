@@ -6,9 +6,9 @@
  *
  * Pipeline:
  *   1. Crop the full-frame YUV422 to the stable training crop family.
- *   2. Resize / convert to 320x320 uint8 RGB.
- *   3. Run center detector NPU inference -> 160x160 heatmap.
- *   4. Decode the heatmap with argmax + parabolic sub-pixel refinement.
+ *   2. Resize / convert to 224x224 uint8 RGB.
+ *   3. Run center detector NPU inference -> 80x80 heatmap.
+ *   4. Decode the heatmap with soft-argmax (intensity-weighted centroid).
  *   5. Map the centre back to full-frame pixel coordinates.
  *   6. Run polar vote around the full-frame centre -> needle angle.
  *   7. Convert angle -> temperature (deg C).
@@ -61,8 +61,8 @@ bool AppCenterDetector_Init(void);
  * @param dial_radius_override_px  When > 0, overrides the internal polar-vote
  *                                 dial radius.  Pass 0 to use the legacy
  *                                 min(crop_width, crop_height) / 2 heuristic.
- * @param frame_width_pixels  Full-frame width in pixels (e.g. 320).
- * @param frame_height_pixels Full-frame height in pixels (e.g. 320).
+ * @param frame_width_pixels  Full-frame width in pixels (e.g. 224).
+ * @param frame_height_pixels Full-frame height in pixels (e.g. 224).
  * @param[out] result      Filled with centre, angle, temperature, confidence.
  * @param override_center_x  When >= 0, skip the CNN and use this as the
  *                           full-frame polar-vote pivot (pixels).

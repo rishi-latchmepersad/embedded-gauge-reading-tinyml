@@ -66,6 +66,67 @@ def _softargmax_coordinates(heatmaps: tf.Tensor) -> tf.Tensor:
     return tf.stack([expected_x, expected_y], axis=-1)
 
 
+def _heatmap_spread_pixels(heatmaps: tf.Tensor) -> tf.Tensor:
+    """Compute the spatial standard deviation of each heatmap in pixel units."""
+
+    batch_heatmaps = _prepare_heatmap_batch(heatmaps)
+    batch_heatmaps = tf.maximum(batch_heatmaps, 0.0)
+    height = tf.shape(batch_heatmaps)[1]
+    width = tf.shape(batch_heatmaps)[2]
+    x_coords, y_coords = _build_pixel_grids(height, width)
+
+    heatmap_sum = tf.reduce_sum(batch_heatmaps, axis=[1, 2], keepdims=True)
+    heatmap_sum = tf.maximum(heatmap_sum, _EPSILON)
+    normalized = batch_heatmaps / heatmap_sum
+
+    mean_x = tf.reduce_sum(normalized * x_coords, axis=[1, 2], keepdims=True)
+    mean_y = tf.reduce_sum(normalized * y_coords, axis=[1, 2], keepdims=True)
+    spread_sq = tf.reduce_sum(
+        normalized
+        * (
+            tf.square(x_coords - mean_x)
+            + tf.square(y_coords - mean_y)
+        ),
+        axis=[1, 2],
+    )
+    return tf.sqrt(tf.maximum(spread_sq, 0.0))
+
+
+def _prepare_polar_profile_batch(heatmaps: tf.Tensor) -> tf.Tensor:
+    """Collapse polar heatmaps into 1D angular profiles by summing rows."""
+
+    batch_heatmaps = _prepare_heatmap_batch(heatmaps)
+    return tf.reduce_sum(batch_heatmaps, axis=1)
+
+
+def _normalize_profile_distribution(profile: tf.Tensor) -> tf.Tensor:
+    """Normalize a 1D profile into a proper probability distribution."""
+
+    tensor = tf.cast(tf.convert_to_tensor(profile), tf.float32)
+    tensor = tf.maximum(tensor, 0.0)
+    profile_sum = tf.reduce_sum(tensor, axis=-1, keepdims=True)
+    return tensor / tf.maximum(profile_sum, _EPSILON)
+
+
+def _softargmax_profile_coordinates(profiles: tf.Tensor) -> tf.Tensor:
+    """Compute the expected angle-bin index for each 1D profile."""
+
+    tensor = tf.cast(tf.convert_to_tensor(profiles), tf.float32)
+    rank = tensor.shape.rank
+
+    if rank == 1:
+        tensor = tf.expand_dims(tensor, axis=0)
+    elif rank != 2:
+        raise ValueError("Profiles must have rank 1 or 2.")
+
+    width = tf.shape(tensor)[1]
+    coords = tf.cast(tf.range(width), tf.float32)[tf.newaxis, :]
+    profile_sum = tf.reduce_sum(tensor, axis=-1, keepdims=True)
+    profile_sum = tf.maximum(profile_sum, _EPSILON)
+    normalized = tensor / profile_sum
+    return tf.reduce_sum(normalized * coords, axis=-1)
+
+
 def _weighted_pixel_reduce(
     y_true: tf.Tensor,
     y_pred: tf.Tensor,
@@ -88,6 +149,17 @@ def _weighted_pixel_reduce(
     weight_sum = tf.reduce_sum(weights, axis=[1, 2])
     reduced = weighted_loss / tf.maximum(weight_sum, _EPSILON)
     return tf.reduce_mean(reduced)
+
+
+def _elementwise_binary_crossentropy(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+    """Compute pixelwise binary cross-entropy without collapsing spatial axes."""
+
+    true_heatmaps = _prepare_heatmap_batch(y_true)
+    pred_heatmaps = tf.clip_by_value(_prepare_heatmap_batch(y_pred), _EPSILON, 1.0 - _EPSILON)
+    return -(
+        true_heatmaps * tf.math.log(pred_heatmaps)
+        + (1.0 - true_heatmaps) * tf.math.log(1.0 - pred_heatmaps)
+    )
 
 
 @keras.utils.register_keras_serializable(package="embedded_gauge_reading_tinyml")
@@ -126,8 +198,8 @@ def weighted_heatmap_bce_loss(
     """Weighted binary cross-entropy for soft heatmap supervision."""
 
     true_heatmaps = _prepare_heatmap_batch(y_true)
-    pred_heatmaps = tf.clip_by_value(_prepare_heatmap_batch(y_pred), _EPSILON, 1.0 - _EPSILON)
-    per_pixel_bce = keras.losses.binary_crossentropy(true_heatmaps, pred_heatmaps)
+    pred_heatmaps = _prepare_heatmap_batch(y_pred)
+    per_pixel_bce = _elementwise_binary_crossentropy(true_heatmaps, pred_heatmaps)
     return _weighted_pixel_reduce(
         true_heatmaps,
         pred_heatmaps,
@@ -152,8 +224,9 @@ def focal_heatmap_loss(
     """Simple focal-style heatmap loss that keeps peak pixels important."""
 
     true_heatmaps = _prepare_heatmap_batch(y_true)
-    pred_heatmaps = tf.clip_by_value(_prepare_heatmap_batch(y_pred), _EPSILON, 1.0 - _EPSILON)
-    base_bce = keras.losses.binary_crossentropy(true_heatmaps, pred_heatmaps)
+    pred_heatmaps = _prepare_heatmap_batch(y_pred)
+    clipped_pred_heatmaps = tf.clip_by_value(pred_heatmaps, _EPSILON, 1.0 - _EPSILON)
+    base_bce = _elementwise_binary_crossentropy(true_heatmaps, clipped_pred_heatmaps)
     pt = true_heatmaps * pred_heatmaps + (1.0 - true_heatmaps) * (1.0 - pred_heatmaps)
     focal_factor = tf.pow(1.0 - pt, gamma)
     focal_loss = alpha * focal_factor * base_bce
@@ -195,12 +268,62 @@ def mean_predicted_heatmap_peak(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tens
 
 
 @keras.utils.register_keras_serializable(package="embedded_gauge_reading_tinyml")
+def heatmap_spread_hinge_loss(y_pred: tf.Tensor, *, max_spread_px: float = 30.0) -> tf.Tensor:
+    """Penalize heatmaps whose spatial spread exceeds a target bound."""
+
+    if max_spread_px <= 0.0:
+        raise ValueError("max_spread_px must be positive.")
+
+    spread_px = _heatmap_spread_pixels(y_pred)
+    return tf.reduce_mean(tf.square(tf.maximum(spread_px - float(max_spread_px), 0.0)))
+
+
+@keras.utils.register_keras_serializable(package="embedded_gauge_reading_tinyml")
 def combined_heatmap_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
     """Recommended v1 heatmap objective: weighted MSE plus coordinate loss."""
 
     return weighted_heatmap_mse_loss(y_true, y_pred) + (
         _DEFAULT_COORDINATE_WEIGHT * softargmax_coordinate_loss(y_true, y_pred)
     )
+
+
+@keras.utils.register_keras_serializable(package="embedded_gauge_reading_tinyml")
+def polar_profile_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+    """Angle-first objective for polar needle masks.
+
+    The polar decoder only needs the horizontal angular profile, so this loss
+    collapses the mask vertically and focuses training on the angle column
+    instead of penalizing irrelevant vertical placement.
+    """
+
+    true_profile = _prepare_polar_profile_batch(y_true)
+    pred_profile = _prepare_polar_profile_batch(y_pred)
+    true_dist = _normalize_profile_distribution(true_profile)
+    pred_dist = _normalize_profile_distribution(pred_profile)
+
+    profile_kl = tf.reduce_mean(
+        tf.reduce_sum(
+            true_dist
+            * (
+                tf.math.log(true_dist + _EPSILON)
+                - tf.math.log(pred_dist + _EPSILON)
+            ),
+            axis=-1,
+        )
+    )
+    coord_loss = tf.reduce_mean(
+        tf.square(
+            _softargmax_profile_coordinates(true_profile)
+            - _softargmax_profile_coordinates(pred_profile)
+        )
+    )
+    peak_loss = tf.reduce_mean(
+        tf.square(
+            tf.reduce_max(true_dist, axis=-1) - tf.reduce_max(pred_dist, axis=-1)
+        )
+    )
+    loss = profile_kl + (0.05 * coord_loss) + (0.1 * peak_loss)
+    return tf.maximum(loss, 0.0)
 
 
 @keras.utils.register_keras_serializable(package="embedded_gauge_reading_tinyml")

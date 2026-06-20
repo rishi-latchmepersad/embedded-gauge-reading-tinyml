@@ -57,10 +57,10 @@
  * @brief Decoded QARepVGG-Pro output — gauge centre + OBB box + rotation.
  */
 typedef struct {
-    float center_x;      /**< Normalised [0,1] gauge centre x in 320×320 frame */
-    float center_y;      /**< Normalised [0,1] gauge centre y in 320×320 frame */
-    float box_w;         /**< Normalised [0,1] OBB width in 320×320 frame */
-    float box_h;         /**< Normalised [0,1] OBB height in 320×320 frame */
+    float center_x;      /**< Normalised [0,1] gauge centre x in the legacy 320×320 frame */
+    float center_y;      /**< Normalised [0,1] gauge centre y in the legacy 320×320 frame */
+    float box_w;         /**< Normalised [0,1] OBB width in the legacy 320×320 frame */
+    float box_h;         /**< Normalised [0,1] OBB height in the legacy 320×320 frame */
     float cos2theta;     /**< cos(2θ) ∈ [-1, 1] — gauge rotation */
     float sin2theta;     /**< sin(2θ) ∈ [-1, 1] */
     float peak_value;    /**< Sigmoid value at detected peak — confidence proxy */

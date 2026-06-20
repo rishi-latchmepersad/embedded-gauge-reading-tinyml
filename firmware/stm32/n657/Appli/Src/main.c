@@ -723,13 +723,16 @@ static void SystemIsolation_Config(void) {
 	/* USER CODE END RIF_Init 1 */
 	/* USER CODE BEGIN RIF_Init 2 */
 
-	/* Enable AXISRAM3+4+6 clocks and take them out of shutdown so the CPU can
-	 * access the .tip_focus_activations (AXISRAM3+4, AI thread stacks) and
-	 * .npusram6 (baseline stacks, frame scratch) sections before ThreadX tries
-	 * to write initial stack frames during tx_thread_create(). */
-	RCC->MEMENR |= RCC_MEMENR_AXISRAM3EN | RCC_MEMENR_AXISRAM4EN | RCC_MEMENR_AXISRAM6EN;
+	/* Enable all NPU SRAM clocks (AXISRAM2-6) so the YOLO OBB model vpool
+	 * (0x34100000, ~2.75 MB spanning AXISRAM2 through AXISRAM6) is accessible
+	 * to the NPU. AXISRAM1 stays at its reset-default enabled state. */
+	RCC->MEMENR |= RCC_MEMENR_AXISRAM2EN | RCC_MEMENR_AXISRAM3EN
+				 | RCC_MEMENR_AXISRAM4EN | RCC_MEMENR_AXISRAM5EN
+				 | RCC_MEMENR_AXISRAM6EN;
+	RAMCFG_SRAM2_AXI->CR &= ~RAMCFG_CR_SRAMSD;
 	RAMCFG_SRAM3_AXI->CR &= ~RAMCFG_CR_SRAMSD;
 	RAMCFG_SRAM4_AXI->CR &= ~RAMCFG_CR_SRAMSD;
+	RAMCFG_SRAM5_AXI->CR &= ~RAMCFG_CR_SRAMSD;
 	RAMCFG_SRAM6_AXI->CR &= ~RAMCFG_CR_SRAMSD;
 
 	/* USER CODE END RIF_Init 2 */

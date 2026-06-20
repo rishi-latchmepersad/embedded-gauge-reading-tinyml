@@ -68,9 +68,26 @@ def patch_dense_quantization_config_deserialization() -> Callable[[], None]:
 def load_geometry_heatmap_keras_model(model_path: Path) -> keras.Model:
     """Load the saved geometry heatmap model in a Keras-v3-compatible way."""
 
+    # Import models_geometry before loading so the @register_keras_serializable
+    # decorator on Identity3x3Initializer runs and registers the class with
+    # Keras's global serialization registry.  This MUST happen before the
+    # load_model call or deserialization of the saved Conv2D layers will fail.
+    import embedded_gauge_reading_tinyml.models_geometry  # noqa: F401
+    from embedded_gauge_reading_tinyml.models_geometry import Identity3x3Initializer
+
+    def _identity_init_pass_through(shape, dtype=None):
+        """Legacy identity-initializer stub that simply forwards to the class."""
+        return Identity3x3Initializer()(shape, dtype=dtype)
+
+    custom_objects = {
+        "_init": _identity_init_pass_through,
+        "Identity3x3Initializer": Identity3x3Initializer,
+    }
     restore = patch_dense_quantization_config_deserialization()
     try:
-        return keras.models.load_model(model_path, compile=False, safe_mode=False)
+        return keras.models.load_model(
+            model_path, compile=False, safe_mode=False, custom_objects=custom_objects
+        )
     finally:
         restore()
 

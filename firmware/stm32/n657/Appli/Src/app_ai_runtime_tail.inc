@@ -65,7 +65,7 @@ bool App_AI_Model_Init(void)
 	AppAI_ResetInferenceBurstHistory();
 #endif
 	DebugConsole_Printf("[AI] Model runtime init OK.\r\n");
-	(void)DebugConsole_WriteString("[AI][PIPELINE] Tip-focus geometry heatmap compiled.\r\n");
+	(void)DebugConsole_WriteString("[AI][PIPELINE] Tip-focus SimCC heads compiled.\r\n");
 	return true;
 }
 
@@ -84,6 +84,79 @@ static void AppAI_LogR9(const char *label)
 	__asm volatile("mov %0, r9" : "=r"(r9_before));
 	DebugConsole_Printf("[AI][DRY_RUN][R9] %s=%p\r\n",
 						label, (const void *)r9_before);
+}
+
+/**
+ * @brief Return true only for ordinary finite float values.
+ */
+static bool AppAI_IsFiniteFloat(float value)
+{
+	union
+	{
+		float f;
+		uint32_t u;
+	} bits = {
+		.f = value};
+
+	return ((bits.u & 0x7F800000U) != 0x7F800000U);
+}
+
+/**
+ * @brief Bound-check the calibrated scalar inference before publish/log.
+ */
+static bool AppAI_IsPlausibleInferenceValue(float value)
+{
+	if (!AppAI_IsFiniteFloat(value))
+	{
+		return false;
+	}
+
+	if (value < APP_AI_INFERENCE_VALUE_MIN_C)
+	{
+		return false;
+	}
+
+	if (value > APP_AI_INFERENCE_VALUE_MAX_C)
+	{
+		return false;
+	}
+
+	return true;
+}
+
+/**
+ * @brief Apply cache maintenance to an address range.
+ */
+static int AppAI_ApplyCacheRange(uint32_t start_addr, uint32_t end_addr,
+								 bool clean, bool invalidate)
+{
+	uintptr_t start = 0U;
+	uintptr_t end = 0U;
+
+	if (end_addr <= start_addr)
+	{
+		return -1;
+	}
+
+	start = (uintptr_t)start_addr;
+	end = (uintptr_t)end_addr;
+
+	start &= ~((uintptr_t)APP_AI_CACHE_LINE_BYTES - 1U);
+	end = (end + APP_AI_CACHE_LINE_BYTES - 1U) &
+		  ~((uintptr_t)APP_AI_CACHE_LINE_BYTES - 1U);
+
+	if (clean)
+	{
+		SCB_CleanDCache_by_Addr((uint32_t *)start, (int32_t)(end - start));
+	}
+
+	if (invalidate)
+	{
+		SCB_InvalidateDCache_by_Addr((uint32_t *)start,
+									 (int32_t)(end - start));
+	}
+
+	return 0;
 }
 
 #if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
@@ -610,6 +683,13 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	if (!App_AI_Model_Init())
 	{
 		(void)DebugConsole_WriteString("[AI] Dry-run entry aborted during model init.\r\n");
+		/* Keep the classical path alive even when the AI model cannot start. */
+		if (!AppBaselineRuntime_RequestEstimate(frame_bytes,
+				(ULONG)frame_size))
+		{
+			DebugConsole_WriteString(
+				"[BASELINE] Failed to queue compare frame.\r\n");
+		}
 		return false;
 	}
 
@@ -619,10 +699,25 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	AppAI_LogR9("post_model_init");
 
 #if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
-	return AppAI_TipFocus_RunDryInferenceFromYuv422(safe_frame_bytes,
-		frame_size);
+	{
+		const bool tip_focus_ok =
+			AppAI_TipFocus_RunDryInferenceFromYuv422(safe_frame_bytes,
+				frame_size);
+
+		/* Queue the same frame for the classical baseline after the AI path
+		 * has finished with it, so both workers can report comparable results. */
+		if (!AppBaselineRuntime_RequestEstimate(frame_bytes,
+				(ULONG)frame_size))
+		{
+			DebugConsole_WriteString(
+				"[BASELINE] Failed to queue compare frame.\r\n");
+		}
+
+		return tip_focus_ok;
+	}
 #endif
 
+	#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 	AppCenterDetector_Init();  /* best-effort, failure logged internally */
 
 	/* -----------------------------------------------------------------------
@@ -1444,74 +1539,6 @@ static float AppAI_FilterInferenceValue(float value)
 }
 #endif /* APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING */
 
-/**
- * @brief Return true only for ordinary finite float values.
- */
-static bool AppAI_IsFiniteFloat(float value)
-{
-	union
-	{
-		float f;
-		uint32_t u;
-	} bits = {
-		.f = value};
-
-	return ((bits.u & 0x7F800000U) != 0x7F800000U);
-}
-
-/**
- * @brief Bound-check the calibrated scalar inference before publish/log.
- */
-static bool AppAI_IsPlausibleInferenceValue(float value)
-{
-	if (!AppAI_IsFiniteFloat(value))
-	{
-		return false;
-	}
-
-	if (value < APP_AI_INFERENCE_VALUE_MIN_C)
-	{
-		return false;
-	}
-
-	if (value > APP_AI_INFERENCE_VALUE_MAX_C)
-	{
-		return false;
-	}
-
-	return true;
-}
-
-static int AppAI_ApplyCacheRange(uint32_t start_addr, uint32_t end_addr,
-								 bool clean, bool invalidate)
-{
-	uintptr_t start = 0U;
-	uintptr_t end = 0U;
-
-	if (end_addr <= start_addr)
-	{
-		return -1;
-	}
-
-	start = (uintptr_t)start_addr;
-	end = (uintptr_t)end_addr;
-
-	start &= ~((uintptr_t)APP_AI_CACHE_LINE_BYTES - 1U);
-	end = (end + APP_AI_CACHE_LINE_BYTES - 1U) & ~((uintptr_t)APP_AI_CACHE_LINE_BYTES - 1U);
-
-	if (clean)
-	{
-		SCB_CleanDCache_by_Addr((uint32_t *)start, (int32_t)(end - start));
-	}
-
-	if (invalidate)
-	{
-		SCB_InvalidateDCache_by_Addr((uint32_t *)start,
-									 (int32_t)(end - start));
-	}
-
-return 0;
-}
 
 static uint8_t AppAI_ReadYuv422Luma(const uint8_t *frame_bytes,
 									size_t frame_size_bytes,
@@ -2423,6 +2450,7 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 
 	return true;
 }
+#endif /* !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE */
 
 static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToInt8Input(
 	const uint8_t *frame_bytes, size_t frame_size, uint8_t *input_ptr,
@@ -2432,7 +2460,8 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToInt8Input(
 	const size_t source_height = (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
 	/* Derive output dimensions from the model's input tensor memory shape
 	 * (NHWC: {batch, height, width, channels}).  Each model stage may have a
-	 * different input resolution (e.g. OBB is 224×224, heatmap is 320×320). */
+	 * different input resolution (for example, the live tip-focus path is
+	 * 224x224 while older legacy stages may differ). */
 	const size_t output_width =
 		(input_info->mem_shape != NULL && input_info->mem_ndims >= 3U)
 			? (size_t)input_info->mem_shape[2U]
@@ -2680,6 +2709,13 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToInt8Input(
 				}
 			}
 		}
+#if APP_AI_ENABLE_INNER_CELSIUS_MASK
+		if (input_info->Qunsigned == 0U)
+		{
+			AppInnerCelsiusMask_Apply(
+				(int8_t *)input_ptr, output_width, output_height);
+		}
+#endif
 	}
 #endif
 
@@ -2687,7 +2723,7 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToInt8Input(
 	return true;
 }
 
-/* V28 polar-vote preprocessing: YUV422 -> 320x320x7 int8 polar input.
+/* V28 polar-vote preprocessing: YUV422 -> 224x224x7 int8 polar input.
  *
  * Channels 0-2: polar-projected RGB (normalized 0-1, mapped to int8).
  * Channels 3-5: Sobel edge channels on polar luma (angular, radial gradients).
@@ -2831,9 +2867,9 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToPolarInput(
 	float crop_height_f = 0.0f;
 	float resized_w = 0.0f;     /* crop dims after resize_with_pad (in output space) */
 	float resized_h = 0.0f;
-	/* Scratch for polar luma plane: 320x320 uint8 (~100 KB in BSS).
+	/* Scratch for polar luma plane: 224x224 uint8 (~49 KB in BSS).
 	 * Stores quantised luma as uint8 [0..255] instead of float [0..1]
-	 * to keep the buffer footprint manageable even at 320x320.  Gradients are
+	 * to keep the buffer footprint manageable even at 224x224.  Gradients are
 	 * recomputed on-the-fly in a second pass instead of being stored in separate
 	 * arrays, which still avoids two large float scratch planes. */
 	static uint8_t resized_rgb[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * 3U] __attribute__((section(".tip_focus_activations"))); /* training-style resized crop */
@@ -3627,7 +3663,7 @@ static void AppAI_BlankTipFocusLowerInset(int8_t *input, size_t width,
 
 	/* Blank the lower inset gauge and the dark blob in the lower center so the
 	 * CNN has to pay attention to the main dial. Scale the legacy reference
-	 * ellipse so it stays aligned on the new 320x320 capture path. */
+	 * ellipse so it stays aligned on the new 224x224 capture path. */
 	const float mask_width_scale = (float)width / 224.0f;
 	const float mask_height_scale = (float)height / 224.0f;
 	const int32_t mask_center_x = (int32_t)lroundf(112.0f * mask_width_scale);
@@ -3999,57 +4035,68 @@ static uint8_t AppAI_FindHistogramPercentile(const uint32_t *histogram,
 }
 
 /**
- * @brief Global softargmax on an int8 heatmap.
+ * @brief Decode one 1-D SimCC axis into a normalized coordinate and stats.
  *
- * Matches the Python training decode: softargmax_2d() which computes
- * the global weighted centroid over the entire heatmap.
- *
- * Formula: normalized = heatmap / sum(heatmap)
- *          expected_x = sum(normalized * x_coords)
- *          expected_y = sum(normalized * y_coords)
- *
- * Returns false if the heatmap has no positive activations.
+ * The exported tip-focus model emits int8 softmax probabilities over 112 bins
+ * per axis. We dequantize the probabilities, compute the weighted mean bin,
+ * and return the normalized [0,1] coordinate plus a simple spread estimate.
  */
-static bool AppAI_SoftArgmaxGlobal(const int8_t *heatmap, int32_t size,
-	float *x_out, float *y_out)
+static bool AppAI_TipFocus_DecodeSimccAxis(const int8_t *axis,
+	int32_t size, float *coord_out, float *peak_out, float *spread_px_out)
 {
-	if ((heatmap == NULL) || (x_out == NULL) || (y_out == NULL) || (size <= 0))
-	{
-		return false;
-	}
-
-	/* First pass: compute global max for numerical stability, then sum */
-	float global_max = -128.0f;
-	for (int32_t i = 0; i < size * size; i++)
-	{
-		const float val = (float)heatmap[i];
-		if (val > global_max) { global_max = val; }
-	}
-
-	/* Second pass: compute exp(heatmap - global_max) and accumulate */
 	float total_weight = 0.0f;
-	float sum_x = 0.0f;
-	float sum_y = 0.0f;
+	float weighted_sum = 0.0f;
+	float peak_value = 0.0f;
 
-	for (int32_t py = 0; py < size; py++)
-	{
-		for (int32_t px = 0; px < size; px++)
-		{
-			const float v = (float)heatmap[py * size + px] - global_max;
-			const float e = expf(v);
-			total_weight += e;
-			sum_x += e * (float)px;
-			sum_y += e * (float)py;
-		}
-	}
-
-	if (total_weight < 1e-6f)
+	if ((axis == NULL) || (size <= 1) || (coord_out == NULL))
 	{
 		return false;
 	}
 
-	*x_out = sum_x / total_weight;
-	*y_out = sum_y / total_weight;
+	const float bin_to_px_scale =
+		(float)(APP_AI_TIP_FOCUS_MODEL_INPUT_WIDTH_PIXELS - 1U) /
+		(float)(size - 1);
+
+	for (int32_t i = 0; i < size; ++i)
+	{
+		const float prob = (((float)axis[i]) + 128.0f) * 0.00390625f;
+
+		if (prob > peak_value)
+		{
+			peak_value = prob;
+		}
+
+		total_weight += prob;
+		weighted_sum += prob * (float)i;
+	}
+
+	if (total_weight <= 0.0f)
+	{
+		return false;
+	}
+
+	*coord_out = (weighted_sum / total_weight) / (float)(size - 1);
+	if (peak_out != NULL)
+	{
+		*peak_out = peak_value;
+	}
+
+	if (spread_px_out != NULL)
+	{
+		float spread_accum = 0.0f;
+		const float mean_bin = weighted_sum / total_weight;
+
+		for (int32_t i = 0; i < size; ++i)
+		{
+			const float prob = (((float)axis[i]) + 128.0f) * 0.00390625f;
+			const float delta = (float)i - mean_bin;
+
+			spread_accum += prob * (delta * delta);
+		}
+
+		*spread_px_out = sqrtf(spread_accum / total_weight) * bin_to_px_scale;
+	}
+
 	return true;
 }
 
@@ -4161,82 +4208,11 @@ static float AppAI_TipFocus_MedianFilter(float new_value)
 	const float new_median = sorted[APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE / 2U];
 	app_ai_tip_focus_last_published = new_median;
 	return new_median;
-}
+	}
 
 #if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 /**
- * @brief Compute the peak value and spatial spread of one quantized heatmap.
- *
- * The replay guardrails use heatmap spread as one of the main strictness
- * checks, so the board runtime keeps the same dequantized statistic here.
- */
-static bool AppAI_TipFocus_HeatmapStats(
-	const int8_t *heatmap,
-	int32_t size,
-	float *peak_out,
-	float *spread_out)
-{
-	float total_weight = 0.0f;
-	float mean_x = 0.0f;
-	float mean_y = 0.0f;
-	float peak_value = 0.0f;
-
-	if ((heatmap == NULL) || (peak_out == NULL) || (spread_out == NULL) || (size <= 0))
-	{
-		return false;
-	}
-
-	for (int32_t py = 0; py < size; ++py)
-	{
-		for (int32_t px = 0; px < size; ++px)
-		{
-			const float prob =
-				(((float)heatmap[(py * size) + px]) + 128.0f) * 0.00390625f;
-
-			if (prob > peak_value)
-			{
-				peak_value = prob;
-			}
-
-			total_weight += prob;
-			mean_x += prob * (float)px;
-			mean_y += prob * (float)py;
-		}
-	}
-
-	if (total_weight <= 0.0f)
-	{
-		return false;
-	}
-
-	mean_x /= total_weight;
-	mean_y /= total_weight;
-
-	{
-		float spread_accum = 0.0f;
-
-		for (int32_t py = 0; py < size; ++py)
-		{
-			for (int32_t px = 0; px < size; ++px)
-			{
-				const float prob =
-					(((float)heatmap[(py * size) + px]) + 128.0f) * 0.00390625f;
-				const float dx = (float)px - mean_x;
-				const float dy = (float)py - mean_y;
-
-				spread_accum += prob * ((dx * dx) + (dy * dy));
-			}
-		}
-
-		*peak_out = peak_value;
-		*spread_out = sqrtf(spread_accum / total_weight);
-	}
-
-	return true;
-}
-
-/**
- * @brief Run the tip-focus heatmap model end-to-end on one YUV422 frame.
+ * @brief Run the tip-focus SimCC model end-to-end on one YUV422 frame.
  */
 static bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 	const uint8_t *frame_bytes, size_t frame_size)
@@ -4244,27 +4220,46 @@ static bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 	const LL_Buffer_InfoTypeDef *input_info =
 		(const LL_Buffer_InfoTypeDef *)AppAI_TipFocus_GetInputBufferInfo();
 	int8_t *input_buffer = AppAI_TipFocus_GetInputBuffer();
-	const int8_t *center_heatmap = NULL;
-	const int8_t *tip_heatmap = NULL;
-	float center_x_112 = 0.0f;
-	float center_y_112 = 0.0f;
-	float tip_x_112 = 0.0f;
-	float tip_y_112 = 0.0f;
+	const int8_t *center_x_axis = NULL;
+	const int8_t *center_y_axis = NULL;
+	const int8_t *tip_x_axis = NULL;
+	const int8_t *tip_y_axis = NULL;
+	float center_x_norm = 0.0f;
+	float center_y_norm = 0.0f;
+	float tip_x_norm = 0.0f;
+	float tip_y_norm = 0.0f;
+	float center_x_peak = 0.0f;
+	float center_y_peak = 0.0f;
+	float tip_x_peak = 0.0f;
+	float tip_y_peak = 0.0f;
+	float center_x_spread_px = 0.0f;
+	float center_y_spread_px = 0.0f;
+	float tip_x_spread_px = 0.0f;
+	float tip_y_spread_px = 0.0f;
 	float center_peak = 0.0f;
 	float tip_peak = 0.0f;
-	float center_spread_px = 0.0f;
-	float tip_spread_px = 0.0f;
 	float confidence = 0.0f;
 	float angle_degrees = 0.0f;
 	float angle_delta_degrees = 0.0f;
 	float temperature_c = 0.0f;
 	float published_temperature_c = 0.0f;
-	const float heatmap_to_pixel_scale =
-		223.0f / (float)(APP_AI_TIP_FOCUS_HEATMAP_SIZE - 1U);
+	const float coord_max_px =
+		(float)(APP_AI_TIP_FOCUS_MODEL_INPUT_WIDTH_PIXELS - 1U);
 	const float expected_center_tip_distance_px =
 		APP_GAUGE_INNER_DIAL_RADIUS_FRAME_RATIO
-		* (float)(APP_AI_TIP_FOCUS_HEATMAP_SIZE * 2U);
+		* coord_max_px;
 	bool valid = true;
+	bool simcc_decode_ok = true;
+	bool center_peak_ok = false;
+	bool tip_peak_ok = false;
+	bool confidence_ok = false;
+	bool center_spread_ok = false;
+	bool tip_spread_ok = false;
+	bool edge_margin_ok = false;
+	bool distance_ok = false;
+	bool angle_ok = false;
+	bool temperature_finite_ok = false;
+	bool temperature_range_ok = false;
 
 	if ((input_info == NULL) || (input_buffer == NULL))
 	{
@@ -4288,56 +4283,66 @@ static bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 		return false;
 	}
 
-	center_heatmap = AppAI_TipFocus_GetCenterHeatmap();
-	tip_heatmap = AppAI_TipFocus_GetTipHeatmap();
+	center_x_axis = AppAI_TipFocus_GetCenterXSimcc();
+	center_y_axis = AppAI_TipFocus_GetCenterYSimcc();
+	tip_x_axis = AppAI_TipFocus_GetTipXSimcc();
+	tip_y_axis = AppAI_TipFocus_GetTipYSimcc();
 	confidence = (((float)AppAI_TipFocus_GetConfidenceRaw()) + 128.0f) * 0.00390625f;
 
-	if ((center_heatmap == NULL) || (tip_heatmap == NULL))
+	if ((center_x_axis == NULL) || (center_y_axis == NULL) ||
+		(tip_x_axis == NULL) || (tip_y_axis == NULL))
 	{
 		DebugConsole_WriteString("[AI] Tip-focus outputs missing.\r\n");
 		return false;
 	}
 
-	valid = AppAI_TipFocus_HeatmapStats(
-		center_heatmap,
-		(int32_t)APP_AI_TIP_FOCUS_HEATMAP_SIZE,
-		&center_peak,
-		&center_spread_px) &&
-		AppAI_TipFocus_HeatmapStats(
-			tip_heatmap,
-			(int32_t)APP_AI_TIP_FOCUS_HEATMAP_SIZE,
-			&tip_peak,
-			&tip_spread_px);
+	simcc_decode_ok =
+		AppAI_TipFocus_DecodeSimccAxis(
+			center_x_axis,
+			(int32_t)APP_AI_TIP_FOCUS_SIMCC_BINS,
+			&center_x_norm,
+			&center_x_peak,
+			&center_x_spread_px) &&
+		AppAI_TipFocus_DecodeSimccAxis(
+			center_y_axis,
+			(int32_t)APP_AI_TIP_FOCUS_SIMCC_BINS,
+			&center_y_norm,
+			&center_y_peak,
+			&center_y_spread_px) &&
+		AppAI_TipFocus_DecodeSimccAxis(
+			tip_x_axis,
+			(int32_t)APP_AI_TIP_FOCUS_SIMCC_BINS,
+			&tip_x_norm,
+			&tip_x_peak,
+			&tip_x_spread_px) &&
+		AppAI_TipFocus_DecodeSimccAxis(
+			tip_y_axis,
+			(int32_t)APP_AI_TIP_FOCUS_SIMCC_BINS,
+			&tip_y_norm,
+			&tip_y_peak,
+			&tip_y_spread_px);
+	valid = simcc_decode_ok;
 
 	if (valid)
 	{
-		valid =
-			AppAI_SoftArgmaxGlobal(center_heatmap,
-				(int32_t)APP_AI_TIP_FOCUS_HEATMAP_SIZE,
-				&center_x_112, &center_y_112) &&
-			AppAI_SoftArgmaxGlobal(tip_heatmap,
-				(int32_t)APP_AI_TIP_FOCUS_HEATMAP_SIZE,
-				&tip_x_112, &tip_y_112);
-	}
-
-	if (valid)
-	{
-		const float center_x_px = center_x_112 * heatmap_to_pixel_scale;
-		const float center_y_px = center_y_112 * heatmap_to_pixel_scale;
-		const float tip_x_px = tip_x_112 * heatmap_to_pixel_scale;
-		const float tip_y_px = tip_y_112 * heatmap_to_pixel_scale;
+		const float center_x_px = center_x_norm * coord_max_px;
+		const float center_y_px = center_y_norm * coord_max_px;
+		const float tip_x_px = tip_x_norm * coord_max_px;
+		const float tip_y_px = tip_y_norm * coord_max_px;
 		const float dx = tip_x_px - center_x_px;
 		const float dy = tip_y_px - center_y_px;
 		const float center_tip_distance_px = sqrtf((dx * dx) + (dy * dy));
 		const float confidence_floor = APP_AI_TIP_FOCUS_CONFIDENCE_FLOOR;
+		const float center_axis_peak_floor = APP_AI_TIP_FOCUS_AXIS_PEAK_FLOOR;
+		const float center_axis_spread_max_px = APP_AI_TIP_FOCUS_AXIS_SPREAD_MAX_PX;
 		const float edge_margin_px =
 			fminf(
-				fminf(center_x_px, 223.0f - center_x_px),
-				fminf(center_y_px, 223.0f - center_y_px));
+				fminf(center_x_px, coord_max_px - center_x_px),
+				fminf(center_y_px, coord_max_px - center_y_px));
 		const float tip_edge_margin_px =
 			fminf(
-				fminf(tip_x_px, 223.0f - tip_x_px),
-				fminf(tip_y_px, 223.0f - tip_y_px));
+				fminf(tip_x_px, coord_max_px - tip_x_px),
+				fminf(tip_y_px, coord_max_px - tip_y_px));
 		const float min_edge_margin_px =
 			fminf(edge_margin_px, tip_edge_margin_px);
 		const float center_tip_distance_ratio =
@@ -4345,7 +4350,13 @@ static bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 				? (center_tip_distance_px / expected_center_tip_distance_px)
 				: 0.0f;
 
-		angle_degrees = atan2f(dy, dx) * (180.0f / 3.14159265358979f);
+		center_peak = fminf(center_x_peak, center_y_peak);
+		tip_peak = fminf(tip_x_peak, tip_y_peak);
+		center_x_spread_px = fmaxf(center_x_spread_px, center_y_spread_px);
+		tip_x_spread_px = fmaxf(tip_x_spread_px, tip_y_spread_px);
+
+		/* Negate image-space Y so the live board matches the replay convention. */
+		angle_degrees = atan2f(-dy, dx) * (180.0f / 3.14159265358979f);
 		if (angle_degrees < 0.0f)
 		{
 			angle_degrees += 360.0f;
@@ -4361,19 +4372,32 @@ static bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 			(APP_AI_TIP_FOCUS_SLOPE * angle_delta_degrees)
 			+ APP_AI_TIP_FOCUS_INTERCEPT;
 
-		valid =
-			(center_peak >= APP_AI_TIP_FOCUS_CONFIDENCE_FLOOR) &&
-			(tip_peak >= 0.35f) &&
-			(confidence >= confidence_floor) &&
-			(center_spread_px <= 55.0f) &&
-			(tip_spread_px <= 55.0f) &&
-			(min_edge_margin_px >= 4.0f) &&
+		center_peak_ok = (center_peak >= center_axis_peak_floor);
+		tip_peak_ok = (tip_peak >= center_axis_peak_floor);
+		confidence_ok = (confidence >= confidence_floor);
+		center_spread_ok = (center_x_spread_px <= center_axis_spread_max_px);
+		tip_spread_ok = (tip_x_spread_px <= center_axis_spread_max_px);
+		edge_margin_ok = (min_edge_margin_px >= 4.0f);
+		distance_ok =
 			(center_tip_distance_ratio >= 0.35f) &&
-			(center_tip_distance_ratio <= 1.40f) &&
-			(angle_delta_degrees <= APP_AI_TIP_FOCUS_SWEEP_DEG) &&
-			AppAI_IsFiniteFloat(temperature_c) &&
+			(center_tip_distance_ratio <= 1.40f);
+		angle_ok = (angle_delta_degrees <= APP_AI_TIP_FOCUS_SWEEP_DEG);
+		temperature_finite_ok = AppAI_IsFiniteFloat(temperature_c);
+		temperature_range_ok =
 			(temperature_c >= APP_AI_TIP_FOCUS_TEMP_MIN_C) &&
 			(temperature_c <= APP_AI_TIP_FOCUS_TEMP_MAX_C);
+
+		valid =
+			center_peak_ok &&
+			tip_peak_ok &&
+			confidence_ok &&
+			center_spread_ok &&
+			tip_spread_ok &&
+			edge_margin_ok &&
+			distance_ok &&
+			angle_ok &&
+			temperature_finite_ok &&
+			temperature_range_ok;
 
 		if (valid)
 		{
@@ -4393,8 +4417,8 @@ static bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 				const long conf100 = lroundf(confidence * 100.0f);
 				const long center_peak100 = lroundf(center_peak * 100.0f);
 				const long tip_peak100 = lroundf(tip_peak * 100.0f);
-				const long center_spread100 = lroundf(center_spread_px * 100.0f);
-				const long tip_spread100 = lroundf(tip_spread_px * 100.0f);
+				const long center_spread100 = lroundf(center_x_spread_px * 100.0f);
+				const long tip_spread100 = lroundf(tip_x_spread_px * 100.0f);
 				const long dist_ratio100 = lroundf(center_tip_distance_ratio * 100.0f);
 
 				DebugConsole_Printf(
@@ -4420,6 +4444,105 @@ static bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 			Metrics_EndInference("AI", temperature_c);
 			return true;
 		}
+	}
+
+	if (!simcc_decode_ok)
+	{
+		DebugConsole_WriteString(
+			"[AI][TIP_FOCUS][REJECT] SimCC decode failed before quality gates.\r\n");
+	}
+	else
+	{
+		const float center_x_px = center_x_norm * coord_max_px;
+		const float center_y_px = center_y_norm * coord_max_px;
+		const float tip_x_px = tip_x_norm * coord_max_px;
+		const float tip_y_px = tip_y_norm * coord_max_px;
+		const float dx = tip_x_px - center_x_px;
+		const float dy = tip_y_px - center_y_px;
+		const float center_tip_distance_px = sqrtf((dx * dx) + (dy * dy));
+		const float edge_margin_px =
+			fminf(
+				fminf(center_x_px, coord_max_px - center_x_px),
+				fminf(center_y_px, coord_max_px - center_y_px));
+		const float tip_edge_margin_px =
+			fminf(
+				fminf(tip_x_px, coord_max_px - tip_x_px),
+				fminf(tip_y_px, coord_max_px - tip_y_px));
+		const float min_edge_margin_px =
+			fminf(edge_margin_px, tip_edge_margin_px);
+		const float center_tip_distance_ratio =
+			(expected_center_tip_distance_px > 0.0f)
+				? (center_tip_distance_px / expected_center_tip_distance_px)
+				: 0.0f;
+		const bool center_peak_ok =
+			(center_peak >= APP_AI_TIP_FOCUS_AXIS_PEAK_FLOOR);
+		const bool tip_peak_ok =
+			(tip_peak >= APP_AI_TIP_FOCUS_AXIS_PEAK_FLOOR);
+		const bool confidence_ok =
+			(confidence >= APP_AI_TIP_FOCUS_CONFIDENCE_FLOOR);
+		const bool center_spread_ok =
+			(fmaxf(center_x_spread_px, center_y_spread_px) <=
+			 APP_AI_TIP_FOCUS_AXIS_SPREAD_MAX_PX);
+		const bool tip_spread_ok =
+			(fmaxf(tip_x_spread_px, tip_y_spread_px) <=
+			 APP_AI_TIP_FOCUS_AXIS_SPREAD_MAX_PX);
+		const bool edge_margin_ok = (min_edge_margin_px >= 4.0f);
+		const bool distance_ok =
+			(center_tip_distance_ratio >= 0.35f) &&
+			(center_tip_distance_ratio <= 1.40f);
+		const bool angle_ok =
+			(angle_delta_degrees <= APP_AI_TIP_FOCUS_SWEEP_DEG);
+		const bool temperature_finite_ok = AppAI_IsFiniteFloat(temperature_c);
+		const bool temperature_range_ok =
+			(temperature_c >= APP_AI_TIP_FOCUS_TEMP_MIN_C) &&
+			(temperature_c <= APP_AI_TIP_FOCUS_TEMP_MAX_C);
+		const long center_x10 = lroundf(center_x_px * 10.0f);
+		const long center_y10 = lroundf(center_y_px * 10.0f);
+		const long tip_x10 = lroundf(tip_x_px * 10.0f);
+		const long tip_y10 = lroundf(tip_y_px * 10.0f);
+		const long angle100 = lroundf(angle_degrees * 100.0f);
+		const long delta100 = lroundf(angle_delta_degrees * 100.0f);
+		const long temp100 = lroundf(temperature_c * 100.0f);
+		const long conf100 = lroundf(confidence * 100.0f);
+		const long center_peak100 = lroundf(center_peak * 100.0f);
+		const long tip_peak100 = lroundf(tip_peak * 100.0f);
+		const long center_spread100 =
+			lroundf(fmaxf(center_x_spread_px, center_y_spread_px) * 100.0f);
+		const long tip_spread100 =
+			lroundf(fmaxf(tip_x_spread_px, tip_y_spread_px) * 100.0f);
+		const long edge100 = lroundf(min_edge_margin_px * 100.0f);
+		const long dist_ratio100 = lroundf(center_tip_distance_ratio * 100.0f);
+
+		DebugConsole_Printf(
+			"[AI][TIP_FOCUS][REJECT] decode=%u cpeak=%u tpeak=%u conf=%u cspread=%u tspread=%u edge=%u dist=%u angle=%u finite=%u trange=%u | "
+			"center=(%ld.%01ld,%ld.%01ld) tip=(%ld.%01ld,%ld.%01ld) "
+			"angle=%ld.%02ld delta=%ld.%02ld temp=%ld.%02ld conf=%ld.%02ld "
+			"peak=%ld.%02ld/%ld.%02ld spread=%ld.%02ld/%ld.%02ld edge=%ld.%02ld dist=%ld.%02ld\r\n",
+			(unsigned int)(simcc_decode_ok ? 1U : 0U),
+			(unsigned int)(center_peak_ok ? 1U : 0U),
+			(unsigned int)(tip_peak_ok ? 1U : 0U),
+			(unsigned int)(confidence_ok ? 1U : 0U),
+			(unsigned int)(center_spread_ok ? 1U : 0U),
+			(unsigned int)(tip_spread_ok ? 1U : 0U),
+			(unsigned int)(edge_margin_ok ? 1U : 0U),
+			(unsigned int)(distance_ok ? 1U : 0U),
+			(unsigned int)(angle_ok ? 1U : 0U),
+			(unsigned int)(temperature_finite_ok ? 1U : 0U),
+			(unsigned int)(temperature_range_ok ? 1U : 0U),
+			labs(center_x10) / 10L, labs(center_x10) % 10L,
+			labs(center_y10) / 10L, labs(center_y10) % 10L,
+			labs(tip_x10) / 10L, labs(tip_x10) % 10L,
+			labs(tip_y10) / 10L, labs(tip_y10) % 10L,
+			labs(angle100) / 100L, labs(angle100) % 100L,
+			labs(delta100) / 100L, labs(delta100) % 100L,
+			labs(temp100) / 100L, labs(temp100) % 100L,
+			labs(conf100) / 100L, labs(conf100) % 100L,
+			labs(center_peak100) / 100L, labs(center_peak100) % 100L,
+			labs(tip_peak100) / 100L, labs(tip_peak100) % 100L,
+			labs(center_spread100) / 100L, labs(center_spread100) % 100L,
+			labs(tip_spread100) / 100L, labs(tip_spread100) % 100L,
+			labs(edge100) / 100L, labs(edge100) % 100L,
+			labs(dist_ratio100) / 100L, labs(dist_ratio100) % 100L);
 	}
 
 	app_ai_tip_focus_consecutive_invalid++;
@@ -4470,10 +4593,11 @@ bool App_AI_GetLastInferenceResult(float *value_out)
 	return true;
 }
 
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 /**
  * @brief Verify that the rectifier weights have been flashed to xSPI2.
  * @retval true xSPI2 flash contains valid rectifier weights.
- * @retval false xSPI2 flash is empty or corrupted - run flash_boot.bat.
+ * @retval false xSPI2 flash is empty or corrupted - run flash_boot.ps1.
  */
 bool AppAI_VerifyRectifierWeights(void)
 {
@@ -4536,7 +4660,7 @@ bool AppAI_VerifyRectifierWeights(void)
 		}
 		DebugConsole_WriteString("\r\n");
 		DebugConsole_WriteString(
-			"[AI][RECTIFIER] CRITICAL: Run flash_boot.bat to flash atonbuf.rectifier.xSPI2.raw\r\n");
+			"[AI][RECTIFIER] CRITICAL: Run flash_boot.ps1 to flash atonbuf.rectifier.xSPI2.raw\r\n");
 		DebugConsole_WriteString(
 			"[AI][RECTIFIER] to 0x70600000 before running inference.\r\n");
 		return false;
@@ -4546,11 +4670,12 @@ bool AppAI_VerifyRectifierWeights(void)
 		"[AI][RECTIFIER] xSPI2 weights signature OK.\r\n");
 	return true;
 }
+#endif /* !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE */
 
 /**
  * @brief Verify that the tip-focus weights have been flashed to xSPI2.
  * @retval true xSPI2 flash contains valid tip-focus weights.
- * @retval false xSPI2 flash is empty or corrupted - run flash_boot.bat.
+ * @retval false xSPI2 flash is empty or corrupted - run flash_boot.ps1.
  */
 bool AppAI_VerifyTipFocusWeights(void)
 {
@@ -4613,7 +4738,7 @@ bool AppAI_VerifyTipFocusWeights(void)
 		}
 		DebugConsole_WriteString("\r\n");
 		DebugConsole_WriteString(
-			"[AI][TIP_FOCUS] CRITICAL: Run flash_boot.bat to flash atonbuf.tip_focus.xSPI2.raw\r\n");
+			"[AI][TIP_FOCUS] CRITICAL: Run flash_boot.ps1 to flash simcc_gauge_v2_spatial_qat_sc128_int8_atonbuf.xSPI2.raw\r\n");
 		DebugConsole_WriteString(
 			"[AI][TIP_FOCUS] to 0x70400000 before running inference.\r\n");
 		return false;

@@ -324,15 +324,9 @@ def _validate_split_config(config: TrainConfig) -> None:
 def _configure_training_runtime(config: TrainConfig) -> None:
     """Configure TensorFlow runtime for CPU/GPU selection and memory behavior."""
     if config.device == "cpu":
-        # Force CPU execution without paying the cost of an eager GPU probe.
-        # Some WSL CUDA stacks stall while enumerating devices, so keep the
-        # CPU path as light as possible.
-        try:
-            tf.config.set_visible_devices([], "GPU")
-        except (RuntimeError, ValueError) as exc:
-            raise RuntimeError(
-                "Unable to force CPU mode because TensorFlow runtime is already initialized."
-            ) from exc
+        # The launcher hides GPU devices before TensorFlow imports. Avoid an
+        # explicit `set_visible_devices()` probe here because some WSL stacks
+        # stall while negotiating the adapter lock even when we only want CPU.
         keras.mixed_precision.set_global_policy("float32")
         return
 

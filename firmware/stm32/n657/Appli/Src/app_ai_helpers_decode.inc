@@ -301,7 +301,10 @@ static bool AppAI_DecodeObbCropBox(
 	AppAI_SourceCrop *crop_out,
 	AppAI_ObbBox *obb_box_out)
 {
-	const int8_t *output_ptr = NULL;
+	const LL_Buffer_InfoTypeDef *obb_buf = NULL;
+	const LL_Buffer_InfoTypeDef *ctr_buf = NULL;
+	const int8_t *obb_ptr = NULL;
+	const int8_t *ctr_ptr = NULL;
 	const float source_width_f = (float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
 	const float source_height_f = (float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
 	const float input_size_f = (float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
@@ -332,16 +335,28 @@ static bool AppAI_DecodeObbCropBox(
 		return false;
 	}
 
-	output_ptr = (const int8_t *)LL_Buffer_addr_start(output_buffer_info);
-	if ((output_ptr == NULL) || (LL_Buffer_len(output_buffer_info) < APP_AI_OBB_OUTPUT_CHANNELS))
+	/* Joint model has two outputs:
+	 *   [0] Quantize_318_out_0 — gauge centre (2 bytes, offset 48)
+	 *   [1] Quantize_315_out_0 — OBB box (6 bytes, offset 0)
+	 * Extract both so we can dequantize all 8 channels. */
+	ctr_buf = output_buffer_info;       /* index 0: centre */
+	obb_buf = output_buffer_info + 1U;  /* index 1: OBB box */
+
+	obb_ptr = (const int8_t *)LL_Buffer_addr_start(obb_buf);
+	ctr_ptr = (const int8_t *)LL_Buffer_addr_start(ctr_buf);
+	if ((obb_ptr == NULL) || (ctr_ptr == NULL))
 	{
 		return false;
 	}
 
-	for (size_t channel_index = 0U; channel_index < APP_AI_OBB_OUTPUT_CHANNELS; ++channel_index)
+	/* Channels 0-5: OBB (cx, cy, w, h, cos2θ, sin2θ) from the 6-byte OBB buffer */
+	for (size_t i = 0U; i < 6U; ++i)
 	{
-		decoded[channel_index] = AppAI_ObbDequantize(output_ptr[channel_index]);
+		decoded[i] = AppAI_ObbDequantize(obb_ptr[i]);
 	}
+	/* Channels 6-7: gauge centre (cx_ctr, cy_ctr) from the 2-byte centre buffer */
+	decoded[6U] = AppAI_ObbDequantize(ctr_ptr[0]);
+	decoded[7U] = AppAI_ObbDequantize(ctr_ptr[1]);
 
 	center_x = AppAI_ClampNormalizedFloat(decoded[0U]);
 	center_y = AppAI_ClampNormalizedFloat(decoded[1U]);
@@ -392,6 +407,28 @@ static bool AppAI_DecodeObbCropBox(
 		obb_box_out->box_h = box_h;
 		obb_box_out->angle_rad = angle_rad;
 		obb_box_out->confidence = confidence;
+		/* Channels 6,7: gauge center (needle pivot) from joint OBB+Center model.
+		 * Already dequantized into decoded[6..7] above. */
+		if (APP_AI_OBB_OUTPUT_CHANNELS >= 8U)
+		{
+			const float gauge_cx = AppAI_ClampNormalizedFloat(decoded[6U]);
+			const float gauge_cy = AppAI_ClampNormalizedFloat(decoded[7U]);
+			if (AppAI_IsFiniteFloat(gauge_cx) && AppAI_IsFiniteFloat(gauge_cy))
+			{
+				obb_box_out->gauge_center_x = gauge_cx;
+				obb_box_out->gauge_center_y = gauge_cy;
+			}
+			else
+			{
+				obb_box_out->gauge_center_x = -1.0f;  /* invalid */
+				obb_box_out->gauge_center_y = -1.0f;
+			}
+		}
+		else
+		{
+			obb_box_out->gauge_center_x = -1.0f;
+			obb_box_out->gauge_center_y = -1.0f;
+		}
 	}
 
 #if APP_AI_ENABLE_RECTIFIER_DIAGNOSTICS
@@ -584,6 +621,7 @@ static bool AppAI_DecodeObbCropBox(
 
 	return true;
 }
+
 #if APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
 static void AppAI_LogSourceCropBoxResult(
 	const LL_Buffer_InfoTypeDef *output_buffer_info,
@@ -1162,6 +1200,32 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		(void)DebugConsole_WriteString("[AI] Stage input cache clean OK.\r\n");
 	}
 
+	/* OBB scaled model epoch 2 dequantize bypass:
+	 * The NPU SE2 input DMA faults on 307200-byte transfers (STM32N6 errata).
+	 * The dequantize affine is identity (output == input, byte-identical).
+	 * Pre-copy the data from NPU RAM5 (0x342e0000, signed int8 input) to
+	 * NPU RAM4 (0x34270000, unsigned int8 for epoch 3) on the CPU so that
+	 * epoch 2 can be skipped safely. */
+	if (stage == &app_ai_obb_stage)
+	{
+		const size_t obb_bypass_len = 307200U;
+		const uintptr_t obb_bypass_src = 0x342e0000U;
+		const uintptr_t obb_bypass_dst = 0x34270000U;
+		(void)memcpy((void *)obb_bypass_dst, (const void *)obb_bypass_src,
+					 obb_bypass_len);
+		(void)mcu_cache_clean_range((uint32_t)obb_bypass_dst,
+									(uint32_t)(obb_bypass_dst + obb_bypass_len));
+		if (emit_stage_diagnostics)
+		{
+			DebugConsole_Printf(
+				"[AI][BYPASS] OBB epoch 2 dequantize bypassed: "
+				"CPU copy 0x%08lX -> 0x%08lX (%lu bytes)\r\n",
+				(unsigned long)obb_bypass_src,
+				(unsigned long)obb_bypass_dst,
+				(unsigned long)obb_bypass_len);
+		}
+	}
+
 	/* Keep network reset opt-in. For this scalar package, forcing reset before
 	 * every run can leave the output tensor in a constant invalid state even
 	 * though the epoch loop reports DONE. */
@@ -1209,6 +1273,42 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	{
 		(void)DebugConsole_WriteString("[AI] Stage inference run start.\r\n");
 	}
+
+	/* Drain any leaked WFE semaphore tokens from a previous inference.
+	 * If the last epoch of a prior model completed and signalled the semaphore,
+	 * but RunEpochBlock returned DONE before WFE was called, the semaphore
+	 * count would be > 0, causing the next inference's WFE to return immediately. */
+	extern void LL_ATON_OSAL_DrainWfeSemaphore(void);
+	extern UINT LL_ATON_OSAL_GetWfeSemaphoreCount(void);
+	if (stage == &app_ai_obb_stage)
+	{
+		DebugConsole_Printf("[AI] WFE sem count before drain: %lu\r\n",
+			(unsigned long)LL_ATON_OSAL_GetWfeSemaphoreCount());
+	}
+	LL_ATON_OSAL_DrainWfeSemaphore();
+	if (stage == &app_ai_obb_stage)
+	{
+		DebugConsole_Printf("[AI] WFE sem count after drain: %lu\r\n",
+			(unsigned long)LL_ATON_OSAL_GetWfeSemaphoreCount());
+	}
+
+	/* Clear any leftover streaming engine IRQ flags from a previous inference.
+	 * The IRQ register is write-1-to-clear. Writing all-ones clears all flags. */
+#if defined(ATON_STRENG_NUM) && ATON_STRENG_NUM > 0
+	for (uint32_t se_id = 0U; se_id < ATON_STRENG_NUM; ++se_id)
+	{
+		ATON_STRENG_IRQ_SET(se_id, 0xFFFFFFFFU);
+	}
+	/* Log SE2 and SE8 IRQ after clear to confirm the write took effect. */
+	if (stage == &app_ai_obb_stage)
+	{
+		DebugConsole_Printf(
+			"[AI][DIAG] SE IRQ after clear: se2_i=0x%08lx se8_i=0x%08lx\r\n",
+			(unsigned long)ATON_STRENG_IRQ_GET(2),
+			(unsigned long)ATON_STRENG_IRQ_GET(8));
+	}
+#endif
+
 	bool mid_logged = false;
 	bool inference_aborted = false;
 	uint32_t obb_stage_start_tick = 0U;
@@ -1221,7 +1321,7 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		/* The OBB localizer has a much deeper epoch schedule than the scalar
 		 * reader.  Cap runaway loops so a bad runtime state cannot freeze the
 		 * board indefinitely. */
-		if (epoch_step >= 256U)
+		if (epoch_step >= 1000U)
 		{
 			(void)DebugConsole_WriteString(
 				"[AI] Stage inference aborted: epoch budget exhausted.\r\n");
@@ -1267,6 +1367,29 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		const LL_ATON_RT_RetValues_t run_status =
 			LL_ATON_RT_RunEpochBlock(stage->nn_instance);
 
+		/* Throttled epoch diagnostics: log every 50 epochs so we can see
+		 * whether the loop is spinning fast (NO_WFE) or slow (WFE blocked). */
+		if ((epoch_step % 50U) == 0U)
+		{
+			const uint32_t now = HAL_GetTick();
+			if (stage == &app_ai_obb_stage)
+			{
+				DebugConsole_Printf(
+					"[AI][DBG] OBB epoch %lu elapsed=%lu status=%ld\r\n",
+					(unsigned long)epoch_step,
+					(unsigned long)(now - obb_stage_start_tick),
+					(long)run_status);
+			}
+			else
+			{
+				DebugConsole_Printf(
+					"[AI][DBG] %s epoch %lu status=%ld\r\n",
+					(stage->stage_label != NULL) ? stage->stage_label : "?",
+					(unsigned long)epoch_step,
+					(long)run_status);
+			}
+		}
+
 		if (run_status == LL_ATON_RT_DONE)
 		{
 			break;
@@ -1274,10 +1397,58 @@ static bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 
 		if (run_status == LL_ATON_RT_WFE)
 		{
-			/* Let the ATON runtime wait on its own event chain. The vendor
-			 * init sequence now installs the IRQ path, so a true WFE wait is
-			 * the closest match to the offline runtime behavior. */
+			/* Probe EC/interrupt-controller state after SetWaitMask so we
+			 * can see where the IRQ path breaks. */
+#if defined(ATON_EPOCHCTRL_NUM) && defined(ATON_STRENG_NUM)
+			if ((epoch_step % 50U) == 0U)
+			{
+				const uint32_t ec_ctrl   = ATON_EPOCHCTRL_CTRL_GET(0);
+				const uint32_t ec_irq    = ATON_EPOCHCTRL_IRQ_GET(0);
+				const uint32_t intreg    = ATON_INTCTRL_INTREG_GET(0);
+				const uint32_t ormask    = ATON_INTCTRL_INTORMSK0_GET(0);
+				const uint32_t andmask   = ATON_INTCTRL_INTANDMSK0_GET(0);
+				uint32_t se2_ctrl=0, se2_irq=0, se8_ctrl=0, se8_irq=0, arith_ctrl=0;
+#if ATON_STRENG_NUM > 8
+				se2_ctrl = ATON_STRENG_CTRL_GET(2);
+				se2_irq  = ATON_STRENG_IRQ_GET(2);
+				se8_ctrl = ATON_STRENG_CTRL_GET(8);
+				se8_irq  = ATON_STRENG_IRQ_GET(8);
+#endif
+#if defined(ATON_ARITH_NUM) && ATON_ARITH_NUM > 0
+				arith_ctrl = ATON_ARITH_CTRL_GET(0);
+#endif
+				DebugConsole_Printf(
+					"[AI][DIAG] ec_ctrl=0x%08lx ec_irq=0x%08lx"
+					" intreg=0x%08lx or=0x%08lx and=0x%08lx"
+					" se2_c=0x%08lx se2_i=0x%08lx"
+					" se8_c=0x%08lx se8_i=0x%08lx"
+					" arith=0x%08lx\r\n",
+					(unsigned long)ec_ctrl, (unsigned long)ec_irq,
+					(unsigned long)intreg, (unsigned long)ormask,
+					(unsigned long)andmask,
+					(unsigned long)se2_ctrl, (unsigned long)se2_irq,
+					(unsigned long)se8_ctrl, (unsigned long)se8_irq,
+					(unsigned long)arith_ctrl);
+			}
+#endif
+			/* Measure WFE duration: if it returns in < 1 tick the semaphore
+			 * was already available (leaked from a prior inference). */
+			if (epoch_step == 0U)
+			{
+				DebugConsole_Printf(
+					"[AI][DIAG] WFE sem count before WFE: %lu\r\n",
+					(unsigned long)LL_ATON_OSAL_GetWfeSemaphoreCount());
+			}
+			const uint32_t wfe_before = HAL_GetTick();
 			LL_ATON_OSAL_WFE();
+			const uint32_t wfe_after = HAL_GetTick();
+			const uint32_t wfe_ticks = wfe_after - wfe_before;
+			if (epoch_step == 0U)
+			{
+				DebugConsole_Printf(
+					"[AI][DIAG] WFE epoch 0 duration=%lu ticks (0=leaked)\r\n",
+					(unsigned long)wfe_ticks);
+			}
 		}
 		else if (run_status == LL_ATON_RT_NO_WFE)
 		{

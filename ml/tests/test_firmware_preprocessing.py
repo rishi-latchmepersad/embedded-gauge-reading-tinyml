@@ -17,6 +17,7 @@ from embedded_gauge_reading_tinyml.firmware_preprocessing import (
     firmware_training_crop_box,
     load_capture_image,
     probe_tensor,
+    polar_rgb_to_training_features,
 )
 from embedded_gauge_reading_tinyml.gauge.processing import load_gauge_specs
 from embedded_gauge_reading_tinyml.polar_vote_v28 import build_polar_vote_v28_model
@@ -24,6 +25,15 @@ from embedded_gauge_reading_tinyml.polar_vote_v28 import build_polar_vote_v28_mo
 
 REPO_ROOT: Path = Path(__file__).resolve().parents[2]
 APP_AI_C: Path = REPO_ROOT / "firmware" / "stm32" / "n657" / "Appli" / "Src" / "app_ai.c"
+APP_AI_RUNTIME_TAIL: Path = (
+    REPO_ROOT
+    / "firmware"
+    / "stm32"
+    / "n657"
+    / "Appli"
+    / "Src"
+    / "app_ai_runtime_tail.inc"
+)
 CAPTURE_IMAGE: Path = REPO_ROOT / "ml" / "data" / "captured_images" / "capture_0c.png"
 V28_SAMPLE_IMAGE: Path = REPO_ROOT / "ml" / "data" / "captured_images" / "capture_0073.png"
 V28_WEIGHTS: Path = (
@@ -81,6 +91,20 @@ def test_training_style_polar_vote_float32_matches_board_shape() -> None:
     assert tensor.shape == (224, 224, 7)
     assert tensor_probe.byte_length == 224 * 224 * 7 * 4
     assert tensor_probe.crc32_hex.startswith("0x")
+
+
+def test_polar_rgb_to_training_features_matches_board_shape() -> None:
+    """The public polar feature helper should preserve the 7-channel board layout."""
+
+    source_image, source_kind = load_capture_image(CAPTURE_IMAGE)
+    from embedded_gauge_reading_tinyml.polar_projection import polar_project_image
+
+    polar = polar_project_image(source_image, polar_size=224)
+    features = polar_rgb_to_training_features(polar)
+
+    assert source_kind == "rgb"
+    assert features.dtype == np.float32
+    assert features.shape == (224, 224, 7)
 
 
 def test_exact_v28_offline_recipe_reproduces_saved_prediction() -> None:
@@ -148,11 +172,30 @@ def test_exact_v28_offline_recipe_needs_center_search() -> None:
 
 
 def test_v28_scratch_buffers_live_in_npusram6() -> None:
-    """The large exact V28 scratch buffers should stay out of main RAM."""
-    app_ai_source = APP_AI_C.read_text(encoding="utf-8")
+    """The polar-replay scratch buffers should stay in the runtime-tail sections."""
+    runtime_tail_source = APP_AI_RUNTIME_TAIL.read_text(encoding="utf-8")
 
-    assert "resized_rgb[224U * 224U * 3U] __attribute__((section(\".npusram6\")))" in app_ai_source
-    assert "polar_luma[224U * 224U] __attribute__((section(\".npusram6\")))" in app_ai_source
+    assert (
+        "static uint8_t resized_rgb[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * "
+        "APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * 3U] __attribute__((section(\".tip_focus_activations\")))"
+        in runtime_tail_source
+    )
+    assert (
+        "static uint8_t polar_luma[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * "
+        "APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS] __attribute__((section(\".npusram6_polar\")))"
+        in runtime_tail_source
+    )
+
+
+def test_tip_focus_preprocess_uses_224_space_and_shared_mask() -> None:
+    """The live tip-focus path should stay in 224-space and apply the shared mask."""
+    app_ai_source = APP_AI_C.read_text(encoding="utf-8")
+    runtime_tail_source = APP_AI_RUNTIME_TAIL.read_text(encoding="utf-8")
+
+    assert "APP_AI_TIP_FOCUS_MODEL_INPUT_WIDTH_PIXELS 224U" in app_ai_source
+    assert "APP_AI_TIP_FOCUS_MODEL_INPUT_HEIGHT_PIXELS 224U" in app_ai_source
+    assert "APP_AI_TIP_FOCUS_MODEL_INPUT_WIDTH_PIXELS - 1U" in runtime_tail_source
+    assert "AppInnerCelsiusMask_Apply(" in runtime_tail_source
 
 
 def test_circular_vote_decode_tracks_the_midpoint_of_the_sweep() -> None:

@@ -33,8 +33,8 @@ INPUT_SIZE = 320
 HEATMAP_SIZE = 160  # 2× v3c
 SIGMA_PIXELS = 6.0  # 2× v3c (scaled with heatmap resolution)
 EARLY_STOP_PATIENCE = 30
-DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "heatmap_cd_320"
-ARTIFACT_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "heatmap_cd_ds_v4"
+DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "heatmap_cd_320_ax"
+ARTIFACT_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "heatmap_cd_ds_v4_ax"
 METADATA_PATH = DATA_DIR / "metadata.json"
 
 tf.random.set_seed(SEED)

@@ -17,6 +17,8 @@ from embedded_gauge_reading_tinyml.gauge import (
     needle_angle_clockwise_rad,
     needle_fraction,
     needle_value,
+    needle_value_from_angle_deg,
+    needle_value_from_angle_rad,
     value_to_fraction,
 )
 
@@ -124,6 +126,22 @@ def test_needle_value_scales_into_range() -> None:
     # Half sweep should land at the midpoint of the value range.
     at_half: Sample = build_sample(0.0, 1.0)
     assert needle_value(at_half, spec, strict=True) == pytest.approx(10.0)
+
+
+def test_needle_value_from_angle_helpers() -> None:
+    """Direct angle-to-value helpers should match the sample-based calibration math."""
+
+    spec: GaugeSpec = make_spec(
+        min_angle_rad=math.radians(135.0),
+        sweep_rad=math.radians(270.0),
+        min_value=-30.0,
+        max_value=50.0,
+    )
+    angle_deg = 270.0
+    angle_rad = math.radians(angle_deg)
+
+    assert needle_value_from_angle_deg(angle_deg, spec, strict=True) == pytest.approx(10.0)
+    assert needle_value_from_angle_rad(angle_rad, spec, strict=True) == pytest.approx(10.0)
 
 
 def test_load_gauge_specs_from_toml(tmp_path: Path) -> None:

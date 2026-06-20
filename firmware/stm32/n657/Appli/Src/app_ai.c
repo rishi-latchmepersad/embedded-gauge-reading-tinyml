@@ -7,14 +7,6 @@
  */
 /* USER CODE END Header */
 
-/* Keep the legacy source-crop-box block disabled. The live board now uses the
- * tip-focus geometry heatmap model directly, while the older OBB / center-
- * detector cascade stays in the file only as a fallback path. */
-#ifdef APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
-#undef APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
-#endif
-#define APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE 0U
-
 #include "app_ai.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -28,10 +20,10 @@
 
 #include "debug_console.h"
 #include "app_inference_calibration.h"
+#include "app_baseline_runtime.h"
 #include "app_inference_log_utils.h"
 #include "app_memory_budget.h"
 #include "app_gauge_geometry.h"
-#include "app_baseline_runtime.h"
 #include "app_inner_celsius_mask.h"
 #include "ina219_power.h"
 #include "inference_metrics.h"
@@ -57,8 +49,6 @@
 #include "stm32n6xx_nucleo_xspi.h"
 #include "npu_cache.h"
 #include "stm32n6xx_hal.h"
-#include "app_center_detector.h"
-#include "app_qarepvgg_decode.inc"
 
 /*
  * The STM32N6 ATON runtime library expects this wait-mask state symbol when
@@ -107,7 +97,7 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 #define APP_AI_RESET_NETWORK_EACH_INFERENCE 0
 #endif
 /* The OBB stage is now fallback-only. The live board inference path routes
- * through the tip-focus geometry heatmap model first, but we keep the old
+ * through the tip-focus SimCC coordinate model first, but we keep the old
  * crop front-end behind a switch so it can still be re-enabled for debug. */
 #ifndef APP_AI_ENABLE_OBB_STAGE
 #define APP_AI_ENABLE_OBB_STAGE 1U
@@ -136,7 +126,7 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 #define APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL CAMERA_CAPTURE_BYTES_PER_PIXEL
 #define APP_AI_CAPTURE_FRAME_BYTES \
 	(APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL)
-/* Rectified scalar reader: 320x320x3 float RGB input. The offline prod v0.8
+/* Rectified scalar reader: 224x224x3 float RGB input. The offline prod v0.8
  * recipe uses the luma-refined crop to feed this float path, then applies the
  * external calibration/postprocess in firmware. */
 #define APP_AI_MODEL_INPUT_FLOAT_COUNT \
@@ -187,7 +177,7 @@ uint32_t volatile __ll_current_wait_mask = 0U;
  * The gauge sweeps clockwise from 135 deg (2.356 rad) over 270 deg (4.712 rad).
  * Value range: -30 C to +50 C. */
 /* Keep the circular vote at 224 bins even as the square image geometry moves
- * to 320x320; the decode helper still expects the original angular resolution.
+ * to 224x224; the decode helper still expects the original angular resolution.
  */
 #define APP_AI_POLAR_VOTE_BINS 224U
 #define APP_AI_POLAR_VOTE_MIN_ANGLE_RAD 3.927f   /* 225° — 7:30 o'clock (scale start) */
@@ -209,6 +199,14 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 /* Dead-zone mask constant: logits outside the gauge sweep are set to this
  * large negative value so they become zero after softmax. */
 #define APP_AI_POLAR_MASK_LOGIT (-1.0e9f)
+/* Shared inference smoothing and plausibility limits used by both the live
+ * tip-focus path and the legacy fallback path. */
+#define APP_AI_INFERENCE_BURST_HISTORY_SIZE 3U
+#define APP_AI_INFERENCE_BURST_RESET_DELTA_C 12.0f
+#define APP_AI_INFERENCE_VALUE_MIN_C (-80.0f)
+#define APP_AI_INFERENCE_VALUE_MAX_C (180.0f)
+/* Legacy model constants are compiled only when the tip-focus path is off. */
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 /* Scalar model image path (deprecated â€” retained for the scalar stage spec). */
 #define APP_AI_SCALAR_XSPI2_MODEL_IMAGE_PATH \
 	"packages/mobilenetv2_rectified_scalar_finetune_v2/st_ai_output/scalar_full_finetune_from_best_piecewise_calibrated_int8_atonbuf.xSPI2.raw"
@@ -219,9 +217,13 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 #define APP_AI_OBB_XSPI2_MODEL_IMAGE_PATH \
 	"packages/qarepvgg_pro_a175_int8/st_ai_output/qarepvgg_pro_a175_int8_atonbuf.xSPI2.raw" /* QARepVGG-Pro α=1.75, ~2228 KB */
 #define APP_AI_XSPI2_MODEL_IMAGE_PATH APP_AI_CENTER_DETECTOR_XSPI2_MODEL_IMAGE_PATH
+#endif
 #define APP_AI_XSPI2_PROGRAM_CHUNK_BYTES 4096U
 #define APP_AI_XSPI2_ERASE_BLOCK_BYTES (64U * 1024U)
 #define APP_AI_XSPI2_PROBE_BYTES 16U
+/* The remaining crop and decode constants only matter to the legacy
+ * scalar/OBB/center-detector fallback path. */
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 /* Keep the rectifier crop slightly larger than the raw box so the scalar head
  * still sees the needle and a bit of surrounding dial context. */
 #define APP_AI_RECTIFIER_CROP_SCALE 1.80f
@@ -301,16 +303,6 @@ uint32_t volatile __ll_current_wait_mask = 0U;
  * APP_AI_RECTIFIER_FIXED_SCALE_CROP is enabled. */
 #define APP_AI_RECTIFIER_CENTER_MIN_RATIO 0.10f
 #define APP_AI_RECTIFIER_CENTER_MAX_RATIO 0.90f
-/* Use a tiny burst history so the user-facing reading can average across a
- * few frames instead of reacting to a single noisy capture. */
-#define APP_AI_INFERENCE_BURST_HISTORY_SIZE 3U
-/* If the scene jumps by a lot, drop the burst history and re-lock quickly to
- * the new setpoint instead of blending two different gauge positions. */
-#define APP_AI_INFERENCE_BURST_RESET_DELTA_C 12.0f
-/* Reject scalar outputs that are finite but physically impossible for this
- * gauge. This avoids propagating corrupted tensor reads into logs/control. */
-#define APP_AI_INFERENCE_VALUE_MIN_C (-80.0f)
-#define APP_AI_INFERENCE_VALUE_MAX_C (180.0f)
 /* Scalar vote-logit decode settings.
  * Keep these aligned with the training/eval decode path:
  *   mode=topk_expectation, topk=8, temperature=1.0.
@@ -320,15 +312,61 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 #define APP_AI_SCALAR_DECODE_TEMPERATURE 1.0f
 #define APP_AI_SCALAR_DECODE_VALUE_MIN_C (-30.0f)
 #define APP_AI_SCALAR_DECODE_VALUE_MAX_C (50.0f)
+#endif
 /* xSPI2 window base address (chip address 0). */
 #define APP_AI_XSPI2_CHIP_BASE_ADDR 0x70000000UL
+/* Tip-focus SimCC model: xSPI2 weights at 0x70400000. */
+#define APP_AI_XSPI2_TIP_FOCUS_BASE_ADDR 0x70400000UL
+#define APP_AI_XSPI2_TIP_FOCUS_CHIP_OFFSET (APP_AI_XSPI2_TIP_FOCUS_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
+/* Legacy aliases used by the shared xSPI2 helpers now point at the live
+ * tip-focus slot so the generic probe/logging code matches the active model. */
+#define APP_AI_XSPI2_MODEL_BASE_ADDR APP_AI_XSPI2_TIP_FOCUS_BASE_ADDR
+#define APP_AI_XSPI2_MODEL_CHIP_OFFSET APP_AI_XSPI2_TIP_FOCUS_CHIP_OFFSET
+/* Shared runtime types are used by both the live tip-focus path and the
+ * compile-guarded legacy fallback helpers, so keep them available in both
+ * build modes. */
+typedef struct AppAI_ModelStageSpec AppAI_ModelStageSpec;
+
+struct AppAI_ModelStageSpec
+{
+	const char *stage_label;
+	const char *model_image_path;
+	NN_Instance_TypeDef *nn_instance;
+	bool (*network_init_fn)(void);
+	bool (*inference_init_fn)(void);
+	bool uses_rectifier_box;
+	uint32_t xspi2_chip_offset; /* byte offset from chip base (0x70000000) */
+	uint32_t xspi2_base_addr;	/* mapped window address for this stage */
+};
+
+typedef struct
+{
+	float center_x;
+	float center_y;
+	float box_w;
+	float box_h;
+	/* QARepVGG-Pro gauge-center prediction from heatmap (needle pivot, normalised [0,1]).
+	 * Set to -1.0 when the model does not provide a valid centre. */
+	float gauge_center_x;
+	float gauge_center_y;
+} AppAI_ObbBox;
+
+typedef struct
+{
+	size_t x_min;
+	size_t y_min;
+	size_t width;
+	size_t height;
+} AppAI_SourceCrop;
+
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 /* Scalar model: immediately after FSBL (0x70000000) + App (0x70100000, 1 MB
- * window). Must match FLASH_SCALAR address in flash_boot.bat.
+ * window). Must match FLASH_SCALAR address in flash_boot.ps1.
  * Size: ~3.07 MB ??? occupies 0x70200000???0x7051FFFF (50 ?? 64 KB blocks). */
 #define APP_AI_XSPI2_SCALAR_BASE_ADDR 0x70200000UL
 #define APP_AI_XSPI2_SCALAR_CHIP_OFFSET (APP_AI_XSPI2_SCALAR_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
 /* Rectifier model: immediately after scalar region (aligned to next 64 KB).
- * Must match FLASH_RECTIFIER address in flash_boot.bat.
+ * Must match FLASH_RECTIFIER address in flash_boot.ps1.
  * Size: ~118 KB ??? occupies 0x70600000???0x7053FFFF (2 ?? 64 KB blocks). */
 #define APP_AI_XSPI2_RECTIFIER_BASE_ADDR 0x70600000UL
 #define APP_AI_XSPI2_RECTIFIER_CHIP_OFFSET (APP_AI_XSPI2_RECTIFIER_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
@@ -339,22 +377,27 @@ uint32_t volatile __ll_current_wait_mask = 0U;
  * xSPI1 hyperRAM (0x90000000) + on-chip AXISRAM2-6. */
 #define APP_AI_XSPI2_CENTER_DETECTOR_BASE_ADDR APP_AI_XSPI2_SCALAR_BASE_ADDR
 #define APP_AI_XSPI2_CENTER_DETECTOR_CHIP_OFFSET (APP_AI_XSPI2_CENTER_DETECTOR_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
-/* Legacy alias used by the single-stage logging helpers; points to center detector. */
-#define APP_AI_XSPI2_MODEL_BASE_ADDR APP_AI_XSPI2_CENTER_DETECTOR_BASE_ADDR
-#define APP_AI_XSPI2_MODEL_CHIP_OFFSET APP_AI_XSPI2_CENTER_DETECTOR_CHIP_OFFSET
+#endif
 /* FileX can take a while to recover from card init retries or media errors.
  * Give the loader a longer window so we do not give up just before the stack
  * settles. */
 #define APP_AI_FILEX_MEDIA_READY_TIMEOUT_MS 180000U
-/* Tip-focus geometry heatmap calibration and guardrail constants.
- * Maps center->tip angle to temperature via robust linear regression. */
+/* Tip-focus SimCC calibration and guardrail constants.
+ * The runtime uses the replay angle convention (negated image Y) so the
+ * board-side temperature fit stays aligned with the packaged hard-case run. */
+#define APP_AI_TIP_FOCUS_MODEL_INPUT_WIDTH_PIXELS 224U
+#define APP_AI_TIP_FOCUS_MODEL_INPUT_HEIGHT_PIXELS 224U
 #define APP_AI_TIP_FOCUS_COLD_ANGLE_DEG     135.0f
-#define APP_AI_TIP_FOCUS_SLOPE              0.3119f
-#define APP_AI_TIP_FOCUS_INTERCEPT          (-33.14f)
+#define APP_AI_TIP_FOCUS_SLOPE              0.2963033f
+#define APP_AI_TIP_FOCUS_INTERCEPT          (-30.0009f)
 #define APP_AI_TIP_FOCUS_SWEEP_DEG          270.0f
-#define APP_AI_TIP_FOCUS_HEATMAP_SIZE       112U
-#define APP_AI_TIP_FOCUS_SOFTARGMAX_WINDOW  3U
+#define APP_AI_TIP_FOCUS_SIMCC_BINS         112U
 #define APP_AI_TIP_FOCUS_CONFIDENCE_FLOOR   0.40f
+/* The live center SimCC head has been landing just under 0.08 on otherwise
+ * good captures, so keep a small margin below that until we retrain or
+ * re-tune the head. */
+#define APP_AI_TIP_FOCUS_AXIS_PEAK_FLOOR    0.06f
+#define APP_AI_TIP_FOCUS_AXIS_SPREAD_MAX_PX  32.0f
 #define APP_AI_TIP_FOCUS_TEMP_MIN_C         (-35.0f)
 #define APP_AI_TIP_FOCUS_TEMP_MAX_C         55.0f
 /* Median smoothing ring buffer for published tip-focus temperature. */
@@ -400,6 +443,7 @@ static size_t app_ai_forced_crop_y_min = 0U;
 static size_t app_ai_forced_crop_width = 0U;
 static size_t app_ai_forced_crop_height = 0U;
 static const char *app_ai_forced_crop_label = NULL;
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 /* Scalar model pool: 32-byte placeholder at 0x70200000 (EXTRAM).
  * The weight blob is pre-flashed to xSPI2 at this address; the NPU reads
  * weights directly from flash, not through this array. */
@@ -416,7 +460,7 @@ uint8_t _mem_pool_xSPI2_heatmap_cd[32U] = {
 };
 /* Compact OBB 320 localizer pool lives in the dedicated OBB flash slot (0x70700000). so the linker script can map it to
  * the rectifier flash region at 0x70600000 ??? matching FLASH_RECTIFIER in
- * flash_boot.bat.  The NPU resolves all weight addresses as:
+ * flash_boot.ps1.  The NPU resolves all weight addresses as:
  *   _mem_pool_xSPI2_mobilenetv2_rectifier_hardcase_finetune + internal_offset
  * so this symbol MUST live at the base of the flashed blob. */
 __attribute__((section(".xspi2_rectifier_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
@@ -428,7 +472,7 @@ uint8_t _mem_pool_xSPI2_mobilenetv2_rectifier_hardcase_finetune[32U] = {
  *   _mem_pool_xSPI2_qarepvgg_pro_a175_int8 — weight-addressing.
  * 32-byte placeholder ensures the symbol resolves at link time.
  * Actual weight blob (~2228 KB, qarepvgg_pro_a175_int8_atonbuf.xSPI2.raw) is
- * flashed separately via flash_boot.bat. */
+ * flashed separately via flash_boot.ps1. */
 __attribute__((section(".xspi2_obb_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
 uint8_t _mem_pool_xSPI2_qarepvgg_pro_a175_int8[32U] = {
 	0U,
@@ -453,25 +497,25 @@ uint8_t _mem_pool_xSPI2_mobilenetv2_source_crop_box_v1_stripped_int8[32U] = {
 	0U,
 
 };
+#endif
 
-/* Tip-focus geometry model pool.  The generated network (via
- * LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(Default)) references
- * _mem_pool_xSPI2_Default, and this 32-byte placeholder keeps that xSPI2
+/* Tip-focus SimCC model pool. The generated network keeps the xSPI2 pool
  * symbol alive at the address where the NPU weight blob
- * (network_atonbuf.xSPI2.raw) is flashed (0x70400000).
+ * (simcc_gauge_v2_spatial_qat_sc128_int8_atonbuf.xSPI2.raw) is flashed
+ * (0x70400000).
  *
  * IMPORTANT: The actual weights data (2.2MB) is NOT stored in this array.
  * The data lives in xSPI2 flash at 0x70400000, and must be flashed using
- * flash_boot.bat before running inference. This 32-byte symbol is just a
+ * flash_boot.ps1 before running inference. This 32-byte symbol is just a
  * linker marker that gets placed at 0x70400000 by the .xspi2_tip_focus_pool
  * section. When the NPU accesses weights, it reads from xSPI2 flash through
  * the memory-mapped window (0x70000000+), not from this RAM array.
  *
  * If you see a HardFault at address 0x8D or similar during inference, it
- * means the xSPI2 flash was not programmed. Run flash_boot.bat to flash
- * network_atonbuf.xSPI2.raw to 0x70400000. */
+ * means the xSPI2 flash was not programmed. Run flash_boot.ps1 to flash
+ * simcc_gauge_v2_spatial_qat_sc128_int8_atonbuf.xSPI2.raw to 0x70400000. */
 __attribute__((section(".xspi2_tip_focus_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
-uint8_t _mem_pool_xSPI2_Default[32U] = { 0U, };
+uint8_t _mem_pool_xSPI2_simcc_gauge_v2_spatial_qat_sc128_int8[32U] = { 0U, };
 static uint8_t app_ai_xspi2_program_buffer[APP_AI_XSPI2_PROGRAM_CHUNK_BYTES];
 __attribute__((aligned(APP_AI_CACHE_LINE_BYTES)))
 static uint8_t app_ai_scalar_row_scratch[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL];
@@ -484,6 +528,7 @@ volatile size_t app_ai_scalar_preprocess_last_row = (size_t)SIZE_MAX;
 /* Keep each preprocessing pass small enough that we can reshape the scalar
  * path without one huge monolithic row loop. */
 #define APP_AI_SCALAR_PREPROCESS_ROWS_PER_CHUNK 8U
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 /* Start/tail signatures for the heatmap center-detector initializer blob.
  * Update these when a new model is exported by running:
  *   python3 -c "
@@ -531,16 +576,19 @@ static const uint8_t app_ai_source_crop_box_xspi2_signature_tail[APP_AI_XSPI2_PR
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x80U,
 };
-/* Tip-focus geometry model xSPI2 signatures for network_atonbuf.xSPI2.raw.
- * Flashed to 0x70400000. Size: 2,201,505 bytes. */
+#endif
+/* Tip-focus SimCC model xSPI2 signatures for
+ * simcc_gauge_v2_spatial_qat_sc128_int8_atonbuf.xSPI2.raw.
+ * Flashed to 0x70400000. Size: 2,268,033 bytes. */
 static const uint8_t app_ai_tip_focus_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0x04U, 0x2FU, 0x1FU, 0xF2U, 0x62U, 0xE7U, 0x3EU, 0xFDU,
-	0x0AU, 0x1EU, 0xF4U, 0x32U, 0xD4U, 0x9AU, 0xFEU, 0xC2U,
+	0xF9U, 0x41U, 0xF2U, 0xFFU, 0x3CU, 0xFCU, 0xCBU, 0x19U,
+	0xD4U, 0xB2U, 0xF3U, 0x4DU, 0x18U, 0xE4U, 0x4AU, 0xFEU,
 };
 static const uint8_t app_ai_tip_focus_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x80U,
 };
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 /* Per-stage programmed sizes. Set during provisioning and used by the verify
  * functions for the tail probe offset. Keeping them separate prevents the
  * scalar tail check from using the rectifier's file size (or vice-versa) when
@@ -549,10 +597,6 @@ static ULONG app_ai_scalar_programmed_size = 0UL;
 static ULONG app_ai_rectifier_programmed_size = 0UL;
 static ULONG app_ai_obb_programmed_size = 0UL;
 static ULONG app_ai_source_crop_box_programmed_size = 0UL;
-static ULONG app_ai_tip_focus_programmed_size = 0UL;
-/* Legacy alias kept so existing references still compile; points to the scalar
- * size which was the only stage before the rectifier was added. */
-static ULONG app_ai_xspi2_programmed_size = 0UL;
 
 /* Per-stage signature caches populated from the SD file during provisioning.
  * Using SD-sourced bytes means verify never goes stale when the model blob is
@@ -569,12 +613,18 @@ static bool app_ai_obb_sig_valid = false;
 static uint8_t app_ai_source_crop_box_sig_start[APP_AI_XSPI2_PROBE_BYTES] = {0U};
 static uint8_t app_ai_source_crop_box_sig_tail[APP_AI_XSPI2_PROBE_BYTES] = {0U};
 static bool app_ai_source_crop_box_sig_valid = false;
+#endif
+/* Legacy alias kept for the shared xSPI2 logging helpers; the live tip-focus
+ * build still expects this size tracker to exist. */
+static ULONG app_ai_xspi2_programmed_size = 0UL;
+static ULONG app_ai_tip_focus_programmed_size = 0UL;
 static uint8_t app_ai_tip_focus_sig_start[APP_AI_XSPI2_PROBE_BYTES] = {0U};
 static uint8_t app_ai_tip_focus_sig_tail[APP_AI_XSPI2_PROBE_BYTES] = {0U};
 static bool app_ai_tip_focus_sig_valid = false;
 
 /* Declare the generated NN instance locally so the dry-run helper can run the
  * AtoNN runtime on the exact network produced by Cube.AI. */
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 	scalar_full_finetune_from_best_piecewise_calibrated_int8);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
@@ -590,20 +640,6 @@ LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 	heatmap_cd);
 
-typedef struct AppAI_ModelStageSpec AppAI_ModelStageSpec;
-
-struct AppAI_ModelStageSpec
-{
-	const char *stage_label;
-	const char *model_image_path;
-	NN_Instance_TypeDef *nn_instance;
-	bool (*network_init_fn)(void);
-	bool (*inference_init_fn)(void);
-	bool uses_rectifier_box;
-	uint32_t xspi2_chip_offset; /* byte offset from chip base (0x70000000) */
-	uint32_t xspi2_base_addr;	/* mapped window address for this stage */
-};
-
 typedef struct
 {
 	float center_x;
@@ -611,28 +647,6 @@ typedef struct
 	float box_w;
 	float box_h;
 } AppAI_RectifierBox;
-
-typedef struct
-{
-	float center_x;    /* OBB box center x (normalised [0,1]) */
-	float center_y;    /* OBB box center y (normalised [0,1]) */
-	float box_w;
-	float box_h;
-	float angle_rad;
-	float confidence;
-	/* QARepVGG-Pro gauge-center prediction from heatmap (needle pivot, normalised [0,1]).
-	 * Set to -1.0 when the model does not provide a valid centre. */
-	float gauge_center_x;
-	float gauge_center_y;
-} AppAI_ObbBox;
-
-typedef struct
-{
-	size_t x_min;
-	size_t y_min;
-	size_t width;
-	size_t height;
-} AppAI_SourceCrop;
 
 static const AppAI_ModelStageSpec app_ai_obb_stage = {
 	.stage_label = "qarepvgg_pro",
@@ -745,6 +759,7 @@ static bool AppAI_DecodeQarepvggObb(
 
 	return true;
 }
+#endif /* !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE */
 
 /* USER CODE END PV */
 

@@ -31,10 +31,10 @@ extern "C" {
 #define IMAGE_CLEANUP_THREAD_STACK_SIZE_BYTES    4096U
 
 /* Capture geometry --------------------------------------------------------- */
-/* Use the same 320x320 colour frame budget everywhere so the pipelines stay
- * aligned with the new OBB and center-detector models. */
-#define CAMERA_CAPTURE_WIDTH_PIXELS             320U
-#define CAMERA_CAPTURE_HEIGHT_PIXELS            320U
+/* Standardize the live capture budget on 224x224 so the AI and baseline
+ * pipelines see the same square frame that the current student models use. */
+#define CAMERA_CAPTURE_WIDTH_PIXELS             224U
+#define CAMERA_CAPTURE_HEIGHT_PIXELS            224U
 #define CAMERA_CAPTURE_BUFFER_COUNT             1U
 #define CAMERA_CAPTURE_BYTES_PER_PIXEL          2U
 #define CAMERA_CAPTURE_BUFFER_SIZE_BYTES        (CAMERA_CAPTURE_WIDTH_PIXELS * CAMERA_CAPTURE_HEIGHT_PIXELS * CAMERA_CAPTURE_BYTES_PER_PIXEL)

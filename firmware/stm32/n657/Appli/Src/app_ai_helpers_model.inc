@@ -1,40 +1,5 @@
 /* This file is included by app_ai_helpers.inc. */
 
-	left = (biased_center_x > (crop_width_pixels / 2U)) ? (biased_center_x - (crop_width_pixels / 2U)) : 0U;
-	top = (biased_center_y > (crop_height_pixels / 2U)) ? (biased_center_y - (crop_height_pixels / 2U)) : 0U;
-	right = left + crop_width_pixels;
-	bottom = top + crop_height_pixels;
-	if (right > frame_width_pixels)
-	{
-		right = frame_width_pixels;
-		left = (right > crop_width_pixels) ? (right - crop_width_pixels)
-										   : 0U;
-	}
-	if (bottom > frame_height_pixels)
-	{
-		bottom = frame_height_pixels;
-		top = (bottom > crop_height_pixels) ? (bottom - crop_height_pixels)
-											: 0U;
-	}
-
-	if ((right <= left) || (bottom <= top))
-	{
-		return false;
-	}
-
-	*crop_x_min = left;
-	*crop_y_min = top;
-	*crop_width = right - left;
-	*crop_height = bottom - top;
-
-	if ((*crop_width < min_crop_width) || (*crop_height < min_crop_height))
-	{
-		return false;
-	}
-
-	return true;
-}
-
 static bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr)
 {
 	uint8_t source_bytes[APP_AI_XSPI2_PROBE_BYTES] = {0U};
@@ -110,7 +75,7 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 
 	stage_label = (stage->stage_label != NULL) ? stage->stage_label : "scalar";
 	is_rectifier = (strcmp(stage_label, "rectifier") == 0);
-	is_obb = (strcmp(stage_label, "obb") == 0);
+	is_obb = (strcmp(stage_label, "obb_center") == 0) || (strstr(stage_label, "qarepvgg") != NULL);
 	bool is_source_crop_box = (strcmp(stage_label, "source_crop_box") == 0);
 
 	if (is_rectifier)
@@ -167,17 +132,19 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 			uint8_t actual[APP_AI_XSPI2_PROBE_BYTES] = {0U};
 			int32_t read_status = BSP_XSPI_NOR_Read(0U, actual,
 													stage->xspi2_chip_offset, APP_AI_XSPI2_PROBE_BYTES);
-#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
-			char vlog[160];
-			(void)DebugConsole_Snprintf(vlog, sizeof(vlog),
-						   "[AI] %s mismatch rc=%ld bytes=[%02X%02X%02X%02X%02X%02X%02X%02X]\r\n",
-						   stage->stage_label, (long)read_status,
-						   actual[0], actual[1], actual[2], actual[3],
-						   actual[4], actual[5], actual[6], actual[7]);
-			DebugConsole_WriteString(vlog);
-#else
-			(void)read_status;
-#endif
+			{
+				char vlog[160];
+				(void)DebugConsole_Snprintf(vlog, sizeof(vlog),
+					"[AI] %s mismatch rc=%ld actual=[%02X%02X%02X%02X%02X%02X%02X%02X] "
+					"expect=[%02X%02X%02X%02X%02X%02X%02X%02X] offset=0x%08lX\r\n",
+					stage->stage_label, (long)read_status,
+					actual[0], actual[1], actual[2], actual[3],
+					actual[4], actual[5], actual[6], actual[7],
+					sig_start[0], sig_start[1], sig_start[2], sig_start[3],
+					sig_start[4], sig_start[5], sig_start[6], sig_start[7],
+					(unsigned long)(stage->xspi2_chip_offset));
+				DebugConsole_WriteString(vlog);
+			}
 		}
 		(void)DebugConsole_WriteString(
 			"[AI] xSPI2 stage signature mismatch at head probe.\r\n");
@@ -578,7 +545,7 @@ static bool AppAI_EnsureXspi2ModelImageReadyForStage(
 	{
 		/* The board now treats xSPI2 blobs as flashed-only assets. Any mismatch
 		 * means the model package on flash is stale or the wrong stage was
-		 * provisioned, so fail fast and let flash_boot.bat refresh it. */
+		 * provisioned, so fail fast and let flash_boot.ps1 refresh it. */
 		DebugConsole_Printf(
 			"[AI] xSPI2 stage '%s' signature mismatch; aborting stage load.\r\n",
 			stage->stage_label);

@@ -16,9 +16,313 @@ All coordinate outputs are sigmoid-constrained to [0, 1].
 
 from typing import Tuple, Optional
 
+import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
+
+
+def _scaled_width(channels: int, width_multiplier: float) -> int:
+    """Scale a channel count and round it to a multiple of 8."""
+
+    scaled = int(round(float(channels) * float(width_multiplier) / 8.0) * 8)
+    return max(8, scaled)
+
+
+@keras.utils.register_keras_serializable(package="embedded_gauge_reading_tinyml")
+class Identity3x3Initializer(keras.initializers.Initializer):
+    """A 3x3 conv kernel initializer that approximates identity.
+
+    The centre pixel copies each input channel to the matching output channel
+    (weight=1.0) while all other spatial positions and cross-channel entries
+    are zero.  Together with bias=0 this makes the layer a near-pass-through
+    so the model starts from a sane state when a new refinement block is added
+    on top of a pre-trained decoder.
+    """
+    def __call__(self, shape, dtype=None):
+        kernel_np = np.zeros(shape, dtype=dtype or np.float32)
+        cy = shape[0] // 2
+        cx = shape[1] // 2
+        in_c = shape[2]
+        out_c = shape[3]
+        common = min(in_c, out_c)
+        for c in range(common):
+            kernel_np[cy, cx, c, c] = 1.0
+        return tf.constant(kernel_np, dtype=dtype or tf.float32)
+
+    def get_config(self):
+        return {}
+
+
+@keras.utils.register_keras_serializable(package="embedded_gauge_reading_tinyml")
+class BilinearUpsamplingInitializer(keras.initializers.Initializer):
+    """Initialize a transposed-conv kernel to behave like bilinear upsampling.
+
+    This gives the model a learnable final resize stage without starting from
+    a random checkerboard-prone kernel.  The initializer copies the same
+    bilinear kernel into the matching input/output channel pairs so the
+    upsampling layer begins as a stable 2x resize and can then sharpen the
+    features during training.
+    """
+
+    def __init__(self, scale: int = 2) -> None:
+        self.scale = int(scale)
+
+    def __call__(self, shape, dtype=None):
+        if len(shape) != 4:
+            raise ValueError(
+                "BilinearUpsamplingInitializer expects a Conv2DTranspose kernel "
+                f"shape, got {shape!r}."
+            )
+        kernel_height, kernel_width, out_channels, in_channels = shape
+        if kernel_height != kernel_width:
+            raise ValueError(
+                "BilinearUpsamplingInitializer requires a square kernel, "
+                f"got {shape!r}."
+            )
+        if kernel_height < 2:
+            raise ValueError(
+                "BilinearUpsamplingInitializer requires a kernel size of at least 2."
+            )
+
+        # Build the standard 2x bilinear filter for a transpose-conv resize.
+        factor = (kernel_height + 1) // 2 if kernel_height % 2 == 1 else kernel_height // 2
+        center = factor - 1 if kernel_height % 2 == 1 else factor - 0.5
+        grid_y, grid_x = np.ogrid[:kernel_height, :kernel_width]
+        bilinear = (1.0 - np.abs(grid_y - center) / factor) * (
+            1.0 - np.abs(grid_x - center) / factor
+        )
+
+        kernel = np.zeros(shape, dtype=np.float32)
+        common_channels = min(int(out_channels), int(in_channels))
+        for channel_index in range(common_channels):
+            kernel[:, :, channel_index, channel_index] = bilinear
+        return tf.convert_to_tensor(kernel, dtype=dtype or tf.float32)
+
+    def get_config(self):
+        return {"scale": self.scale}
+
+
+def _identity_3x3_initializer(channels: int):
+    """Return a kernel initializer that approximates an identity 3x3 conv.
+
+    The centre pixel copies each input channel to the matching output channel
+    (weight=1.0) while all other spatial positions and cross-channel entries
+    are zero.  Together with bias=0 this makes the layer a near-pass-through
+    so the model starts from a sane state when a new refinement block is added
+    on top of a pre-trained decoder.
+    """
+    # Use the serializable class so saved .keras files can be reloaded.
+    return Identity3x3Initializer()
+
+
+def _input_channel_count(x: tf.Tensor) -> int:
+    """Return the channel count of a tensor, handling both eager and graph builds."""
+    input_shape = x.shape
+    try:
+        rank = input_shape.rank  # type: ignore[union-attr]
+        if rank is not None and input_shape[-1] is not None:
+            return int(input_shape[-1])
+    except AttributeError:
+        if len(input_shape) >= 1 and input_shape[-1] is not None:
+            return int(input_shape[-1])
+    return int(tf.shape(x)[-1])
+
+
+def _full_resolution_refine_block(
+    x: tf.Tensor,
+    *,
+    name: str,
+    filters: int | None = None,
+    widen_filters: int = 0,
+) -> tf.Tensor:
+    """Add a full-resolution spatial refinement block before heatmap heads.
+
+    By default keeps the same channel count as the input so that downstream
+    1x1 heatmap projections can transfer their weights.  When widen_filters
+    > 0, a zero-init residual bottleneck is added in parallel to the identity
+    branch, giving the model more capacity without breaking transfer safety.
+    """
+
+    if filters is None:
+        input_shape = x.shape
+        try:
+            rank = input_shape.rank  # type: ignore[union-attr]
+            if rank is not None and input_shape[-1] is not None:
+                filters = int(input_shape[-1])
+        except AttributeError:
+            if len(input_shape) >= 1 and input_shape[-1] is not None:
+                filters = int(input_shape[-1])
+        if filters is None:
+            filters = tf.shape(x)[-1]
+
+    # Identity branch: 3x3 conv that starts as a pass-through.
+    identity_branch = layers.Conv2D(
+        filters,
+        3,
+        padding="same",
+        activation="relu",
+        kernel_initializer=_identity_3x3_initializer(filters),
+        bias_initializer="zeros",
+        name=name,
+    )(x)
+
+    if widen_filters <= 0:
+        return identity_branch
+
+    # Widened residual branch: deeper representation, zero-initialised so
+    # the model starts exactly where the source checkpoint left off.
+    residual = layers.Conv2D(
+        widen_filters,
+        3,
+        padding="same",
+        activation="relu",
+        kernel_initializer="he_normal",
+        bias_initializer="zeros",
+        name=f"{name}_widen",
+    )(x)
+    residual = layers.Conv2D(
+        filters,
+        1,
+        padding="same",
+        activation=None,
+        kernel_initializer="zeros",
+        bias_initializer="zeros",
+        name=f"{name}_widen_proj",
+    )(residual)
+    return layers.Add(name=f"{name}_fused")([identity_branch, residual])
+
+
+def _full_resolution_residual_sharpen_block(
+    x: tf.Tensor,
+    *,
+    name: str,
+    filters: int | None = None,
+    residual_scale: float = 0.1,
+    depth: int = 2,
+) -> tf.Tensor:
+    """Add a zero-start residual sharpening branch at full resolution.
+
+    The branch keeps the input tensor shape unchanged so it is safe to add on
+    top of a source-transfer checkpoint. It begins as a no-op, then can learn
+    a small correction that sharpens heatmap peaks without disturbing the
+    v14-compatible decoder weights.
+
+    depth: number of 3x3 conv layers inside the residual branch.  The first
+    (depth-1) layers use identity-initialized kernels with relu so they
+    start as near-pass-throughs.  The final layer is zero-initialized with
+    no activation, guaranteeing the branch starts as a no-op regardless of
+    depth.  Default 2 preserves the original behaviour.
+    """
+
+    if filters is None:
+        input_shape = x.shape
+        try:
+            rank = input_shape.rank  # type: ignore[union-attr]
+            if rank is not None and input_shape[-1] is not None:
+                filters = int(input_shape[-1])
+        except AttributeError:
+            if len(input_shape) >= 1 and input_shape[-1] is not None:
+                filters = int(input_shape[-1])
+        if filters is None:
+            filters = tf.shape(x)[-1]
+
+    depth = max(int(depth), 2)
+    residual = x
+    # Identity-initialised layers: start as pass-through, learn spatial detail.
+    for i in range(depth - 1):
+        residual = layers.Conv2D(
+            filters,
+            3,
+            padding="same",
+            activation="relu",
+            kernel_initializer=_identity_3x3_initializer(filters),
+            bias_initializer="zeros",
+            name=f"{name}_conv_{i + 1}",
+        )(residual)
+    # Final zero-initialised layer keeps the branch a no-op at start.
+    residual = layers.Conv2D(
+        filters,
+        3,
+        padding="same",
+        activation=None,
+        kernel_initializer="zeros",
+        bias_initializer="zeros",
+        name=f"{name}_conv_{depth}",
+    )(residual)
+    residual = layers.Rescaling(residual_scale, name=f"{name}_scale")(residual)
+    return layers.Add(name=name)([x, residual])
+
+
+def _upsample_2x(
+    x: tf.Tensor,
+    *,
+    filters: int,
+    name: str,
+    mode: str,
+    hybrid_residual_scale: float = 0.2,
+) -> tf.Tensor:
+    """Upsample a feature map by 2x using a named decoder strategy."""
+
+    if mode == "bilinear":
+        return layers.UpSampling2D(size=(2, 2), interpolation="bilinear", name=name)(x)
+    if mode == "transpose":
+        # Start from a bilinear resize so the layer can learn sharper edges
+        # without the random checkerboard artifacts of an uninitialized deconv.
+        return layers.Conv2DTranspose(
+            filters,
+            kernel_size=4,
+            strides=2,
+            padding="same",
+            activation="relu",
+            kernel_initializer=BilinearUpsamplingInitializer(),
+            bias_initializer="zeros",
+            name=name,
+        )(x)
+    if mode == "hybrid_residual":
+        # Keep the stable bilinear path as the anchor, then learn a small
+        # residual correction with a zero-initialized transpose conv.
+        bilinear = layers.UpSampling2D(size=(2, 2), interpolation="bilinear", name=f"{name}_bilinear")(x)
+        residual = layers.Conv2DTranspose(
+            filters,
+            kernel_size=4,
+            strides=2,
+            padding="same",
+            activation=None,
+            kernel_initializer="zeros",
+            bias_initializer="zeros",
+            name=f"{name}_residual",
+        )(x)
+        residual = layers.Rescaling(hybrid_residual_scale, name=f"{name}_residual_scale")(residual)
+        return layers.Add(name=name)([bilinear, residual])
+    raise ValueError(f"Unsupported upsample mode: {mode!r}")
+
+
+def _fuse_decoder_skip(
+    x: tf.Tensor,
+    skip: tf.Tensor,
+    *,
+    filters: int,
+    name: str,
+) -> tf.Tensor:
+    """Fuse a backbone skip tensor into the decoder at the same resolution.
+
+    The skip path is projected to the decoder width before being added back in.
+    That keeps the fusion cheap while still giving the model a direct
+    multi-scale signal to sharpen the needle geometry.
+    """
+
+    skip = layers.Conv2D(
+        filters,
+        1,
+        padding="same",
+        activation=None,
+        kernel_initializer="he_normal",
+        bias_initializer="zeros",
+        name=f"{name}_skip_proj",
+    )(skip)
+    fused = layers.Add(name=f"{name}_add")([x, skip])
+    return layers.Activation("relu", name=f"{name}_relu")(fused)
 
 
 def build_mobilenetv2_geometry_points_v1(
@@ -338,8 +642,14 @@ def _build_mobilenetv2_geometry_heatmap_decoder(
     heatmap_size=56,
     decoder_channels: tuple[int, ...] = (128, 64, 32),
     model_name: str = "mobilenetv2_geometry_heatmap",
+    pretrained: bool = True,
 ):
-    """Build a compact MobileNetV2 heatmap decoder with a configurable output size."""
+    """Build a compact MobileNetV2 heatmap decoder with a configurable output size.
+
+    For 112x112 outputs, the decoder adds a tiny full-resolution refinement
+    block before the final heatmap heads so the model can sharpen peaks
+    without widening the whole decoder.
+    """
 
     if heatmap_size not in (56, 112):
         raise ValueError(f"Unsupported heatmap_size={heatmap_size}; expected 56 or 112.")
@@ -347,11 +657,13 @@ def _build_mobilenetv2_geometry_heatmap_decoder(
     inputs = keras.Input(shape=input_shape, name="input_image")
 
     # Keep the backbone shallow and reusable so we can transfer weights across v2/v3/v4.
+    # Honor the caller's initialization choice so "random" runs do not spend
+    # time loading ImageNet weights and can train from a true scratch start.
     backbone = keras.applications.MobileNetV2(
         input_shape=input_shape,
         alpha=alpha,
         include_top=False,
-        weights="imagenet",
+        weights="imagenet" if pretrained else None,
         pooling=None,
     )
     backbone.trainable = not backbone_frozen
@@ -387,6 +699,14 @@ def _build_mobilenetv2_geometry_heatmap_decoder(
     if current_size != heatmap_size:
         raise RuntimeError(f"Decoder reached {current_size}x{current_size}, expected {heatmap_size}x{heatmap_size}.")
 
+    if heatmap_size == 112:
+        # Give the 112x112 tensor one learned spatial pass before the
+        # final 1x1 heatmap projections.
+        x = _full_resolution_refine_block(
+            x,
+            name="geometry_decoder_refine_fullres",
+        )
+
     center_heatmap = layers.Conv2D(1, 1, padding="same", activation="sigmoid", name="center_heatmap")(x)
     tip_heatmap = layers.Conv2D(1, 1, padding="same", activation="sigmoid", name="tip_heatmap")(x)
 
@@ -403,15 +723,28 @@ def build_mobilenetv2_geometry_heatmap_v4_112(
     include_aux_coords=False,
     aux_head_size="small",
     aux_head_type="none",
+    decoder_width_multiplier: float = 1.0,
+    decoder_upsample_mode: str = "bilinear",
+    decoder_multiscale_fusion: bool = False,
+    decoder_fullres_residual_block: bool = False,
+    decoder_fullres_residual_scale: float = 0.1,
+    decoder_fullres_residual_depth: int = 2,
+    hybrid_residual_scale: float = 0.2,
+    decoder_refine_widen_filters: int = 0,
+    decoder_fullres_dw_residual: bool = False,
+    decoder_fullres_dw_residual_scale: float = 0.05,
+    subpixel_refinement_head: bool = False,
     pretrained: bool = True,
 ):
     """Build the 112x112 geometry heatmap model for tip-stable INT8 deployment.
 
     The 112x112 head keeps the v3-style decoder blocks so we can still transfer
-    compatible weights from the canonical v3 checkpoint, but it adds a shallow
-    56x56 skip before the final upsampling stage. That gives the decoder a
-    cleaner spatial signal than a plain bilinear 56->112 wrapper while keeping
-    the model compact enough for embedded deployment.
+    compatible weights from the canonical v3 checkpoint, and it can optionally
+    fuse 14x14 / 28x28 / 56x56 MobileNetV2 skips into the decoder. A tiny
+    two-layer full-resolution refinement block then sharpens the 112x112
+    tensor before the final heatmap projections, giving the decoder a cleaner
+    spatial signal than a plain bilinear 56->112 wrapper while keeping the
+    model compact enough for embedded deployment.
 
     Auxiliary head types (aux_head_type):
       - "none": no aux head (default). include_aux_coords is ignored.
@@ -423,6 +756,22 @@ def build_mobilenetv2_geometry_heatmap_v4_112(
         112x112 decoder tensor and predicts per-pixel dx/dy offsets via a
         small conv head. Output is 112x112x4 with channels
         [center_dx, center_dy, tip_dx, tip_dy] in tanh range [-1, 1].
+      - decoder_width_multiplier: scales the decoder and auxiliary head widths
+        while keeping the spatial resolution fixed. This lets us spend more
+        capacity on richer geometry features without changing the heatmap size.
+      - decoder_upsample_mode: final 56x56 -> 112x112 resize strategy. Use
+        "bilinear" for the existing deterministic resize or "transpose" for a
+        learnable Conv2DTranspose stage initialized to bilinear weights, or
+        "hybrid_residual" for bilinear upsampling plus a small learnable
+        residual transpose-conv correction.
+      - decoder_multiscale_fusion: if True, fuse 14x14, 28x28, and 56x56
+        MobileNetV2 skip features into the decoder with residual adds. This
+        gives the network a more UNet-like multi-scale path for sharper
+        geometry and better locality.
+      - decoder_fullres_residual_block: if True, add a small zero-start
+        residual sharpening branch after the existing full-resolution refine
+        block. This keeps v14 transfer compatibility while giving the model an
+        extra place to learn fine peak corrections.
 
     For backward compat, include_aux_coords=True is equivalent to aux_head_type="gap".
     """
@@ -437,21 +786,32 @@ def build_mobilenetv2_geometry_heatmap_v4_112(
         input_shape=input_shape,
         alpha=alpha,
         include_top=False,
-        weights="imagenet",
+        weights="imagenet" if pretrained else None,
         pooling=None,
     )
     backbone.trainable = not backbone_frozen
 
     feature_extractor = keras.Model(
         inputs=backbone.input,
-        outputs=[backbone.get_layer("block_3_expand_relu").output, backbone.output],
+        outputs=[
+            backbone.get_layer("block_13_expand_relu").output,
+            backbone.get_layer("block_6_expand_relu").output,
+            backbone.get_layer("block_3_expand_relu").output,
+            backbone.output,
+        ],
         name="mobilenetv2_geometry_heatmap_v4_112_backbone",
     )
 
-    skip_56, x = feature_extractor(inputs)
+    skip_14, skip_28, skip_56, x = feature_extractor(inputs)
+
+    decoder_conv_1_filters = _scaled_width(128, decoder_width_multiplier)
+    decoder_conv_2_filters = _scaled_width(64, decoder_width_multiplier)
+    decoder_conv_3_filters = _scaled_width(32, decoder_width_multiplier)
+    skip_56_filters = _scaled_width(16, decoder_width_multiplier)
+    decoder_refine_filters = _scaled_width(32, decoder_width_multiplier)
 
     x = layers.Conv2D(
-        128,
+        decoder_conv_1_filters,
         3,
         padding="same",
         activation="relu",
@@ -459,9 +819,16 @@ def build_mobilenetv2_geometry_heatmap_v4_112(
         name="geometry_decoder_conv_1",
     )(x)
     x = layers.UpSampling2D(size=(2, 2), interpolation="bilinear", name="geometry_decoder_up_1")(x)
+    if decoder_multiscale_fusion:
+        x = _fuse_decoder_skip(
+            x,
+            skip_14,
+            filters=decoder_conv_1_filters,
+            name="geometry_decoder_fuse_14",
+        )
 
     x = layers.Conv2D(
-        64,
+        decoder_conv_2_filters,
         3,
         padding="same",
         activation="relu",
@@ -469,9 +836,16 @@ def build_mobilenetv2_geometry_heatmap_v4_112(
         name="geometry_decoder_conv_2",
     )(x)
     x = layers.UpSampling2D(size=(2, 2), interpolation="bilinear", name="geometry_decoder_up_2")(x)
+    if decoder_multiscale_fusion:
+        x = _fuse_decoder_skip(
+            x,
+            skip_28,
+            filters=decoder_conv_2_filters,
+            name="geometry_decoder_fuse_28",
+        )
 
     x = layers.Conv2D(
-        32,
+        decoder_conv_3_filters,
         3,
         padding="same",
         activation="relu",
@@ -479,25 +853,74 @@ def build_mobilenetv2_geometry_heatmap_v4_112(
         name="geometry_decoder_conv_3",
     )(x)
     x = layers.UpSampling2D(size=(2, 2), interpolation="bilinear", name="geometry_decoder_up_3")(x)
-
-    skip_56 = layers.Conv2D(
-        16,
-        1,
-        padding="same",
-        activation="relu",
-        kernel_initializer="he_normal",
-        name="geometry_decoder_skip_56",
-    )(skip_56)
-    x = layers.Concatenate(name="geometry_decoder_concat_56")([x, skip_56])
+    if decoder_multiscale_fusion:
+        x = _fuse_decoder_skip(
+            x,
+            skip_56,
+            filters=decoder_conv_3_filters,
+            name="geometry_decoder_fuse_56",
+        )
+    else:
+        skip_56 = layers.Conv2D(
+            skip_56_filters,
+            1,
+            padding="same",
+            activation="relu",
+            kernel_initializer="he_normal",
+            name="geometry_decoder_skip_56",
+        )(skip_56)
+        x = layers.Concatenate(name="geometry_decoder_concat_56")([x, skip_56])
     x = layers.Conv2D(
-        32,
+        decoder_refine_filters,
         3,
         padding="same",
         activation="relu",
         kernel_initializer="he_normal",
         name="geometry_decoder_refine_112",
     )(x)
-    x = layers.UpSampling2D(size=(2, 2), interpolation="bilinear", name="geometry_decoder_up_4")(x)
+    x = _upsample_2x(
+        x,
+        filters=decoder_refine_filters,
+        name="geometry_decoder_up_4",
+        mode=decoder_upsample_mode,
+        hybrid_residual_scale=hybrid_residual_scale,
+    )
+
+    # Sharpen the full-resolution feature map before the 1x1 heatmap heads.
+    x = _full_resolution_refine_block(
+        x,
+        name="geometry_decoder_refine_fullres",
+        widen_filters=decoder_refine_widen_filters,
+    )
+    if decoder_fullres_residual_block:
+        x = _full_resolution_residual_sharpen_block(
+            x,
+            name="geometry_decoder_refine_fullres_residual",
+            residual_scale=decoder_fullres_residual_scale,
+            depth=decoder_fullres_residual_depth,
+        )
+
+    if decoder_fullres_dw_residual:
+        # Lightweight HRNet-lite style detail branch: zero-start depthwise
+        # separable residual that learns spatial corrections without adding
+        # meaningful activation overhead.  Zero-init across the board so it
+        # starts as a no-op (transfer-safe).
+        input_filters = _input_channel_count(x)
+        dw_residual = layers.DepthwiseConv2D(
+            3, padding="same", activation=None,
+            depthwise_initializer="zeros", bias_initializer="zeros",
+            name="geometry_decoder_dw_residual_depthwise",
+        )(x)
+        dw_residual = layers.Conv2D(
+            input_filters, 1, padding="same", activation=None,
+            kernel_initializer="zeros", bias_initializer="zeros",
+            name="geometry_decoder_dw_residual_pointwise",
+        )(dw_residual)
+        dw_residual = layers.Rescaling(
+            decoder_fullres_dw_residual_scale,
+            name="geometry_decoder_dw_residual_scale",
+        )(dw_residual)
+        x = layers.Add(name="geometry_decoder_dw_residual_add")([x, dw_residual])
 
     center_heatmap = layers.Conv2D(1, 1, padding="same", activation="sigmoid", name="center_heatmap")(x)
     tip_heatmap = layers.Conv2D(1, 1, padding="same", activation="sigmoid", name="tip_heatmap")(x)
@@ -507,23 +930,44 @@ def build_mobilenetv2_geometry_heatmap_v4_112(
 
     outputs: list[keras.layers.Layer] = [center_heatmap, tip_heatmap, confidence]
 
+    if subpixel_refinement_head:
+        # Tiny Dense head predicting residual offsets for center and tip.
+        # Trained against the difference between soft-argmax peak and ground
+        # truth, so the heatmaps learn coarse position and this head learns
+        # the sub-pixel correction.  Output is tanh [-1, 1], scaled by a
+        # configurable factor during loss computation.
+        offset_features = layers.Dense(
+            _scaled_width(32, decoder_width_multiplier),
+            activation="relu",
+            kernel_initializer="he_normal",
+            name="subpixel_refinement_dense",
+        )(confidence_features)
+        subpixel_offsets = layers.Dense(
+            4,
+            activation="tanh",
+            kernel_initializer="zeros",
+            bias_initializer="zeros",
+            name="subpixel_offsets",
+        )(offset_features)
+        outputs.append(subpixel_offsets)
+
     if aux_head_type == "gap":
         if aux_head_size == "large":
             aux_coords = layers.Dense(
-                128,
+                _scaled_width(128, decoder_width_multiplier),
                 activation="relu",
                 kernel_initializer="he_normal",
                 name="aux_coords_dense_1",
             )(confidence_features)
             aux_coords = layers.Dense(
-                64,
+                _scaled_width(64, decoder_width_multiplier),
                 activation="relu",
                 kernel_initializer="he_normal",
                 name="aux_coords_dense_2",
             )(aux_coords)
         else:
             aux_coords = layers.Dense(
-                64,
+                _scaled_width(64, decoder_width_multiplier),
                 activation="relu",
                 kernel_initializer="he_normal",
                 name="aux_coords_dense",
@@ -541,7 +985,7 @@ def build_mobilenetv2_geometry_heatmap_v4_112(
         # dx/dy offsets in tanh range [-1, 1] for both center and tip keypoints.
         # Output channels: [center_dx, center_dy, tip_dx, tip_dy].
         aux_offset = layers.Conv2D(
-            32,
+            decoder_refine_filters,
             3,
             padding="same",
             activation="relu",
@@ -549,7 +993,7 @@ def build_mobilenetv2_geometry_heatmap_v4_112(
             name="aux_offset_conv_1",
         )(x)
         aux_offset = layers.Conv2D(
-            16,
+            skip_56_filters,
             3,
             padding="same",
             activation="relu",
@@ -572,7 +1016,7 @@ def build_mobilenetv2_geometry_heatmap_v4_112(
         # Outputs 1D logit vectors for center/tip x/y coordinates.
         # Shape: (batch, 4, 112) with semantic order [center_x, center_y, tip_x, tip_y].
         axis_feat = layers.Dense(
-            128,
+            _scaled_width(128, decoder_width_multiplier),
             activation="relu",
             kernel_initializer="he_normal",
             name="axis_simcc_dense_1",
@@ -604,7 +1048,10 @@ def build_heatmap_angle_model(
     This model predicts center and tip heatmaps from which the needle angle
     is derived via soft-argmax decoding and atan2. The architecture is based
     on the proven v4 112x112 heatmap model but simplified by removing the
-    auxiliary heads that did not improve INT8 robustness in Phase 11 experiments.
+    auxiliary heads that did not improve INT8 robustness in Phase 11
+    experiments. It also keeps the tiny two-layer full-resolution refinement
+    block before the final heatmap heads so peak sharpening stays consistent
+    with the main geometry family.
 
     Architecture:
     - Backbone: MobileNetV2 (alpha=0.35, optionally ImageNet pretrained)
@@ -716,6 +1163,13 @@ def build_heatmap_angle_model(
         name="angle_decoder_refine_112",
     )(x)
     x = layers.UpSampling2D(size=(2, 2), interpolation="bilinear", name="angle_decoder_up_4")(x)
+
+    # Add a compact full-resolution sharpening stage before the
+    # heatmap heads.
+    x = _full_resolution_refine_block(
+        x,
+        name="angle_decoder_refine_fullres",
+    )
 
     # Heatmap heads
     center_heatmap = layers.Conv2D(

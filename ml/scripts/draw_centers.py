@@ -3,7 +3,7 @@ from pathlib import Path
 import csv
 
 project_root = Path("/mnt/d/Projects/embedded-gauge-reading-tinyml")
-manifest = project_root / "ml" / "data" / "ai_annotated_centers.csv"
+manifest = project_root / "ml" / "data" / "ai_annotated_board_captures.csv"
 out_dir = project_root / "tmp" / "center_debug"
 out_dir.mkdir(parents=True, exist_ok=True)
 

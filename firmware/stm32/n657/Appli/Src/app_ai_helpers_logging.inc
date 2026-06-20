@@ -1116,3 +1116,38 @@ static bool AppAI_EstimateGaugeCropBoxFromYuv422(const uint8_t *frame_bytes,
 		biased_center_y = (bright_center_y > bounded_y_bias) ? (bright_center_y - bounded_y_bias) : 0U;
 	}
 
+	left = (biased_center_x > (crop_width_pixels / 2U)) ? (biased_center_x - (crop_width_pixels / 2U)) : 0U;
+	top = (biased_center_y > (crop_height_pixels / 2U)) ? (biased_center_y - (crop_height_pixels / 2U)) : 0U;
+	right = left + crop_width_pixels;
+	bottom = top + crop_height_pixels;
+	if (right > frame_width_pixels)
+	{
+		right = frame_width_pixels;
+		left = (right > crop_width_pixels) ? (right - crop_width_pixels)
+										   : 0U;
+	}
+	if (bottom > frame_height_pixels)
+	{
+		bottom = frame_height_pixels;
+		top = (bottom > crop_height_pixels) ? (bottom - crop_height_pixels)
+											: 0U;
+	}
+
+	if ((right <= left) || (bottom <= top))
+	{
+		return false;
+	}
+
+	*crop_x_min = left;
+	*crop_y_min = top;
+	*crop_width = right - left;
+	*crop_height = bottom - top;
+
+	if ((*crop_width < min_crop_width) || (*crop_height < min_crop_height))
+	{
+		return false;
+	}
+
+	return true;
+}
+

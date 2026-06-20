@@ -125,8 +125,11 @@ def angle_from_polar_prediction(
 ) -> float:
     """Extract the needle angle from a predicted polar needle mask.
 
-    Uses a weighted average (soft argmax) along the horizontal axis to
-    estimate the needle column, then converts back to degrees.
+    The decode is intentionally more robust than a plain argmax:
+    1. Collapse the mask vertically into a 1D angular profile.
+    2. Remove the background floor with a median subtraction.
+    3. Smooth the profile slightly so quantization noise matters less.
+    4. Estimate the peak angle with a local quadratic fit and a weighted fallback.
 
     Args:
         predicted_mask: Predicted mask of shape (H, W, 1) or (H, W).
@@ -139,16 +142,58 @@ def angle_from_polar_prediction(
         raise ValueError(f"Expected 2D mask after squeeze, got shape {mask.shape}")
 
     height, width = mask.shape
-    # Sum vertically to get a 1D profile across angles.
-    profile = np.sum(mask, axis=0)  # shape (W,)
+    if height <= 0 or width <= 0:
+        return 0.0
 
-    if np.sum(profile) < 1e-6:
+    # Sum vertically to get a 1D profile across angles.
+    profile_raw = np.sum(mask.astype(np.float32), axis=0)
+    if float(np.sum(profile_raw)) <= 1e-6:
         return 0.0  # Fallback for empty mask.
 
-    # Soft argmax for sub-pixel precision.
-    coords = np.arange(width, dtype=np.float32)
-    weights = profile / np.sum(profile)
-    center_col = float(np.sum(coords * weights))
+    # Remove the background floor and smooth the profile a little.
+    profile = np.clip(profile_raw - float(np.median(profile_raw)), 0.0, None)
+    padded = np.pad(profile, (1, 1), mode="edge")
+    profile = 0.25 * padded[:-2] + 0.50 * padded[1:-1] + 0.25 * padded[2:]
+
+    peak_index = int(np.argmax(profile))
+    window_radius = max(3, min(8, width // 32))
+    window_start = max(0, peak_index - window_radius)
+    window_end = min(width, peak_index + window_radius + 1)
+    window_indices = np.arange(window_start, window_end, dtype=np.float32)
+    window_weights = profile[window_start:window_end].astype(np.float32)
+    window_weights = np.clip(window_weights, 0.0, None)
+    window_weights = np.power(window_weights, 1.5)
+
+    center_col: float | None = None
+    if width >= 3:
+        if peak_index <= 0:
+            x_coords = np.array([0.0, 1.0, 2.0], dtype=np.float32)
+            y_coords = profile_raw[:3]
+            x_origin = 0.0
+        elif peak_index >= width - 1:
+            x_coords = np.array([-2.0, -1.0, 0.0], dtype=np.float32)
+            y_coords = profile_raw[-3:]
+            x_origin = float(width - 1)
+        else:
+            x_coords = np.array([-1.0, 0.0, 1.0], dtype=np.float32)
+            y_coords = profile_raw[peak_index - 1 : peak_index + 2]
+            x_origin = float(peak_index)
+
+        coeffs = np.polyfit(x_coords, y_coords, deg=2)
+        if abs(float(coeffs[0])) > 1e-8:
+            vertex = x_origin - (float(coeffs[1]) / (2.0 * float(coeffs[0])))
+            if np.isfinite(vertex):
+                center_col = float(vertex)
+
+    if center_col is None:
+        if float(np.sum(window_weights)) <= 1e-6:
+            center_col = float(peak_index)
+        else:
+            center_col = float(np.sum(window_indices * window_weights) / np.sum(window_weights))
+
+    # The angular axis is linear in the image, so keep the estimate inside the
+    # finite raster instead of letting an extrapolated peak drift outside it.
+    center_col = min(max(center_col, 0.0), float(width - 1))
 
     # Convert column back to angle.
     angle_deg = (center_col / float(width)) * 360.0

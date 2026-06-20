@@ -18,36 +18,16 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
-/* Prod v0.8: source-crop-box stage is disabled by default.
- * The OBB + luma + polar-vote cascade replaces it.
- * Define APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE=1 from the compiler command line
- * to re-enable for debug comparisons. */
-#ifndef APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
-#define APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE 0U
+/* Force the live firmware onto the sc128 tip-focus geometry path even when
+ * the generated CubeIDE makefile leaves the stage switch at its default 0.
+ * This keeps app_ai.c, app_threadx.c, and the runtime tail aligned on the
+ * same compile-time route. */
+#ifdef APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
+#undef APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 #endif
+#define APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE 1U
 
-#if APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
-/** @brief Path to the source-crop-box model image on xSPI2 flash (legacy debug-only). */
-#define APP_AI_SOURCE_CROP_BOX_XSPI2_MODEL_IMAGE_PATH \
-	"atonbuf.source_crop_box.xSPI2.raw"
-
-/** @brief Base address for the source-crop-box model in xSPI2 mapped window (legacy). */
-#define APP_AI_XSPI2_SOURCE_CROP_BOX_BASE_ADDR 0x70B00000UL
-
-/** @brief Chip offset for the source-crop-box model from xSPI2 chip base (legacy). */
-#define APP_AI_XSPI2_SOURCE_CROP_BOX_CHIP_OFFSET (APP_AI_XSPI2_SOURCE_CROP_BOX_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
-
-/** @brief Source-space xyxy crop box produced by the source-crop-box localizer (legacy). */
-typedef struct
-{
-	float x_min;
-	float y_min;
-	float x_max;
-	float y_max;
-} AppAI_SourceCropBox;
-#endif /* APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE */
-
-/* Tip-focus geometry heatmap stage.
+/* Tip-focus SimCC coordinate stage.
  * This is the active live-board geometry model wrapper, so expose it through
  * the public AI header for the runtime and the ThreadX bootstrap. */
 #include "ai_network_tip_focus_v4_112_int8.h"
@@ -64,10 +44,10 @@ typedef struct
 bool App_AI_Model_Init(void);
 
 /**
- * @brief Run a one-shot inference using a captured 320x320 YUV422 frame.
+ * @brief Run a one-shot inference using a captured 224x224 YUV422 frame.
  *
- * The helper converts the colour frame into the model float32 RGB input
- * buffer, runs the generated LL_ATON runtime once, and logs the output
+ * The helper converts the colour frame into the model int8 RGB input buffer,
+ * runs the generated LL_ATON runtime once, and logs the SimCC output
  * summary.
  *
  * @param frame_bytes Pointer to the captured frame bytes.
@@ -81,9 +61,9 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 /**
  * @brief Ensure xSPI2 flash is in memory-mapped mode for NPU weight access.
  *
- * The generated LL_ATON code dereferences _mem_pool_xSPI2_Default pointers
- * to read coefficient vectors directly from xSPI2 flash.  If a prior stage
- * left xSPI2 in indirect mode, those CPU-side reads will hang the bus.
+ * The generated LL_ATON code dereferences the xSPI2 model pool directly to
+ * read coefficient vectors from flash. If a prior stage left xSPI2 in
+ * indirect mode, those CPU-side reads will hang the bus.
  *
  * Call this before any inference that uses pool-7+xSPI2 weight data.
  *
@@ -105,10 +85,10 @@ bool App_AI_GetLastInferenceResult(float *value_out);
  * @brief Verify that tip-focus weights are programmed in xSPI2 flash.
  *
  * Reads the signature bytes from xSPI2 at 0x70400000 and compares
- * against the expected network_atonbuf.xSPI2.raw header.
+ * against the expected simcc_gauge_v2_spatial_qat_sc128_int8_atonbuf.xSPI2.raw header.
  *
  * @retval true xSPI2 contains valid tip-focus weights.
- * @retval false xSPI2 is empty or corrupted - run flash_boot.bat.
+ * @retval false xSPI2 is empty or corrupted - run flash_boot.ps1.
  */
 bool AppAI_VerifyTipFocusWeights(void);
 

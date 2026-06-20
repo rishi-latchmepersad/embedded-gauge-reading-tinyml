@@ -33,7 +33,7 @@ extern int mcu_cache_clean_range(uint32_t start_addr, uint32_t end_addr);
 extern int mcu_cache_invalidate_range(uint32_t start_addr, uint32_t end_addr);
 
 /* Generated ST Edge AI package for the heatmap center detector. */
-#include "../../st_ai_output/packages/heatmap_cd_tiny/st_ai_output/heatmap_cd.h"
+#include "../../st_ai_output/packages/heatmap_cd_v4s_80/st_ai_output/heatmap_cd.h"
 
 /* USER CODE END Includes */
 
@@ -49,26 +49,33 @@ extern int mcu_cache_invalidate_range(uint32_t start_addr, uint32_t end_addr);
 #define CENTER_DET_INPUT_HEIGHT CAMERA_CAPTURE_HEIGHT_PIXELS
 #define CENTER_DET_INPUT_CHANS  3U
 
-/* Heatmap output dimensions from the deployed DS-CNN v4 package. */
-#define CENTER_DET_HEATMAP_WIDTH  160U
-#define CENTER_DET_HEATMAP_HEIGHT 160U
+/* Heatmap output dimensions from the deployed DS-CNN 80x80 slim package. */
+#define CENTER_DET_HEATMAP_WIDTH  80U
+#define CENTER_DET_HEATMAP_HEIGHT 80U
 
 /* Quantization for the heatmap output tensor. */
 #define CENTER_DET_HEATMAP_OUTPUT_SCALE 0.00390625f
 
-/* Reject flat or clearly broken heatmaps before we turn them into a pivot. */
-#define CENTER_DET_MIN_PEAK_VALUE 0.05f
+/* Reject flat or clearly broken heatmaps before we turn them into a pivot.
+ * The sigmoid output may peak as low as ~0.02 when the CNN is uncertain but
+ * still encodes a useful argmax location — the fallback-centre-distance guard
+ * catches pathological cases. */
+#define CENTER_DET_MIN_PEAK_VALUE 0.02f
 
 /* Reject CNN outputs that land far away from the trusted fallback centre.
  * The board-facing failure mode we care about is a collapsed output or a
- * center estimate that is clearly nowhere near the OBB/polar fallback. */
-#define CENTER_DET_FALLBACK_MAX_DELTA_PX 48.0f
+ * center estimate that is clearly nowhere near the OBB/polar fallback.
+ * Increased from 48 to 150 px (2026-06-08) — the rim-vote fallback centre
+ * can land near the outer bezel (y ~260 px) while the CNN correctly finds
+ * the inner dial centre (y ~157 px), creating a ~100 px gap. 150 px covers
+ * this without letting through a completely spurious output. */
+#define CENTER_DET_FALLBACK_MAX_DELTA_PX 150.0f
 
-/* The tiny heatmap model is staged in xSPI2, then copied into AXISRAM2
- * before the network is initialised. */
+/* The DS-CNN v4 model reads weights directly from xSPI2 flash at 0x70200000;
+ * no AXISRAM2 copy is needed.  Activation scratch uses xSPI1 hyperRAM +
+ * on-chip AXISRAM2-6, managed by the NPU runtime. */
 #define CENTER_DET_MODEL_FLASH_BASE_ADDR 0x70200000UL
-#define CENTER_DET_MODEL_RAM_BASE_ADDR   0x34100000UL
-#define CENTER_DET_MODEL_IMAGE_BYTES     69457U
+#define CENTER_DET_MODEL_IMAGE_BYTES     273137U  /* DS-CNN v4-S 80x80 raw blob */
 #define CENTER_DET_MODEL_SIGNATURE_BYTES 16U
 
 /* USER CODE END PD */
@@ -80,18 +87,19 @@ extern int mcu_cache_invalidate_range(uint32_t start_addr, uint32_t end_addr);
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
 
-/** Scratch buffer for the 320x320 RGB crop fed to the NPU. */
+/** Scratch buffer for the 224x224 RGB crop fed to the NPU. */
 static uint8_t center_det_input_buf[CENTER_DET_INPUT_WIDTH * CENTER_DET_INPUT_HEIGHT * CENTER_DET_INPUT_CHANS]
 	__attribute__((section(".tip_focus_activations"), aligned(32)));
 
-/** Tiny-model blob signatures used to validate the staged xSPI2 image. */
+/** DS-CNN v4-S blob signatures (same first/last 16 bytes as DS-CNN v4).
+ * Raw blob: 273,137 bytes at 0x70200000. */
 static const uint8_t center_det_model_signature_start[CENTER_DET_MODEL_SIGNATURE_BYTES] = {
-	0xB5U, 0x3FU, 0x43U, 0x0AU, 0x50U, 0xD3U, 0x0AU, 0x08U,
-	0xBCU, 0x1BU, 0xB6U, 0xB1U, 0xD6U, 0xDDU, 0x0FU, 0x0CU,
+	0x80U, 0x80U, 0x81U, 0x82U, 0x83U, 0x83U, 0x84U, 0x85U,
+	0x86U, 0x87U, 0x87U, 0x88U, 0x89U, 0x8AU, 0x8BU, 0x8BU,
 };
 static const uint8_t center_det_model_signature_tail[CENTER_DET_MODEL_SIGNATURE_BYTES] = {
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
-	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x90U,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x80U,
 };
 
 /** NPU instance and interface declared here via the Cube.AI macro. */
@@ -120,7 +128,7 @@ static void AppCenterDetector_ComputeResizeWithPadGeometry(
 
 /**
  * @brief Resample the selected crop from the YUV422 full frame into the
- *        uint8 RGB 320x320 input buffer using resize-with-pad geometry.
+ *        uint8 RGB 224x224 input buffer using resize-with-pad geometry.
  */
 static bool AppCenterDetector_FillInputFromCrop(
 	const uint8_t *frame_bytes, size_t frame_size,
@@ -128,17 +136,15 @@ static bool AppCenterDetector_FillInputFromCrop(
 	size_t crop_x, size_t crop_y, size_t crop_w, size_t crop_h);
 
 /**
- * @brief Decode the heatmap output into a sub-pixel center estimate.
+ * @brief Decode the heatmap output into a center estimate via soft-argmax.
+ *
+ * Computes the intensity-weighted centroid of the uint8 heatmap.  Raw
+ * pixel values are used directly — the output scale factor cancels in
+ * the ratio, so no per-element dequantization is needed.
  */
 static bool AppCenterDetector_DecodeHeatmapOutput(
 	const uint8_t *output_ptr, size_t output_len_bytes,
 	float *center_row_out, float *center_col_out, float *peak_value_out);
-
-/**
- * @brief One-dimensional parabolic refinement around the argmax peak.
- */
-static float AppCenterDetector_ParabolicRefineAxis(
-	float left, float center, float right);
 
 /**
  * @brief Decide whether the CNN center output should be rejected.
@@ -150,11 +156,6 @@ static bool AppCenterDetector_ShouldFallback(
 	bool has_fallback_center,
 	float fallback_center_x, float fallback_center_y,
 	const char **reason_out);
-
-/**
- * @brief Copy the staged tiny-model blob from xSPI2 into AXISRAM2.
- */
-static bool AppCenterDetector_LoadModelImage(void);
 
 /* USER CODE END PFP */
 
@@ -172,16 +173,35 @@ bool AppCenterDetector_Init(void)
 	{
 		return false;
 	}
-	if (!AppCenterDetector_LoadModelImage())
+	/* Verify the xSPI2 flash image signature before using it. */
 	{
-		return false;
+		const uint8_t *source_ptr = (const uint8_t *)CENTER_DET_MODEL_FLASH_BASE_ADDR;
+		(void)mcu_cache_invalidate_range((uint32_t)(uintptr_t)source_ptr,
+			(uint32_t)((uintptr_t)source_ptr + CENTER_DET_MODEL_IMAGE_BYTES));
+		if ((memcmp(source_ptr, center_det_model_signature_start,
+					sizeof(center_det_model_signature_start)) != 0) ||
+			(memcmp(source_ptr + CENTER_DET_MODEL_IMAGE_BYTES -
+					CENTER_DET_MODEL_SIGNATURE_BYTES,
+					center_det_model_signature_tail,
+					sizeof(center_det_model_signature_tail)) != 0))
+		{
+			DebugConsole_WriteString(
+				"[CD] DS-CNN v4 model image signature mismatch in xSPI2.\r\n");
+			return false;
+
+		}
+		DebugConsole_Printf(
+			"[CD] DS-CNN v4 model image verified at 0x%08lX (%lu bytes).\r\n",
+			(unsigned long)CENTER_DET_MODEL_FLASH_BASE_ADDR,
+			(unsigned long)CENTER_DET_MODEL_IMAGE_BYTES);
 	}
+	/* The DS-CNN v4 model reads weights directly from xSPI2; no AXISRAM2
+	 * copy is needed.  The hyperRAM (xSPI1) scratch is managed by the NPU
+	 * runtime via _mem_pool_xSPI1_heatmap_cd. */
 	if (!LL_ATON_EC_Network_Init_heatmap_cd())
 	{
 		return false;
 	}
-	/* The generated EC init is a stub; the runtime instance still needs the
-	 * generic LL_ATON network initialization before we can run epochs. */
 	LL_ATON_RT_Init_Network(&NN_Instance_heatmap_cd);
 	center_det_initialized = true;
 	return true;
@@ -351,7 +371,7 @@ bool AppCenterDetector_Run(const uint8_t *frame_bytes, size_t frame_size,
 		AppCenterDetector_ComputeResizeWithPadGeometry(
 			crop_width, crop_height, &resize_scale, &pad_x, &pad_y);
 
-		/* Convert the 160x160 heatmap location back into the 320x320 crop
+		/* Convert the heatmap location back into the 224x224 crop
 		 * space, then invert the resize-with-pad transform to recover the
 		 * full-frame pixel centre. */
 		const float heatmap_to_input_scale =
@@ -393,11 +413,24 @@ bool AppCenterDetector_Run(const uint8_t *frame_bytes, size_t frame_size,
 			{
 				if (has_trusted_fallback)
 				{
+					const long cnn_cx10 = lroundf(ff_cx * 10.0f);
+					const long cnn_cy10 = lroundf(ff_cy * 10.0f);
+					const long fb_cx10 = lroundf(fallback_center_x * 10.0f);
+					const long fb_cy10 = lroundf(fallback_center_y * 10.0f);
+					const float cnn_fb_delta = sqrtf(
+						(ff_cx - fallback_center_x) * (ff_cx - fallback_center_x) +
+						(ff_cy - fallback_center_y) * (ff_cy - fallback_center_y));
+					const long delta10 = lroundf(cnn_fb_delta * 10.0f);
 					DebugConsole_Printf(
-						"[CD] CNN output rejected (%s); using fallback centre: "
-						"(%.1f,%.1f)\r\n",
+						"[CD] CNN output rejected (%s); CNN=(%ld.%01ld,%ld.%01ld) "
+						"fallback=(%ld.%01ld,%ld.%01ld) delta=%ld.%01ldpx > %ldpx\r\n",
 						(fallback_reason != NULL) ? fallback_reason : "unknown",
-						fallback_center_x, fallback_center_y);
+						labs(cnn_cx10) / 10L, labs(cnn_cx10) % 10L,
+						labs(cnn_cy10) / 10L, labs(cnn_cy10) % 10L,
+						labs(fb_cx10) / 10L, labs(fb_cx10) % 10L,
+						labs(fb_cy10) / 10L, labs(fb_cy10) % 10L,
+						labs(delta10) / 10L, labs(delta10) % 10L,
+						(long)CENTER_DET_FALLBACK_MAX_DELTA_PX);
 					ff_cx = fallback_center_x;
 					ff_cy = fallback_center_y;
 				}
@@ -407,8 +440,8 @@ bool AppCenterDetector_Run(const uint8_t *frame_bytes, size_t frame_size,
 						? fallback_reason
 						: "cnn output rejected";
 					goto center_detector_use_fallback;
-				}
 			}
+		}
 		}
 
 		result->center_x = ff_cx;
@@ -418,11 +451,14 @@ bool AppCenterDetector_Run(const uint8_t *frame_bytes, size_t frame_size,
 center_detector_use_fallback:
 		if (has_trusted_fallback)
 		{
+			const long fb_cx10 = lroundf(fallback_center_x * 10.0f);
+			const long fb_cy10 = lroundf(fallback_center_y * 10.0f);
 			DebugConsole_Printf(
 				"[CD] CNN path unavailable (%s); using fallback centre: "
-				"(%.1f,%.1f)\r\n",
+				"(%ld.%01ld,%ld.%01ld)\r\n",
 				(cnn_failure_reason != NULL) ? cnn_failure_reason : "unknown",
-				fallback_center_x, fallback_center_y);
+				labs(fb_cx10) / 10L, labs(fb_cx10) % 10L,
+				labs(fb_cy10) / 10L, labs(fb_cy10) % 10L);
 			ff_cx = fallback_center_x;
 			ff_cy = fallback_center_y;
 			result->center_x = ff_cx;
@@ -547,45 +583,6 @@ static void AppCenterDetector_YuvToRgb_uint8(
 	{
 		*b_out = (uint8_t)b;
 	}
-}
-
-static bool AppCenterDetector_LoadModelImage(void)
-{
-	const uint8_t *source_ptr =
-		(const uint8_t *)CENTER_DET_MODEL_FLASH_BASE_ADDR;
-	uint8_t *dest_ptr = (uint8_t *)CENTER_DET_MODEL_RAM_BASE_ADDR;
-	const uint32_t source_start = (uint32_t)(uintptr_t)source_ptr;
-	const uint32_t source_end = source_start + (uint32_t)CENTER_DET_MODEL_IMAGE_BYTES;
-	const uint32_t dest_start = (uint32_t)(uintptr_t)dest_ptr;
-	const uint32_t dest_end = dest_start + (uint32_t)CENTER_DET_MODEL_IMAGE_BYTES;
-
-	if ((source_ptr == NULL) || (dest_ptr == NULL))
-	{
-		return false;
-	}
-
-	/* Keep the xSPI2 bytes fresh in case the blob was just reflashed. */
-	(void)mcu_cache_invalidate_range(source_start, source_end);
-
-	if ((memcmp(source_ptr, center_det_model_signature_start,
-				sizeof(center_det_model_signature_start)) != 0) ||
-		(memcmp(source_ptr + CENTER_DET_MODEL_IMAGE_BYTES -
-				CENTER_DET_MODEL_SIGNATURE_BYTES,
-				center_det_model_signature_tail,
-				sizeof(center_det_model_signature_tail)) != 0))
-	{
-		DebugConsole_WriteString(
-			"[CD] heatmap model image signature mismatch in xSPI2.\r\n");
-		return false;
-	}
-
-	memcpy(dest_ptr, source_ptr, CENTER_DET_MODEL_IMAGE_BYTES);
-	(void)mcu_cache_clean_range(dest_start, dest_end);
-
-	DebugConsole_Printf(
-		"[CD] heatmap model image copied to AXISRAM2 (%lu bytes).\r\n",
-		(unsigned long)CENTER_DET_MODEL_IMAGE_BYTES);
-	return true;
 }
 
 static bool AppCenterDetector_FillInputFromCrop(
@@ -714,31 +711,6 @@ static void AppCenterDetector_ComputeResizeWithPadGeometry(
 	}
 }
 
-static float AppCenterDetector_ParabolicRefineAxis(
-	float left, float center, float right)
-{
-	const float denom = left - (2.0f * center) + right;
-	float offset = 0.0f;
-
-	if (fabsf(denom) < 1.0e-6f)
-	{
-		return 0.0f;
-	}
-
-	/* Fit a parabola through the three samples and return the sub-pixel peak
-	 * shift relative to the center sample. */
-	offset = 0.5f * (left - right) / denom;
-	if (offset < -1.0f)
-	{
-		offset = -1.0f;
-	}
-	else if (offset > 1.0f)
-	{
-		offset = 1.0f;
-	}
-	return offset;
-}
-
 static bool AppCenterDetector_DecodeHeatmapOutput(
 	const uint8_t *output_ptr, size_t output_len_bytes,
 	float *center_row_out, float *center_col_out, float *peak_value_out)
@@ -746,8 +718,10 @@ static bool AppCenterDetector_DecodeHeatmapOutput(
 	const size_t heatmap_width = CENTER_DET_HEATMAP_WIDTH;
 	const size_t heatmap_height = CENTER_DET_HEATMAP_HEIGHT;
 	const size_t heatmap_elems = heatmap_width * heatmap_height;
-	size_t peak_index = 0U;
 	uint8_t peak_q = 0U;
+	uint32_t total_weight = 0U;
+	uint32_t weighted_row = 0U;
+	uint32_t weighted_col = 0U;
 	float peak_value = 0.0f;
 	float center_row = 0.0f;
 	float center_col = 0.0f;
@@ -761,14 +735,28 @@ static bool AppCenterDetector_DecodeHeatmapOutput(
 		return false;
 	}
 
+	/* Single-pass soft-argmax: accumulate weighted sums for center-of-mass
+	 * while tracking the peak for the fallback guard.
+	 *
+	 * Using raw uint8 values avoids dequantizing every element — the
+	 * output scale (0.00390625) and zero_point (0) cancel in the ratio.
+	 * The 80×80 namespace (≤ 6400 × 255 = 1,632,000) fits safely in
+	 * uint32_t for both the weight sum and the weighted-coordinate sums
+	 * (max row 79 × 255 × 6400 ≈ 129M). */
 	for (size_t index = 0U; index < heatmap_elems; ++index)
 	{
 		const uint8_t value = output_ptr[index];
+		const size_t row = index / heatmap_width;
+		const size_t col = index % heatmap_width;
+
 		if (value > peak_q)
 		{
 			peak_q = value;
-			peak_index = index;
 		}
+
+		total_weight += (uint32_t)value;
+		weighted_row += (uint32_t)value * (uint32_t)row;
+		weighted_col += (uint32_t)value * (uint32_t)col;
 	}
 
 	peak_value = ((float)peak_q) * CENTER_DET_HEATMAP_OUTPUT_SCALE;
@@ -777,29 +765,19 @@ static bool AppCenterDetector_DecodeHeatmapOutput(
 		return false;
 	}
 
-	center_row = (float)(peak_index / heatmap_width);
-	center_col = (float)(peak_index % heatmap_width);
-
-	if ((peak_index % heatmap_width) > 0U && (peak_index % heatmap_width) < (heatmap_width - 1U))
+	if (total_weight > 0U)
 	{
-		const size_t row = peak_index / heatmap_width;
-		const size_t col = peak_index % heatmap_width;
-		const float left = (float)output_ptr[(row * heatmap_width) + (col - 1U)];
-		const float center = (float)output_ptr[(row * heatmap_width) + col];
-		const float right = (float)output_ptr[(row * heatmap_width) + (col + 1U)];
-		center_col += AppCenterDetector_ParabolicRefineAxis(left, center, right);
+		center_row = (float)weighted_row / (float)total_weight;
+		center_col = (float)weighted_col / (float)total_weight;
+	}
+	else
+	{
+		/* Degenerate case: all-zero heatmap — shouldn't happen after peak
+		 * check, but guard for safety. */
+		return false;
 	}
 
-	if ((peak_index / heatmap_width) > 0U && (peak_index / heatmap_width) < (heatmap_height - 1U))
-	{
-		const size_t row = peak_index / heatmap_width;
-		const size_t col = peak_index % heatmap_width;
-		const float up = (float)output_ptr[((row - 1U) * heatmap_width) + col];
-		const float center = (float)output_ptr[(row * heatmap_width) + col];
-		const float down = (float)output_ptr[((row + 1U) * heatmap_width) + col];
-		center_row += AppCenterDetector_ParabolicRefineAxis(up, center, down);
-	}
-
+	/* Clamp to heatmap bounds (edge cases from rounding). */
 	if (center_row < 0.0f)
 	{
 		center_row = 0.0f;

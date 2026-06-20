@@ -15,6 +15,9 @@
 - Each block of code should have a docstring or comment explaining what it does. Every few lines should have inline comments explaining why we're doing the lines.
 - We will use keras and tensorflow for ML.
 - We will use TFLM for export, and STM32 Cube.AI for integration into the board.
+- For deployment candidates, train from scratch with TFLite-compatible QAT
+  only. Do not spend time on post-training quantization, float16 export, or
+  conversion-rescue experiments once a family has shown TFLite mismatch.
 - We will use STM32 Cube IDE extension for development of the C code.
 - We will use STM32 Cube MX for development of the C BSP packages etc.
 - Favor `src/` layout conventions and Poetry tooling.
@@ -37,6 +40,12 @@
 - Prefer `pytest` for tests.
 - Use WSL for ML work, with the GPU preferred.
 - Prepare explicit WSL handoff scripts in `tmp/` for model jobs and let DeepSeek run those directly; keep the workflow script-driven instead of manual and stateful.
+- Before board packaging, run a Keras-vs-TFLite parity check on a small validation sample set so graph-conversion issues are caught early.
+- `nohup` does not work reliably with `poetry run` in WSL — background jobs get killed when the shell exits. Use `setsid` + `disown` instead:
+    ```bash
+    setsid poetry run python scripts/train_qat_micro_yolov8.py > /tmp/log.log 2>&1 &
+    disown
+    ```
 - Always run jobs in bash scripts inside WSL, and tail the logs so you can see when they hang or fail.
 - Use the `d:/Projects/embedded-gauge-reading-tinyml/tmp/` directory for all temporary files and folders (e.g., `tmp_*`, `artifacts/tmp_*`). This replaces any `tmp/` or `tmp_*/` folders that were previously in the project root.
 

@@ -31,6 +31,7 @@ from embedded_gauge_reading_tinyml.polar_projection import polar_project_image
 
 RGBImage = NDArray[np.uint8]
 FirmwareTensor = NDArray[np.int8]
+PolarInputMode = Literal["rgb", "edge3", "rgb_edge6", "rgb_edge6_vote7"]
 
 DEFAULT_IMAGE_SIZE: Final[int] = 224
 CAPTURE_YUV422_SUFFIX: Final[str] = ".yuv422"
@@ -351,7 +352,7 @@ def _score_polar_alignment(polar_rgb: NDArray[np.float32]) -> float:
 def _polar_rgb_to_vote_channels(
     polar_rgb: NDArray[np.float32],
     *,
-    input_mode: Literal["rgb", "edge3", "rgb_edge6", "rgb_edge6_vote7"],
+    input_mode: PolarInputMode,
 ) -> NDArray[np.float32]:
     """Convert a polar RGB image into the float32 representation used by training."""
     if polar_rgb.ndim != 3 or polar_rgb.shape[2] != 3:
@@ -387,6 +388,38 @@ def _polar_rgb_to_vote_channels(
 
     vote_prior = _build_polar_vote_prior_channel(luma, edge3[..., 1])
     return np.concatenate([polar_rgb, edge3, vote_prior], axis=-1).astype(np.float32)
+
+
+def polar_rgb_to_training_features(
+    polar_rgb: NDArray[np.float32],
+    *,
+    input_mode: PolarInputMode = "rgb_edge6_vote7",
+) -> NDArray[np.float32]:
+    """Public wrapper for the polar training feature stack used by the board path.
+
+    The training script uses this helper so the model sees the same feature
+    representation that the firmware will construct at inference time.
+    """
+
+    return _polar_rgb_to_vote_channels(polar_rgb, input_mode=input_mode)
+
+
+def polar_rgb_batch_to_training_features(
+    polar_rgb_batch: NDArray[np.float32],
+    *,
+    input_mode: PolarInputMode = "rgb_edge6_vote7",
+) -> NDArray[np.float32]:
+    """Convert a batch of polar RGB tensors into the requested feature stack."""
+
+    batch = np.asarray(polar_rgb_batch, dtype=np.float32)
+    if batch.ndim != 4 or batch.shape[-1] != 3:
+        raise ValueError("polar_rgb_batch must have shape (N, H, W, 3).")
+
+    features = [
+        polar_rgb_to_training_features(polar_rgb, input_mode=input_mode)
+        for polar_rgb in batch
+    ]
+    return np.stack(features, axis=0).astype(np.float32)
 
 
 def _build_polar_vote_tensor_from_polar_rgb(

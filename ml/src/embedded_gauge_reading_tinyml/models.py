@@ -4703,3 +4703,247 @@ def build_mobilenetv2_heatmap_center_model(
     )
     setattr(model, "_mobilenet_backbone", backbone)
     return model
+
+
+def build_mobilenetv2_obb_center_model(
+    image_height: int = 320,
+    image_width: int = 320,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 0.50,
+    head_units_1: int = 256,
+    head_units_2: int = 96,
+    head_dropout_1: float = 0.25,
+    head_dropout_2: float = 0.15,
+) -> keras.Model:
+    """Build a MobileNetV2 + CoordConv model that jointly predicts OBB and center.
+
+    Uses a shared MobileNetV2 backbone with CoordConv positional encoding so the
+    model always knows absolute pixel position — critical for precise center
+    regression after the bottleneck GAP layer discards most spatial information.
+    Two lightweight prediction heads share the same features:
+      - ``obb_params``: [cx, cy, w, h, cos(2θ), sin(2θ)] in normalised coords.
+      - ``center_xy``:  [cx, cy] in normalised [0,1] coords (needle pivot).
+
+    Args:
+        image_height: Input image height (pixels).
+        image_width: Input image width (pixels).
+        pretrained: Whether to load ImageNet weights.
+        backbone_trainable: Whether the backbone is trainable (False for
+            warm-up, True for fine-tuning).
+        alpha: MobileNetV2 width multiplier.
+        head_units_1: Units in the first dense layer after GAP.
+        head_units_2: Units in the second dense layer.
+        head_dropout_1: Dropout rate after the first dense layer.
+        head_dropout_2: Dropout rate after the second dense layer.
+
+    Returns:
+        A ``keras.Model`` with dict outputs ``{"obb_params", "center_xy"}``.
+    """
+    inputs = keras.Input(shape=(image_height, image_width, 3), name="image")
+
+    # --- CoordConv: positional encoding channels -----------------------------
+    # Generate normalised x/y coordinate grids in [-1, 1] so the model
+    # always knows absolute position — GAP on a 10×10 feature map discards
+    # almost all spatial information, so we inject it here.
+    y_grid = tf.linspace(-1.0, 1.0, image_height)
+    x_grid = tf.linspace(-1.0, 1.0, image_width)
+    yy, xx = tf.meshgrid(y_grid, x_grid, indexing="ij")
+    coords = tf.stack([xx, yy], axis=-1)  # [H, W, 2]
+    coords = coords[tf.newaxis, ...]  # [1, H, W, 2]
+    coord_input = keras.layers.Lambda(
+        lambda img: tf.tile(
+            coords, [tf.shape(img)[0], 1, 1, 1],
+        ),
+        output_shape=(image_height, image_width, 2),
+        name="coord_channels",
+    )(inputs)
+
+    # Concatenate RGB + coordinate channels → 5-channel input
+    x = keras.layers.Concatenate(name="rgb_coords")([inputs, coord_input])
+
+    # 1×1 conv to map 5 channels back to 3 so MobileNetV2 can consume them.
+    # This learns a small per-pixel projection from (colour + position) to
+    # a colour-like 3-channel representation.
+    x = keras.layers.Conv2D(
+        3, kernel_size=1, use_bias=False, name="coord_proj",
+    )(x)
+
+    # Preprocessing: [0, 1] → [-1, 1] for MobileNetV2.
+    x = keras.layers.Rescaling(
+        2.0, offset=-1.0, name="mobilenetv2_preprocess",
+    )(x)
+
+    base_model = keras.applications.MobileNetV2(
+        include_top=False,
+        weights="imagenet" if pretrained else None,
+        input_shape=(image_height, image_width, 3),
+        alpha=alpha,
+    )
+    base_model.trainable = backbone_trainable
+    features = base_model(x, training=backbone_trainable)
+
+    # --- Deeper shared head for better representational capacity -------------
+    x = keras.layers.GlobalAveragePooling2D(name="dual_gap")(features)
+    x = keras.layers.LayerNormalization(name="dual_ln")(x)
+    x = keras.layers.Dense(
+        head_units_1, activation="swish", name="dual_dense_1",
+    )(x)
+    x = keras.layers.Dropout(head_dropout_1, name="dual_dropout_1")(x)
+    x = keras.layers.Dense(
+        head_units_2, activation="swish", name="dual_dense_2",
+    )(x)
+    x = keras.layers.Dropout(head_dropout_2, name="dual_dropout_2")(x)
+
+    # OBB head: 6-parameter oriented bounding box.
+    center_xy_obb = keras.layers.Dense(
+        2, activation="sigmoid", name="obb_center_xy",
+    )(x)
+    size_wh = keras.layers.Dense(
+        2, activation="sigmoid", name="obb_size_wh",
+    )(x)
+    angle_raw = keras.layers.Dense(2, name="obb_angle_raw")(x)
+    angle_sincos = keras.layers.UnitNormalization(
+        axis=-1, name="obb_angle_sincos",
+    )(angle_raw)
+    obb_params = keras.layers.Concatenate(name="obb_params")(
+        [center_xy_obb, size_wh, angle_sincos],
+    )
+
+    # Center head: direct (cx, cy) prediction for the needle pivot.
+    center_xy = keras.layers.Dense(
+        2, activation="sigmoid", name="center_xy",
+    )(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={"obb_params": obb_params, "center_xy": center_xy},
+        name=(
+            f"mobilenetv2_obb_center_cc_a{int(round(alpha*100)):03d}"
+            f"_h{head_units_1}-{head_units_2}"
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
+
+
+def build_mobilenetv3_obb_center_model(
+    image_height: int = 320,
+    image_width: int = 320,
+    *,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    alpha: float = 0.75,
+    head_units_1: int = 256,
+    head_units_2: int = 96,
+    head_dropout_1: float = 0.25,
+    head_dropout_2: float = 0.15,
+) -> keras.Model:
+    """Build a MobileNetV3-Small + CoordConv model that jointly predicts OBB and center.
+
+    Uses a shared MobileNetV3-Small backbone with CoordConv positional encoding so the
+    model always knows absolute pixel position — critical for precise center
+    regression after the bottleneck GAP layer discards most spatial information.
+    Two lightweight prediction heads share the same features:
+      - ``obb_params``: [cx, cy, w, h, cos(2θ), sin(2θ)] in normalised coords.
+      - ``center_xy``:  [cx, cy] in normalised [0,1] coords (needle pivot).
+
+    MobileNetV3-Small expects [0, 1] input (unlike V2 which uses [-1, 1]).
+
+    Args:
+        image_height: Input image height (pixels).
+        image_width: Input image width (pixels).
+        pretrained: Whether to load ImageNet weights.
+        backbone_trainable: Whether the backbone is trainable (False for
+            warm-up, True for fine-tuning).
+        alpha: MobileNetV3-Small width multiplier.
+        head_units_1: Units in the first dense layer after GAP.
+        head_units_2: Units in the second dense layer.
+        head_dropout_1: Dropout rate after the first dense layer.
+        head_dropout_2: Dropout rate after the second dense layer.
+
+    Returns:
+        A ``keras.Model`` with dict outputs ``{"obb_params", "center_xy"}``.
+    """
+    inputs = keras.Input(shape=(image_height, image_width, 3), name="image")
+
+    # --- CoordConv: positional encoding channels -----------------------------
+    # Generate normalised x/y coordinate grids in [-1, 1] so the model
+    # always knows absolute position — GAP on a 10×10 feature map discards
+    # almost all spatial information, so we inject it here.
+    y_grid = tf.linspace(-1.0, 1.0, image_height)
+    x_grid = tf.linspace(-1.0, 1.0, image_width)
+    yy, xx = tf.meshgrid(y_grid, x_grid, indexing="ij")
+    coords = tf.stack([xx, yy], axis=-1)  # [H, W, 2]
+    coords = coords[tf.newaxis, ...]  # [1, H, W, 2]
+    coord_input = keras.layers.Lambda(
+        lambda img: tf.tile(
+            coords, [tf.shape(img)[0], 1, 1, 1],
+        ),
+        output_shape=(image_height, image_width, 2),
+        name="coord_channels",
+    )(inputs)
+
+    # Concatenate RGB + coordinate channels → 5-channel input
+    x = keras.layers.Concatenate(name="rgb_coords")([inputs, coord_input])
+
+    # 1×1 conv to map 5 channels back to 3 so MobileNetV3 can consume them.
+    # This learns a small per-pixel projection from (colour + position) to
+    # a colour-like 3-channel representation.
+    x = keras.layers.Conv2D(
+        3, kernel_size=1, use_bias=False, name="coord_proj",
+    )(x)
+
+    # MobileNetV3-Small expects [0, 1] input — no rescaling needed.
+    base_model = keras.applications.MobileNetV3Small(
+        include_top=False,
+        weights="imagenet" if pretrained else None,
+        input_shape=(image_height, image_width, 3),
+        alpha=alpha,
+    )
+    base_model.trainable = backbone_trainable
+    features = base_model(x, training=backbone_trainable)
+
+    # --- Shared head for better representational capacity --------------------
+    x = keras.layers.GlobalAveragePooling2D(name="dual_gap")(features)
+    x = keras.layers.LayerNormalization(name="dual_ln")(x)
+    x = keras.layers.Dense(
+        head_units_1, activation="swish", name="dual_dense_1",
+    )(x)
+    x = keras.layers.Dropout(head_dropout_1, name="dual_dropout_1")(x)
+    x = keras.layers.Dense(
+        head_units_2, activation="swish", name="dual_dense_2",
+    )(x)
+    x = keras.layers.Dropout(head_dropout_2, name="dual_dropout_2")(x)
+
+    # OBB head: 6-parameter oriented bounding box.
+    center_xy_obb = keras.layers.Dense(
+        2, activation="sigmoid", name="obb_center_xy",
+    )(x)
+    size_wh = keras.layers.Dense(
+        2, activation="sigmoid", name="obb_size_wh",
+    )(x)
+    angle_raw = keras.layers.Dense(2, name="obb_angle_raw")(x)
+    angle_sincos = keras.layers.UnitNormalization(
+        axis=-1, name="obb_angle_sincos",
+    )(angle_raw)
+    obb_params = keras.layers.Concatenate(name="obb_params")(
+        [center_xy_obb, size_wh, angle_sincos],
+    )
+
+    # Center head: direct (cx, cy) prediction for the needle pivot.
+    center_xy = keras.layers.Dense(
+        2, activation="sigmoid", name="center_xy",
+    )(x)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={"obb_params": obb_params, "center_xy": center_xy},
+        name=(
+            f"mobilenetv3_small_obb_center_cc_a{int(round(alpha*100)):03d}"
+            f"_h{head_units_1}-{head_units_2}"
+        ),
+    )
+    setattr(model, "_mobilenet_backbone", base_model)
+    return model
