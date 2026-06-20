@@ -1,4 +1,8 @@
-"""Training pipeline for gauge-value regression with dial ROI cropping."""
+"""Training pipeline for gauge-value regression with dial ROI cropping.
+
+Public API: ``TrainConfig``, ``TrainingExample``, ``DatasetSplit``,
+``TrainingResult``, and ``train()``.
+"""
 
 from __future__ import annotations
 
@@ -109,6 +113,88 @@ REPO_ROOT: Path = ML_ROOT.parent
 LABELLED_DIR: Path = ML_ROOT / "data" / "labelled"
 RAW_DIR: Path = ML_ROOT / "data" / "raw"
 
+from ._augmentation import (
+    _augment_glare_blobs,
+    _augment_image,
+    _augment_full_frame_box_image,
+    _augment_rectifier_image_and_box,
+)
+from ._data_loading import (
+    _crop_image_with_xyxy,
+    _load_crop_and_preprocess_image,
+    _load_crop_and_preprocess_image_board_style,
+    _load_crop_with_fraction_target,
+    _load_crop_with_fraction_weight,
+    _load_crop_with_geometry_target,
+    _load_crop_with_geometry_uncertainty_target,
+    _load_crop_with_geometry_uncertainty_weight,
+    _load_crop_with_geometry_weight,
+    _load_crop_with_direction_geometry_target,
+    _load_crop_with_direction_geometry_weight,
+    _load_crop_with_interval_target,
+    _load_crop_with_interval_weight,
+    _load_crop_with_keypoint_target,
+    _load_crop_with_keypoint_weight,
+    _load_crop_with_obb_geometry_target,
+    _load_crop_with_obb_geometry_weight,
+    _load_crop_with_obb_mask_geometry_target,
+    _load_crop_with_obb_mask_geometry_weight,
+    _load_crop_with_obb_target,
+    _load_crop_with_obb_weight,
+    _load_crop_with_ordinal_target,
+    _load_crop_with_ordinal_weight,
+    _load_crop_with_weight,
+    _load_crop_with_weight_maybe_board_style,
+    _load_fullframe_obb_data,
+    _load_rectifier_and_preprocess_image,
+    _load_rectifier_with_weight,
+    _load_source_crop_and_preprocess_image,
+    _load_source_crop_corner_target,
+    _load_source_crop_corner_weight,
+    _load_source_crop_with_weight,
+    _preprocess_board_style,
+)
+from ._targets import (
+    _coerce_keypoint_coords,
+    _coerce_keypoint_heatmaps,
+    _compute_fullframe_obb_params,
+    _make_gaussian_heatmap,
+    _make_keypoint_heatmaps,
+    _make_pointer_mask,
+    _make_source_crop_corner_targets,
+    _map_point_to_resized_crop_xy,
+)
+from ._compilation import (
+    _compile_direction_geometry_model,
+    _compile_direction_model,
+    _compile_fraction_model,
+    _compile_geometry_model,
+    _compile_geometry_uncertainty_model,
+    _compile_interval_model,
+    _compile_keypoint_model,
+    _compile_obb_geometry_model,
+    _compile_obb_mask_geometry_model,
+    _compile_obb_model,
+    _compile_ordinal_model,
+    _compile_rectifier_model,
+    _compile_regression_model,
+    _compile_source_crop_box_model,
+    _compile_source_crop_box_v2_model,
+    _compile_source_crop_corner_model,
+    _direction_cosine_loss,
+    _make_pinball_loss,
+    _make_scalar_regression_loss,
+    _source_crop_box_v2_loss,
+)
+from ._weights import (
+    _compute_edge_weights,
+    _compute_range_aware_weights,
+    _edge_weight,
+    _mixup_value_batch,
+    _range_aware_weight,
+    _sample_mixup_lambda,
+)
+
 
 @dataclass(frozen=True)
 class TrainConfig:
@@ -170,45 +256,6 @@ class TrainConfig:
         "mobilenet_v2_ordinal",
     ] = DEFAULT_MODEL_FAMILY
     mobilenet_pretrained: bool = DEFAULT_MOBILENET_PRETRAINED
-    mobilenet_backbone_trainable: bool = DEFAULT_MOBILENET_BACKBONE_TRAINABLE
-    mobilenet_warmup_epochs: int = DEFAULT_MOBILENET_WARMUP_EPOCHS
-    mobilenet_unfreeze_last_n: int = 0
-    mobilenet_freeze_batchnorm: bool = True
-    mobilenet_alpha: float = DEFAULT_MOBILENET_ALPHA
-    mobilenet_head_units: int = DEFAULT_MOBILENET_HEAD_UNITS
-    mobilenet_head_dropout: float = DEFAULT_MOBILENET_HEAD_DROPOUT
-    hard_case_eval_manifest: str | None = None
-    hard_case_manifest: str | None = None
-    hard_case_repeat: int = 0
-    val_manifest: str | None = None
-    test_manifest: str | None = None
-    init_model_path: str | None = None
-    monotonic_pair_strength: float = 0.0
-    monotonic_pair_margin: float = 0.0
-    mixup_alpha: float = 0.0
-    interval_bin_width: float = DEFAULT_INTERVAL_BIN_WIDTH
-    interpolation_pair_strength: float = 0.0
-    interpolation_pair_scale: float = DEFAULT_INTERPOLATION_PAIR_SCALE
-    ordinal_threshold_step: float = DEFAULT_ORDINAL_THRESHOLD_STEP
-    ordinal_loss_weight: float = DEFAULT_ORDINAL_LOSS_WEIGHT
-    sweep_fraction_loss_weight: float = DEFAULT_SWEEP_FRACTION_LOSS_WEIGHT
-    interval_loss_weight: float = DEFAULT_INTERVAL_LOSS_WEIGHT
-    keypoint_heatmap_size: int = DEFAULT_KEYPOINT_HEATMAP_SIZE
-    keypoint_heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT
-    keypoint_coord_loss_weight: float = DEFAULT_KEYPOINT_COORD_LOSS_WEIGHT
-    geometry_value_loss_weight: float = DEFAULT_GEOMETRY_VALUE_LOSS_WEIGHT
-    geometry_uncertainty_loss_weight: float = DEFAULT_GEOMETRY_UNCERTAINTY_LOSS_WEIGHT
-    geometry_uncertainty_low_quantile: float = DEFAULT_GEOMETRY_UNCERTAINTY_LOW_QUANTILE
-    geometry_uncertainty_high_quantile: float = (
-        DEFAULT_GEOMETRY_UNCERTAINTY_HIGH_QUANTILE
-    )
-    # Range-aware sampling: oversample cold/hot tails for better range coverage
-    range_aware_sampling: bool = False
-    cold_tail_fraction: float = 0.15
-    hot_tail_fraction: float = 0.15
-    oversampling_factor: float = 3.0
-    # Keep for config compatibility; the no-calibration pipeline forbids this path.
-    linear_output: bool = False
 
 
 @dataclass(frozen=True)
@@ -231,6 +278,8 @@ class TrainingExample:
     source_crop_corner_box: np.ndarray | None = None
 
 
+
+
 @dataclass(frozen=True)
 class DatasetSplit:
     """Container for train/val/test example splits."""
@@ -238,6 +287,8 @@ class DatasetSplit:
     train_examples: list[TrainingExample]
     val_examples: list[TrainingExample]
     test_examples: list[TrainingExample]
+
+
 
 
 @dataclass(frozen=True)
@@ -250,6 +301,7 @@ class TrainingResult:
     test_metrics: dict[str, float]
     baseline_test_mae: float
     dropped_out_of_sweep: int
+
 
 
 def _validate_split_config(config: TrainConfig) -> None:
@@ -321,6 +373,8 @@ def _validate_split_config(config: TrainConfig) -> None:
         )
 
 
+
+
 def _configure_training_runtime(config: TrainConfig) -> None:
     """Configure TensorFlow runtime for CPU/GPU selection and memory behavior."""
     if config.device == "cpu":
@@ -351,6 +405,8 @@ def _configure_training_runtime(config: TrainConfig) -> None:
         keras.mixed_precision.set_global_policy("mixed_float16")
     else:
         keras.mixed_precision.set_global_policy("float32")
+
+
 
 
 def _configure_mobilenet_backbone_trainability(
@@ -386,6 +442,8 @@ def _configure_mobilenet_backbone_trainability(
                 layer.trainable = False
 
 
+
+
 def _log_runtime_state(config: TrainConfig) -> None:
     """Print the TensorFlow runtime state we care about before training starts."""
     print(
@@ -395,6 +453,8 @@ def _log_runtime_state(config: TrainConfig) -> None:
         f"mixed_precision={keras.mixed_precision.global_policy().name}"
     )
     print("[TRAIN] TensorFlow device probe skipped to avoid WSL stalls.")
+
+
 
 
 def _log_dataset_state(
@@ -421,6 +481,8 @@ def _log_dataset_state(
     )
 
 
+
+
 def _log_model_choice(config: TrainConfig) -> None:
     """Print the selected model family and input geometry before building it."""
     print(
@@ -430,6 +492,8 @@ def _log_model_choice(config: TrainConfig) -> None:
         f"batch_size={config.batch_size} "
         f"epochs={config.epochs}"
     )
+
+
 
 
 def _hard_case_target_kind_for_model_family(model_family: str) -> str:
@@ -477,6 +541,8 @@ def _hard_case_target_kind_for_model_family(model_family: str) -> str:
     return "value"
 
 
+
+
 def _compute_crop_box(
     sample: Sample, pad_ratio: float
 ) -> tuple[float, float, float, float]:
@@ -491,294 +557,6 @@ def _compute_crop_box(
     return (x_min, y_min, x_max, y_max)
 
 
-def _compute_fullframe_obb_params(
-    source_w: int,
-    source_h: int,
-    dial_cx: float,
-    dial_cy: float,
-    dial_rx: float,
-    dial_ry: float,
-    dial_rotation_deg: float,
-    canvas_h: int = 224,
-    canvas_w: int = 224,
-) -> np.ndarray:
-    """Map dial ellipse from source-image coords -> 224x224 canvas normalized.
-
-    Unlike the crop-based pipeline (where cx,cy are always ~0.5), this maps
-    into the full-frame canvas so cx,cy vary with photo composition. The model
-    must actually detect the gauge rather than predict the mean center.
-    """
-    scale: float = min(canvas_w / source_w, canvas_h / source_h)
-    scaled_w: float = source_w * scale
-    scaled_h: float = source_h * scale
-    pad_x: float = (canvas_w - scaled_w) * 0.5
-    pad_y: float = (canvas_h - scaled_h) * 0.5
-
-    canvas_cx: float = dial_cx * scale + pad_x
-    canvas_cy: float = dial_cy * scale + pad_y
-    canvas_w_: float = 2.0 * dial_rx * scale
-    canvas_h_: float = 2.0 * dial_ry * scale
-
-    rotation_rad: float = math.radians(dial_rotation_deg)
-    return np.array(
-        [
-            np.clip(canvas_cx / canvas_w, 0.0, 1.0),
-            np.clip(canvas_cy / canvas_h, 0.0, 1.0),
-            np.clip(canvas_w_ / canvas_w, 0.0, 1.0),
-            np.clip(canvas_h_ / canvas_h, 0.0, 1.0),
-            math.cos(2.0 * rotation_rad),
-            math.sin(2.0 * rotation_rad),
-        ],
-        dtype=np.float32,
-    )
-
-
-def _map_point_to_resized_crop_xy(
-    *,
-    point_xy: tuple[float, float],
-    crop_box_xyxy: tuple[float, float, float, float],
-    image_height: int,
-    image_width: int,
-) -> tuple[float, float]:
-    """Map a point from the original image into the resized crop frame.
-
-    We mirror the crop + resize_with_pad geometry used by the input pipeline so
-    keypoint heatmaps line up with the network input coordinates.
-    """
-    x_min, y_min, x_max, y_max = crop_box_xyxy
-    crop_w: float = max(x_max - x_min, 1.0)
-    crop_h: float = max(y_max - y_min, 1.0)
-    scale: float = min(image_width / crop_w, image_height / crop_h)
-    resized_w: float = crop_w * scale
-    resized_h: float = crop_h * scale
-    pad_x: float = 0.5 * float(image_width - resized_w)
-    pad_y: float = 0.5 * float(image_height - resized_h)
-
-    point_x, point_y = point_xy
-    out_x: float = (point_x - x_min) * scale + pad_x
-    out_y: float = (point_y - y_min) * scale + pad_y
-    return out_x, out_y
-
-
-def _make_gaussian_heatmap(
-    *,
-    point_xy: tuple[float, float],
-    heatmap_size: int,
-    sigma: float = 1.5,
-) -> np.ndarray:
-    """Build a single Gaussian heatmap centered on the given point."""
-    if heatmap_size < 4:
-        raise ValueError("heatmap_size must be >= 4.")
-    if sigma <= 0.0:
-        raise ValueError("sigma must be > 0.")
-
-    center_x, center_y = point_xy
-    yy, xx = np.meshgrid(
-        np.arange(heatmap_size, dtype=np.float32),
-        np.arange(heatmap_size, dtype=np.float32),
-        indexing="ij",
-    )
-    heatmap: np.ndarray = np.exp(
-        -((xx - np.float32(center_x)) ** 2 + (yy - np.float32(center_y)) ** 2)
-        / (2.0 * np.float32(sigma) ** 2)
-    )
-    max_value: float = float(np.max(heatmap))
-    if max_value > 0.0:
-        heatmap = heatmap / max_value
-    return heatmap.astype(np.float32)
-
-
-def _make_keypoint_heatmaps(
-    *,
-    center_xy: tuple[float, float],
-    tip_xy: tuple[float, float],
-    heatmap_size: int,
-    sigma: float = 1.5,
-    extra_keypoints: tuple[tuple[float, float], ...] = (),
-) -> np.ndarray:
-    """Build the heatmap target used by the keypoint-style models.
-
-    The first two channels stay centered on the dial pivot and the pointer tip.
-    Optional extra channels can supervise additional sweep landmarks so the
-    reader learns the full gauge arc instead of only the local pointer pose.
-    """
-    keypoints: list[tuple[float, float]] = [center_xy, tip_xy]
-    keypoints.extend(extra_keypoints)
-    heatmap_channels: list[np.ndarray] = [
-        _make_gaussian_heatmap(
-            point_xy=point_xy,
-            heatmap_size=heatmap_size,
-            sigma=sigma,
-        )
-        for point_xy in keypoints
-    ]
-    return np.stack(heatmap_channels, axis=-1)
-
-
-def _make_pointer_mask(
-    *,
-    center_xy: tuple[float, float],
-    tip_xy: tuple[float, float],
-    mask_size: int,
-    sigma: float = 1.6,
-) -> np.ndarray:
-    """Build a soft pointer-shaft mask from the dial center to the tip."""
-    if mask_size < 4:
-        raise ValueError("mask_size must be >= 4.")
-    if sigma <= 0.0:
-        raise ValueError("sigma must be > 0.")
-
-    center_x, center_y = center_xy
-    tip_x, tip_y = tip_xy
-    yy, xx = np.meshgrid(
-        np.arange(mask_size, dtype=np.float32),
-        np.arange(mask_size, dtype=np.float32),
-        indexing="ij",
-    )
-    dx = np.float32(tip_x - center_x)
-    dy = np.float32(tip_y - center_y)
-    denom = dx * dx + dy * dy
-    if float(denom) <= 0.0:
-        return np.zeros((mask_size, mask_size, 1), dtype=np.float32)
-
-    # Project each pixel onto the needle segment, then convert the distance to
-    # a smooth confidence mask. This is a cheap proxy for a true pointer mask.
-    proj_t = ((xx - np.float32(center_x)) * dx + (yy - np.float32(center_y)) * dy) / denom
-    proj_t = np.clip(proj_t, 0.0, 1.0)
-    proj_x = np.float32(center_x) + proj_t * dx
-    proj_y = np.float32(center_y) + proj_t * dy
-    dist_sq = (xx - proj_x) ** 2 + (yy - proj_y) ** 2
-    mask: np.ndarray = np.exp(-dist_sq / (2.0 * np.float32(sigma) ** 2))
-    max_value: float = float(np.max(mask))
-    if max_value > 0.0:
-        mask = mask / max_value
-    return mask[..., np.newaxis].astype(np.float32)
-
-
-def _make_source_crop_corner_targets(
-    *,
-    crop_box_xyxy: tuple[float, float, float, float],
-    source_image_height: int,
-    source_image_width: int,
-    image_height: int,
-    image_width: int,
-    heatmap_size: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Build the corner heatmaps, coordinates, and normalized box target.
-
-    The crop box corners are first mapped onto the full-frame canvas used by the
-    network input and then normalized so the box head can learn a compact
-    0-1 representation.
-    """
-    source_x0, source_y0, source_x1, source_y1 = crop_box_xyxy
-    source_corners: tuple[tuple[float, float], ...] = (
-        (source_x0, source_y0),
-        (source_x1, source_y0),
-        (source_x1, source_y1),
-        (source_x0, source_y1),
-    )
-    canvas_corners = [
-        _map_point_to_resized_crop_xy(
-            point_xy=corner,
-            crop_box_xyxy=(
-                0.0,
-                0.0,
-                float(source_image_width),
-                float(source_image_height),
-            ),
-            image_height=image_height,
-            image_width=image_width,
-        )
-        for corner in source_corners
-    ]
-    scale_x: float = (heatmap_size - 1.0) / max(image_width - 1.0, 1.0)
-    scale_y: float = (heatmap_size - 1.0) / max(image_height - 1.0, 1.0)
-    heatmap_channels: list[np.ndarray] = [
-        _make_gaussian_heatmap(
-            point_xy=(canvas_x * scale_x, canvas_y * scale_y),
-            heatmap_size=heatmap_size,
-        )
-        for canvas_x, canvas_y in canvas_corners
-    ]
-    corner_heatmaps = np.stack(heatmap_channels, axis=-1)
-    corner_coords = np.array(
-        [
-            [canvas_x * scale_x, canvas_y * scale_y]
-            for canvas_x, canvas_y in canvas_corners
-        ],
-        dtype=np.float32,
-    )
-    canvas_x_values = np.array([corner[0] for corner in canvas_corners], dtype=np.float32)
-    canvas_y_values = np.array([corner[1] for corner in canvas_corners], dtype=np.float32)
-    normalized_box = np.array(
-        [
-            float(np.min(canvas_x_values) / max(image_width, 1)),
-            float(np.min(canvas_y_values) / max(image_height, 1)),
-            float(np.max(canvas_x_values) / max(image_width, 1)),
-            float(np.max(canvas_y_values) / max(image_height, 1)),
-        ],
-        dtype=np.float32,
-    )
-    return corner_heatmaps, corner_coords, normalized_box
-
-
-def _coerce_keypoint_heatmaps(
-    heatmaps: np.ndarray | None,
-    *,
-    heatmap_size: int,
-    num_keypoints: int,
-) -> np.ndarray:
-    """Return a keypoint heatmap tensor with a stable channel count.
-
-    This keeps the OBB-mask and sequence-geometry dataset builders from mixing
-    legacy 2-keypoint examples with the new 4-keypoint sweep examples.
-    """
-    if heatmaps is None:
-        return np.zeros((heatmap_size, heatmap_size, num_keypoints), dtype=np.float32)
-
-    arr: np.ndarray = np.asarray(heatmaps, dtype=np.float32)
-    if arr.ndim == 2:
-        arr = arr[..., np.newaxis]
-    if arr.shape[:2] != (heatmap_size, heatmap_size):
-        raise ValueError(
-            "Keypoint heatmap spatial size mismatch: "
-            f"expected {(heatmap_size, heatmap_size)}, got {arr.shape[:2]}."
-        )
-    channels = int(arr.shape[-1])
-    if channels == num_keypoints:
-        return arr
-    if channels > num_keypoints:
-        return arr[..., :num_keypoints]
-
-    padded = np.zeros((heatmap_size, heatmap_size, num_keypoints), dtype=np.float32)
-    padded[..., :channels] = arr
-    return padded
-
-
-def _coerce_keypoint_coords(
-    coords: np.ndarray | None,
-    *,
-    num_keypoints: int,
-) -> np.ndarray:
-    """Return a coordinate tensor with a stable keypoint count."""
-    if coords is None:
-        return np.zeros((num_keypoints, 2), dtype=np.float32)
-
-    arr: np.ndarray = np.asarray(coords, dtype=np.float32)
-    if arr.ndim != 2 or arr.shape[-1] != 2:
-        raise ValueError(
-            "Keypoint coordinate tensor must have shape (N, 2); "
-            f"got {arr.shape}."
-        )
-    keypoint_count = int(arr.shape[0])
-    if keypoint_count == num_keypoints:
-        return arr
-    if keypoint_count > num_keypoints:
-        return arr[:num_keypoints, :]
-
-    padded = np.zeros((num_keypoints, 2), dtype=np.float32)
-    padded[:keypoint_count, :] = arr
-    return padded
 
 
 def _build_training_examples(
@@ -968,6 +746,8 @@ def _build_training_examples(
     return examples, dropped_out_of_sweep
 
 
+
+
 def _build_fullframe_obb_examples(
     samples: list[Sample],
     spec: GaugeSpec,
@@ -1028,6 +808,7 @@ def _build_fullframe_obb_examples(
         )
 
     return examples, dropped
+
 
 
 def _load_hard_case_examples(
@@ -1143,6 +924,8 @@ def _load_hard_case_examples(
     return examples
 
 
+
+
 def _load_manifest_examples_for_split(
     examples: list[TrainingExample],
     manifest_path: Path,
@@ -1192,6 +975,8 @@ def _load_manifest_examples_for_split(
     return manifest_examples, manifest_names
 
 
+
+
 def _interval_bin_count(
     value_min: float,
     value_max: float,
@@ -1201,6 +986,8 @@ def _interval_bin_count(
     span: float = value_max - value_min
     num_bins: int = int(math.ceil(span / bin_width))
     return max(num_bins, 2)
+
+
 
 
 def _value_to_interval_index(
@@ -1221,6 +1008,8 @@ def _value_to_interval_index(
     return min(max(raw_index, 0), num_bins - 1)
 
 
+
+
 def _ordinal_threshold_count(
     value_min: float,
     value_max: float,
@@ -1230,6 +1019,8 @@ def _ordinal_threshold_count(
     span: float = value_max - value_min
     num_thresholds: int = int(math.ceil(span / threshold_step))
     return max(num_thresholds, 2)
+
+
 
 
 def _value_to_ordinal_threshold_vector(
@@ -1250,6 +1041,8 @@ def _value_to_ordinal_threshold_vector(
         np.arange(num_thresholds, dtype=np.float32) + 0.5
     ) * np.float32(threshold_step)
     return (np.float32(value) > thresholds).astype(np.float32)
+
+
 
 
 def _build_interval_targets(
@@ -1276,6 +1069,8 @@ def _build_interval_targets(
     return scalar_targets, interval_targets
 
 
+
+
 def _load_init_model(init_model_path: Path) -> keras.Model:
     """Load a previously trained Keras model for warm-start fine-tuning."""
     if not init_model_path.exists():
@@ -1298,6 +1093,8 @@ def _load_init_model(init_model_path: Path) -> keras.Model:
     return model
 
 
+
+
 def _load_rectifier_model(rectifier_model_path: Path) -> keras.Model:
     """Load a saved rectifier model for crop generation during scalar training."""
     if not rectifier_model_path.exists():
@@ -1314,6 +1111,8 @@ def _load_rectifier_model(rectifier_model_path: Path) -> keras.Model:
     )
     model.trainable = False
     return model
+
+
 
 
 def _predict_rectifier_crop_box(
@@ -1396,6 +1195,8 @@ def _predict_rectifier_crop_box(
     return (x_min_orig, y_min_orig, x_max_orig, y_max_orig)
 
 
+
+
 def _is_board_capture(image_path: str) -> bool:
     """Return True if this image came from the STM32 board camera.
 
@@ -1419,6 +1220,8 @@ def _is_board_capture(image_path: str) -> bool:
     if _re.match(r"capture_\d{4}-\d{2}-\d{2}", name):
         return True
     return False
+
+
 
 
 def _apply_precomputed_crop_boxes(
@@ -1487,6 +1290,8 @@ def _apply_precomputed_crop_boxes(
     return out
 
 
+
+
 def _rectify_examples_for_scalar(
     examples: list[TrainingExample],
     *,
@@ -1520,6 +1325,8 @@ def _rectify_examples_for_scalar(
     return rectified_examples
 
 
+
+
 def _iter_layers_recursive(model: keras.Model) -> list[keras.layers.Layer]:
     """Return all layers, including nested model layers, in a stable order."""
     layers: list[keras.layers.Layer] = []
@@ -1528,6 +1335,8 @@ def _iter_layers_recursive(model: keras.Model) -> list[keras.layers.Layer]:
         if isinstance(layer, keras.Model):
             layers.extend(_iter_layers_recursive(layer))
     return layers
+
+
 
 
 def _transfer_matching_weights(
@@ -1564,6 +1373,8 @@ def _transfer_matching_weights(
         f"matched_layers={transferred_layers}",
     )
     return transferred_layers
+
+
 
 
 def _split_examples(
@@ -1731,1199 +1542,6 @@ def _split_examples(
     )
 
 
-def _crop_image_with_xyxy(image: tf.Tensor, crop_box_xyxy: tf.Tensor) -> tf.Tensor:
-    """Safely crop image using float xyxy box and clip to valid image bounds."""
-    shape: tf.Tensor = tf.shape(image)
-    img_h: tf.Tensor = shape[0]
-    img_w: tf.Tensor = shape[1]
-
-    x_min_f: tf.Tensor = tf.clip_by_value(
-        crop_box_xyxy[0], 0.0, tf.cast(img_w - 1, tf.float32)
-    )
-    y_min_f: tf.Tensor = tf.clip_by_value(
-        crop_box_xyxy[1], 0.0, tf.cast(img_h - 1, tf.float32)
-    )
-    x_max_f: tf.Tensor = tf.clip_by_value(
-        crop_box_xyxy[2], x_min_f + 1.0, tf.cast(img_w, tf.float32)
-    )
-    y_max_f: tf.Tensor = tf.clip_by_value(
-        crop_box_xyxy[3], y_min_f + 1.0, tf.cast(img_h, tf.float32)
-    )
-
-    x_min: tf.Tensor = tf.cast(tf.math.floor(x_min_f), tf.int32)
-    y_min: tf.Tensor = tf.cast(tf.math.floor(y_min_f), tf.int32)
-    x_max: tf.Tensor = tf.cast(tf.math.ceil(x_max_f), tf.int32)
-    y_max: tf.Tensor = tf.cast(tf.math.ceil(y_max_f), tf.int32)
-
-    crop_w: tf.Tensor = tf.maximum(1, x_max - x_min)
-    crop_h: tf.Tensor = tf.maximum(1, y_max - y_min)
-
-    crop_w = tf.minimum(crop_w, img_w - x_min)
-    crop_h = tf.minimum(crop_h, img_h - y_min)
-
-    return tf.image.crop_to_bounding_box(image, y_min, x_min, crop_h, crop_w)
-
-
-def _load_crop_and_preprocess_image(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-) -> tuple[tf.Tensor, tf.Tensor]:
-    """Read image, crop dial ROI, resize, and normalize to [0, 1]."""
-    image_bytes: tf.Tensor = tf.io.read_file(image_path)
-    image: tf.Tensor = tf.io.decode_image(
-        image_bytes,
-        channels=3,
-        expand_animations=False,
-    )
-    image = tf.ensure_shape(image, [None, None, 3])
-
-    image = _crop_image_with_xyxy(image, crop_box_xyxy)
-    # Preserve dial geometry (needle angle) by avoiding anisotropic warping.
-    image = tf.image.resize_with_pad(image, image_height, image_width)
-
-    image = tf.cast(image, tf.float32) / 255.0
-    target: tf.Tensor = tf.cast(value, tf.float32)
-    return image, target
-
-
-def _preprocess_board_style(
-    cropped_image: tf.Tensor,
-    image_height: int,
-    image_width: int,
-) -> tf.Tensor:
-    """Simulate the firmware preprocess: luma extraction, nearest-neighbor resize, zero pad.
-
-    The board firmware extracts Y-channel luma from YUV422, resizes with
-    nearest-neighbour to preserve the dial geometry, and zero-pads to 224x224.
-    Replicating that path during training removes the bilinear-RGB domain shift.
-    """
-    # Convert RGB uint8 crop to luma using ITU-R BT.601 coefficients.
-    image = tf.cast(cropped_image, tf.float32)
-    luma = 0.299 * image[..., 0] + 0.587 * image[..., 1] + 0.114 * image[..., 2]
-    luma = tf.clip_by_value(luma, 0.0, 255.0)
-    luma = tf.cast(tf.round(luma), tf.uint8)
-
-    # Compute scale exactly like firmware: scale = min(224/crop_h, 224/crop_w)
-    crop_h = tf.shape(luma)[0]
-    crop_w = tf.shape(luma)[1]
-    scale = tf.minimum(
-        tf.cast(image_height, tf.float32) / tf.cast(crop_h, tf.float32),
-        tf.cast(image_width, tf.float32) / tf.cast(crop_w, tf.float32),
-    )
-    scaled_h = tf.cast(tf.cast(crop_h, tf.float32) * scale, tf.int32)
-    scaled_w = tf.cast(tf.cast(crop_w, tf.float32) * scale, tf.int32)
-    scaled_h = tf.maximum(scaled_h, 1)
-    scaled_w = tf.maximum(scaled_w, 1)
-
-    # Nearest-neighbor resize (firmware does integer nearest-neighbour sampling).
-    luma = tf.expand_dims(luma, axis=-1)  # [H, W, 1]
-    resized = tf.image.resize(luma, [scaled_h, scaled_w], method='nearest')
-    resized = tf.cast(tf.round(resized), tf.uint8)
-
-    # Zero-pad to target size using integer truncation division (same as firmware).
-    pad_y = (image_height - scaled_h) // 2
-    pad_x = (image_width - scaled_w) // 2
-    pad_bottom = image_height - scaled_h - pad_y
-    pad_right = image_width - scaled_w - pad_x
-    padded = tf.pad(resized, [[pad_y, pad_bottom], [pad_x, pad_right], [0, 0]])
-    padded = tf.ensure_shape(padded, [image_height, image_width, 1])
-
-    # Replicate luma to 3 channels because the model expects 3-channel input.
-    rgb = tf.tile(padded, [1, 1, 3])
-
-    # Normalize to [0, 1] float.
-    return tf.cast(rgb, tf.float32) / 255.0
-
-
-def _load_crop_and_preprocess_image_board_style(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-) -> tuple[tf.Tensor, tf.Tensor]:
-    """Read image, crop dial ROI, and apply board-style luma+nearest-neighbor preprocess."""
-    image_bytes = tf.io.read_file(image_path)
-    image = tf.io.decode_image(image_bytes, channels=3, expand_animations=False)
-    image = tf.ensure_shape(image, [None, None, 3])
-    image = _crop_image_with_xyxy(image, crop_box_xyxy)
-    image = _preprocess_board_style(image, image_height, image_width)
-    target = tf.cast(value, tf.float32)
-    return image, target
-
-
-def _load_rectifier_and_preprocess_image(
-    image_path: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-) -> tuple[tf.Tensor, tf.Tensor]:
-    """Read a full image and emit a padded-canvas crop-box center/size target."""
-    image_bytes: tf.Tensor = tf.io.read_file(image_path)
-    image: tf.Tensor = tf.io.decode_image(
-        image_bytes,
-        channels=3,
-        expand_animations=False,
-    )
-    image = tf.ensure_shape(image, [None, None, 3])
-
-    orig_h: tf.Tensor = tf.cast(tf.shape(image)[0], tf.float32)
-    orig_w: tf.Tensor = tf.cast(tf.shape(image)[1], tf.float32)
-
-    # Keep the full frame intact so the rectifier learns the crop on the same
-    # padded 224x224 canvas used at inference time.
-    image = tf.image.resize_with_pad(image, image_height, image_width)
-    image = tf.cast(image, tf.float32) / 255.0
-
-    x_min: tf.Tensor = tf.cast(crop_box_xyxy[0], tf.float32)
-    y_min: tf.Tensor = tf.cast(crop_box_xyxy[1], tf.float32)
-    x_max: tf.Tensor = tf.cast(crop_box_xyxy[2], tf.float32)
-    y_max: tf.Tensor = tf.cast(crop_box_xyxy[3], tf.float32)
-
-    scale: tf.Tensor = tf.minimum(
-        tf.cast(image_height, tf.float32) / tf.maximum(orig_h, 1.0),
-        tf.cast(image_width, tf.float32) / tf.maximum(orig_w, 1.0),
-    )
-    scaled_w: tf.Tensor = orig_w * scale
-    scaled_h: tf.Tensor = orig_h * scale
-    pad_x: tf.Tensor = 0.5 * (tf.cast(image_width, tf.float32) - scaled_w)
-    pad_y: tf.Tensor = 0.5 * (tf.cast(image_height, tf.float32) - scaled_h)
-
-    x_min_canvas: tf.Tensor = x_min * scale + pad_x
-    y_min_canvas: tf.Tensor = y_min * scale + pad_y
-    x_max_canvas: tf.Tensor = x_max * scale + pad_x
-    y_max_canvas: tf.Tensor = y_max * scale + pad_y
-
-    center_x: tf.Tensor = tf.clip_by_value(
-        ((x_min_canvas + x_max_canvas) * 0.5)
-        / tf.maximum(tf.cast(image_width, tf.float32), 1.0),
-        0.0,
-        1.0,
-    )
-    center_y: tf.Tensor = tf.clip_by_value(
-        ((y_min_canvas + y_max_canvas) * 0.5)
-        / tf.maximum(tf.cast(image_height, tf.float32), 1.0),
-        0.0,
-        1.0,
-    )
-    box_w: tf.Tensor = tf.clip_by_value(
-        (x_max_canvas - x_min_canvas)
-        / tf.maximum(tf.cast(image_width, tf.float32), 1.0),
-        0.0,
-        1.0,
-    )
-    box_h: tf.Tensor = tf.clip_by_value(
-        (y_max_canvas - y_min_canvas)
-        / tf.maximum(tf.cast(image_height, tf.float32), 1.0),
-        0.0,
-        1.0,
-    )
-    target: tf.Tensor = tf.stack([center_x, center_y, box_w, box_h], axis=-1)
-    return image, target
-
-
-def _load_source_crop_and_preprocess_image(
-    image_path: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-) -> tuple[tf.Tensor, tf.Tensor]:
-    """Read a full image and emit a normalized source-space xyxy crop target.
-
-    Unlike the older rectifier target, this keeps the crop in the original
-    image coordinate system so the network learns the actual board-space box.
-    """
-    image_bytes: tf.Tensor = tf.io.read_file(image_path)
-    image: tf.Tensor = tf.io.decode_image(
-        image_bytes,
-        channels=3,
-        expand_animations=False,
-    )
-    image = tf.ensure_shape(image, [None, None, 3])
-
-    orig_h: tf.Tensor = tf.cast(tf.shape(image)[0], tf.float32)
-    orig_w: tf.Tensor = tf.cast(tf.shape(image)[1], tf.float32)
-    image = tf.image.resize_with_pad(image, image_height, image_width)
-    image = tf.cast(image, tf.float32) / 255.0
-
-    x_min: tf.Tensor = tf.clip_by_value(
-        tf.cast(crop_box_xyxy[0], tf.float32) / tf.maximum(orig_w, 1.0),
-        0.0,
-        1.0,
-    )
-    y_min: tf.Tensor = tf.clip_by_value(
-        tf.cast(crop_box_xyxy[1], tf.float32) / tf.maximum(orig_h, 1.0),
-        0.0,
-        1.0,
-    )
-    x_max: tf.Tensor = tf.clip_by_value(
-        tf.cast(crop_box_xyxy[2], tf.float32) / tf.maximum(orig_w, 1.0),
-        0.0,
-        1.0,
-    )
-    y_max: tf.Tensor = tf.clip_by_value(
-        tf.cast(crop_box_xyxy[3], tf.float32) / tf.maximum(orig_h, 1.0),
-        0.0,
-        1.0,
-    )
-    target: tf.Tensor = tf.stack([x_min, y_min, x_max, y_max], axis=-1)
-    return image, target
-
-
-def _load_crop_with_weight(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-    """Load/crop one image and attach the requested sample weight."""
-    image, target = _load_crop_and_preprocess_image(
-        image_path, value, crop_box_xyxy, image_height, image_width
-    )
-    return image, target, weight
-
-
-def _load_crop_with_weight_maybe_board_style(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-    board_style_prob: float,
-) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-    """Load/crop one image, randomly choosing board-style or standard preprocess.
-
-    With probability oard_style_prob we apply the exact firmware luma +
-    nearest-neighbour resize + zero-pad path so the model sees the same
-    domain it encounters on-device.
-    """
-    use_board = tf.random.uniform([]) < board_style_prob
-    image, target = tf.cond(
-        use_board,
-        lambda: _load_crop_and_preprocess_image_board_style(
-            image_path, value, crop_box_xyxy, image_height, image_width
-        ),
-        lambda: _load_crop_and_preprocess_image(
-            image_path, value, crop_box_xyxy, image_height, image_width
-        ),
-    )
-    return image, target, weight
-
-
-def _load_rectifier_with_weight(
-    image_path: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-    """Load a full-frame rectifier example and attach its sample weight."""
-    image, target = _load_rectifier_and_preprocess_image(
-        image_path,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    return image, target, weight
-
-
-def _load_source_crop_with_weight(
-    image_path: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-    """Load a full-frame crop-box example and attach its sample weight."""
-    image, target = _load_source_crop_and_preprocess_image(
-        image_path,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    return image, target, weight
-
-
-def _load_source_crop_corner_target(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    corner_heatmaps: tf.Tensor,
-    corner_coords: tf.Tensor,
-    corner_box: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
-    """Load a full-frame example and attach corner heatmap and box targets."""
-    image, _source_target = _load_source_crop_and_preprocess_image(
-        image_path,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    _ = value
-    targets = {
-        "source_crop_canvas_box": tf.cast(corner_box, tf.float32),
-        "keypoint_heatmaps": tf.cast(corner_heatmaps, tf.float32),
-        "keypoint_coords": tf.cast(corner_coords, tf.float32),
-    }
-    return image, targets
-
-
-def _load_source_crop_corner_weight(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    corner_heatmaps: tf.Tensor,
-    corner_coords: tf.Tensor,
-    corner_box: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-    heatmap_weight: tf.Tensor,
-    coord_weight: tf.Tensor,
-    box_weight: tf.Tensor,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
-    """Load a full-frame corner-localizer example and attach sample weights."""
-    image, targets = _load_source_crop_corner_target(
-        image_path,
-        value,
-        corner_heatmaps,
-        corner_coords,
-        corner_box,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    sample_weights = {
-        "source_crop_canvas_box": box_weight,
-        "keypoint_heatmaps": heatmap_weight,
-        "keypoint_coords": coord_weight,
-    }
-    return image, targets, sample_weights
-
-
-def _load_source_crop_with_weight(
-    image_path: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-    """Load a full-frame source-crop example and attach the requested weight."""
-    image, target = _load_source_crop_and_preprocess_image(
-        image_path,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    return image, target, weight
-
-
-def _load_crop_with_obb_target(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    obb_params: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
-    """Load/crop one image and attach oriented-box parameters."""
-    image, _scalar_target = _load_crop_and_preprocess_image(
-        image_path, value, crop_box_xyxy, image_height, image_width
-    )
-    obb_target = tf.cast(obb_params, tf.float32)
-    return image, {"obb_params": obb_target}
-
-
-def _load_crop_with_obb_weight(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    obb_params: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
-    """Load/crop one image and attach OBB parameters plus a sample weight."""
-    image, target = _load_crop_with_obb_target(
-        image_path,
-        value,
-        obb_params,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    return image, target, {"obb_params": tf.cast(weight, tf.float32)}
-
-
-def _load_fullframe_obb_data(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    obb_params: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
-    """Read full image, apply board-style preprocess, pass OBB targets in canvas space.
-
-    Purpose-built for full-frame OBB training. Unlike _load_crop_with_obb_weight
-    which crops to the dial region, this reads the entire image and scales it to
-    fit the 224x224 canvas, preserving the gauge's actual position in the frame.
-    """
-    image_bytes: tf.Tensor = tf.io.read_file(image_path)
-    image: tf.Tensor = tf.io.decode_image(
-        image_bytes,
-        channels=3,
-        expand_animations=False,
-    )
-    image = tf.ensure_shape(image, [None, None, 3])
-    image = _preprocess_board_style(image, image_height, image_width)
-    obb_target = tf.cast(obb_params, tf.float32)
-    return image, {"obb_params": obb_target}, {"obb_params": tf.cast(weight, tf.float32)}
-
-
-def _load_crop_with_interval_weight(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    interval_index: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
-    """Load/crop one image and attach scalar, interval, and weight targets."""
-    image, target = _load_crop_and_preprocess_image(
-        image_path, value, crop_box_xyxy, image_height, image_width
-    )
-    interval_target = tf.cast(interval_index, tf.int32)
-    targets = {
-        "gauge_value": target,
-        "interval_logits": interval_target,
-    }
-    sample_weights = {
-        "gauge_value": weight,
-        "interval_logits": weight,
-    }
-    return image, targets, sample_weights
-
-
-def _load_crop_with_interval_target(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    interval_index: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
-    """Load/crop one image and attach scalar plus interval-class targets."""
-    image, target = _load_crop_and_preprocess_image(
-        image_path, value, crop_box_xyxy, image_height, image_width
-    )
-    interval_target = tf.cast(interval_index, tf.int32)
-    targets = {
-        "gauge_value": target,
-        "interval_logits": interval_target,
-    }
-    return image, targets
-
-
-def _load_crop_with_ordinal_target(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    ordinal_thresholds: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
-    """Load/crop one image and attach scalar plus ordinal-threshold targets."""
-    image, target = _load_crop_and_preprocess_image(
-        image_path, value, crop_box_xyxy, image_height, image_width
-    )
-    ordinal_target = tf.cast(ordinal_thresholds, tf.float32)
-    targets = {
-        "gauge_value": target,
-        "ordinal_logits": ordinal_target,
-    }
-    return image, targets
-
-
-def _load_crop_with_ordinal_weight(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    ordinal_thresholds: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
-    """Load/crop one image and attach ordinal targets plus sample weights."""
-    image, targets = _load_crop_with_ordinal_target(
-        image_path,
-        value,
-        ordinal_thresholds,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    sample_weights = {
-        "gauge_value": weight,
-        "ordinal_logits": weight,
-    }
-    return image, targets, sample_weights
-
-
-def _load_crop_with_fraction_target(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    fraction: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
-    """Load/crop one image and attach scalar plus sweep-fraction targets."""
-    image, target = _load_crop_and_preprocess_image(
-        image_path, value, crop_box_xyxy, image_height, image_width
-    )
-    fraction_target = tf.cast(fraction, tf.float32)
-    targets = {
-        "gauge_value": target,
-        "sweep_fraction": fraction_target,
-    }
-    return image, targets
-
-
-def _load_crop_with_fraction_weight(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    fraction: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
-    """Load/crop one image and attach sweep-fraction targets plus sample weights."""
-    image, targets = _load_crop_with_fraction_target(
-        image_path,
-        value,
-        fraction,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    sample_weights = {
-        "gauge_value": weight,
-        "sweep_fraction": weight,
-    }
-    return image, targets, sample_weights
-
-
-def _load_crop_with_keypoint_target(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    heatmaps: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
-    """Load/crop one image and attach scalar plus keypoint-heatmap targets."""
-    image, target = _load_crop_and_preprocess_image(
-        image_path, value, crop_box_xyxy, image_height, image_width
-    )
-    keypoint_target = tf.cast(heatmaps, tf.float32)
-    targets = {
-        "gauge_value": target,
-        "keypoint_heatmaps": keypoint_target,
-    }
-    return image, targets
-
-
-def _load_crop_with_keypoint_weight(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    heatmaps: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-    heatmap_weight: tf.Tensor,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
-    """Load/crop one image and attach keypoint targets plus sample weights."""
-    image, targets = _load_crop_with_keypoint_target(
-        image_path,
-        value,
-        heatmaps,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    sample_weights = {
-        "gauge_value": weight,
-        "keypoint_heatmaps": heatmap_weight,
-    }
-    return image, targets, sample_weights
-
-
-def _load_crop_with_geometry_target(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    heatmaps: tf.Tensor,
-    coords: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
-    """Load/crop one image and attach geometry targets for detector training."""
-    image, value_target = _load_crop_and_preprocess_image(
-        image_path, value, crop_box_xyxy, image_height, image_width
-    )
-    keypoint_target = tf.cast(heatmaps, tf.float32)
-    coord_target = tf.cast(coords, tf.float32)
-    targets = {
-        "gauge_value": value_target,
-        "keypoint_heatmaps": keypoint_target,
-        "keypoint_coords": coord_target,
-    }
-    return image, targets
-
-
-def _load_crop_with_geometry_uncertainty_target(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    heatmaps: tf.Tensor,
-    coords: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
-    """Load/crop one image and attach geometry plus uncertainty targets."""
-    image, targets = _load_crop_with_geometry_target(
-        image_path,
-        value,
-        heatmaps,
-        coords,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    targets["gauge_value_lower"] = targets["gauge_value"]
-    targets["gauge_value_upper"] = targets["gauge_value"]
-    return image, targets
-
-
-def _load_crop_with_geometry_weight(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    heatmaps: tf.Tensor,
-    coords: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-    heatmap_weight: tf.Tensor,
-    coord_weight: tf.Tensor,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
-    """Load/crop one image and attach geometry targets plus sample weights."""
-    image, targets = _load_crop_with_geometry_target(
-        image_path,
-        value,
-        heatmaps,
-        coords,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    sample_weights = {
-        "gauge_value": weight,
-        "keypoint_heatmaps": heatmap_weight,
-        "keypoint_coords": coord_weight,
-    }
-    return image, targets, sample_weights
-
-
-def _load_crop_with_direction_geometry_target(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    needle_unit_xy: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
-    """Load/crop one image and attach needle-direction and value targets."""
-    image, value_target = _load_crop_and_preprocess_image(
-        image_path, value, crop_box_xyxy, image_height, image_width
-    )
-    direction_target = tf.cast(needle_unit_xy, tf.float32)
-    targets = {
-        "gauge_value": value_target,
-        "needle_xy": direction_target,
-    }
-    return image, targets
-
-
-def _load_crop_with_direction_geometry_weight(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    needle_unit_xy: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-    direction_weight: tf.Tensor,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
-    """Load/crop one image and attach needle-direction targets plus weights."""
-    image, targets = _load_crop_with_direction_geometry_target(
-        image_path,
-        value,
-        needle_unit_xy,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    sample_weights = {
-        "gauge_value": weight,
-        "needle_xy": direction_weight,
-    }
-    return image, targets, sample_weights
-
-
-def _load_crop_with_obb_geometry_target(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    heatmaps: tf.Tensor,
-    coords: tf.Tensor,
-    obb_params: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
-    """Load/crop one image and attach joint OBB + geometry targets."""
-    image, targets = _load_crop_with_geometry_target(
-        image_path,
-        value,
-        heatmaps,
-        coords,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    targets["obb_params"] = tf.cast(obb_params, tf.float32)
-    return image, targets
-
-
-def _load_crop_with_obb_geometry_weight(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    heatmaps: tf.Tensor,
-    coords: tf.Tensor,
-    obb_params: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-    heatmap_weight: tf.Tensor,
-    coord_weight: tf.Tensor,
-    obb_weight: tf.Tensor,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
-    """Load/crop one image and attach joint OBB + geometry targets plus weights."""
-    image, targets = _load_crop_with_obb_geometry_target(
-        image_path,
-        value,
-        heatmaps,
-        coords,
-        obb_params,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    sample_weights = {
-        "gauge_value": weight,
-        "keypoint_heatmaps": heatmap_weight,
-        "keypoint_coords": coord_weight,
-        "obb_params": obb_weight,
-    }
-    return image, targets, sample_weights
-
-
-def _load_crop_with_obb_mask_geometry_target(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    heatmaps: tf.Tensor,
-    coords: tf.Tensor,
-    pointer_mask: tf.Tensor,
-    obb_params: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
-    """Load/crop one image and attach joint OBB + mask geometry targets."""
-    image, targets = _load_crop_with_obb_geometry_target(
-        image_path,
-        value,
-        heatmaps,
-        coords,
-        obb_params,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    targets["pointer_mask"] = tf.cast(pointer_mask, tf.float32)
-    return image, targets
-
-
-def _load_crop_with_obb_mask_geometry_weight(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    heatmaps: tf.Tensor,
-    coords: tf.Tensor,
-    pointer_mask: tf.Tensor,
-    obb_params: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-    heatmap_weight: tf.Tensor,
-    coord_weight: tf.Tensor,
-    mask_weight: tf.Tensor,
-    obb_weight: tf.Tensor,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
-    """Load/crop one image and attach OBB + mask targets plus sample weights."""
-    image, targets = _load_crop_with_obb_mask_geometry_target(
-        image_path,
-        value,
-        heatmaps,
-        coords,
-        pointer_mask,
-        obb_params,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    sample_weights = {
-        "gauge_value": weight,
-        "keypoint_heatmaps": heatmap_weight,
-        "keypoint_coords": coord_weight,
-        "pointer_mask": mask_weight,
-        "obb_params": obb_weight,
-    }
-    return image, targets, sample_weights
-
-
-def _load_crop_with_geometry_uncertainty_weight(
-    image_path: tf.Tensor,
-    value: tf.Tensor,
-    heatmaps: tf.Tensor,
-    coords: tf.Tensor,
-    crop_box_xyxy: tf.Tensor,
-    image_height: int,
-    image_width: int,
-    weight: tf.Tensor,
-    heatmap_weight: tf.Tensor,
-    coord_weight: tf.Tensor,
-    uncertainty_weight: tf.Tensor,
-) -> tuple[tf.Tensor, dict[str, tf.Tensor], dict[str, tf.Tensor]]:
-    """Load/crop one image and attach geometry uncertainty targets plus weights."""
-    image, targets = _load_crop_with_geometry_uncertainty_target(
-        image_path,
-        value,
-        heatmaps,
-        coords,
-        crop_box_xyxy,
-        image_height,
-        image_width,
-    )
-    sample_weights = {
-        "gauge_value": weight,
-        "keypoint_heatmaps": heatmap_weight,
-        "keypoint_coords": coord_weight,
-        "gauge_value_lower": uncertainty_weight,
-        "gauge_value_upper": uncertainty_weight,
-    }
-    return image, targets, sample_weights
-
-
-def _augment_glare_blobs(image: tf.Tensor) -> tf.Tensor:
-    """Stamp 1–3 bright glare blobs via resized gaussian noise. Simulates specular reflections on gauge glass."""
-    # Generate blobs at a fixed small resolution then resize up — avoids dynamic meshgrid entirely.
-    BLOB_RES = 32
-    mask = tf.zeros([BLOB_RES, BLOB_RES, 1], dtype=tf.float32)
-    for _ in range(3):
-        active = tf.cast(tf.random.uniform([]) < 0.5, tf.float32)
-        cx = tf.random.uniform([], 2, BLOB_RES - 2, dtype=tf.float32)
-        cy = tf.random.uniform([], 2, BLOB_RES - 2, dtype=tf.float32)
-        # Draw a single bright pixel at (cy, cx) with strength, then blur via resize
-        brightness = tf.random.uniform([], 0.5, 1.0) * active
-        # Use a small dense gaussian kernel: encode as a 1-pixel impulse scaled by brightness
-        # We approximate the blob by creating a [BLOB_RES, BLOB_RES] tensor with one hot pixel
-        # and relying on bilinear resize to spread it.
-        cy_i = tf.cast(tf.round(cy), tf.int32)
-        cx_i = tf.cast(tf.round(cx), tf.int32)
-        # Scatter a bright spot
-        idx = tf.stack([cy_i, cx_i, 0])
-        spot = tf.tensor_scatter_nd_update(
-            tf.zeros([BLOB_RES, BLOB_RES, 1], dtype=tf.float32),
-            [idx],
-            [brightness],
-        )
-        mask = mask + spot
-
-    # Resize to image size with bicubic to spread the spots into soft blobs
-    image_shape = tf.shape(image)
-    mask = tf.image.resize(mask, [image_shape[0], image_shape[1]], method="bicubic")
-    mask = tf.clip_by_value(mask, 0.0, 1.0)  # [H, W, 1] broadcast across channels
-    image = image + mask * (1.0 - image)
-    return tf.clip_by_value(image, 0.0, 1.0)
-
-
-def _augment_image(image: tf.Tensor) -> tf.Tensor:
-    """Apply photometric augmentation that preserves gauge geometry.
-
-    This augmentation is designed to match the board camera reality:
-    - Crop jitter: Simulates slight variations in dial position within crop
-    - Brightness/exposure: Simulates camera exposure variations (under/over)
-    - Contrast/saturation: Simulates lighting condition variations
-    - Gamma: Simulates non-linear exposure response
-    - Glare: Simulates specular reflections on gauge glass
-    - Noise: Simulates sensor noise
-    """
-    image_shape: tf.Tensor = tf.shape(image)
-    image_h: tf.Tensor = image_shape[0]
-    image_w: tf.Tensor = image_shape[1]
-
-    # --- Crop jitter: simulate slight dial position variations within crop ---
-    # Random scale from 90% to 100% of crop (was 92-100%)
-    scale: tf.Tensor = tf.random.uniform([], minval=0.90, maxval=1.0, dtype=tf.float32)
-    crop_h: tf.Tensor = tf.maximum(
-        2, tf.cast(tf.cast(image_h, tf.float32) * scale, dtype=tf.int32)
-    )
-    crop_w: tf.Tensor = tf.maximum(
-        2, tf.cast(tf.cast(image_w, tf.float32) * scale, dtype=tf.int32)
-    )
-    image = tf.image.random_crop(image, size=[crop_h, crop_w, 3])
-    image = tf.image.resize(image, [image_h, image_w])
-
-    # Additional crop jitter: slight translation within the crop box
-    # This simulates the dial not being perfectly centered in the crop
-    max_offset: tf.Tensor = tf.cast(
-        tf.cast(image_h, tf.float32) * 0.05, tf.int32
-    )  # 5% max offset
-    if max_offset > 0:
-        offset_y = tf.random.uniform([], -max_offset, max_offset + 1, dtype=tf.int32)
-        offset_x = tf.random.uniform([], -max_offset, max_offset + 1, dtype=tf.int32)
-        # Pad image to allow cropping with offset
-        pad_h = image_h + 2 * max_offset
-        pad_w = image_w + 2 * max_offset
-        image_padded = tf.image.resize_with_pad(image, pad_h, pad_w)
-        image = tf.image.crop_to_bounding_box(
-            image_padded, max_offset + offset_y, max_offset + offset_x, image_h, image_w
-        )
-
-    # AUG_HEAVY=1 → stronger photometric augmentation for board-domain robustness.
-    aug_heavy: bool = os.environ.get("AUG_HEAVY", "0") == "1"
-
-    # --- Brightness/exposure augmentation (matches board camera reality) ---
-    # Simulates exposure variations: underexposure (dark) and overexposure (bright)
-    if aug_heavy:
-        # Wider exposure range for heavy augmentation
-        exposure_range = 0.35  # +/- 35% brightness
-        contrast_range = (0.55, 1.45)
-        saturation_range = (0.70, 1.30)
-        gamma_range_dark = (1.0, 2.8)
-        gamma_range_bright = (0.4, 1.0)
-    else:
-        # Moderate exposure range for standard augmentation
-        exposure_range = 0.20  # +/- 20% brightness
-        contrast_range = (0.75, 1.25)
-        saturation_range = (0.85, 1.15)
-        gamma_range_dark = (1.0, 2.2)
-        gamma_range_bright = (0.6, 1.0)
-
-    # Random brightness (linear exposure)
-    image = tf.image.random_brightness(image, max_delta=exposure_range)
-
-    # Random contrast (simulates lighting consistency)
-    image = tf.image.random_contrast(
-        image, lower=contrast_range[0], upper=contrast_range[1]
-    )
-
-    # Random saturation (simulates color consistency under different lighting)
-    image = tf.image.random_saturation(
-        image, lower=saturation_range[0], upper=saturation_range[1]
-    )
-
-    # Clip to valid range before gamma operations
-    image = tf.clip_by_value(image, 0.0, 1.0)
-
-    # --- Gamma augmentation: simulates non-linear camera exposure response ---
-    if aug_heavy:
-        # Wider gamma sweep at higher rate: covers under- AND over-exposed captures.
-        gamma_dark: tf.Tensor = tf.random.uniform(
-            [], minval=gamma_range_dark[0], maxval=gamma_range_dark[1], dtype=tf.float32
-        )
-        apply_dark: tf.Tensor = tf.random.uniform([]) < 0.35
-        image = tf.where(apply_dark, tf.pow(image, gamma_dark), image)
-        gamma_bright: tf.Tensor = tf.random.uniform(
-            [],
-            minval=gamma_range_bright[0],
-            maxval=gamma_range_bright[1],
-            dtype=tf.float32,
-        )
-        apply_bright: tf.Tensor = tf.random.uniform([]) < 0.20
-        image = tf.where(apply_bright, tf.pow(image, gamma_bright), image)
-    else:
-        # Moderate gamma adjustment
-        gamma: tf.Tensor = tf.random.uniform(
-            [], minval=1.0, maxval=2.0, dtype=tf.float32
-        )
-        apply_dark: tf.Tensor = tf.random.uniform([]) < 0.15
-        image = tf.where(apply_dark, tf.pow(image, gamma), image)
-
-    # Simulate specular glare patches on gauge glass (25% chance, was 20%)
-    apply_glare: tf.Tensor = tf.random.uniform([]) < 0.25
-    image = tf.cond(
-        apply_glare,
-        lambda: _augment_glare_blobs(image),
-        lambda: image,
-    )
-
-    # Add sensor noise (slightly higher for board-like conditions)
-    noise_std: float = 0.02 if aug_heavy else 0.015
-    noise: tf.Tensor = tf.random.normal(
-        shape=tf.shape(image),
-        mean=0.0,
-        stddev=noise_std,
-        dtype=tf.float32,
-    )
-    image = image + noise
-    image = tf.clip_by_value(image, 0.0, 1.0)
-    return image
-
-
-def _augment_full_frame_box_image(image: tf.Tensor) -> tf.Tensor:
-    """Apply photometric-only augmentation for source-space crop-box training.
-
-    We avoid crop jitter here because the target is expressed in the original
-    source-frame coordinate system and should not be warped without updating
-    the labels.
-    """
-    aug_heavy: bool = os.environ.get("AUG_HEAVY", "0") == "1"
-    if aug_heavy:
-        exposure_range = 0.30
-        contrast_range = (0.60, 1.40)
-        saturation_range = (0.75, 1.25)
-        noise_std = 0.02
-    else:
-        exposure_range = 0.15
-        contrast_range = (0.82, 1.18)
-        saturation_range = (0.90, 1.10)
-        noise_std = 0.012
-
-    image = tf.image.random_brightness(image, max_delta=exposure_range)
-    image = tf.image.random_contrast(
-        image, lower=contrast_range[0], upper=contrast_range[1]
-    )
-    image = tf.image.random_saturation(
-        image, lower=saturation_range[0], upper=saturation_range[1]
-    )
-    image = tf.clip_by_value(image, 0.0, 1.0)
-    image = tf.cond(
-        tf.random.uniform([]) < 0.25,
-        lambda: _augment_glare_blobs(image),
-        lambda: image,
-    )
-    noise: tf.Tensor = tf.random.normal(
-        shape=tf.shape(image),
-        mean=0.0,
-        stddev=noise_std,
-        dtype=tf.float32,
-    )
-    image = tf.clip_by_value(image + noise, 0.0, 1.0)
-    return image
-
-
-def _augment_rectifier_image_and_box(
-    image: tf.Tensor,
-    box: tf.Tensor,
-) -> tuple[tf.Tensor, tf.Tensor]:
-    """Geometric + photometric augmentation for the rectifier training path.
-
-    Randomly zooms into a sub-region of the 224x224 padded canvas so the model
-    sees dial sizes ranging from ~30% to 100% of the frame — covering both the
-    far-away phone-photo distribution and close-up board-camera framing.
-
-    The target box (cx, cy, w, h) in [0,1] canvas coords is recomputed to stay
-    consistent with the zoomed view.  If the zoom window clips the dial box we
-    clamp it so the target always describes the visible portion of the dial.
-    """
-    image_shape: tf.Tensor = tf.shape(image)
-    canvas: tf.Tensor = tf.cast(image_shape[0], tf.float32)  # square 224
-
-    # --- random zoom window in canvas pixels ---
-    # zoom_scale in [0.40, 1.0]: 0.40 → 2.5x zoom-in (close-up), 1.0 → full frame
-    zoom_scale: tf.Tensor = tf.random.uniform([], minval=0.40, maxval=1.0)
-    win_size: tf.Tensor = canvas * zoom_scale
-
-    max_offset: tf.Tensor = tf.maximum(canvas - win_size, 0.0)
-    off_x: tf.Tensor = tf.random.uniform([], minval=0.0, maxval=1.0) * max_offset
-    off_y: tf.Tensor = tf.random.uniform([], minval=0.0, maxval=1.0) * max_offset
-
-    # crop then resize back to canvas
-    off_y_i = tf.cast(tf.math.floor(off_y), tf.int32)
-    off_x_i = tf.cast(tf.math.floor(off_x), tf.int32)
-    win_i = tf.cast(tf.math.ceil(win_size), tf.int32)
-    win_i = tf.maximum(win_i, 2)
-    win_i = tf.minimum(win_i, image_shape[0] - off_y_i)
-    win_i_w = tf.minimum(win_i, image_shape[1] - off_x_i)
-    image = tf.image.crop_to_bounding_box(image, off_y_i, off_x_i, win_i, win_i_w)
-    image = tf.image.resize(image, [image_shape[0], image_shape[1]])
-
-    # --- recompute box target in zoomed canvas coords ---
-    # input box: [cx, cy, w, h] all in [0,1] relative to original 224x224
-    cx = box[0] * canvas
-    cy = box[1] * canvas
-    bw = box[2] * canvas
-    bh = box[3] * canvas
-
-    x_min = cx - bw * 0.5
-    y_min = cy - bh * 0.5
-    x_max = cx + bw * 0.5
-    y_max = cy + bh * 0.5
-
-    # map original canvas coords → zoomed canvas coords
-    x_min_z = (x_min - off_x) / win_size * canvas
-    y_min_z = (y_min - off_y) / win_size * canvas
-    x_max_z = (x_max - off_x) / win_size * canvas
-    y_max_z = (y_max - off_y) / win_size * canvas
-
-    # clamp to [0, canvas]
-    x_min_z = tf.clip_by_value(x_min_z, 0.0, canvas)
-    y_min_z = tf.clip_by_value(y_min_z, 0.0, canvas)
-    x_max_z = tf.clip_by_value(x_max_z, 0.0, canvas)
-    y_max_z = tf.clip_by_value(y_max_z, 0.0, canvas)
-
-    new_cx = tf.clip_by_value(((x_min_z + x_max_z) * 0.5) / canvas, 0.0, 1.0)
-    new_cy = tf.clip_by_value(((y_min_z + y_max_z) * 0.5) / canvas, 0.0, 1.0)
-    new_w = tf.clip_by_value((x_max_z - x_min_z) / canvas, 0.0, 1.0)
-    new_h = tf.clip_by_value((y_max_z - y_min_z) / canvas, 0.0, 1.0)
-    new_box = tf.stack([new_cx, new_cy, new_w, new_h])
-
-    # photometric augmentation (same as scalar path)
-    image = tf.image.random_brightness(image, max_delta=0.15)
-    image = tf.image.random_contrast(image, lower=0.80, upper=1.20)
-    image = tf.image.random_saturation(image, lower=0.85, upper=1.15)
-    noise: tf.Tensor = tf.random.normal(
-        shape=tf.shape(image), mean=0.0, stddev=0.01, dtype=tf.float32
-    )
-    image = tf.clip_by_value(image + noise, 0.0, 1.0)
-
-    return image, new_box
 
 
 def _build_tf_dataset(
@@ -4521,125 +3139,6 @@ def _build_tf_dataset(
     return dataset
 
 
-def _edge_weight(value_norm: float, strength: float) -> float:
-    """Return a weight that concentrates loss on the dial edges."""
-    if strength <= 0.0:
-        return 1.0
-    distance = abs(value_norm - 0.5) * 2.0
-    return 1.0 + strength * distance
-
-
-def _range_aware_weight(
-    value: float,
-    *,
-    value_min: float,
-    value_max: float,
-    cold_tail_fraction: float = 0.15,
-    hot_tail_fraction: float = 0.15,
-    oversampling_factor: float = 3.0,
-) -> float:
-    """Return a weight that oversamples cold/hot tails for range-aware training.
-
-    Args:
-        value: The normalized gauge value (in the calibrated range).
-        value_min: Minimum value in the gauge range.
-        value_max: Maximum value in the gauge range.
-        cold_tail_fraction: Fraction of range at cold end to oversample (default 15%).
-        hot_tail_fraction: Fraction of range at hot end to oversample (default 15%).
-        oversampling_factor: How much more to weight tail samples (default 3x).
-
-    Returns:
-        A sample weight that emphasizes cold/hot tail regions.
-    """
-    if value_max <= value_min:
-        return 1.0
-
-    span = value_max - value_min
-    cold_threshold = value_min + cold_tail_fraction * span
-    hot_threshold = value_max - hot_tail_fraction * span
-
-    if value <= cold_threshold:
-        # Cold tail region
-        return oversampling_factor
-    elif value >= hot_threshold:
-        # Hot tail region
-        return oversampling_factor
-    else:
-        # Middle region
-        return 1.0
-
-
-def _compute_range_aware_weights(
-    examples: list[TrainingExample],
-    *,
-    value_min: float,
-    value_max: float,
-    cold_tail_fraction: float = 0.15,
-    hot_tail_fraction: float = 0.15,
-    oversampling_factor: float = 3.0,
-) -> np.ndarray:
-    """Compute range-aware sample weights for oversampling cold/hot tails."""
-    weights = np.array(
-        [
-            _range_aware_weight(
-                example.value,
-                value_min=value_min,
-                value_max=value_max,
-                cold_tail_fraction=cold_tail_fraction,
-                hot_tail_fraction=hot_tail_fraction,
-                oversampling_factor=oversampling_factor,
-            )
-            for example in examples
-        ],
-        dtype=np.float32,
-    )
-    return weights
-
-
-def _compute_edge_weights(
-    examples: list[TrainingExample],
-    strength: float,
-) -> np.ndarray:
-    """Map normalized scalar labels into sample weights that emphasize extremes."""
-    if strength <= 0.0:
-        return np.ones(len(examples), dtype=np.float32)
-    weights = np.array(
-        [_edge_weight(example.value_norm, strength) for example in examples],
-        dtype=np.float32,
-    )
-    return weights
-
-
-def _sample_mixup_lambda(alpha: float) -> tf.Tensor:
-    """Sample a MixUp interpolation coefficient from a symmetric Beta law."""
-    if alpha <= 0.0:
-        return tf.constant(1.0, dtype=tf.float32)
-    left: tf.Tensor = tf.random.gamma([], alpha=alpha, beta=1.0, dtype=tf.float32)
-    right: tf.Tensor = tf.random.gamma([], alpha=alpha, beta=1.0, dtype=tf.float32)
-    return tf.cast(left / (left + right + 1e-7), tf.float32)
-
-
-def _mixup_value_batch(
-    images: tf.Tensor,
-    targets: tf.Tensor,
-    weights: tf.Tensor,
-    alpha: float,
-) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-    """Apply MixUp to a batch of scalar-regression examples."""
-    batch_size: tf.Tensor = tf.shape(images)[0]
-    perm: tf.Tensor = tf.random.shuffle(tf.range(batch_size))
-    mixed_images: tf.Tensor = tf.gather(images, perm)
-    mixed_targets: tf.Tensor = tf.gather(targets, perm)
-    mixed_weights: tf.Tensor = tf.gather(weights, perm)
-
-    lam: tf.Tensor = _sample_mixup_lambda(alpha)
-    lam_img: tf.Tensor = tf.reshape(lam, [1, 1, 1, 1])
-    lam_vec: tf.Tensor = tf.reshape(lam, [1])
-
-    images = lam_img * images + (1.0 - lam_img) * mixed_images
-    targets = lam_vec * targets + (1.0 - lam_vec) * mixed_targets
-    weights = lam_vec * weights + (1.0 - lam_vec) * mixed_weights
-    return images, targets, weights
 
 
 def _compute_mean_baseline_mae(
@@ -4659,771 +3158,6 @@ def _compute_mean_baseline_mae(
     return baseline_mae
 
 
-def _make_scalar_regression_loss(
-    *,
-    monotonic_pair_strength: float = 0.0,
-    monotonic_pair_margin: float = 0.0,
-    interpolation_pair_strength: float = 0.0,
-    interpolation_pair_scale: float = DEFAULT_INTERPOLATION_PAIR_SCALE,
-):
-    """Create the scalar regression loss used by the training heads."""
-
-    def monotonic_pair_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
-        """Penalize local ordering violations inside a batch."""
-        y_true_flat: tf.Tensor = tf.reshape(tf.cast(y_true, tf.float32), [-1])
-        y_pred_flat: tf.Tensor = tf.reshape(tf.cast(y_pred, tf.float32), [-1])
-        order: tf.Tensor = tf.argsort(y_true_flat, stable=True)
-        sorted_pred: tf.Tensor = tf.gather(y_pred_flat, order)
-        count: tf.Tensor = tf.shape(sorted_pred)[0]
-
-        def _compute() -> tf.Tensor:
-            diffs: tf.Tensor = sorted_pred[1:] - sorted_pred[:-1]
-            violations: tf.Tensor = tf.nn.relu(monotonic_pair_margin - diffs)
-            return tf.reduce_mean(violations)
-
-        return tf.cond(count < 2, lambda: tf.constant(0.0, dtype=tf.float32), _compute)
-
-    def interpolation_pair_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
-        """Penalize local slope mismatches so nearby temperatures interpolate smoothly."""
-        y_true_flat: tf.Tensor = tf.reshape(tf.cast(y_true, tf.float32), [-1])
-        y_pred_flat: tf.Tensor = tf.reshape(tf.cast(y_pred, tf.float32), [-1])
-        count: tf.Tensor = tf.shape(y_true_flat)[0]
-
-        def _compute() -> tf.Tensor:
-            true_i: tf.Tensor = tf.expand_dims(y_true_flat, axis=1)
-            true_j: tf.Tensor = tf.expand_dims(y_true_flat, axis=0)
-            pred_i: tf.Tensor = tf.expand_dims(y_pred_flat, axis=1)
-            pred_j: tf.Tensor = tf.expand_dims(y_pred_flat, axis=0)
-
-            true_diff: tf.Tensor = true_i - true_j
-            pred_diff: tf.Tensor = pred_i - pred_j
-            abs_true_diff: tf.Tensor = tf.abs(true_diff)
-            pair_weights: tf.Tensor = tf.exp(
-                -abs_true_diff / tf.constant(interpolation_pair_scale, dtype=tf.float32)
-            )
-            pair_mask: tf.Tensor = 1.0 - tf.eye(count, dtype=tf.float32)
-            pair_error: tf.Tensor = tf.abs(pred_diff - true_diff)
-            weighted_error: tf.Tensor = pair_weights * pair_mask * pair_error
-            normalizer: tf.Tensor = tf.reduce_sum(pair_weights * pair_mask)
-            return tf.math.divide_no_nan(tf.reduce_sum(weighted_error), normalizer)
-
-        return tf.cond(count < 2, lambda: tf.constant(0.0, dtype=tf.float32), _compute)
-
-    def combined_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
-        """Blend pointwise regression loss with interpolation and ordering penalties."""
-        mse: tf.Tensor = tf.reduce_mean(
-            tf.square(tf.cast(y_true, tf.float32) - tf.cast(y_pred, tf.float32))
-        )
-        total_loss: tf.Tensor = mse
-        if monotonic_pair_strength > 0.0:
-            total_loss = total_loss + monotonic_pair_strength * monotonic_pair_loss(
-                y_true, y_pred
-            )
-        if interpolation_pair_strength > 0.0:
-            total_loss = (
-                total_loss
-                + interpolation_pair_strength * interpolation_pair_loss(y_true, y_pred)
-            )
-        return total_loss
-
-    return combined_loss
-
-
-def _make_pinball_loss(quantile: float):
-    """Create a pinball loss for a scalar quantile head."""
-    if not (0.0 < quantile < 1.0):
-        raise ValueError("quantile must be in (0, 1).")
-
-    quantile_const: tf.Tensor = tf.constant(quantile, dtype=tf.float32)
-
-    def pinball_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
-        """Penalize under- and over-estimates according to the target quantile."""
-        error: tf.Tensor = tf.cast(y_true, tf.float32) - tf.cast(y_pred, tf.float32)
-        return tf.reduce_mean(
-            tf.maximum(
-                quantile_const * error,
-                (quantile_const - 1.0) * error,
-            )
-        )
-
-    pinball_loss.__name__ = f"pinball_q{int(round(quantile * 100.0)):02d}"
-    return pinball_loss
-
-
-def _compile_regression_model(
-    model: keras.Model,
-    *,
-    learning_rate: float,
-    monotonic_pair_strength: float = 0.0,
-    monotonic_pair_margin: float = 0.0,
-    interpolation_pair_strength: float = 0.0,
-    interpolation_pair_scale: float = DEFAULT_INTERPOLATION_PAIR_SCALE,
-) -> None:
-    """Compile a scalar regression model with standard losses and metrics."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
-        learning_rate=learning_rate,
-        weight_decay=1e-4,
-        clipnorm=1.0,
-    )
-
-    model.compile(
-        optimizer=optimizer,
-        loss=_make_scalar_regression_loss(
-            monotonic_pair_strength=monotonic_pair_strength,
-            monotonic_pair_margin=monotonic_pair_margin,
-            interpolation_pair_strength=interpolation_pair_strength,
-            interpolation_pair_scale=interpolation_pair_scale,
-        ),
-        metrics=[
-            keras.metrics.MeanAbsoluteError(name="mae"),
-            keras.metrics.RootMeanSquaredError(name="rmse"),
-        ],
-    )
-
-
-def _compile_fraction_model(
-    model: keras.Model,
-    *,
-    learning_rate: float,
-    fraction_loss_weight: float = DEFAULT_SWEEP_FRACTION_LOSS_WEIGHT,
-) -> None:
-    """Compile a sweep-fraction model with scalar and fraction losses."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
-        learning_rate=learning_rate,
-        weight_decay=1e-4,
-        clipnorm=1.0,
-    )
-
-    model.compile(
-        optimizer=optimizer,
-        loss={
-            "gauge_value": keras.losses.MeanSquaredError(),
-            "sweep_fraction": keras.losses.MeanSquaredError(),
-        },
-        loss_weights={
-            "gauge_value": 1.0,
-            "sweep_fraction": fraction_loss_weight,
-        },
-        metrics={
-            "gauge_value": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                keras.metrics.RootMeanSquaredError(name="rmse"),
-            ],
-            "sweep_fraction": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-            ],
-        },
-    )
-
-
-def _compile_keypoint_model(
-    model: keras.Model,
-    *,
-    learning_rate: float,
-    heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
-    value_loss_weight: float = 1.0,
-) -> None:
-    """Compile a keypoint-auxiliary model with scalar and heatmap losses."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
-        learning_rate=learning_rate,
-        weight_decay=1e-4,
-        clipnorm=1.0,
-    )
-
-    model.compile(
-        optimizer=optimizer,
-        loss={
-            "gauge_value": keras.losses.MeanSquaredError(),
-            "keypoint_heatmaps": keras.losses.MeanSquaredError(),
-        },
-        loss_weights={
-            "gauge_value": value_loss_weight,
-            "keypoint_heatmaps": heatmap_loss_weight,
-        },
-        metrics={
-            "gauge_value": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                keras.metrics.RootMeanSquaredError(name="rmse"),
-            ],
-            "keypoint_heatmaps": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-            ],
-        },
-    )
-
-
-def _compile_geometry_model(
-    model: keras.Model,
-    *,
-    learning_rate: float,
-    heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
-    coord_loss_weight: float = DEFAULT_KEYPOINT_COORD_LOSS_WEIGHT,
-    value_loss_weight: float = DEFAULT_GEOMETRY_VALUE_LOSS_WEIGHT,
-) -> None:
-    """Compile a geometry detector with heatmap, coordinate, and value losses."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
-        learning_rate=learning_rate,
-        weight_decay=1e-4,
-        clipnorm=1.0,
-    )
-
-    model.compile(
-        optimizer=optimizer,
-        loss={
-            "gauge_value": keras.losses.MeanSquaredError(),
-            "keypoint_heatmaps": keras.losses.MeanSquaredError(),
-            "keypoint_coords": keras.losses.MeanSquaredError(),
-        },
-        loss_weights={
-            "gauge_value": value_loss_weight,
-            "keypoint_heatmaps": heatmap_loss_weight,
-            "keypoint_coords": coord_loss_weight,
-        },
-        metrics={
-            "gauge_value": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                keras.metrics.RootMeanSquaredError(name="rmse"),
-            ],
-            "keypoint_heatmaps": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-            ],
-            "keypoint_coords": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                _make_keypoint_angle_mae_metric(),
-            ],
-        },
-    )
-
-
-def _compile_geometry_uncertainty_model(
-    model: keras.Model,
-    *,
-    learning_rate: float,
-    heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
-    coord_loss_weight: float = DEFAULT_KEYPOINT_COORD_LOSS_WEIGHT,
-    value_loss_weight: float = DEFAULT_GEOMETRY_VALUE_LOSS_WEIGHT,
-    uncertainty_loss_weight: float = DEFAULT_GEOMETRY_UNCERTAINTY_LOSS_WEIGHT,
-    low_quantile: float = DEFAULT_GEOMETRY_UNCERTAINTY_LOW_QUANTILE,
-    high_quantile: float = DEFAULT_GEOMETRY_UNCERTAINTY_HIGH_QUANTILE,
-) -> None:
-    """Compile a geometry model with symmetric uncertainty bounds."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
-        learning_rate=learning_rate,
-        weight_decay=1e-4,
-        clipnorm=1.0,
-    )
-
-    model.compile(
-        optimizer=optimizer,
-        loss={
-            "gauge_value": keras.losses.MeanSquaredError(),
-            "keypoint_heatmaps": keras.losses.MeanSquaredError(),
-            "keypoint_coords": keras.losses.MeanSquaredError(),
-            "gauge_value_lower": _make_pinball_loss(low_quantile),
-            "gauge_value_upper": _make_pinball_loss(high_quantile),
-        },
-        loss_weights={
-            "gauge_value": value_loss_weight,
-            "keypoint_heatmaps": heatmap_loss_weight,
-            "keypoint_coords": coord_loss_weight,
-            "gauge_value_lower": uncertainty_loss_weight,
-            "gauge_value_upper": uncertainty_loss_weight,
-        },
-        metrics={
-            "gauge_value": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                keras.metrics.RootMeanSquaredError(name="rmse"),
-            ],
-            "keypoint_heatmaps": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-            ],
-            "keypoint_coords": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                _make_keypoint_angle_mae_metric(),
-            ],
-            "gauge_value_lower": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-            ],
-            "gauge_value_upper": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-            ],
-        },
-    )
-
-
-
-
-def _source_crop_box_v2_loss(
-    y_true: tf.Tensor,
-    y_pred: tf.Tensor,
-    *,
-    giou_weight: float = 2.0,
-    huber_weight: float = 1.0,
-    aspect_weight: float = 1.0,
-    center_weight: float = 0.5,
-    eps: float = 1e-7,
-) -> tf.Tensor:
-    """Combined GIoU + Huber + aspect-ratio + center loss for source crop boxes.
-
-    Targets and predictions are ordered normalized xyxy tensors in [0, 1].
-    """
-    yt = tf.cast(y_true, tf.float32)
-    yp = tf.cast(y_pred, tf.float32)
-
-    # Split corners
-    xt0, yt0, xt1, yt1 = tf.split(yt, 4, axis=-1)
-    xp0, yp0, xp1, yp1 = tf.split(yp, 4, axis=-1)
-
-    # Widths and heights
-    w_true = tf.maximum(xt1 - xt0, 0.0)
-    h_true = tf.maximum(yt1 - yt0, 0.0)
-    w_pred = tf.maximum(xp1 - xp0, 0.0)
-    h_pred = tf.maximum(yp1 - yp0, 0.0)
-
-    # Areas
-    area_true = w_true * h_true
-    area_pred = w_pred * h_pred
-
-    # Intersection
-    xi0 = tf.maximum(xt0, xp0)
-    yi0 = tf.maximum(yt0, yp0)
-    xi1 = tf.minimum(xt1, xp1)
-    yi1 = tf.minimum(yt1, yp1)
-    wi = tf.maximum(xi1 - xi0, 0.0)
-    hi = tf.maximum(yi1 - yi0, 0.0)
-    intersection = wi * hi
-
-    union = area_true + area_pred - intersection
-    iou = intersection / (union + eps)
-
-    # Enclosing box for GIoU
-    xc0 = tf.minimum(xt0, xp0)
-    yc0 = tf.minimum(yt0, yp0)
-    xc1 = tf.maximum(xt1, xp1)
-    yc1 = tf.maximum(yt1, yp1)
-    wc = tf.maximum(xc1 - xc0, 0.0)
-    hc = tf.maximum(yc1 - yc0, 0.0)
-    area_c = wc * hc
-
-    giou = iou - (area_c - union) / (area_c + eps)
-    giou_loss = tf.reduce_mean(1.0 - giou)
-
-    # Huber for direct corner accuracy
-    huber_loss = tf.reduce_mean(
-        keras.losses.huber(yt, yp, delta=0.05)
-    )
-
-    # Aspect ratio loss: match arctan(w/h)
-    ar_true = tf.math.atan(w_true / (h_true + eps))
-    ar_pred = tf.math.atan(w_pred / (h_pred + eps))
-    aspect_loss = tf.reduce_mean(tf.square(ar_true - ar_pred))
-
-    # Center loss: keep predicted box centered on target
-    cx_true = (xt0 + xt1) * 0.5
-    cy_true = (yt0 + yt1) * 0.5
-    cx_pred = (xp0 + xp1) * 0.5
-    cy_pred = (yp0 + yp1) * 0.5
-    center_loss = tf.reduce_mean(
-        tf.square(cx_true - cx_pred) + tf.square(cy_true - cy_pred)
-    )
-
-    total = (
-        giou_weight * giou_loss
-        + huber_weight * huber_loss
-        + aspect_weight * aspect_loss
-        + center_weight * center_loss
-    )
-    return total
-
-
-def _compile_source_crop_box_v2_model(
-    model: keras.Model,
-    *,
-    learning_rate: float,
-) -> None:
-    """Compile a source-space crop-box v2 model with GIoU + aspect + center loss."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
-        learning_rate=learning_rate,
-        weight_decay=1e-4,
-        clipnorm=1.0,
-    )
-
-    model.compile(
-        optimizer=optimizer,
-        loss={
-            "source_crop_box": _source_crop_box_v2_loss,
-        },
-        metrics={
-            "source_crop_box": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                keras.metrics.RootMeanSquaredError(name="rmse"),
-            ],
-        },
-    )
-def _compile_rectifier_model(
-    model: keras.Model,
-    *,
-    learning_rate: float,
-) -> None:
-    """Compile a rectifier model that regresses the normalized crop box."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
-        learning_rate=learning_rate,
-        weight_decay=1e-4,
-        clipnorm=1.0,
-    )
-
-    model.compile(
-        optimizer=optimizer,
-        loss={
-            "rectifier_box": keras.losses.Huber(delta=0.05),
-        },
-        metrics={
-            "rectifier_box": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                keras.metrics.RootMeanSquaredError(name="rmse"),
-            ],
-        },
-    )
-
-
-def _compile_source_crop_box_model(
-    model: keras.Model,
-    *,
-    learning_rate: float,
-) -> None:
-    """Compile a source-space crop-box model that regresses xyxy corners."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
-        learning_rate=learning_rate,
-        weight_decay=1e-4,
-        clipnorm=1.0,
-    )
-
-    model.compile(
-        optimizer=optimizer,
-        loss={
-            "source_crop_box": keras.losses.Huber(delta=0.05),
-        },
-        metrics={
-            "source_crop_box": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                keras.metrics.RootMeanSquaredError(name="rmse"),
-            ],
-        },
-    )
-
-
-def _compile_source_crop_corner_model(
-    model: keras.Model,
-    *,
-    learning_rate: float,
-    heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
-    coord_loss_weight: float = DEFAULT_KEYPOINT_COORD_LOSS_WEIGHT,
-    box_loss_weight: float = 1.0,
-) -> None:
-    """Compile the corner-localizer with heatmap, coordinate, and box losses."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
-        learning_rate=learning_rate,
-        weight_decay=1e-4,
-        clipnorm=1.0,
-    )
-
-    model.compile(
-        optimizer=optimizer,
-        loss={
-            "source_crop_canvas_box": keras.losses.Huber(delta=0.05),
-            "keypoint_heatmaps": keras.losses.MeanSquaredError(),
-            "keypoint_coords": keras.losses.MeanSquaredError(),
-        },
-        loss_weights={
-            "source_crop_canvas_box": box_loss_weight,
-            "keypoint_heatmaps": heatmap_loss_weight,
-            "keypoint_coords": coord_loss_weight,
-        },
-        metrics={
-            "source_crop_canvas_box": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                keras.metrics.RootMeanSquaredError(name="rmse"),
-            ],
-            "keypoint_heatmaps": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-            ],
-            "keypoint_coords": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-            ],
-        },
-    )
-
-
-def _compile_obb_model(
-    model: keras.Model,
-    *,
-    learning_rate: float,
-) -> None:
-    """Compile an oriented-box localizer with a compact regression loss."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
-        learning_rate=learning_rate,
-        clipnorm=1.0,
-    )
-
-    model.compile(
-        optimizer=optimizer,
-        loss={
-            "obb_params": keras.losses.Huber(delta=0.05),
-        },
-        metrics={
-            "obb_params": [
-                keras.metrics.MeanAbsoluteError(name="obb_params_mae"),
-                keras.metrics.RootMeanSquaredError(name="obb_params_rmse"),
-            ],
-        },
-    )
-
-
-def _compile_obb_geometry_model(
-    model: keras.Model,
-    *,
-    learning_rate: float,
-    obb_loss_weight: float = 0.35,
-    heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
-    coord_loss_weight: float = DEFAULT_KEYPOINT_COORD_LOSS_WEIGHT,
-    value_loss_weight: float = 1.0,
-) -> None:
-    """Compile a detector-plus-geometry model with OBB and keypoint losses."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
-        learning_rate=learning_rate,
-        weight_decay=1e-4,
-        clipnorm=1.0,
-    )
-
-    model.compile(
-        optimizer=optimizer,
-        loss={
-            "gauge_value": keras.losses.MeanSquaredError(),
-            "keypoint_heatmaps": keras.losses.MeanSquaredError(),
-            "keypoint_coords": keras.losses.MeanSquaredError(),
-            "obb_params": keras.losses.Huber(delta=0.05),
-        },
-        loss_weights={
-            "gauge_value": value_loss_weight,
-            "keypoint_heatmaps": heatmap_loss_weight,
-            "keypoint_coords": coord_loss_weight,
-            "obb_params": obb_loss_weight,
-        },
-        metrics={
-            "gauge_value": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                keras.metrics.RootMeanSquaredError(name="rmse"),
-            ],
-            "keypoint_heatmaps": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-            ],
-            "keypoint_coords": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                _make_keypoint_angle_mae_metric(),
-            ],
-            "obb_params": [
-                keras.metrics.MeanAbsoluteError(name="obb_params_mae"),
-                keras.metrics.RootMeanSquaredError(name="obb_params_rmse"),
-            ],
-        },
-    )
-
-
-def _compile_obb_mask_geometry_model(
-    model: keras.Model,
-    *,
-    learning_rate: float,
-    heatmap_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
-    coord_loss_weight: float = DEFAULT_KEYPOINT_COORD_LOSS_WEIGHT,
-    mask_loss_weight: float = DEFAULT_KEYPOINT_HEATMAP_LOSS_WEIGHT,
-    value_loss_weight: float = DEFAULT_GEOMETRY_VALUE_LOSS_WEIGHT,
-    obb_loss_weight: float = 0.35,
-) -> None:
-    """Compile an OBB-plus-mask model with segmentation and geometry losses."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
-        learning_rate=learning_rate,
-        weight_decay=1e-4,
-        clipnorm=1.0,
-    )
-
-    model.compile(
-        optimizer=optimizer,
-        loss={
-            "gauge_value": keras.losses.MeanSquaredError(),
-            "keypoint_heatmaps": keras.losses.MeanSquaredError(),
-            "keypoint_coords": keras.losses.MeanSquaredError(),
-            "pointer_mask": keras.losses.BinaryCrossentropy(),
-            "obb_params": keras.losses.Huber(delta=0.05),
-        },
-        loss_weights={
-            "gauge_value": value_loss_weight,
-            "keypoint_heatmaps": heatmap_loss_weight,
-            "keypoint_coords": coord_loss_weight,
-            "pointer_mask": mask_loss_weight,
-            "obb_params": obb_loss_weight,
-        },
-        metrics={
-            "gauge_value": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                keras.metrics.RootMeanSquaredError(name="rmse"),
-            ],
-            "keypoint_heatmaps": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-            ],
-            "keypoint_coords": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                _make_keypoint_angle_mae_metric(),
-            ],
-            "pointer_mask": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-            ],
-            "obb_params": [
-                keras.metrics.MeanAbsoluteError(name="obb_params_mae"),
-                keras.metrics.RootMeanSquaredError(name="obb_params_rmse"),
-            ],
-        },
-    )
-
-
-def _compile_interval_model(
-    model: keras.Model,
-    *,
-    learning_rate: float,
-    monotonic_pair_strength: float = 0.0,
-    monotonic_pair_margin: float = 0.0,
-    interval_loss_weight: float = DEFAULT_INTERVAL_LOSS_WEIGHT,
-) -> None:
-    """Compile the hybrid interval model with scalar and coarse-bin losses."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
-        learning_rate=learning_rate,
-        clipnorm=1.0,
-    )
-    scalar_loss = _make_scalar_regression_loss(
-        monotonic_pair_strength=monotonic_pair_strength,
-        monotonic_pair_margin=monotonic_pair_margin,
-    )
-
-    model.compile(
-        optimizer=optimizer,
-        loss={
-            "gauge_value": scalar_loss,
-            "interval_logits": keras.losses.SparseCategoricalCrossentropy(
-                from_logits=True
-            ),
-        },
-        loss_weights={
-            "gauge_value": 1.0,
-            "interval_logits": interval_loss_weight,
-        },
-        metrics={
-            "gauge_value": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                keras.metrics.RootMeanSquaredError(name="rmse"),
-            ],
-            "interval_logits": [
-                keras.metrics.SparseCategoricalAccuracy(name="acc"),
-            ],
-        },
-    )
-
-
-def _compile_ordinal_model(
-    model: keras.Model,
-    *,
-    learning_rate: float,
-    ordinal_loss_weight: float = DEFAULT_ORDINAL_LOSS_WEIGHT,
-) -> None:
-    """Compile an ordinal-threshold model with scalar and ordinal losses."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
-        learning_rate=learning_rate,
-        clipnorm=1.0,
-    )
-
-    model.compile(
-        optimizer=optimizer,
-        loss={
-            "gauge_value": keras.losses.MeanSquaredError(),
-            "ordinal_logits": keras.losses.BinaryCrossentropy(from_logits=True),
-        },
-        loss_weights={
-            "gauge_value": 1.0,
-            "ordinal_logits": ordinal_loss_weight,
-        },
-        metrics={
-            "gauge_value": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                keras.metrics.RootMeanSquaredError(name="rmse"),
-            ],
-        },
-    )
-
-
-def _direction_cosine_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
-    """Optimize angular agreement between unit needle vectors."""
-    dot: tf.Tensor = tf.reduce_sum(y_true * y_pred, axis=-1)
-    clipped: tf.Tensor = tf.clip_by_value(dot, -1.0, 1.0)
-    return tf.reduce_mean(1.0 - clipped)
-
-
-def _compile_direction_model(
-    model: keras.Model,
-    *,
-    learning_rate: float,
-    spec: GaugeSpec,
-) -> None:
-    """Compile a direction-regression model with value-space metrics."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.Adam(
-        learning_rate=learning_rate,
-        clipnorm=1.0,
-    )
-    model.compile(
-        optimizer=optimizer,
-        loss=_direction_cosine_loss,
-        metrics=[
-            _make_angle_mae_metric(),
-            _make_value_mae_metric(spec),
-            _make_value_rmse_metric(spec),
-        ],
-    )
-
-
-def _compile_direction_geometry_model(
-    model: keras.Model,
-    *,
-    learning_rate: float,
-    spec: GaugeSpec,
-) -> None:
-    """Compile a geometry-bottleneck direction model with scalar supervision."""
-    optimizer: keras.optimizers.Optimizer = keras.optimizers.AdamW(
-        learning_rate=learning_rate,
-        weight_decay=1e-4,
-        clipnorm=1.0,
-    )
-
-    model.compile(
-        optimizer=optimizer,
-        loss={
-            "gauge_value": keras.losses.MeanSquaredError(),
-            "needle_xy": _direction_cosine_loss,
-        },
-        loss_weights={
-            "gauge_value": 1.0,
-            # Keep geometric direction as an auxiliary signal only.
-            # Hard-case manifests often contain value-only labels, so forcing a
-            # strong direction loss can overpower the scalar objective and hurt
-            # generalization on unseen board captures.
-            "needle_xy": 0.0,
-        },
-        metrics={
-            "gauge_value": [
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                keras.metrics.RootMeanSquaredError(name="rmse"),
-            ],
-            "needle_xy": [
-                _make_angle_mae_metric(),
-            ],
-        },
-    )
 
 
 def _make_training_callbacks(
@@ -5447,6 +3181,8 @@ def _make_training_callbacks(
     ]
 
 
+
+
 def _merge_histories(
     first: keras.callbacks.History,
     second: keras.callbacks.History,
@@ -5460,6 +3196,8 @@ def _merge_histories(
         merged[key] = vals_a + vals_b
     second.history = merged
     return second
+
+
 
 
 def _vectors_to_values_tf(y: tf.Tensor, spec: GaugeSpec) -> tf.Tensor:
@@ -5478,6 +3216,8 @@ def _vectors_to_values_tf(y: tf.Tensor, spec: GaugeSpec) -> tf.Tensor:
     return min_value + fractions * value_span
 
 
+
+
 def _make_value_mae_metric(spec: GaugeSpec):
     """Create a Keras metric function that reports Celsius MAE from direction vectors."""
 
@@ -5488,6 +3228,8 @@ def _make_value_mae_metric(spec: GaugeSpec):
 
     value_mae.__name__ = "mae"
     return value_mae
+
+
 
 
 def _make_value_rmse_metric(spec: GaugeSpec):
@@ -5503,6 +3245,8 @@ def _make_value_rmse_metric(spec: GaugeSpec):
     return value_rmse
 
 
+
+
 def _make_angle_mae_metric():
     """Create a Keras metric function that reports absolute angle error in degrees."""
 
@@ -5516,6 +3260,8 @@ def _make_angle_mae_metric():
 
     angle_mae_deg.__name__ = "angle_mae_deg"
     return angle_mae_deg
+
+
 
 
 def _make_keypoint_angle_mae_metric():
@@ -5542,6 +3288,7 @@ def _make_keypoint_angle_mae_metric():
 
     angle_mae_deg.__name__ = "angle_mae_deg"
     return angle_mae_deg
+
 
 
 def train(config: TrainConfig) -> TrainingResult:
@@ -7039,3 +4786,5 @@ def train(config: TrainConfig) -> TrainingResult:
     )
 
     return result
+
+
