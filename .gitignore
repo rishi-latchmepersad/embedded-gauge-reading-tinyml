@@ -135,6 +135,11 @@ ml/tmp/*
 Thumbs.db
 desktop.ini
 
+# IDE config
+.vscode/
+.opencode/
+opencode.jsonc
+
 # Python virtual environments
 .venv/
 venv/

@@ -1,4 +1,4 @@
-# AGENTS.md instructions for d:\Projects\embedded-gauge-reading-tinyml
+# AGENTS.md instructions for /home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml
 
 <INSTRUCTIONS>
 ## Project goals
@@ -27,7 +27,7 @@
 - Keep Python and ML code under `ml/`, using `ml/src/` for importable code, `ml/scripts/` for runnable jobs, and `ml/tests/` for pytest coverage.
 - Keep firmware and board integration under `firmware/`, with STM32CubeIDE project files staying inside the matching board/app subdirectory.
 - Keep project docs, notes, and design writeups under `docs/`.
-- Keep generated or scratch files under `d:/Projects/embedded-gauge-reading-tinyml/tmp/` only.
+- Keep generated or scratch files under `tmp/` only.
 - Do not place temporary scripts, exports, or experiment outputs in the repo root, `docs/`, or `firmware/` unless they are meant to be checked in there permanently.
 - If a new file does not clearly belong in `ml/`, `firmware/`, `docs/`, or `tmp/`, stop and choose the smallest existing home rather than inventing a new top-level folder.
 
@@ -47,7 +47,7 @@
     disown
     ```
 - Always run jobs in bash scripts inside WSL, and tail the logs so you can see when they hang or fail.
-- Use the `d:/Projects/embedded-gauge-reading-tinyml/tmp/` directory for all temporary files and folders (e.g., `tmp_*`, `artifacts/tmp_*`). This replaces any `tmp/` or `tmp_*/` folders that were previously in the project root.
+- Use the `tmp/` directory for all temporary files and folders (e.g., `tmp_*`, `artifacts/tmp_*`). This replaces any `tmp/` or `tmp_*/` folders that were previously in the project root.
 
 ## Notes
 </INSTRUCTIONS>
