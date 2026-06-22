@@ -1,4 +1,4 @@
-# Install script for directory: D:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests
+# Install script for directory: /home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -40,7 +40,7 @@ endif()
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
 if(CMAKE_INSTALL_LOCAL_ONLY)
-  file(WRITE "D:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/build/install_local_manifest.txt"
+  file(WRITE "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/build/install_local_manifest.txt"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
 endif()
 if(CMAKE_INSTALL_COMPONENT)
@@ -56,6 +56,6 @@ else()
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
-  file(WRITE "D:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/build/${CMAKE_INSTALL_MANIFEST}"
+  file(WRITE "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/build/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
 endif()

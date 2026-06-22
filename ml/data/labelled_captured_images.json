@@ -31,7 +31,7 @@
       "unique_image_count": 26
     },
     {
-      "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+      "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
       "source_kind": "reviewed_geometry",
       "description": "Reviewed labels from captured_image_review_batch_50_reviewed.csv.",
       "row_count": 50,
@@ -47,7 +47,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_0007.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 1,
           "source_image_path": "ml/data/captured_images/capture_0007.png",
@@ -136,7 +136,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_0073.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 2,
           "source_image_path": "ml/data/captured_images/capture_0073.png",
@@ -195,7 +195,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_0074.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 3,
           "source_image_path": "ml/data/captured_images/capture_0074.png",
@@ -230,7 +230,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_0075.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 4,
           "source_image_path": "ml/data/captured_images/capture_0075.png",
@@ -289,7 +289,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_0c.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 5,
           "source_image_path": "ml/data/captured_images/capture_0c.png",
@@ -354,7 +354,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-03_08-20-49.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 6,
           "source_image_path": "ml/data/captured_images/capture_2026-04-03_08-20-49.png",
@@ -413,7 +413,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-03_11-43-02.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 7,
           "source_image_path": "ml/data/captured_images/capture_2026-04-03_11-43-02.png",
@@ -448,7 +448,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-03_13-48-34.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 8,
           "source_image_path": "ml/data/captured_images/capture_2026-04-03_13-48-34.png",
@@ -507,7 +507,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-03_15-28-33.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 9,
           "source_image_path": "ml/data/captured_images/capture_2026-04-03_15-28-33.png",
@@ -542,7 +542,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-03_15-46-04.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 10,
           "source_image_path": "ml/data/captured_images/capture_2026-04-03_15-46-04.png",
@@ -601,7 +601,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-15_11-28-02.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 11,
           "source_image_path": "ml/data/captured_images/capture_2026-04-15_11-28-02.png",
@@ -636,7 +636,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-15_13-08-57.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 12,
           "source_image_path": "ml/data/captured_images/capture_2026-04-15_13-08-57.png",
@@ -671,7 +671,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-18_13-18-53.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 13,
           "source_image_path": "ml/data/captured_images/capture_2026-04-18_13-18-53.png",
@@ -706,7 +706,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-19_12-56-02.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 14,
           "source_image_path": "ml/data/captured_images/capture_2026-04-19_12-56-02.png",
@@ -741,7 +741,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-19_13-00-52.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 15,
           "source_image_path": "ml/data/captured_images/capture_2026-04-19_13-00-52.png",
@@ -776,7 +776,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-19_16-40-52.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 16,
           "source_image_path": "ml/data/captured_images/capture_2026-04-19_16-40-52.png",
@@ -811,7 +811,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-19_18-23-05.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 17,
           "source_image_path": "ml/data/captured_images/capture_2026-04-19_18-23-05.png",
@@ -846,7 +846,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-19_18-53-38.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 18,
           "source_image_path": "ml/data/captured_images/capture_2026-04-19_18-53-38.png",
@@ -881,7 +881,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-20_16-01-36.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 19,
           "source_image_path": "ml/data/captured_images/capture_2026-04-20_16-01-36.png",
@@ -916,7 +916,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-22_07-15-36.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 20,
           "source_image_path": "ml/data/captured_images/capture_2026-04-22_07-15-36.png",
@@ -963,7 +963,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-22_07-16-50.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 21,
           "source_image_path": "ml/data/captured_images/capture_2026-04-22_07-16-50.png",
@@ -1046,7 +1046,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-22_07-20-31.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 22,
           "source_image_path": "ml/data/captured_images/capture_2026-04-22_07-20-31.png",
@@ -1111,7 +1111,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-22_07-22-58.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 23,
           "source_image_path": "ml/data/captured_images/capture_2026-04-22_07-22-58.png",
@@ -1194,7 +1194,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-22_07-27-11.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 24,
           "source_image_path": "ml/data/captured_images/capture_2026-04-22_07-27-11.png",
@@ -1259,7 +1259,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-22_07-29-38.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 25,
           "source_image_path": "ml/data/captured_images/capture_2026-04-22_07-29-38.png",
@@ -1324,7 +1324,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-22_07-32-06.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 26,
           "source_image_path": "ml/data/captured_images/capture_2026-04-22_07-32-06.png",
@@ -1371,7 +1371,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-22_07-33-19.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 27,
           "source_image_path": "ml/data/captured_images/capture_2026-04-22_07-33-19.png",
@@ -1436,7 +1436,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-22_07-35-06.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 28,
           "source_image_path": "ml/data/captured_images/capture_2026-04-22_07-35-06.png",
@@ -1501,7 +1501,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-22_07-37-33.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 29,
           "source_image_path": "ml/data/captured_images/capture_2026-04-22_07-37-33.png",
@@ -1584,7 +1584,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-22_07-41-14.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 30,
           "source_image_path": "ml/data/captured_images/capture_2026-04-22_07-41-14.png",
@@ -1703,7 +1703,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-24_22-24-04.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 31,
           "source_image_path": "ml/data/captured_images/capture_2026-04-24_22-24-04.png",
@@ -1738,7 +1738,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-30_05-51-06.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 32,
           "source_image_path": "ml/data/captured_images/capture_2026-04-30_05-51-06.png",
@@ -1773,7 +1773,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-30_10-01-59.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 33,
           "source_image_path": "ml/data/captured_images/capture_2026-04-30_10-01-59.png",
@@ -1808,7 +1808,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-04-30_14-02-46.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 34,
           "source_image_path": "ml/data/captured_images/capture_2026-04-30_14-02-46.png",
@@ -1843,7 +1843,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-05-27_06-00-14.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 35,
           "source_image_path": "ml/data/captured_images/capture_2026-05-27_06-00-14.png",
@@ -1878,7 +1878,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_2026-05-27_16-26-51.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 36,
           "source_image_path": "ml/data/captured_images/capture_2026-05-27_16-26-51.png",
@@ -1913,7 +1913,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_m10c.jpg",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 37,
           "source_image_path": "ml/data/captured_images/capture_m10c.jpg",
@@ -1990,7 +1990,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_m18c.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 38,
           "source_image_path": "ml/data/captured_images/capture_m18c.png",
@@ -2049,7 +2049,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_m19c.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 39,
           "source_image_path": "ml/data/captured_images/capture_m19c.png",
@@ -2108,7 +2108,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_m25c.jpg",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 40,
           "source_image_path": "ml/data/captured_images/capture_m25c.jpg",
@@ -2215,7 +2215,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_p15c.jpg",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 41,
           "source_image_path": "ml/data/captured_images/capture_p15c.jpg",
@@ -2310,7 +2310,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_p25c.jpg",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 42,
           "source_image_path": "ml/data/captured_images/capture_p25c.jpg",
@@ -2375,7 +2375,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_p30c.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 43,
           "source_image_path": "ml/data/captured_images/capture_p30c.png",
@@ -2434,7 +2434,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_p31c.jpg",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 44,
           "source_image_path": "ml/data/captured_images/capture_p31c.jpg",
@@ -2529,7 +2529,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_p42c.jpg",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 45,
           "source_image_path": "ml/data/captured_images/capture_p42c.jpg",
@@ -2576,7 +2576,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_p45c.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 46,
           "source_image_path": "ml/data/captured_images/capture_p45c.png",
@@ -2665,7 +2665,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/capture_p5c.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 47,
           "source_image_path": "ml/data/captured_images/capture_p5c.png",
@@ -2724,7 +2724,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/today_converted/capture_2026-04-09_06-41-57.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 48,
           "source_image_path": "ml/data/captured_images/today_converted/capture_2026-04-09_06-41-57.png",
@@ -2771,7 +2771,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/today_converted/capture_2026-04-09_06-50-28.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 49,
           "source_image_path": "ml/data/captured_images/today_converted/capture_2026-04-09_06-50-28.png",
@@ -2818,7 +2818,7 @@
       "annotations": [
         {
           "image_path": "ml/data/captured_images/today_converted/capture_2026-04-09_06-51-13.png",
-          "source_manifest": "D:/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
+          "source_manifest": "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/tmp/captured_image_review_batch_50_reviewed.csv",
           "source_kind": "reviewed_geometry",
           "source_row_index": 50,
           "source_image_path": "ml/data/captured_images/today_converted/capture_2026-04-09_06-51-13.png",

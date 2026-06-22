@@ -1,5 +1,11 @@
 # AI Memory
 
+## Canonical repo location moved to `/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml`
+
+- Treat `/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml` as the canonical WSL checkout for this project.
+- A compatibility symlink still exists at `/mnt/d/Projects/embedded-gauge-reading-tinyml` so older cached tools and scripts can keep working during the transition.
+- New scripts and notes should prefer the `/home/...` path or derive paths from the repository root instead of hardcoding drive-letter mounts.
+
 ## Master labeled-captured-images manifest now lives in `ml/data/labelled_captured_images.json`
 
 - The manifest is grouped by image path, not flattened by source row, so each image keeps a list of annotations from the source CSVs that mention it.

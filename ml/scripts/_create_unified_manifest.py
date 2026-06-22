@@ -4,7 +4,7 @@ import csv
 from pathlib import Path
 from collections import Counter
 
-repo_root = Path("d:/Projects/embedded-gauge-reading-tinyml")
+repo_root = Path(__file__).resolve().parent.parent.parent  # repo root from ml/scripts/
 
 # Source manifests
 labelled_manifest = repo_root / "ml/data/full_labelled_plus_board30_valid_with_new5.csv"

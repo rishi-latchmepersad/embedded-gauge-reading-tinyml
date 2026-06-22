@@ -28,7 +28,7 @@ events:
       Compilation of the C compiler identification source "CMakeCCompilerId.c" produced "a.exe"
       
       The C compiler identification is GNU, found in:
-        D:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/build/CMakeFiles/4.0.1/CompilerIdC/a.exe
+        /home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/build/CMakeFiles/4.0.1/CompilerIdC/a.exe
       
   -
     kind: "try_compile-v1"
@@ -39,8 +39,8 @@ events:
     checks:
       - "Detecting C compiler ABI info"
     directories:
-      source: "D:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/build/CMakeFiles/CMakeScratch/TryCompile-2ojhtg"
-      binary: "D:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/build/CMakeFiles/CMakeScratch/TryCompile-2ojhtg"
+      source: "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/build/CMakeFiles/CMakeScratch/TryCompile-2ojhtg"
+      binary: "/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/build/CMakeFiles/CMakeScratch/TryCompile-2ojhtg"
     cmakeVariables:
       CMAKE_C_FLAGS: ""
       CMAKE_C_FLAGS_DEBUG: "-g"
@@ -49,7 +49,7 @@ events:
       variable: "CMAKE_C_ABI_COMPILED"
       cached: true
       stdout: |
-        Change Dir: 'D:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/build/CMakeFiles/CMakeScratch/TryCompile-2ojhtg'
+        Change Dir: '/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/build/CMakeFiles/CMakeScratch/TryCompile-2ojhtg'
         
         Run Build Command(s): C:/winlibs64/bin/ninja.exe -v cmTC_a537d
         [1/2] C:\\winlibs64\\bin\\gcc.exe   -v -o CMakeFiles/cmTC_a537d.dir/CMakeCCompilerABI.c.obj -c C:/winlibs64/share/cmake-4.0/Modules/CMakeCCompilerABI.c
@@ -139,7 +139,7 @@ events:
       Parsed C implicit link information:
         link line regex: [^( *|.*[/\\])(ld[0-9]*(|\\.[a-rt-z][a-z]*|\\.s[a-np-z][a-z]*|\\.so[a-z]+)|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
         linker tool regex: [^[ 	]*(->|")?[ 	]*(([^"]*[/\\])?(ld[0-9]*(|\\.[a-rt-z][a-z]*|\\.s[a-np-z][a-z]*|\\.so[a-z]+)))("|,| |$)]
-        ignore line: [Change Dir: 'D:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/build/CMakeFiles/CMakeScratch/TryCompile-2ojhtg']
+        ignore line: [Change Dir: '/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/build/CMakeFiles/CMakeScratch/TryCompile-2ojhtg']
         ignore line: []
         ignore line: [Run Build Command(s): C:/winlibs64/bin/ninja.exe -v cmTC_a537d]
         ignore line: [[1/2] C:\\winlibs64\\bin\\gcc.exe   -v -o CMakeFiles/cmTC_a537d.dir/CMakeCCompilerABI.c.obj -c C:/winlibs64/share/cmake-4.0/Modules/CMakeCCompilerABI.c]

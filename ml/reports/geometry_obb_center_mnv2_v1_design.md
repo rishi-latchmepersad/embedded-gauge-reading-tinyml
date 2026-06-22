@@ -82,7 +82,7 @@ Recommended decode rules:
 
 Use the existing training entrypoint:
 
-- [train_obb_center_mobilenetv2.py](D:/Projects/embedded-gauge-reading-tinyml/ml/scripts/train_obb_center_mobilenetv2.py)
+- [train_obb_center_mobilenetv2.py](../scripts/train_obb_center_mobilenetv2.py)
 
 Recommended settings:
 

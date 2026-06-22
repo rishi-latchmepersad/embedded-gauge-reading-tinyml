@@ -80,9 +80,8 @@ def convert_latest_yuv422(captured_dir: Path, count: int = 10) -> None:
 
 
 if __name__ == "__main__":
-    captured_dir = Path(
-        "D:/Projects/embedded-gauge-reading-tinyml/ml/data/captured_images"
-    )
+    repo_root = Path(__file__).resolve().parent.parent
+    captured_dir = repo_root / "ml/data/captured_images"
 
     # Check if argument is a file path or count
     if len(sys.argv) > 1:

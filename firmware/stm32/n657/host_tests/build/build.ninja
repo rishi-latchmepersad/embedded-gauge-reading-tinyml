@@ -47,49 +47,49 @@ build cmake_object_order_depends_target_unit_tests: phony || .
 build CMakeFiles/unit_tests.dir/D_/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/Appli/Middlewares/Third_Party/Unity/src/unity.c.obj: C_COMPILER__unit_tests_unscanned_ D$:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/Appli/Middlewares/Third_Party/Unity/src/unity.c || cmake_object_order_depends_target_unit_tests
   DEP_FILE = CMakeFiles\unit_tests.dir\D_\Projects\embedded-gauge-reading-tinyml\firmware\stm32\N657X0_bringup\Appli\Middlewares\Third_Party\Unity\src\unity.c.obj.d
   FLAGS = -std=gnu11
-  INCLUDES = -ID:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/../Appli/Middlewares/Third_Party/Unity/src -ID:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/../Appli/Inc
+  INCLUDES = -I/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/../Appli/Middlewares/Third_Party/Unity/src -I/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/../Appli/Inc
   OBJECT_DIR = CMakeFiles\unit_tests.dir
   OBJECT_FILE_DIR = CMakeFiles\unit_tests.dir\D_\Projects\embedded-gauge-reading-tinyml\firmware\stm32\N657X0_bringup\Appli\Middlewares\Third_Party\Unity\src
 
 build CMakeFiles/unit_tests.dir/D_/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/Appli/Src/sd_spi_protocol.c.obj: C_COMPILER__unit_tests_unscanned_ D$:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/Appli/Src/sd_spi_protocol.c || cmake_object_order_depends_target_unit_tests
   DEP_FILE = CMakeFiles\unit_tests.dir\D_\Projects\embedded-gauge-reading-tinyml\firmware\stm32\N657X0_bringup\Appli\Src\sd_spi_protocol.c.obj.d
   FLAGS = -std=gnu11
-  INCLUDES = -ID:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/../Appli/Middlewares/Third_Party/Unity/src -ID:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/../Appli/Inc
+  INCLUDES = -I/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/../Appli/Middlewares/Third_Party/Unity/src -I/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/../Appli/Inc
   OBJECT_DIR = CMakeFiles\unit_tests.dir
   OBJECT_FILE_DIR = CMakeFiles\unit_tests.dir\D_\Projects\embedded-gauge-reading-tinyml\firmware\stm32\N657X0_bringup\Appli\Src
 
 build CMakeFiles/unit_tests.dir/D_/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/Appli/Src/sd_debug_log_core.c.obj: C_COMPILER__unit_tests_unscanned_ D$:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/Appli/Src/sd_debug_log_core.c || cmake_object_order_depends_target_unit_tests
   DEP_FILE = CMakeFiles\unit_tests.dir\D_\Projects\embedded-gauge-reading-tinyml\firmware\stm32\N657X0_bringup\Appli\Src\sd_debug_log_core.c.obj.d
   FLAGS = -std=gnu11
-  INCLUDES = -ID:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/../Appli/Middlewares/Third_Party/Unity/src -ID:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/../Appli/Inc
+  INCLUDES = -I/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/../Appli/Middlewares/Third_Party/Unity/src -I/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/../Appli/Inc
   OBJECT_DIR = CMakeFiles\unit_tests.dir
   OBJECT_FILE_DIR = CMakeFiles\unit_tests.dir\D_\Projects\embedded-gauge-reading-tinyml\firmware\stm32\N657X0_bringup\Appli\Src
 
 build CMakeFiles/unit_tests.dir/test_runner.c.obj: C_COMPILER__unit_tests_unscanned_ D$:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/test_runner.c || cmake_object_order_depends_target_unit_tests
   DEP_FILE = CMakeFiles\unit_tests.dir\test_runner.c.obj.d
   FLAGS = -std=gnu11
-  INCLUDES = -ID:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/../Appli/Middlewares/Third_Party/Unity/src -ID:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/../Appli/Inc
+  INCLUDES = -I/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/../Appli/Middlewares/Third_Party/Unity/src -I/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/../Appli/Inc
   OBJECT_DIR = CMakeFiles\unit_tests.dir
   OBJECT_FILE_DIR = CMakeFiles\unit_tests.dir
 
 build CMakeFiles/unit_tests.dir/test_sanity.c.obj: C_COMPILER__unit_tests_unscanned_ D$:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/test_sanity.c || cmake_object_order_depends_target_unit_tests
   DEP_FILE = CMakeFiles\unit_tests.dir\test_sanity.c.obj.d
   FLAGS = -std=gnu11
-  INCLUDES = -ID:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/../Appli/Middlewares/Third_Party/Unity/src -ID:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/../Appli/Inc
+  INCLUDES = -I/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/../Appli/Middlewares/Third_Party/Unity/src -I/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/../Appli/Inc
   OBJECT_DIR = CMakeFiles\unit_tests.dir
   OBJECT_FILE_DIR = CMakeFiles\unit_tests.dir
 
 build CMakeFiles/unit_tests.dir/test_sd_spi_protocol.c.obj: C_COMPILER__unit_tests_unscanned_ D$:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/test_sd_spi_protocol.c || cmake_object_order_depends_target_unit_tests
   DEP_FILE = CMakeFiles\unit_tests.dir\test_sd_spi_protocol.c.obj.d
   FLAGS = -std=gnu11
-  INCLUDES = -ID:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/../Appli/Middlewares/Third_Party/Unity/src -ID:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/../Appli/Inc
+  INCLUDES = -I/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/../Appli/Middlewares/Third_Party/Unity/src -I/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/../Appli/Inc
   OBJECT_DIR = CMakeFiles\unit_tests.dir
   OBJECT_FILE_DIR = CMakeFiles\unit_tests.dir
 
 build CMakeFiles/unit_tests.dir/test_sd_debug_log_core.c.obj: C_COMPILER__unit_tests_unscanned_ D$:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/test_sd_debug_log_core.c || cmake_object_order_depends_target_unit_tests
   DEP_FILE = CMakeFiles\unit_tests.dir\test_sd_debug_log_core.c.obj.d
   FLAGS = -std=gnu11
-  INCLUDES = -ID:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/../Appli/Middlewares/Third_Party/Unity/src -ID:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/../Appli/Inc
+  INCLUDES = -I/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/../Appli/Middlewares/Third_Party/Unity/src -I/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/../Appli/Inc
   OBJECT_DIR = CMakeFiles\unit_tests.dir
   OBJECT_FILE_DIR = CMakeFiles\unit_tests.dir
 
@@ -144,7 +144,7 @@ build unit_tests: phony unit_tests.exe
 # =============================================================================
 
 #############################################
-# Folder: D:/Projects/embedded-gauge-reading-tinyml/firmware/stm32/N657X0_bringup/host_tests/build
+# Folder: /home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/firmware/stm32/n657/host_tests/build
 
 build all: phony unit_tests.exe
 
