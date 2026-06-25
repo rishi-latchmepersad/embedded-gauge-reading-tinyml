@@ -14,6 +14,7 @@ The model predicts normalized coordinates in [0, 1] range:
 All coordinate outputs are sigmoid-constrained to [0, 1].
 """
 
+import math
 from typing import Tuple, Optional
 
 import numpy as np
@@ -127,6 +128,293 @@ def _input_channel_count(x: tf.Tensor) -> int:
         if len(input_shape) >= 1 and input_shape[-1] is not None:
             return int(input_shape[-1])
     return int(tf.shape(x)[-1])
+
+
+def _conv_bn_relu(
+    x: tf.Tensor,
+    *,
+    filters: int,
+    kernel_size: int = 3,
+    strides: int = 1,
+    name: str,
+) -> tf.Tensor:
+    """Apply a simple Conv2D -> BatchNorm -> ReLU block.
+
+    The block keeps the geometry model flat so tfmot can clone it for QAT
+    without running into nested-Model limitations.
+    """
+
+    x = layers.Conv2D(
+        filters,
+        kernel_size,
+        strides=strides,
+        padding="same",
+        use_bias=False,
+        kernel_initializer="he_normal",
+        name=f"{name}_conv",
+    )(x)
+    x = layers.BatchNormalization(name=f"{name}_bn")(x)
+    x = layers.ReLU(name=f"{name}_relu")(x)
+    return x
+
+
+def set_heatmap_encoder_trainable(model: keras.Model, trainable: bool) -> None:
+    """Toggle the flat heatmap encoder layers while keeping the decoder active."""
+
+    for layer in model.layers:
+        if layer.name.startswith("heatmap_encoder_"):
+            layer.trainable = bool(trainable)
+        else:
+            layer.trainable = True
+
+
+def set_needle_direction_encoder_trainable(model: keras.Model, trainable: bool) -> None:
+    """Toggle the compact direction encoder while leaving the head trainable."""
+
+    for layer in model.layers:
+        if layer.name.startswith("needle_direction_encoder_"):
+            layer.trainable = bool(trainable)
+        else:
+            layer.trainable = True
+
+
+@keras.utils.register_keras_serializable(package="embedded_gauge_reading_tinyml")
+class NeedleValueFromDirection(keras.layers.Layer):
+    """Map a unit needle-direction vector to the calibrated gauge value."""
+
+    def __init__(
+        self,
+        *,
+        value_min: float = -30.0,
+        value_max: float = 50.0,
+        cold_angle_degrees: float = 135.0,
+        sweep_degrees: float = 270.0,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        if value_max <= value_min:
+            raise ValueError("value_max must be > value_min.")
+        if sweep_degrees <= 0.0:
+            raise ValueError("sweep_degrees must be > 0.")
+        self.value_min = float(value_min)
+        self.value_max = float(value_max)
+        self.cold_angle_degrees = float(cold_angle_degrees)
+        self.sweep_degrees = float(sweep_degrees)
+        self._two_pi = float(2.0 * math.pi)
+
+    def call(self, inputs: tf.Tensor) -> tf.Tensor:
+        """Convert needle direction vectors into calibrated Celsius readings."""
+
+        needle_xy = tf.math.l2_normalize(tf.cast(inputs, tf.float32), axis=-1)
+        raw_angle = tf.atan2(needle_xy[..., 1], needle_xy[..., 0])
+        cold_angle = tf.constant(math.radians(self.cold_angle_degrees), dtype=tf.float32)
+        sweep = tf.constant(math.radians(self.sweep_degrees), dtype=tf.float32)
+        shifted = tf.math.floormod(raw_angle - cold_angle, self._two_pi)
+        fraction = tf.clip_by_value(shifted / sweep, 0.0, 1.0)
+        value_span = tf.constant(self.value_max - self.value_min, dtype=tf.float32)
+        return self.value_min + fraction * value_span
+
+    def get_config(self) -> dict[str, object]:
+        """Serialize the calibration constants with the layer."""
+
+        config = super().get_config()
+        config.update(
+            {
+                "value_min": self.value_min,
+                "value_max": self.value_max,
+                "cold_angle_degrees": self.cold_angle_degrees,
+                "sweep_degrees": self.sweep_degrees,
+            }
+        )
+        return config
+
+
+def build_qat_friendly_heatmap_angle_model(
+    input_shape=(224, 224, 3),
+    *,
+    heatmap_size: int = 112,
+    encoder_width_multiplier: float = 1.0,
+    decoder_width_multiplier: float = 1.0,
+    model_name: str = "qat_friendly_heatmap_angle",
+) -> keras.Model:
+    """Build a flat heatmap model that is friendly to QAT cloning.
+
+    The encoder-decoder stays entirely inside a single Functional graph so
+    tfmot.quantize_model() can clone it.  It trades ImageNet transfer for a
+    cleaner export path, which is a better fit for the current deployment
+    constraint.
+    """
+
+    if heatmap_size != 112:
+        raise ValueError(f"Unsupported heatmap_size={heatmap_size}; expected 112.")
+
+    enc32 = _scaled_width(32, encoder_width_multiplier)
+    enc48 = _scaled_width(48, encoder_width_multiplier)
+    enc64 = _scaled_width(64, encoder_width_multiplier)
+    enc96 = _scaled_width(96, encoder_width_multiplier)
+    enc128 = _scaled_width(128, encoder_width_multiplier)
+    dec96 = _scaled_width(96, decoder_width_multiplier)
+    dec64 = _scaled_width(64, decoder_width_multiplier)
+    dec48 = _scaled_width(48, decoder_width_multiplier)
+    dec32 = _scaled_width(32, decoder_width_multiplier)
+
+    inputs = keras.Input(shape=input_shape, name="input_image")
+    x = inputs
+
+    # Encoder: downsample from 224x224 to 7x7 with named blocks.
+    x = _conv_bn_relu(x, filters=enc32, strides=2, name="heatmap_encoder_1")
+    x = _conv_bn_relu(x, filters=enc32, name="heatmap_encoder_1b")
+    skip_112 = x
+
+    x = _conv_bn_relu(x, filters=enc48, strides=2, name="heatmap_encoder_2")
+    x = _conv_bn_relu(x, filters=enc48, name="heatmap_encoder_2b")
+    skip_56 = x
+
+    x = _conv_bn_relu(x, filters=enc64, strides=2, name="heatmap_encoder_3")
+    x = _conv_bn_relu(x, filters=enc64, name="heatmap_encoder_3b")
+    skip_28 = x
+
+    x = _conv_bn_relu(x, filters=enc96, strides=2, name="heatmap_encoder_4")
+    x = _conv_bn_relu(x, filters=enc96, name="heatmap_encoder_4b")
+    skip_14 = x
+
+    x = _conv_bn_relu(x, filters=enc128, strides=2, name="heatmap_encoder_5")
+    x = _conv_bn_relu(x, filters=enc128, name="heatmap_encoder_5b")
+
+    # Decoder: progressively recover spatial detail with flat skip connections.
+    x = layers.UpSampling2D(size=(2, 2), interpolation="bilinear", name="heatmap_decoder_up_1")(x)
+    x = layers.Concatenate(name="heatmap_decoder_concat_14")([x, skip_14])
+    x = _conv_bn_relu(x, filters=dec96, name="heatmap_decoder_1")
+    x = _conv_bn_relu(x, filters=dec96, name="heatmap_decoder_1b")
+
+    x = layers.UpSampling2D(size=(2, 2), interpolation="bilinear", name="heatmap_decoder_up_2")(x)
+    x = layers.Concatenate(name="heatmap_decoder_concat_28")([x, skip_28])
+    x = _conv_bn_relu(x, filters=dec64, name="heatmap_decoder_2")
+    x = _conv_bn_relu(x, filters=dec64, name="heatmap_decoder_2b")
+
+    x = layers.UpSampling2D(size=(2, 2), interpolation="bilinear", name="heatmap_decoder_up_3")(x)
+    x = layers.Concatenate(name="heatmap_decoder_concat_56")([x, skip_56])
+    x = _conv_bn_relu(x, filters=dec48, name="heatmap_decoder_3")
+    x = _conv_bn_relu(x, filters=dec48, name="heatmap_decoder_3b")
+
+    x = layers.UpSampling2D(size=(2, 2), interpolation="bilinear", name="heatmap_decoder_up_4")(x)
+    x = layers.Concatenate(name="heatmap_decoder_concat_112")([x, skip_112])
+    x = _conv_bn_relu(x, filters=dec32, name="heatmap_decoder_4")
+    x = _conv_bn_relu(x, filters=dec32, name="heatmap_decoder_4b")
+
+    center_heatmap = layers.Conv2D(1, 1, padding="same", activation="sigmoid", name="center_heatmap")(x)
+    tip_heatmap = layers.Conv2D(1, 1, padding="same", activation="sigmoid", name="tip_heatmap")(x)
+    confidence_features = layers.GlobalAveragePooling2D(name="heatmap_confidence_gap")(x)
+    confidence = layers.Dense(1, activation="sigmoid", name="confidence")(confidence_features)
+
+    return keras.Model(
+        inputs=inputs,
+        outputs=[center_heatmap, tip_heatmap, confidence],
+        name=model_name,
+    )
+
+
+def build_qat_friendly_needle_direction_model(
+    input_shape=(224, 224, 3),
+    *,
+    encoder_width_multiplier: float = 1.0,
+    head_units: int = 64,
+    head_dropout: float = 0.15,
+    model_name: str = "qat_friendly_needle_direction",
+) -> keras.Model:
+    """Build a compact needle-direction regressor that is friendly to QAT.
+
+    The network predicts a 2D unit vector ``(dx, dy)`` for the needle
+    direction. That direct target is simpler than heatmaps, easier to quantize,
+    and maps cleanly to the downstream polar-vote angle.
+    """
+
+    enc24 = _scaled_width(24, encoder_width_multiplier)
+    enc32 = _scaled_width(32, encoder_width_multiplier)
+    enc48 = _scaled_width(48, encoder_width_multiplier)
+    enc64 = _scaled_width(64, encoder_width_multiplier)
+
+    inputs = keras.Input(shape=input_shape, name="input_image")
+    x = keras.layers.Rescaling(1.0 / 255.0, name="needle_direction_rescale")(inputs)
+
+    # Early stages keep the model tiny so it stays well under the board SRAM budget.
+    x = _conv_bn_relu(x, filters=enc24, strides=2, name="needle_direction_encoder_1")
+    x = _conv_bn_relu(x, filters=enc24, name="needle_direction_encoder_1b")
+    x = keras.layers.MaxPooling2D(pool_size=2, name="needle_direction_pool_1")(x)
+
+    x = _conv_bn_relu(x, filters=enc32, name="needle_direction_encoder_2")
+    x = _conv_bn_relu(x, filters=enc32, name="needle_direction_encoder_2b")
+    x = keras.layers.MaxPooling2D(pool_size=2, name="needle_direction_pool_2")(x)
+
+    x = _conv_bn_relu(x, filters=enc48, name="needle_direction_encoder_3")
+    x = _conv_bn_relu(x, filters=enc48, name="needle_direction_encoder_3b")
+    x = keras.layers.MaxPooling2D(pool_size=2, name="needle_direction_pool_3")(x)
+
+    x = _conv_bn_relu(x, filters=enc64, name="needle_direction_encoder_4")
+    x = _conv_bn_relu(x, filters=enc64, name="needle_direction_encoder_4b")
+
+    x = keras.layers.GlobalAveragePooling2D(name="needle_direction_gap")(x)
+    x = keras.layers.Dense(head_units, activation="swish", name="needle_direction_dense")(x)
+    x = keras.layers.Dropout(head_dropout, name="needle_direction_dropout")(x)
+    needle_xy = keras.layers.Dense(2, name="needle_xy")(x)
+
+    return keras.Model(inputs=inputs, outputs=needle_xy, name=model_name)
+
+
+def build_qat_friendly_needle_direction_geometry_model(
+    input_shape=(224, 224, 3),
+    *,
+    encoder_width_multiplier: float = 1.0,
+    head_units: int = 64,
+    head_dropout: float = 0.15,
+    value_min: float = -30.0,
+    value_max: float = 50.0,
+    cold_angle_degrees: float = 135.0,
+    sweep_degrees: float = 270.0,
+    model_name: str = "qat_friendly_needle_direction_geometry",
+) -> keras.Model:
+    """Build a compact direction model with an auxiliary temperature head."""
+
+    enc24 = _scaled_width(24, encoder_width_multiplier)
+    enc32 = _scaled_width(32, encoder_width_multiplier)
+    enc48 = _scaled_width(48, encoder_width_multiplier)
+    enc64 = _scaled_width(64, encoder_width_multiplier)
+
+    inputs = keras.Input(shape=input_shape, name="input_image")
+    x = keras.layers.Rescaling(1.0 / 255.0, name="needle_direction_rescale")(inputs)
+
+    x = _conv_bn_relu(x, filters=enc24, strides=2, name="needle_direction_encoder_1")
+    x = _conv_bn_relu(x, filters=enc24, name="needle_direction_encoder_1b")
+    x = keras.layers.MaxPooling2D(pool_size=2, name="needle_direction_pool_1")(x)
+
+    x = _conv_bn_relu(x, filters=enc32, name="needle_direction_encoder_2")
+    x = _conv_bn_relu(x, filters=enc32, name="needle_direction_encoder_2b")
+    x = keras.layers.MaxPooling2D(pool_size=2, name="needle_direction_pool_2")(x)
+
+    x = _conv_bn_relu(x, filters=enc48, name="needle_direction_encoder_3")
+    x = _conv_bn_relu(x, filters=enc48, name="needle_direction_encoder_3b")
+    x = keras.layers.MaxPooling2D(pool_size=2, name="needle_direction_pool_3")(x)
+
+    x = _conv_bn_relu(x, filters=enc64, name="needle_direction_encoder_4")
+    x = _conv_bn_relu(x, filters=enc64, name="needle_direction_encoder_4b")
+
+    x = keras.layers.GlobalAveragePooling2D(name="needle_direction_gap")(x)
+    x = keras.layers.Dense(head_units, activation="swish", name="needle_direction_dense")(x)
+    x = keras.layers.Dropout(head_dropout, name="needle_direction_dropout")(x)
+    needle_xy = keras.layers.Dense(2, name="needle_xy")(x)
+    gauge_value = NeedleValueFromDirection(
+        value_min=value_min,
+        value_max=value_max,
+        cold_angle_degrees=cold_angle_degrees,
+        sweep_degrees=sweep_degrees,
+        name="gauge_value",
+    )(needle_xy)
+
+    return keras.Model(
+        inputs=inputs,
+        outputs={"needle_xy": needle_xy, "gauge_value": gauge_value},
+        name=model_name,
+    )
 
 
 def _full_resolution_refine_block(

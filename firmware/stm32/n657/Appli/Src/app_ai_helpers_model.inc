@@ -75,7 +75,10 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 
 	stage_label = (stage->stage_label != NULL) ? stage->stage_label : "scalar";
 	is_rectifier = (strcmp(stage_label, "rectifier") == 0);
-	is_obb = (strcmp(stage_label, "obb_center") == 0) || (strstr(stage_label, "qarepvgg") != NULL);
+	is_obb = (strcmp(stage_label, "obb_center") == 0)
+		|| (strstr(stage_label, "obb_box") != NULL)
+		|| (strstr(stage_label, "board_bbox") != NULL)
+		|| (strstr(stage_label, "qarepvgg") != NULL);
 	bool is_source_crop_box = (strcmp(stage_label, "source_crop_box") == 0);
 
 	if (is_rectifier)

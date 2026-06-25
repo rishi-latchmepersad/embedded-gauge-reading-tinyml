@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 116 116" width="116" height="116">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f8f4ff"/>
+      <stop offset="100%" stop-color="#ffffff"/>
+    </linearGradient>
+    <linearGradient id="heat" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffcc66"/>
+      <stop offset="50%" stop-color="#ff8a3d"/>
+      <stop offset="100%" stop-color="#d93636"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="108" height="108" rx="16" fill="url(#bg)" stroke="#9673a6" stroke-width="2"/>
+  <path d="M26 82 A34 34 0 0 1 78 34" fill="none" stroke="#6c8ebf" stroke-width="4" stroke-linecap="round"/>
+  <path d="M34 74 A24 24 0 0 1 68 41" fill="none" stroke="#b8cbe0" stroke-width="4" stroke-linecap="round" stroke-dasharray="5 4"/>
+  <path d="M42 68 A14 14 0 0 1 60 50" fill="none" stroke="#d6b656" stroke-width="4" stroke-linecap="round" stroke-dasharray="4 3"/>
+  <path d="M58 58 L84 30" stroke="#82b366" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="58" cy="58" r="5" fill="#243447"/>
+  <circle cx="84" cy="30" r="6" fill="#ff7f50" stroke="#8d6a00" stroke-width="2"/>
+  <path d="M84 30 L78 32 M84 30 L82 37" stroke="#8d6a00" stroke-width="2" stroke-linecap="round"/>
+  <rect x="25" y="20" width="22" height="10" rx="3" fill="#ffffff" stroke="#6c8ebf" stroke-width="1.5"/>
+  <text x="36" y="27" text-anchor="middle" font-family="Verdana,Arial,sans-serif" font-size="6" font-weight="700" fill="#6c8ebf">ANGLE</text>
+  <rect x="71" y="20" width="32" height="10" rx="3" fill="#ffffff" stroke="#8d6a00" stroke-width="1.5"/>
+  <text x="87" y="27" text-anchor="middle" font-family="Verdana,Arial,sans-serif" font-size="7" font-weight="700" fill="#8d6a00">TEMP</text>
+  <rect x="28" y="86" width="60" height="10" rx="4" fill="url(#heat)" stroke="#9673a6" stroke-width="1.5"/>
+  <text x="58" y="94" text-anchor="middle" font-family="Verdana,Arial,sans-serif" font-size="8" font-weight="700" fill="#ffffff">CAL MAP</text>
+  <path d="M40 47 L48 40" fill="none" stroke="#9673a6" stroke-width="2" stroke-linecap="round" stroke-dasharray="3 3"/>
+  <path d="M74 63 L67 70" fill="none" stroke="#9673a6" stroke-width="2" stroke-linecap="round" stroke-dasharray="3 3"/>
+</svg>

@@ -9,31 +9,26 @@ full training job.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
+import os
 import sys
 from pathlib import Path
 
+import tensorflow as tf
 import numpy as np
 from sklearn.model_selection import train_test_split
-
-import tf_keras as keras
-import tensorflow_model_optimization as tfmot
 
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
 SRC_DIR: Path = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+from embedded_gauge_reading_tinyml.quantize_compat import quantize_load_scope  # noqa: E402
 
-from train_qat_obb_simcc_combined import (  # noqa: E402
-    CombinedGeometrySequence,
-    CombinedSample,
-    DEFAULT_BATCH_SIZE,
-    DEFAULT_TEST_FRACTION,
-    DEFAULT_VAL_FRACTION,
-    MANIFEST_PATH,
-    _evaluate_sequence,
-    load_combined_samples,
-)
+DEFAULT_BATCH_SIZE = 16
+DEFAULT_TEST_FRACTION = 0.10
+DEFAULT_VAL_FRACTION = 0.15
+MANIFEST_PATH = PROJECT_ROOT / "data" / "labelled_captured_images.json"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -58,12 +53,12 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _split_samples(
-    samples: list[CombinedSample],
+    samples: list[object],
     *,
     val_fraction: float,
     test_fraction: float,
     seed: int,
-) -> tuple[list[CombinedSample], list[CombinedSample], list[CombinedSample]]:
+) -> tuple[list[object], list[object], list[object]]:
     """Split manifest rows into train, validation, and test partitions."""
 
     split_labels = np.array(
@@ -99,12 +94,27 @@ def main() -> None:
     """Load a saved model and score it on the requested holdout split."""
 
     args = _parse_args()
+    if not args.model_path.exists():
+        raise FileNotFoundError(args.model_path)
     if not (0.0 < args.val_fraction < 1.0):
         raise ValueError("--val-fraction must be in (0, 1).")
     if not (0.0 < args.test_fraction < 1.0):
         raise ValueError("--test-fraction must be in (0, 1).")
     if args.val_fraction + args.test_fraction >= 1.0:
         raise ValueError("--val-fraction + --test-fraction must be < 1.0.")
+
+    with quantize_load_scope():
+        model = tf.keras.models.load_model(
+            args.model_path,
+            compile=False,
+            safe_mode=False,
+        )
+
+    os.environ.setdefault("TF_SKIP_EXPLICIT_GPU_CONFIG", "1")
+    training = importlib.import_module("train_qat_obb_simcc_combined")
+    load_combined_samples = training.load_combined_samples
+    CombinedGeometrySequence = training.CombinedGeometrySequence
+    evaluate_sequence = training._evaluate_sequence
 
     samples = load_combined_samples(args.manifest, include_temperature_head=True)
     if not samples:
@@ -125,16 +135,7 @@ def main() -> None:
         seed=args.seed,
     )
 
-    if not args.model_path.exists():
-        raise FileNotFoundError(args.model_path)
-    with tfmot.quantization.keras.quantize_scope():
-        model = keras.models.load_model(
-            args.model_path,
-            compile=False,
-            safe_mode=False,
-        )
-
-    report = _evaluate_sequence(
+    report = evaluate_sequence(
         model,
         sequence,
         include_temperature_head="gauge_value" in model.output_names,

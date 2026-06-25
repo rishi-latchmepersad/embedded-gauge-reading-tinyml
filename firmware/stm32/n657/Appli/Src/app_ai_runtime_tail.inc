@@ -4239,6 +4239,7 @@ static bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 	float center_peak = 0.0f;
 	float tip_peak = 0.0f;
 	float confidence = 0.0f;
+	float angle_rad = 0.0f;
 	float angle_degrees = 0.0f;
 	float angle_delta_degrees = 0.0f;
 	float temperature_c = 0.0f;
@@ -4356,7 +4357,8 @@ static bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 		tip_x_spread_px = fmaxf(tip_x_spread_px, tip_y_spread_px);
 
 		/* Negate image-space Y so the live board matches the replay convention. */
-		angle_degrees = atan2f(-dy, dx) * (180.0f / 3.14159265358979f);
+		angle_rad = atan2f(-dy, dx);
+		angle_degrees = angle_rad * (180.0f / 3.14159265358979f);
 		if (angle_degrees < 0.0f)
 		{
 			angle_degrees += 360.0f;
@@ -4368,9 +4370,7 @@ static bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 			angle_delta_degrees += 360.0f;
 		}
 
-		temperature_c =
-			(APP_AI_TIP_FOCUS_SLOPE * angle_delta_degrees)
-			+ APP_AI_TIP_FOCUS_INTERCEPT;
+		temperature_c = AppBaselineRuntime_ConvertAngleToTemperature(angle_rad);
 
 		center_peak_ok = (center_peak >= center_axis_peak_floor);
 		tip_peak_ok = (tip_peak >= center_axis_peak_floor);

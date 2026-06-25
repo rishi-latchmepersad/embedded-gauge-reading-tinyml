@@ -25,7 +25,7 @@ import numpy as np
 from PIL import Image
 from sklearn.model_selection import train_test_split
 
-_GPU_MEMORY_LIMIT_MB = int(_os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "3800"))
+_GPU_MEMORY_LIMIT_MB = int(_os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "3900"))
 _SKIP_EXPLICIT_GPU_CONFIG = _os.environ.get("TF_SKIP_EXPLICIT_GPU_CONFIG", "0") == "1"
 import tensorflow as tf
 
@@ -52,6 +52,11 @@ from embedded_gauge_reading_tinyml.board_crop_compare import (  # noqa: E402
     load_rgb_image,
     load_yuv422_capture_as_rgb,
     resize_with_pad_rgb,
+)
+from embedded_gauge_reading_tinyml.obb_crop_manifest import (  # noqa: E402
+    ObbCropRecord,
+    load_obb_crop_overrides,
+    resolve_crop_box_override,
 )
 from embedded_gauge_reading_tinyml.gauge.processing import (  # noqa: E402
     GaugeSpec,
@@ -90,6 +95,7 @@ DEFAULT_CENTER_DISTILL_WEIGHT: float = 0.25
 DEFAULT_CENTER_DISTILL_TEMPERATURE: float = 1.0
 DEFAULT_CENTER_DISTILL_HUBER_DELTA: float = 0.03
 DEFAULT_TEMPERATURE_LOSS_WEIGHT: float = 0.25
+DEFAULT_TIP_LOSS_WEIGHT: float = 1.5
 
 _CENTER_PRIORITY: dict[str, int] = {
     "reviewed_geometry": 5,
@@ -426,6 +432,8 @@ def _select_combined_sample(
     entry: dict[str, Any],
     *,
     include_temperature_head: bool,
+    obb_crop_overrides: dict[Path, ObbCropRecord] | None = None,
+    require_accepted_obb_crop: bool = True,
 ) -> CombinedSample | None:
     """Convert one grouped-manifest image entry into a training sample."""
 
@@ -435,7 +443,16 @@ def _select_combined_sample(
 
     annotations = list(entry["annotations"])
     source_width, source_height = _resolve_source_size(image_path, annotations)
+    # Use the OBB-localized crop for every capture when a manifest is available.
+    # The legacy firmware crop stays only as a fallback for images that do not
+    # have an OBB record yet, which keeps the loader usable during bring-up.
     crop_box_xyxy = firmware_training_crop_box(source_width, source_height)
+    crop_box_xyxy, _obb_record = resolve_crop_box_override(
+        image_path,
+        crop_box_xyxy,
+        obb_crop_overrides,
+        require_accepted=require_accepted_obb_crop,
+    )
 
     center_annotation = _pick_annotation(
         annotations,
@@ -548,6 +565,8 @@ def load_combined_samples(
     manifest_path: Path,
     *,
     include_temperature_head: bool,
+    obb_crop_overrides: dict[Path, ObbCropRecord] | None = None,
+    require_accepted_obb_crop: bool = True,
 ) -> list[CombinedSample]:
     """Load and filter the grouped manifest into training samples."""
 
@@ -558,6 +577,8 @@ def load_combined_samples(
         sample = _select_combined_sample(
             entry,
             include_temperature_head=include_temperature_head,
+            obb_crop_overrides=obb_crop_overrides,
+            require_accepted_obb_crop=require_accepted_obb_crop,
         )
         if sample is not None:
             absolute_path = REPO_ROOT / sample.image_path
@@ -887,7 +908,11 @@ def _load_teacher_model(teacher_model_path: Path | None) -> keras.Model | None:
             compile=False,
             safe_mode=False,
         )
-    _validate_teacher_model_input_shape(teacher_model, teacher_model_path=teacher_model_path)
+    try:
+        _validate_teacher_model_input_shape(teacher_model, teacher_model_path=teacher_model_path)
+    except ValueError as exc:
+        print(f"[KD] Teacher rejected: {exc}")
+        return None
     return teacher_model
 
 
@@ -939,6 +964,7 @@ class CenterSimCCDistillTrainer(keras.Model):
         *,
         teacher_model: keras.Model | None = None,
         center_loss_weight: float = DEFAULT_CENTER_LOSS_WEIGHT,
+        tip_loss_weight: float = DEFAULT_TIP_LOSS_WEIGHT,
         center_distill_weight: float = DEFAULT_CENTER_DISTILL_WEIGHT,
         center_huber_delta: float = DEFAULT_CENTER_DISTILL_HUBER_DELTA,
         include_temperature_head: bool = False,
@@ -949,6 +975,7 @@ class CenterSimCCDistillTrainer(keras.Model):
         self.student_model = student_model
         self.teacher_model = teacher_model
         self.center_loss_weight = float(center_loss_weight)
+        self.tip_loss_weight = float(tip_loss_weight)
         self.center_distill_weight = float(center_distill_weight)
         self.center_huber_delta = float(center_huber_delta)
         self.include_temperature_head = bool(include_temperature_head)
@@ -1022,8 +1049,7 @@ class CenterSimCCDistillTrainer(keras.Model):
             + self.center_distill_weight * center_distill_loss
             + center_x_loss
             + center_y_loss
-            + tip_x_loss
-            + tip_y_loss
+            + self.tip_loss_weight * (tip_x_loss + tip_y_loss)
         )
 
         center_mae_px = tf.reduce_mean(
@@ -1316,6 +1342,18 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--test-fraction", type=float, default=DEFAULT_TEST_FRACTION)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
+        "--obb-crop-manifest",
+        type=Path,
+        default=None,
+        help="Optional OBB crop manifest JSON for crop-box overrides.",
+    )
+    parser.add_argument(
+        "--obb-use-rejected-crops",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Allow OBB crop rows even when the decoder marked them rejected.",
+    )
+    parser.add_argument(
         "--teacher-model-path",
         type=Path,
         default=None,
@@ -1332,6 +1370,12 @@ def _parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_CENTER_DISTILL_WEIGHT,
         help="Teacher-student Huber weight for the center head distillation term.",
+    )
+    parser.add_argument(
+        "--tip-loss-weight",
+        type=float,
+        default=DEFAULT_TIP_LOSS_WEIGHT,
+        help="Weight applied to the tip SimCC cross-entropy losses.",
     )
     parser.add_argument(
         "--center-huber-delta",
@@ -1372,9 +1416,17 @@ def main() -> None:
         raise ValueError("--val-fraction + --test-fraction must be < 1.0.")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    obb_crop_overrides: dict[Path, ObbCropRecord] | None = None
+    if args.obb_crop_manifest is not None:
+        if not args.obb_crop_manifest.exists():
+            raise FileNotFoundError(f"OBB crop manifest not found: {args.obb_crop_manifest}")
+        obb_crop_overrides = load_obb_crop_overrides(args.obb_crop_manifest)
+
     samples = load_combined_samples(
         args.manifest,
         include_temperature_head=bool(args.include_temperature_head),
+        obb_crop_overrides=obb_crop_overrides,
+        require_accepted_obb_crop=not bool(args.obb_use_rejected_crops),
     )
     if not samples:
         raise ValueError(f"No usable samples were found in {args.manifest}.")
@@ -1435,6 +1487,12 @@ def main() -> None:
         f"({len(geometry_samples)} geometry-labeled, "
         f"{sum(1 for sample in samples if sample.has_temperature and not sample.has_geometry)} temperature-only)."
     )
+    if args.obb_crop_manifest is not None:
+        print(
+            f"Using OBB crop overrides from {args.obb_crop_manifest} "
+            f"({len(obb_crop_overrides or {})} records, "
+            f"require_accepted={not bool(args.obb_use_rejected_crops)})."
+        )
     print(
         f"Split sizes: train={len(train_samples)} val={len(val_samples)} test={len(test_samples)}."
     )
@@ -1478,6 +1536,7 @@ def main() -> None:
         student_model,
         teacher_model=teacher_model,
         center_loss_weight=args.center_loss_weight,
+        tip_loss_weight=args.tip_loss_weight,
         center_distill_weight=args.center_distill_weight if teacher_model is not None else 0.0,
         center_huber_delta=args.center_huber_delta,
         include_temperature_head=bool(args.include_temperature_head),
@@ -1515,6 +1574,7 @@ def main() -> None:
         qat_student,
         teacher_model=teacher_model,
         center_loss_weight=args.center_loss_weight,
+        tip_loss_weight=args.tip_loss_weight,
         center_distill_weight=args.center_distill_weight if teacher_model is not None else 0.0,
         center_huber_delta=args.center_huber_delta,
         include_temperature_head=bool(args.include_temperature_head),

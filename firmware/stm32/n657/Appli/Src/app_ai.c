@@ -215,7 +215,7 @@ uint32_t volatile __ll_current_wait_mask = 0U;
 #define APP_AI_RECTIFIER_XSPI2_MODEL_IMAGE_PATH \
 	"atonbuf.rectifier.xSPI2.raw"
 #define APP_AI_OBB_XSPI2_MODEL_IMAGE_PATH \
-	"packages/qarepvgg_pro_a175_int8/st_ai_output/qarepvgg_pro_a175_int8_atonbuf.xSPI2.raw" /* QARepVGG-Pro α=1.75, ~2228 KB */
+	"packages/obb_box_board_bbox_deploy_candidate/st_ai_output/obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw" /* Board bbox OBB deploy candidate, ~664 KiB */
 #define APP_AI_XSPI2_MODEL_IMAGE_PATH APP_AI_CENTER_DETECTOR_XSPI2_MODEL_IMAGE_PATH
 #endif
 #define APP_AI_XSPI2_PROGRAM_CHUNK_BYTES 4096U
@@ -382,14 +382,13 @@ typedef struct
  * Give the loader a longer window so we do not give up just before the stack
  * settles. */
 #define APP_AI_FILEX_MEDIA_READY_TIMEOUT_MS 180000U
-/* Tip-focus SimCC calibration and guardrail constants.
+/* Tip-focus SimCC guardrail constants.
  * The runtime uses the replay angle convention (negated image Y) so the
- * board-side temperature fit stays aligned with the packaged hard-case run. */
+ * board-side angle decode stays aligned with the packaged hard-case run.
+ * Temperature mapping itself is shared through AppBaselineRuntime_. */
 #define APP_AI_TIP_FOCUS_MODEL_INPUT_WIDTH_PIXELS 224U
 #define APP_AI_TIP_FOCUS_MODEL_INPUT_HEIGHT_PIXELS 224U
 #define APP_AI_TIP_FOCUS_COLD_ANGLE_DEG     135.0f
-#define APP_AI_TIP_FOCUS_SLOPE              0.2963033f
-#define APP_AI_TIP_FOCUS_INTERCEPT          (-30.0009f)
 #define APP_AI_TIP_FOCUS_SWEEP_DEG          270.0f
 #define APP_AI_TIP_FOCUS_SIMCC_BINS         112U
 #define APP_AI_TIP_FOCUS_CONFIDENCE_FLOOR   0.40f
@@ -467,23 +466,23 @@ __attribute__((section(".xspi2_rectifier_pool"), aligned(APP_AI_CACHE_LINE_BYTES
 uint8_t _mem_pool_xSPI2_mobilenetv2_rectifier_hardcase_finetune[32U] = {
 	0U,
 };
-/* QARepVGG-Pro α=1.75 pool lives in the dedicated OBB flash slot (0x70700000).
+/* Board bbox OBB pool lives in the dedicated OBB flash slot (0x70700000).
  * The generated network references:
- *   _mem_pool_xSPI2_qarepvgg_pro_a175_int8 — weight-addressing.
+ *   _mem_pool_xSPI2_obb_box_board_bbox_deploy_candidate — weight-addressing.
  * 32-byte placeholder ensures the symbol resolves at link time.
- * Actual weight blob (~2228 KB, qarepvgg_pro_a175_int8_atonbuf.xSPI2.raw) is
+ * Actual weight blob (~664 KiB, obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw) is
  * flashed separately via flash_boot.ps1. */
 __attribute__((section(".xspi2_obb_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
-uint8_t _mem_pool_xSPI2_qarepvgg_pro_a175_int8[32U] = {
+uint8_t _mem_pool_xSPI2_obb_box_board_bbox_deploy_candidate[32U] = {
 	0U,
 };
 
-/* QARepVGG-Pro activation overflow (1024 KB) in xSPI1 HyperRAM.
+/* Board bbox OBB activation overflow (1024 KB) in xSPI1 HyperRAM.
  * The N657 Nucleo has no physical HyperRAM — this symbol resolves
  * at 0x90000000 via the .xspi1_obb_pool linker section.
  * NPU access to 0x90000000 will bus-fault at runtime. */
 __attribute__((section(".xspi1_obb_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
-uint8_t _mem_pool_xSPI1_qarepvgg_pro_a175_int8[32U] = {
+uint8_t _mem_pool_xSPI1_obb_box_board_bbox_deploy_candidate[32U] = {
 	0U,
 };
 
@@ -555,12 +554,12 @@ static const uint8_t app_ai_rectifier_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BY
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x80U,
 };
-/* QARepVGG-Pro α=1.75 xSPI2 signatures.  Update after running:
- *   python ml/scripts/package_qarepvgg_pro_for_n6.py
+/* Board bbox OBB xSPI2 signatures.  Update after running:
+ *   python ml/scripts/package_obb_box_board_bbox_deploy_candidate_for_n6.py
  * The script prints the 16 start/tail bytes for this raw blob. */
 static const uint8_t app_ai_obb_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0xF6U, 0xFBU, 0x1DU, 0xF5U, 0xFFU, 0xF1U, 0xFAU, 0x07U,
-	0xFDU, 0xF6U, 0x0FU, 0x04U, 0x07U, 0xEAU, 0xFEU, 0x0FU,
+	0x34U, 0x10U, 0x10U, 0x1CU, 0x11U, 0xDFU, 0xFEU, 0x2DU,
+	0xD7U, 0xB0U, 0xCFU, 0x0CU, 0x04U, 0x0FU, 0xDBU, 0x0EU,
 };
 static const uint8_t app_ai_obb_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x70U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
@@ -578,11 +577,11 @@ static const uint8_t app_ai_source_crop_box_xspi2_signature_tail[APP_AI_XSPI2_PR
 };
 #endif
 /* Tip-focus SimCC model xSPI2 signatures for
- * simcc_gauge_v2_spatial_qat_sc128_int8_atonbuf.xSPI2.raw.
- * Flashed to 0x70400000. Size: 2,268,033 bytes. */
+ * network_atonbuf.xSPI2.raw.
+ * Flashed to 0x70400000. Size: 2,201,505 bytes. */
 static const uint8_t app_ai_tip_focus_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0xF9U, 0x41U, 0xF2U, 0xFFU, 0x3CU, 0xFCU, 0xCBU, 0x19U,
-	0xD4U, 0xB2U, 0xF3U, 0x4DU, 0x18U, 0xE4U, 0x4AU, 0xFEU,
+	0x04U, 0x2FU, 0x1FU, 0xF2U, 0x62U, 0xE7U, 0x3EU, 0xFDU,
+	0x0AU, 0x1EU, 0xF4U, 0x32U, 0xD4U, 0x9AU, 0xFEU, 0xC2U,
 };
 static const uint8_t app_ai_tip_focus_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
@@ -629,10 +628,10 @@ LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 	scalar_full_finetune_from_best_piecewise_calibrated_int8);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 	mobilenetv2_rectifier_hardcase_finetune);
-/* QARepVGG-Pro α=1.75 — single-model OBB + heatmap centre detector.
+/* Board bbox OBB deploy candidate — single-model localizer.
  * Outputs 3 int8 tensors decoded by app_qarepvgg_decode.inc. */
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
-	qarepvgg_pro_a175_int8);
+	obb_box_board_bbox_deploy_candidate);
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(
 	mobilenetv2_source_crop_box_v1_stripped_int8);
 /* Heatmap center detector replaces the scalar CNN as the sole inference
@@ -649,11 +648,11 @@ typedef struct
 } AppAI_RectifierBox;
 
 static const AppAI_ModelStageSpec app_ai_obb_stage = {
-	.stage_label = "qarepvgg_pro",
+	.stage_label = "obb_box_board_bbox_deploy_candidate",
 	.model_image_path = APP_AI_OBB_XSPI2_MODEL_IMAGE_PATH,
-	.nn_instance = &NN_Instance_qarepvgg_pro_a175_int8,
-	.network_init_fn = LL_ATON_EC_Network_Init_qarepvgg_pro_a175_int8,
-	.inference_init_fn = LL_ATON_EC_Inference_Init_qarepvgg_pro_a175_int8,
+	.nn_instance = &NN_Instance_obb_box_board_bbox_deploy_candidate,
+	.network_init_fn = LL_ATON_EC_Network_Init_obb_box_board_bbox_deploy_candidate,
+	.inference_init_fn = LL_ATON_EC_Inference_Init_obb_box_board_bbox_deploy_candidate,
 	.uses_rectifier_box = false,
 	.xspi2_chip_offset = APP_AI_XSPI2_OBB_CHIP_OFFSET,
 	.xspi2_base_addr = APP_AI_XSPI2_OBB_BASE_ADDR,

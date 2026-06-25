@@ -808,3 +808,105 @@ def build_mobilenetv2_center_simcc_model(
     )
     setattr(model, "_mobilenet_backbone_layers", backbone_layers)
     return model
+
+
+def build_mobilenetv2_obb_box_model(
+    image_shape: tuple[int, int, int] = (224, 224, 3),
+    *,
+    alpha: float = 0.35,
+    pretrained: bool = True,
+    backbone_trainable: bool = False,
+    spatial_channels: int = 64,
+    head_units: int = 96,
+    head_dropout: float = 0.15,
+) -> keras.Model:
+    """Build a full-frame OBB box model for deployable crop generation.
+
+    Outputs:
+      - conf: a lightweight confidence score in [0, 1]
+      - box: normalized box parameters ``[cx, cy, w, h]`` in [0, 1]
+
+    The box output is intentionally axis-aligned. That keeps the first-stage
+    crop decoder simple and makes the model easier to quantize and deploy on
+    embedded hardware while still letting the camera and gauge move around in
+    the field.
+    """
+
+    inputs = keras.Input(shape=image_shape, name="input_image")
+
+    backbone_layers: dict[str, keras.layers.Layer] = {}
+    backbone_features = _build_mobilenetv2_feature_tensor(
+        inputs,
+        alpha=alpha,
+        created_layers=backbone_layers,
+    )
+
+    if pretrained:
+        _transfer_mobilenetv2_weights(
+            backbone_layers,
+            image_shape=image_shape,
+            alpha=alpha,
+        )
+
+    for layer in backbone_layers.values():
+        layer.trainable = backbone_trainable
+
+    shared = layers.Conv2D(
+        spatial_channels,
+        1,
+        padding="same",
+        activation="relu",
+        kernel_initializer="he_normal",
+        name="shared_spatial_proj",
+    )(backbone_features)
+    shared = layers.UpSampling2D(
+        size=(2, 2),
+        interpolation="bilinear",
+        name="shared_spatial_up",
+    )(shared)
+    shared = layers.Conv2D(
+        spatial_channels,
+        3,
+        padding="same",
+        activation="relu",
+        kernel_initializer="he_normal",
+        name="shared_spatial_conv_1",
+    )(shared)
+    shared = layers.Conv2D(
+        spatial_channels,
+        3,
+        padding="same",
+        activation="relu",
+        kernel_initializer="he_normal",
+        name="shared_spatial_conv_2",
+    )(shared)
+
+    obb_features = layers.GlobalAveragePooling2D(name="obb_gap")(shared)
+    obb_features = layers.Dense(
+        head_units,
+        activation="relu",
+        kernel_initializer="he_normal",
+        name="obb_dense",
+    )(obb_features)
+    obb_features = layers.Dropout(head_dropout, name="obb_dropout")(obb_features)
+
+    conf = layers.Dense(
+        1,
+        activation="sigmoid",
+        kernel_initializer="he_normal",
+        name="conf",
+    )(obb_features)
+    box = layers.Dense(
+        4,
+        activation="sigmoid",
+        kernel_initializer="he_normal",
+        name="box",
+    )(obb_features)
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={"conf": conf, "box": box},
+        name="mobilenetv2_obb_box",
+    )
+    setattr(model, "_mobilenet_backbone_layers", backbone_layers)
+    return model

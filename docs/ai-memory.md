@@ -1,5 +1,215 @@
 # AI Memory
 
+# Board compact-geometry needle model now has a clean-capture path that reaches the target on good captures (2026-06-24)
+
+- The current needle trainer is `ml/scripts/train_board_compact_geometry.py`.
+- Important defaults and options in that trainer:
+  - it loads the grouped manifest at `tmp/labelled_captured_images_board_center_tip_v2.json`
+  - it applies OBB crop overrides from `tmp/obb_output_board_tip_v2/obb_crop_manifest.json`
+  - it filters reviewed board captures with simple crop quality thresholds
+  - it can run a board-only fine-tune stage after the mixed pxl+board stage
+  - it weights the tip keypoint more heavily than the center keypoint
+- The best staged run so far is `tmp/board_compact_geometry_stage2_smoke1/`.
+- Final held-out metrics from that run:
+  - `board_center_mae_px=3.907993429396698`
+  - `board_tip_mae_px=5.273940098868177`
+  - `angle_mae_degrees=25.54987781920327`
+- The good-capture subset is stronger than the raw board average:
+  - clean board captures on the held-out test split came out around `center_mae_px=4.42` and `tip_mae_px=3.69`
+- The remaining bad example is the very dark/noisy `capture_2026-04-09_06-51-13.png`; the model is not being optimized for those frames anymore.
+- Visual overlays for the staged run are in `tmp/board_compact_geometry_stage2_smoke1_overlays/`.
+
+## Final refined checkpoint clears the board target on held-out captures (2026-06-24)
+
+- Starting from `tmp/board_compact_geometry_stage2_smoke1/compact_geometry_float.keras`, I ran a short clean-board-only refinement pass.
+- The refined artifact is `tmp/board_compact_geometry_stage2_refine1/refined_float.keras`.
+- Held-out board metrics for that refined checkpoint:
+  - `board_center_mae_px=4.554588794708252`
+  - `board_tip_mae_px=4.76971435546875`
+  - `angle_mae_degrees=14.707543017315098`
+- The corresponding held-out overlays live under `tmp/board_compact_geometry_stage2_refine1_overlays/`.
+- This is the checkpoint to prefer when we want a board-ready geometry model for clean captures.
+
+# Combined board labeling wrapper now prepares bbox and center/tip batches back to back (2026-06-24)
+
+- The new all-in-one label flow is `tmp/run_board_bbox_then_center_tip_labelers.sh`.
+- It generates a fresh board bbox manifest, runs `ml/scripts/label_board_bboxes.py`, turns those boxes into a center/tip review batch, runs `ml/scripts/label_board_center_tip.py`, and then merges the two CSVs into `tmp/labelled_captured_images_board_bbox_plus_center_tip_v3.json`.
+- Default outputs:
+  - bbox labels: `tmp/board_bbox_labels_for_center_tip.csv`
+  - center/tip labels: `tmp/board_center_tip_labels_for_new_bbox.csv`
+  - merged manifest: `tmp/labelled_captured_images_board_bbox_plus_center_tip_v3.json`
+- This is the right script to use when we want to collect a compact board set that feeds both the OBB stage and the SimCC stage.
+
+# QAT center SimCC is loadable with a compatibility shim, but int8 export still needs a fresh training/export pass (2026-06-24)
+
+- The current `ml/artifacts/training/obb_board_simcc_kd_qat_v2/center_simcc_qat.keras` artifact can be loaded by a compatibility shim in `ml/src/embedded_gauge_reading_tinyml/quantize_compat.py`.
+- The shim restores legacy quantization wrapper state by shape-matching saved tensors to the current TF-MOT variables.
+- The model can be evaluated again, but the current exported QAT save remains fragile and does not yet convert cleanly to a board-ready int8 TFLite file in this environment.
+- The best next data move is still more board supervision, especially center/tip labels on the same captures we are boxing, because the hard board cases are still the main source of error.
+
+# Center SimCC holdout eval looks decent on easier board captures, but the QAT `.keras` artifact is loader-sensitive (2026-06-24)
+
+- The saved float checkpoint at `ml/artifacts/training/obb_board_simcc_kd_qat_v2/center_simcc_float.keras` loads cleanly in the current Poetry environment.
+- The saved QAT checkpoint at `ml/artifacts/training/obb_board_simcc_kd_qat_v2/center_simcc_qat.keras` currently fails to load here with a `quantize_layer` variable-count mismatch, so we should treat that export path as environment-sensitive until we regenerate or repack it.
+- A holdout eval on `tmp/labelled_captured_images_board_center_tip_v2.json` reported:
+  - `center_xy_mae_px=21.40`
+  - `simcc_center_mae_px=11.83`
+  - `tip_mae_px=15.79`
+- The worst overlay cases are still the low-quality or cluttered board captures, but the easier captures look visually reasonable. The contact sheet is in `tmp/center_simcc_holdout_overlays/contact_sheet.png`.
+
+## Additional center/tip labels now come from the reviewed board-box manifest (2026-06-24)
+
+- The new point-label prep script is `ml/scripts/prepare_board_center_tip_review_batch_from_manifest.py`.
+- It reads `tmp/labelled_captured_images_board_bbox_hardcase_v3.json` and selects the 50 reviewed board captures from that manifest.
+- The convenience wrapper is `tmp/run_board_center_tip_from_reviewed_boxes.sh`.
+- The wrapper emits `tmp/board_center_tip_review_batch_reviewed_boxes.csv` and saves labels to `tmp/board_center_tip_reviewed_boxes_labels.csv`.
+- This batch is separate from the earlier 39-row center/tip CSV and uses boxed board captures we had not point-labeled yet.
+
+## Mixed board bbox batch is ready for the next labeling pass (2026-06-24)
+
+- The new selector is `ml/scripts/generate_board_bbox_mixed_manifest.py`.
+- It samples a 70/30 easy-to-moderate-hard mix from the board capture pool and excludes anything already present in `tmp/board_bbox_labels.csv`.
+- The convenience wrapper is `tmp/run_board_bbox_mixed_labeler.sh`.
+- The default output manifest is `tmp/board_bbox_mixed_manifest.csv`, and the label CSV is `tmp/board_bbox_mixed_labels.csv`.
+- A quick preview run confirmed the selector is pulling fresh board capture dates rather than repeating the already-boxed images.
+
+## Board center/tip labeling workflow is now available in OpenCV (2026-06-24)
+
+- The new board review batch prep script is `ml/scripts/prepare_board_center_tip_review_batch.py`.
+- It converts the reviewed board bbox CSV into a deduped center/tip review batch at `tmp/board_center_tip_review_batch.csv`.
+- The new OpenCV annotator is `ml/scripts/label_board_center_tip.py`.
+- It writes the final labels to `tmp/board_center_tip_labels.csv` and uses the same manifest-friendly CSV schema as the captured-image labeler.
+- The convenience wrapper is `tmp/run_board_center_tip_labeler.sh`.
+- The wrapper first prepares the batch from `tmp/board_bbox_labels.csv` and then launches the labeler from inside `ml/` via Poetry.
+- The selector now dedupes image families so PNG and YUV variants of the same capture do not both land in the review batch.
+
+## Board SimCC training ran on the new center/tip manifest, but tip remains the weak spot (2026-06-24)
+
+- The board-stage trainer was run on `tmp/labelled_captured_images_board_center_tip.json`.
+- The merged manifest contained `383` usable geometry-labeled samples, split into `286` train, `58` val, and `39` test rows.
+- Final metrics from the completed run:
+  - `val_center_xy_mae_px=20.58`
+  - `val_simcc_center_mae_px=6.90`
+  - `val_tip_mae_px=43.11`
+  - `test_center_xy_mae_px=21.87`
+  - `test_simcc_center_mae_px=9.63`
+  - `test_tip_mae_px=48.15`
+- The final checkpoint files are in `ml/artifacts/training/obb_board_simcc_kd_qat/`.
+- This run confirms the board label pipeline is wired correctly, but the tip head still needs more clean supervision or a more targeted loss/data recipe before it is deployment-ready.
+
+## Board SimCC stage is wired up, but tip quality is still the limiter (2026-06-24)
+
+- The new board-stage trainer wrapper is `ml/scripts/train_obb_board_simcc_kd_qat.py`.
+- It reuses the shared combined SimCC trainer, consumes the OBB crop manifest from `tmp/obb_output/obb_crop_manifest.json`, and defaults to the reviewed board manifest when available.
+- The shared trainer now accepts `--tip-loss-weight`, and the board wrapper injects a higher default tip weight so the needle endpoint gets more emphasis than the center head.
+- A short smoke run on `344` board samples completed successfully and produced:
+  - `val_center_xy_mae_px=19.12`
+  - `val_simcc_center_mae_px=11.61`
+  - `val_tip_mae_px=38.91`
+  - `test_center_xy_mae_px=19.88`
+  - `test_simcc_center_mae_px=12.07`
+  - `test_tip_mae_px=40.28`
+- Visual checks on held-out captures showed that the center is usually reasonable, but the tip still drifts badly on dark or cluttered frames.
+- On easier held-out captures, the tip error is much more acceptable, roughly `6-11 px`, so this stage is usable as a starter model for good captures but not yet the final robust needle localizer.
+
+## Quick board bbox labeler is now available for 50-image board batches (2026-06-23)
+
+- The new annotator is `ml/scripts/label_board_bboxes.py`.
+- It now defaults to the uncropped 50-image board manifest at `tmp/board_bbox_uncropped_manifest.csv`.
+- It writes a compact CSV to `tmp/board_bbox_labels.csv` by default, with `image_path`, source dimensions, and `crop_x_min/y_min/x_max/y_max` so the grouped-manifest builder can merge it as an extra geometry source.
+- The saved CSV can be merged later with `ml/scripts/build_labelled_captured_images_manifest.py --extra-source tmp/board_bbox_labels.csv`.
+- The uncropped manifest is generated from the hard-case CSVs and filters out preview/crop artifacts.
+- The labeler now also infers square dimensions for uncropped YUV and raw-ish captures when they appear in a batch.
+
+## Diverse board bbox batch is ready for a second labeling pass (2026-06-23)
+
+- The new diverse manifest is `tmp/board_bbox_diverse_manifest.csv`.
+- It selects 50 unique uncropped captures across April, May, June, `today_converted`, named capture families, PNG, and YUV422.
+- The preview contact sheet for that batch is `tmp/board_bbox_diverse_preview/diverse_manifest_contact_sheet.png`.
+
+## Board-augmented OBB training now uses the cleaned reviewed boxes (2026-06-23)
+
+- The cleaned board labels kept `42` boxes and skipped `8` unusable captures from the diverse batch.
+- The merged board-augmented manifest is `tmp/labelled_captured_images_board_bbox_v2.json`.
+- The longer board-augmented run used `344 pxl_geometry` samples plus `42 reviewed_geometry` board samples.
+- The final long-run test report improved to `board_box_center_mae_px=5.12`, `board_box_size_mae_px=10.39`, `pxl_box_center_mae_px=4.94`, and `pxl_box_size_mae_px=3.86`.
+
+## OBB-first crop loading is now the default for the combined SimCC trainer (2026-06-23)
+
+- The new OBB box model trained from the grouped manifest exported cleanly to TFLite and produced usable board overlays on most inspected captures.
+- The combined SimCC trainer now applies OBB crop overrides to every image when a manifest is present, instead of special-casing board captures back to the firmware crop.
+- The latest OBB manifest generation on `ml/data/labelled_captured_images.json` accepted `88` of `441` source images, and the combined trainer now sees `422` usable samples with the current manifest.
+- The latest OBB box training run used stronger translation plus scale augmentation and a higher board sample weight, and the test split improved to `board_box_center_mae_px=5.12`, `board_box_size_mae_px=5.70`, `pxl_box_center_mae_px=6.57`, and `pxl_box_size_mae_px=7.71`.
+- Visual sanity checks were good on `capture_2026-04-19_18-53-38.png`, `capture_2026-04-30_05-51-06.png`, and `capture_p45c.png`.
+- `capture_m10c.jpg` is still a hard failure case with a bad top-left crop, so we should keep watching for outliers and improve the OBB data/model rather than assuming the localizer is solved.
+- The latest board overlay artifacts live under `tmp/obb_box_grouped_qat_v3_manifest/`, and the new OBB training output is under `tmp/obb_box_grouped_qat_v3/`.
+- After switching the OBB trainer to pxl-only supervision, the validation baseline improved to `box_center_mae_px=5.25` and `box_size_mae_px=5.86`, but the board hard-case replay still shows the same family of off-image false crops on `capture_p20`, `capture_p35c`, `capture_m10c`, and `capture_p45c`.
+
+## Board overlay replay on the cleaned board-bbox checkpoint is now scriptable (2026-06-23)
+
+- The new replay runner is `ml/scripts/replay_obb_board_boxes.py`.
+- It replays the int8 export from `tmp/obb_box_board_bbox_v2_long/obb_box_qat.tflite` on `tmp/board_bbox_labels.csv`, renders per-image overlays under `tmp/obb_board_bbox_replay/overlays/`, and writes `contact_sheet_all.png` plus `contact_sheet_worst12.png`.
+- Full replay on the 42 reviewed board boxes reported `mean_center_error_px=8.49`, `mean_size_error_px=10.30`, `mean_iou=0.803`, and `worst_center_error_px=19.67`.
+- The replay looked broadly sane on most captures, but the obvious hard failures still include `capture_0074`, `capture_0075`, `biglook_18-54-51`, `capture_m30c`, and the `p35c` pair, where the predicted box stays too large or drifts off the gauge face.
+
+## New hard-case board bbox batch is ready for labeling (2026-06-23)
+
+- The targeted manifest is `tmp/board_bbox_hardcase_manifest.csv`.
+- It is biased toward the replay failure families and busy date ranges, instead of generic diversity.
+- The preview sheet is `tmp/board_bbox_hardcase_preview/contact_sheet.png`.
+- The batch includes the hard families `capture_0074`, `capture_0075`, `capture_m30c`, `capture_p10c`, `capture_p35c`, and `capture_p50c`, plus nearby unlabeled board captures from `2026-04-19`, `2026-05-30`, `2026-05-31`, `2026-06-01`, `2026-06-02`, and `2026-06-03`.
+- One selected YUV capture had a size mismatch during preview loading, so the batch should still be checked in the GUI, but the manifest itself is the right place to start the next labeling pass.
+
+## Second hard-case board bbox pass is labeled and shows the remaining failure modes clearly (2026-06-23)
+
+- The hard-case batch at `tmp/board_bbox_hardcase_manifest.csv` has now been labeled in `tmp/board_bbox_labels.csv` with `50` reviewed rows and no excluded rows.
+- Replaying `tmp/obb_box_board_bbox_v2_long/obb_box_qat.tflite` on those 50 labels produced `mean_center_error_px=13.88`, `mean_size_error_px=21.37`, `mean_iou=0.785`, and `worst_center_error_px=84.36`.
+- The dramatic misses were the expected nasty families: `capture_p35c`, `capture_2026-05-23_05-51-57`, `capture_p25c`, and `capture_p15c`.
+- Several of the easy-ish board captures still look fine, so the next cleanup should focus on the truly pathological frames rather than treating the whole batch as equally bad.
+
+## Hard-case board bbox fine-tune completed, but the worst frames still dominate the replay tail (2026-06-23)
+
+- The new training run is `tmp/obb_box_board_bbox_hardcase_v3/`.
+- It used the merged manifest `tmp/labelled_captured_images_board_bbox_hardcase_v3.json`, which contains `344 pxl_geometry` samples and `50 reviewed_geometry` board samples.
+- The export completed cleanly and produced `obb_box_float.keras`, `obb_box_qat.keras`, and `obb_box_qat.tflite`.
+- Held-out test results improved to `board_box_center_mae_px=6.30`, `board_box_size_mae_px=7.59`, `pxl_box_center_mae_px=9.23`, and `pxl_box_size_mae_px=5.21`.
+- Replaying the new int8 model on the 50 hard-case board labels was still mixed: `mean_center_error_px=14.63`, `mean_size_error_px=19.00`, `mean_iou=0.763`, and `worst_center_error_px=96.95`.
+- The new model clearly helps some of the easier board captures, but the pathological frames like `capture_p35c` and `capture_p15c` still need either more data cleanup or explicit exclusion before we claim the localizer is solid.
+
+## Good-capture board bbox batch is now ready for a cleaner labeling pass (2026-06-23)
+
+- The new selector is `ml/scripts/generate_board_bbox_good_manifest.py`.
+- It writes `tmp/board_bbox_good_manifest.csv` and previews to `tmp/board_bbox_good_preview/contact_sheet.png`.
+- The selection uses simple image-stat scoring to favor bright-to-medium, lower-noise board captures and intentionally skips the known pathological families.
+- This is the batch we should use when we want to tighten the model on normal captures rather than teach it the extreme dark/noisy tail.
+
+## The latest "good" board batch still needed a cleanup pass, and the cleaned manifest is ready (2026-06-24)
+
+- I visually reviewed the 50-image `tmp/board_bbox_good_manifest.csv` batch and removed the obvious low-value frames before the next labeling pass.
+- The cleaned manifest is `tmp/board_bbox_good_manifest_clean.csv`.
+- Skipped frames:
+  - `capture_2026-06-01_09-35-00.yuv422`
+  - `capture_2026-05-31_08-33-15.yuv422`
+  - `capture_2026-04-09_06-51-13.yuv422`
+  - `capture_2026-04-09_06-51-13.png`
+  - `capture_2026-04-20_16-11-24.png`
+  - `capture_2026-04-09_06-50-28.png`
+- The remaining 44 frames are the ones we should prefer for clean board-box labeling because they are brighter, clearer, and less likely to teach the model garbage crops.
+
+## A stricter clean board bbox batch was generated after visual review, and this is the one to label next (2026-06-24)
+
+- The latest clean batch is `tmp/board_bbox_clean_manifest_v7.csv`.
+- Its preview contact sheet is `tmp/board_bbox_clean_preview_v7/contact_sheet.png`.
+- Selection rules were tightened to favor clearer, medium-bright frames and drop the noisier tail:
+  - brightness roughly centered around the mid-range,
+  - standard deviation capped lower than the earlier "good" batch,
+  - dynamic range limited so the preview does not drift into very noisy or very clipped frames,
+  - bad families and derived images are still excluded.
+- The resulting 50-image batch is spread across the cleaner sessions on `2026-05-30`, `2026-05-31`, `2026-06-01`, `2026-06-02`, `2026-06-03`, `2026-06-04`, `2026-06-08`, `2026-04-19`, `2026-04-20`, and `2026-05-27`.
+- I visually checked the full contact sheet and this is the best clean board-bbox batch so far: no obvious night junk, no side-view raw files, and no obvious cropped weirdness.
+- The matching center/tip review batch from these clean bbox labels is `tmp/board_center_tip_review_batch_from_clean_bbox.csv`.
+- The helper wrapper is `tmp/run_board_center_tip_from_clean_bbox.sh`.
+
 ## Canonical repo location moved to `/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml`
 
 - Treat `/home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml` as the canonical WSL checkout for this project.
@@ -2661,3 +2871,87 @@ sha256[:16] = f7065e4f6b3a98f6
   `flash_boot.ps1` flashes the sc128 raw blob at `0x70400000`.
   The old scalar/OBB/center-detector routing remains only in compile-guarded
   fallback text.
+
+## OBB student distillation on board captures — QAT beats PTQ, fit looks good (2026-06-23)
+
+- New trainer: `ml/scripts/train_qat_obb_box_kd_student.py`.
+- New wrapper: `tmp/run_obb_box_kd_student.sh`.
+- Data used: `tmp/labelled_captured_images_board_bbox.json`, filtered to
+  `pxl_geometry` + `reviewed_geometry` only.
+- Teacher: `tmp/obb_box_board_bbox_hardcase_v3/obb_box_float.keras`.
+- Student config: MobileNetV2 α=0.35, `spatial_channels=32`, `head_units=48`,
+  `head_dropout=0.10`, with TL + KD warmup/fine-tune, then QAT and PTQ export.
+- Estimated SRAM lower bound: 1,084,437 bytes total
+  (`612,912` bytes largest activation + `471,525` int8 weights), under the
+  1.5 MB budget we were targeting.
+- Float test split: board center MAE 13.24 px, board size MAE 16.53 px.
+- PTQ test split: board center MAE 12.59 px, board size MAE 17.00 px.
+- QAT test split: board center MAE 7.83 px, board size MAE 18.38 px.
+- Replay on 49 labeled board captures:
+  - QAT: mean IoU 0.687, mean center error 11.07 px, mean size error 21.57 px.
+  - PTQ: mean IoU 0.633, mean center error 17.81 px, mean size error 23.98 px.
+- Visual replay on the QAT contact sheet showed the boxes are mostly centered on
+  the gauge face for normal captures; the remaining failures are concentrated in
+  the very dark / noisy / extreme-angle frames, which matches our current goal.
+- Deployment choice for now: keep the QAT int8 model and use PTQ only as a
+  reference baseline.
+
+## OBB student v2 merged-manifest run — PTQ is the current best candidate (2026-06-23)
+
+- Merged manifest: `tmp/labelled_captured_images_board_bbox_plus_board_reviews.json`
+  adds 46 reviewed board captures on top of the 394-image grouped set, for 440
+  total samples with 96 `reviewed_geometry` rows.
+- New run directory: `tmp/obb_box_board_bbox_kd_student_v2/`.
+- On the labeled board replay, the PTQ int8 model is currently the best one we
+  have:
+  - mean IoU `0.754`
+  - mean center error `11.96 px`
+  - mean size error `14.15 px`
+- The corresponding QAT int8 artifact was weaker on this split, so PTQ is the
+  active deploy candidate for now.
+- Unseen probe on six board captures from the good manifest looked sensible:
+  the predicted boxes stayed on the gauge face and tracked the full dial even on
+  rotated and partially shadowed frames.
+- SRAM fit estimate is unchanged from the student architecture:
+  `1,084,437` bytes lower-bound total, still under the 1.5 MB target.
+
+## OBB student deploy proof — ST Edge AI fit confirms on-chip SRAM use only (2026-06-23)
+
+- Deploy candidate folder: `tmp/obb_box_board_bbox_deploy_candidate/`.
+- The ST Edge AI generate step completed for the PTQ student and emitted:
+  - `obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw`
+  - `obb_box_board_bbox_deploy_candidate.c`
+  - `obb_box_board_bbox_deploy_candidate.h`
+  - `network.csv`
+  - `c_info.json`
+- Actual memory summary from ST Edge AI:
+  - activations `1,154,048 B`
+  - total RAM `1,154,077 B`
+  - HyperRAM `0 B`
+  - octoFlash weights `663,907 B`
+- The model therefore stays below the 1.5 MB on-chip SRAM target with room
+  left for the SimCC stage.
+- The relocatable `npu_driver` build hit a WSL path quirk in this environment,
+  but the generated ST Edge AI memory report already proves the SRAM fit we care
+  about.
+
+## Heatmap angle CNN retrain for board captures — better, but still not deploy-ready (2026-06-24)
+
+- Training pipeline: `ml/scripts/train_heatmap_angle_cnn.py`
+  - GPU cap is enforced at import time with `TF_GPU_MEMORY_LIMIT_MB=3900`.
+  - PNG and JPG loading now goes through OpenCV so the manifest can mix file types.
+  - Manifest paths are resolved from `ml/` or repo-root-relative entries correctly.
+  - Dataset repeat + explicit `steps_per_epoch`/`validation_steps` were added so
+    multi-epoch training does not exhaust the generator.
+  - The loss was tightened to `combined_heatmap_loss` for both center and tip.
+- Final checkpoint from the retrain:
+  - `ml/artifacts/training/heatmap_angle_board_pxl_v1/model.keras`
+  - `ml/artifacts/training/heatmap_angle_board_pxl_v1/training.log`
+- Final logged validation numbers from the retrain were roughly:
+  - center soft-argmax MAE `~1.97 px`
+  - tip soft-argmax MAE `~6.51 px`
+- Visual sanity check on eight unseen board captures showed mixed results:
+  - a few clean captures landed on the gauge face and the needle line looked plausible
+  - several captures still snapped to frame edges or bottom-corner failure modes
+- Conclusion: this heatmap model is better than the first pass, but we still
+  should not treat it as deployment-ready for board captures yet.

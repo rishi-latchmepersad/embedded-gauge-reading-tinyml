@@ -82,12 +82,18 @@ def load_geometry_heatmap_keras_model(model_path: Path) -> keras.Model:
     custom_objects = {
         "_init": _identity_init_pass_through,
         "Identity3x3Initializer": Identity3x3Initializer,
+        "embedded_gauge_reading_tinyml>Identity3x3Initializer": Identity3x3Initializer,
+        "embedded_gauge_reading_tinyml.models_geometry.Identity3x3Initializer": Identity3x3Initializer,
     }
     restore = patch_dense_quantization_config_deserialization()
     try:
-        return keras.models.load_model(
-            model_path, compile=False, safe_mode=False, custom_objects=custom_objects
-        )
+        with tf.keras.utils.custom_object_scope(custom_objects):
+            return tf.keras.models.load_model(
+                model_path,
+                compile=False,
+                safe_mode=False,
+                custom_objects=custom_objects,
+            )
     finally:
         restore()
 

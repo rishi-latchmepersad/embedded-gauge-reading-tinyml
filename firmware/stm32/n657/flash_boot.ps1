@@ -3,9 +3,9 @@
     Sign and flash STM32N657 for boot-from-flash.
 
 .DESCRIPTION
-    Flashes the tip-focus SimCC model needed by the live board firmware.
-    The script signs the application, programs the FSBL, and flashes the
-    tip-focus weights into xSPI2.
+    Flashes the OBB localizer and tip-focus SimCC model needed by the live
+    board firmware. The script signs the application, programs the FSBL, and
+    flashes both xSPI2 weight blobs.
 
     Prerequisites:
       - Board in NUCLEO dev/programming mode (see board manual)
@@ -28,13 +28,18 @@ $RepoRoot   = Resolve-Path "$ScriptDir\..\..\.."
 # ---------- paths ----------
 $FsblBin     = "$ScriptDir\FSBL\Debug\n657_FSBL.bin"
 $FsblTrusted = "$ScriptDir\FSBL\Debug\FSBL_trusted.bin"
-$TipFocusRaw = "$ScriptDir\st_ai_output\packages\simcc_gauge_v2_spatial_qat_sc128_int8_n6_npu\st_ai_output\simcc_gauge_v2_spatial_qat_sc128_int8_atonbuf.xSPI2.raw"
+$ObbRaw      = "$ScriptDir\st_ai_output\packages\obb_box_board_bbox_deploy_candidate\st_ai_output\obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw"
+$TipFocusRaw = "$ScriptDir\st_ai_output\packages\tip_focus_v4_112_int8_n6_npu\st_ai_output\network_atonbuf.xSPI2.raw"
 
+if (-not (Test-Path $ObbRaw -PathType Leaf)) {
+    $ObbRaw = "$RepoRoot\firmware\stm32\n657\st_ai_output\packages\obb_box_board_bbox_deploy_candidate\st_ai_output\obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw"
+}
 if (-not (Test-Path $TipFocusRaw -PathType Leaf)) {
-    $TipFocusRaw = "$RepoRoot\firmware\stm32\n657\st_ai_output\packages\simcc_gauge_v2_spatial_qat_sc128_int8_n6_npu\st_ai_output\simcc_gauge_v2_spatial_qat_sc128_int8_atonbuf.xSPI2.raw"
+    $TipFocusRaw = "$RepoRoot\firmware\stm32\n657\st_ai_output\packages\tip_focus_v4_112_int8_n6_npu\st_ai_output\network_atonbuf.xSPI2.raw"
 }
 
-$TipFocusBin     = "$ScriptDir\Appli\Debug\tip_focus_simcc_model_stage.bin"
+$ObbBin          = "$ScriptDir\Appli\Debug\obb_box_board_bbox_deploy_candidate.bin"
+$TipFocusBin     = "$ScriptDir\Appli\Debug\tip_focus_v4_112_int8_n6_npu.bin"
 $AppBin          = "$ScriptDir\Appli\Debug\n657_Appli.bin"
 $AppSign         = "$ScriptDir\Appli\Debug\n657_Appli_sign_new.bin"
 $AppSignTmp      = "$ScriptDir\Appli\Debug\n657_Appli_sign_tmp.bin"
@@ -79,6 +84,7 @@ if (-not (Test-Path $ProgCli   -PathType Leaf)) { Die "Programmer CLI not found:
 if (-not (Test-Path $ExtLoader -PathType Leaf)) { Die "External loader not found: $ExtLoader" }
 if (-not (Test-Path $FsblBin   -PathType Leaf)) { Die "FSBL binary not found: $FsblBin" }
 if (-not (Test-Path $AppBin    -PathType Leaf)) { Die "Application binary not found: $AppBin" }
+if (-not (Test-Path $ObbRaw -PathType Leaf)) { Die "OBB model not found: $ObbRaw" }
 if (-not (Test-Path $TipFocusRaw -PathType Leaf)) { Die "Tip-focus model not found: $TipFocusRaw" }
 
 if (-not (Test-Path $SigReportDir -PathType Container)) {
@@ -97,18 +103,25 @@ Write-Host "Trusted FSBL: $FsblTrusted"
 Write-Host "`n=== Step 2: Flash FSBL at 0x70000000 ==="
 Do-Flash -bin $FsblTrusted -addr 0x70000000 -label "FSBL"
 
-# ================== Step 3: Flash tip-focus SimCC model ==================
-Write-Host "`n=== Step 3: Flash tip-focus SimCC model at 0x70400000 ==="
+# ================== Step 3: Flash OBB model ==================
+Write-Host "`n=== Step 3: Flash OBB model at 0x70700000 ==="
+Copy-Item -LiteralPath $ObbRaw -Destination $ObbBin -Force
+Do-Flash -bin $ObbBin -addr 0x70700000 -label "OBB-localizer"
+
+Write-Host "`n=== Step 4: Flash tip-focus SimCC model at 0x70400000 ==="
 Copy-Item -LiteralPath $TipFocusRaw -Destination $TipFocusBin -Force
 Do-Flash -bin $TipFocusBin -addr 0x70400000 -label "TipFocus-SimCC"
 
-Write-Host "`n=== Step 4: Extract tip-focus signature ==="
-python "$RepoRoot\ml\scripts\extract_model_signature.py" "$TipFocusRaw" > "$SigReportDir\simcc_signature.txt"
+Write-Host "`n=== Step 5: Extract model signatures ==="
+python "$RepoRoot\ml\scripts\extract_model_signature.py" "$ObbRaw" > "$SigReportDir\obb_signature.txt"
+if ($LASTEXITCODE -ne 0) { Die "OBB signature extraction failed" }
+python "$RepoRoot\ml\scripts\extract_model_signature.py" "$TipFocusRaw" > "$SigReportDir\tip_focus_signature.txt"
 if ($LASTEXITCODE -ne 0) { Die "Tip-focus signature extraction failed" }
-Write-Host "Tip-focus signature: $SigReportDir\simcc_signature.txt"
+Write-Host "OBB signature: $SigReportDir\obb_signature.txt"
+Write-Host "Tip-focus signature: $SigReportDir\tip_focus_signature.txt"
 
-# ================== Step 5: Sign app ==================
-Write-Host "`n=== Step 5: Sign application binary ==="
+# ================== Step 6: Sign app ==================
+Write-Host "`n=== Step 6: Sign application binary ==="
 if (Test-Path $AppSignTmp -PathType Leaf) { Remove-Item -LiteralPath $AppSignTmp -Force }
 Do-Sign -bin $AppBin -type ssbl -out $AppSignTmp
 if (Test-Path $AppSign -PathType Leaf) { Remove-Item -LiteralPath $AppSign -Force }
@@ -122,8 +135,8 @@ if (-not (Test-Path $AppSign -PathType Leaf)) {
 }
 Write-Host "Signed binary: $AppSign"
 
-# ================== Step 6: Flash app ==================
-Write-Host "`n=== Step 6: Flash signed application at 0x70100000 ==="
+# ================== Step 7: Flash app ==================
+Write-Host "`n=== Step 7: Flash signed application at 0x70100000 ==="
 Do-Flash -bin $AppSign -addr 0x70100000 -label "App"
 
 Write-Host "`n=== Done! ==="

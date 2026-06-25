@@ -39,6 +39,7 @@
 - Use `poetry` for env management and scripts.
 - Prefer `pytest` for tests.
 - Use WSL for ML work, with the GPU preferred.
+- The 4 GB GTX 1650 Ti GPU should be capped to **3.9 GB (3900 MB)** so WSL has headroom. Use `tf.config.set_logical_device_configuration(gpus[0], [tf.config.LogicalDeviceConfiguration(memory_limit=3900)])` at the top of every training script.
 - Prepare explicit WSL handoff scripts in `tmp/` for model jobs and let DeepSeek run those directly; keep the workflow script-driven instead of manual and stateful.
 - Before board packaging, run a Keras-vs-TFLite parity check on a small validation sample set so graph-conversion issues are caught early.
 - `nohup` does not work reliably with `poetry run` in WSL — background jobs get killed when the shell exits. Use `setsid` + `disown` instead:
@@ -47,6 +48,7 @@
     disown
     ```
 - Always run jobs in bash scripts inside WSL, and tail the logs so you can see when they hang or fail.
+- All `poetry run` invocations MUST run from the `ml/` directory because that is where `pyproject.toml` lives. From the repo root, `poetry run` will fail with "Poetry could not find a pyproject.toml file". Wrapper scripts in `tmp/` should `cd "$REPO_ROOT/ml"` before invoking `poetry run`.
 - Use the `tmp/` directory for all temporary files and folders (e.g., `tmp_*`, `artifacts/tmp_*`). This replaces any `tmp/` or `tmp_*/` folders that were previously in the project root.
 
 ## Notes

@@ -1,241 +1,277 @@
-<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" version="28.1.2" pages="3">
-  <diagram name="Edge Camera Pod" id="eDqyFWhCivcmqFs6QsoU">
-    <mxGraphModel dx="1355" dy="889" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="800" math="0" shadow="0">
+<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" version="28.1.2" pages="2">
+  <diagram id="6fHF2__YJ60N_B--ARtN" name="AI_Process">
+    <mxGraphModel dx="964" dy="674" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1200" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="t1" value="Industrial Edge Camera Pod for Gauge Reading" style="text;html=1;fontSize=32;fontStyle=1;" parent="1" vertex="1">
-          <mxGeometry x="40" y="20" width="800" height="50" as="geometry" />
+        <mxCell id="cnn_title_why" value="Why each step is performed" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=16;" parent="1" vertex="1">
+          <mxGeometry y="680" width="360" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="pipe" value="Pipe / Handrail" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#a0522d;fontColor=#ffffff;strokeColor=#6D1F00;" parent="1" vertex="1">
-          <mxGeometry x="40" y="310" width="720" height="70" as="geometry" />
+        <mxCell id="cnn_tech_1" value="The IMX335 image sensor captures a frame (in the format of YUV422 224×224 px)&lt;br&gt;- Manual exposure used (AEC disabled)&lt;br&gt;- The brightness is seeded from last accepted brightness value&lt;br&gt;  or 2/3-range fraction on first boot" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#dae8fc;strokeColor=#6c8ebf;image=process_diagrams_assets/cnn_01_capture.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" parent="1" vertex="1">
+          <mxGeometry x="40" y="90" width="270" height="170" as="geometry" />
         </mxCell>
-        <mxCell id="clamp" value="U-bolt Clamps" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" parent="1" vertex="1">
-          <mxGeometry x="470" y="310" width="65" height="70" as="geometry" />
+        <mxCell id="cnn_tech_2" value="A brightness gate is applied before inference&lt;br&gt;- Measure mean/min/max luma over the full frame or canonical crop&lt;br&gt;- Reject if the frame is too dark or too bright&lt;br&gt;- Nudge exposure ×2 or ÷2, and retry up to 16 attempts" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#d5e8d4;strokeColor=#82b366;image=process_diagrams_assets/cnn_02_brightness.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" parent="1" vertex="1">
+          <mxGeometry x="350" y="90" width="280" height="170" as="geometry" />
         </mxCell>
-        <mxCell id="camera" value="" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#647687;fontColor=#ffffff;strokeColor=#314354;" parent="1" vertex="1">
-          <mxGeometry x="630" y="260" width="240" height="140" as="geometry" />
+        <mxCell id="cnn_tech_3" value="A compact OBB localizer finds the gauge face&lt;br&gt;- Input: full 224x224 YUV422 frame&lt;br&gt;- Output: oriented box (cx, cy, w, h, cos, sin) for pose normalization" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#d5e8d4;strokeColor=#82b366;image=process_diagrams_assets/cnn_03_obb_localizer.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" parent="1" vertex="1">
+          <mxGeometry x="670" y="90" width="300" height="170" as="geometry" />
         </mxCell>
-        <mxCell id="shade" value="Sun Shade / Hood" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
-          <mxGeometry x="788" y="240" width="120" height="30" as="geometry" />
+        <mxCell id="cnn_tech_4" value="The OBB is validated and used to extract a canonical crop&lt;br&gt;- Check minimum size, angle, and in-bounds coordinates&lt;br&gt;- Expand slightly and clamp/rotate into the trained orientation&lt;br&gt;- Keep the OBB path available for diagnostics and fallback" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#fff2cc;strokeColor=#d6b656;image=process_diagrams_assets/cnn_04_crop_selection.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" parent="1" vertex="1">
+          <mxGeometry x="1010" y="90" width="290" height="170" as="geometry" />
         </mxCell>
-        <mxCell id="lens" value="Camera" style="ellipse;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#f5f5f5;gradientColor=#b3b3b3;strokeColor=#666666;" parent="1" vertex="1">
-          <mxGeometry x="788" y="298" width="64" height="64" as="geometry" />
+        <mxCell id="cnn_tech_5" value="A compact geometry model reads the needle keypoints&lt;br&gt;- Input: normalized gauge-face crop from the OBB path&lt;br&gt;- Output: needle center and tip (heatmaps/keypoints) for angle estimation" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#d5e8d4;strokeColor=#82b366;image=process_diagrams_assets/cnn_05_geometry_keypoints.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" parent="1" vertex="1">
+          <mxGeometry x="1340" y="90" width="300" height="170" as="geometry" />
         </mxCell>
-        <mxCell id="power" value="Power Box&#xa;(Battery + Charge Controller)" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#fad7ac;strokeColor=#b46504;" parent="1" vertex="1">
-          <mxGeometry x="175" y="380" width="280" height="180" as="geometry" />
+        <mxCell id="cnn_tech_6" value="Needle angle is converted to temperature output&lt;br&gt;- Convert center-tip geometry to angle&lt;br&gt;- Map angle to temperature with the calibrated sweep&lt;br&gt;- Log to SD card CSV and report via UART for debugging" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#e1d5e7;strokeColor=#9673a6;image=process_diagrams_assets/cnn_06_angle_to_temperature.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" parent="1" vertex="1">
+          <mxGeometry x="1680" y="90" width="280" height="170" as="geometry" />
         </mxCell>
-        <mxCell id="tilt" value="Tilt Bracket" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#647687;fontColor=#ffffff;strokeColor=#314354;" parent="1" vertex="1">
-          <mxGeometry x="460" y="240" width="120" height="70" as="geometry" />
+        <mxCell id="cnn_why_1" value="Manual exposure gives consistent luma/brightness across captures.&amp;nbsp;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;AEC chases highlights (e.g. glare spots) and would destabilize the live AI input&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Cached seed means no brightness search delay after the first capture.&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="40" y="480" width="270" height="190" as="geometry" />
         </mxCell>
-        <mxCell id="solar" value="&lt;font style=&quot;font-size: 14px; color: rgb(0, 0, 0);&quot;&gt;Adjustable Solar Panel&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" parent="1" vertex="1">
-          <mxGeometry x="360" y="100" width="240" height="120" as="geometry" />
+        <mxCell id="cnn_why_2" value="The quality gate keeps obviously bad frames away from the model. Underexposed frames lose needle contrast and overexposed frames blow out the dial face.&amp;nbsp;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Checking luma before the AI stages also helps catch glare and exposure drift early.&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="350" y="480" width="280" height="190" as="geometry" />
         </mxCell>
-        <mxCell id="e5" style="endArrow=open;html=1;strokeWidth=3;dashed=1;dashPattern=8 8;endFill=0;" parent="1" source="lens" edge="1">
-          <mxGeometry relative="1" as="geometry">
-            <mxPoint x="960" y="330" as="targetPoint" />
-          </mxGeometry>
+        <mxCell id="cnn_why_3" value="The OBB localizer normalizes gauge pose before the geometry model runs. That lets us handle rotated board captures and moving cameras without relying on a fixed crop.&lt;br&gt;&lt;br&gt;The downstream model sees a more consistent dial orientation, which is easier to train and more stable to deploy." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="670" y="480" width="300" height="190" as="geometry" />
         </mxCell>
-        <mxCell id="e6" style="endArrow=none;html=1;strokeWidth=2;entryX=0.5;entryY=1;entryDx=0;entryDy=0;edgeStyle=orthogonalEdgeStyle;endFill=0;" parent="1" source="power" target="camera" edge="1">
+        <mxCell id="cnn_why_4" value="The crop step turns the oriented box into the canonical image family the model was trained on. That keeps the input geometry stable even when the camera or gauge shifts in the field.&lt;br&gt;&lt;br&gt;We still keep the raw OBB path for telemetry and fallback logic." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="1010" y="480" width="290" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="cnn_why_5" value="A compact keypoint model is a better fit for this gauge than a heavier detector head. Predicting center and tip gives us the geometry we need for angle recovery without overcomplicating the board deployment.&lt;br&gt;&lt;br&gt;The heatmap/keypoint formulation is also easier to quantify, export, and validate on embedded targets." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="1340" y="480" width="300" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="cnn_why_6" value="The final step is deterministic: once we know the needle angle, firmware maps that angle to temperature with the calibrated sweep.&lt;br&gt;&lt;br&gt;Logging every inference to SD card keeps us honest during validation and gives us clean data for future retraining." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="1680" y="480" width="280" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="cnn_e1" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cnn_tech_1" target="cnn_tech_2" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e7" style="endArrow=classic;html=1;strokeWidth=3;entryX=0.717;entryY=1.008;entryDx=0;entryDy=0;entryPerimeter=0;shape=link;" parent="1" source="tilt" target="solar" edge="1">
+        <mxCell id="cnn_e2" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cnn_tech_2" target="cnn_tech_3" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="X8aUyGfJaH6FOO79OV4r-2" value="Gauge Being Measured" style="html=1;verticalLabelPosition=bottom;align=center;labelBackgroundColor=#ffffff;verticalAlign=top;strokeWidth=2;strokeColor=#0080F0;shadow=0;dashed=0;shape=mxgraph.ios7.icons.gauge;" vertex="1" parent="1">
-          <mxGeometry x="990" y="267" width="140" height="133" as="geometry" />
+        <mxCell id="cnn_e3" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cnn_tech_3" target="cnn_tech_4" edge="1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="X8aUyGfJaH6FOO79OV4r-4" value="STM32 Board, MicroSD Card, Camera &amp;amp; LoRAWAN Box" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontColor=#FFFFFF;" vertex="1" parent="1">
-          <mxGeometry x="670" y="295" width="100" height="70" as="geometry" />
+        <mxCell id="cnn_e4" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cnn_tech_4" target="cnn_tech_5" edge="1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="X8aUyGfJaH6FOO79OV4r-5" value="" style="html=1;verticalLabelPosition=bottom;align=center;labelBackgroundColor=#ffffff;verticalAlign=top;strokeWidth=2;strokeColor=#d6b656;shadow=0;dashed=0;shape=mxgraph.ios7.icons.sun;pointerEvents=1;fillColor=#fff2cc;gradientColor=#ffd966;" vertex="1" parent="1">
-          <mxGeometry x="280" y="90" width="70" height="60" as="geometry" />
+        <mxCell id="cnn_e5" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cnn_tech_5" target="cnn_tech_6" edge="1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="X8aUyGfJaH6FOO79OV4r-6" value="U-bolt Clamps" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" vertex="1" parent="1">
-          <mxGeometry x="565" y="310" width="65" height="70" as="geometry" />
+        <mxCell id="cnn_w1" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="zElmDHNvidVek9H3AHMp-1" target="cnn_why_1" edge="1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="X8aUyGfJaH6FOO79OV4r-7" value="U-bolt Clamps" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" vertex="1" parent="1">
-          <mxGeometry x="230" y="310" width="65" height="70" as="geometry" />
+        <mxCell id="cnn_w2" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="zElmDHNvidVek9H3AHMp-3" target="cnn_why_2" edge="1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="X8aUyGfJaH6FOO79OV4r-8" style="endArrow=none;html=1;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=0;exitDx=0;exitDy=0;endFill=0;" edge="1" parent="1" source="power">
+        <mxCell id="cnn_w3" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="zElmDHNvidVek9H3AHMp-5" target="cnn_why_3" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cnn_w4" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="zElmDHNvidVek9H3AHMp-7" target="cnn_why_4" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cnn_w5" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" target="cnn_why_5" edge="1">
           <mxGeometry relative="1" as="geometry">
-            <mxPoint x="114.75" y="269.5" as="sourcePoint" />
-            <mxPoint x="420" y="220" as="targetPoint" />
+            <mxPoint x="1490" y="436" as="sourcePoint" />
           </mxGeometry>
+        </mxCell>
+        <mxCell id="cnn_w6" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" target="cnn_why_6" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1820" y="435.5" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="zElmDHNvidVek9H3AHMp-2" value="" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_1" target="zElmDHNvidVek9H3AHMp-1" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="175" y="260" as="sourcePoint" />
+            <mxPoint x="175" y="480" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="zElmDHNvidVek9H3AHMp-1" value="" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;editableCssRules=.*;image=data:image/svg+xml,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjIuNSAyLjUgMTE1IDExNSIgaGVpZ2h0PSIxMTUiIHdpZHRoPSIxMTUiPiYjeGE7ICA8ZGVmcz4mI3hhOyAgICA8bGluZWFyR3JhZGllbnQgeTI9IjEiIHgyPSIxIiB5MT0iMCIgeDE9IjAiIGlkPSJiZyI+JiN4YTsgICAgICA8c3RvcCBzdG9wLWNvbG9yPSIjZWVmNWZmIiBvZmZzZXQ9IjAlIi8+JiN4YTsgICAgICA8c3RvcCBzdG9wLWNvbG9yPSIjZmZmZmZmIiBvZmZzZXQ9IjEwMCUiLz4mI3hhOyAgICA8L2xpbmVhckdyYWRpZW50PiYjeGE7ICA8L2RlZnM+JiN4YTsgIDxyZWN0IHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjNmM4ZWJmIiBmaWxsPSJ1cmwoI2JnKSIgcng9IjE2IiBoZWlnaHQ9IjExMiIgd2lkdGg9IjExMiIgeT0iNCIgeD0iNCIvPiYjeGE7ICA8cmVjdCBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZT0iIzZjOGViZiIgZmlsbD0iIzI0MzQ0NyIgcng9IjYiIGhlaWdodD0iMzQiIHdpZHRoPSI1NCIgeT0iMjgiIHg9IjE4Ii8+JiN4YTsgIDxjaXJjbGUgZmlsbD0iIzViOWJkNSIgcj0iMTEiIGN5PSI0NSIgY3g9IjQ1Ii8+JiN4YTsgIDxjaXJjbGUgZmlsbD0iI2RmZWZmZiIgcj0iNiIgY3k9IjQ1IiBjeD0iNDUiLz4mI3hhOyAgPHJlY3QgZmlsbD0iIzZjOGViZiIgcng9IjIiIGhlaWdodD0iOCIgd2lkdGg9IjIwIiB5PSIzMyIgeD0iNzciLz4mI3hhOyAgPHBhdGggc3Ryb2tlLWRhc2hhcnJheT0iNCAzIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZT0iI2I4Y2JlMCIgZD0iTTE4IDc1aDg0Ii8+JiN4YTsgIDxyZWN0IHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjODJiMzY2IiBmaWxsPSJub25lIiByeD0iNCIgaGVpZ2h0PSIxOCIgd2lkdGg9Ijg0IiB5PSI3MSIgeD0iMTgiLz4mI3hhOyAgPHBhdGggc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZT0iIzgyYjM2NiIgZmlsbD0ibm9uZSIgZD0iTTIzIDgwaDEybDYtNyA2IDdoMTJsNi0xMCA2IDEwaDEybDYtNiA2IDZoMTIiLz4mI3hhOyAgPHRleHQgZmlsbD0iIzI0MzQ0NyIgZm9udC13ZWlnaHQ9IjcwMCIgZm9udC1zaXplPSIxMSIgZm9udC1mYW1pbHk9IlZlcmRhbmEsQXJpYWwsc2Fucy1zZXJpZiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgeT0iMTA0IiB4PSI2MCI+Q0FQVFVSRTwvdGV4dD4mI3hhOzwvc3ZnPg==;" parent="1" vertex="1">
+          <mxGeometry x="117.5" y="320" width="115" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="zElmDHNvidVek9H3AHMp-4" value="" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_2" target="zElmDHNvidVek9H3AHMp-3" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="490" y="260" as="sourcePoint" />
+            <mxPoint x="490" y="480" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="zElmDHNvidVek9H3AHMp-3" value="" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;editableCssRules=.*;image=data:image/svg+xml,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjIgMiAxMTYgMTE2IiBoZWlnaHQ9IjExNiIgd2lkdGg9IjExNiI+JiN4YTsgIDxkZWZzPiYjeGE7ICAgIDxsaW5lYXJHcmFkaWVudCB5Mj0iMSIgeDI9IjEiIHkxPSIwIiB4MT0iMCIgaWQ9ImJnIj4mI3hhOyAgICAgIDxzdG9wIHN0b3AtY29sb3I9IiNmNWZiZWYiIG9mZnNldD0iMCUiLz4mI3hhOyAgICAgIDxzdG9wIHN0b3AtY29sb3I9IiNmZmZmZmYiIG9mZnNldD0iMTAwJSIvPiYjeGE7ICAgIDwvbGluZWFyR3JhZGllbnQ+JiN4YTsgIDwvZGVmcz4mI3hhOyAgPHJlY3Qgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiM4MmIzNjYiIGZpbGw9InVybCgjYmcpIiByeD0iMTYiIGhlaWdodD0iMTEyIiB3aWR0aD0iMTEyIiB5PSI0IiB4PSI0Ii8+JiN4YTsgIDxjaXJjbGUgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiNkNmI2NTYiIGZpbGw9IiNmZmQ5NjYiIHI9IjEwIiBjeT0iMjgiIGN4PSIyNiIvPiYjeGE7ICA8cGF0aCBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjZDZiNjU2IiBkPSJNMjYgMTJ2Nk0yNiAzOHY2TTEwIDI4aDZNMzYgMjhoNk0xNSAxN2w0IDRNMzMgMzVsNCA0TTE1IDM5bDQtNE0zMyAyMWw0LTQiLz4mI3hhOyAgPHJlY3QgZmlsbD0iIzJmNWQ4NyIgaGVpZ2h0PSI0NiIgd2lkdGg9IjEyIiB5PSIyMiIgeD0iNTgiLz4mI3hhOyAgPHJlY3QgZmlsbD0iIzRmODFiZCIgaGVpZ2h0PSIyOCIgd2lkdGg9IjEyIiB5PSI0MCIgeD0iNzIiLz4mI3hhOyAgPHJlY3QgZmlsbD0iIzgyYjM2NiIgaGVpZ2h0PSIzOCIgd2lkdGg9IjEyIiB5PSIzMCIgeD0iODYiLz4mI3hhOyAgPHBhdGggc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiM4ZmE3YzAiIGQ9Ik0xNCA3NGg5MiIvPiYjeGE7ICA8cGF0aCBzdHJva2UtZGFzaGFycmF5PSIzIDIiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjZDZiNjU2IiBkPSJNMzQgNzR2LThNNTggNzR2LTE2TTg4IDc0di0yNCIvPiYjeGE7ICA8cmVjdCBzdHJva2Utd2lkdGg9IjEuNSIgc3Ryb2tlPSIjZDZiNjU2IiBmaWxsPSIjZmZmMmNjIiByeD0iNiIgaGVpZ2h0PSIxMiIgd2lkdGg9IjkyIiB5PSI3NCIgeD0iMTQiLz4mI3hhOyAgPHBhdGggc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2Utd2lkdGg9IjQiIHN0cm9rZT0iIzgyYjM2NiIgZD0iTTMyIDgwaDE0TTUyIDgwaDE0TTcyIDgwaDE0Ii8+JiN4YTsgIDx0ZXh0IGZpbGw9IiMyZjVkODciIGZvbnQtd2VpZ2h0PSI3MDAiIGZvbnQtc2l6ZT0iMTEiIGZvbnQtZmFtaWx5PSJWZXJkYW5hLEFyaWFsLHNhbnMtc2VyaWYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIHk9IjEwNCIgeD0iNjAiPkdBVEU8L3RleHQ+JiN4YTs8L3N2Zz4=;" parent="1" vertex="1">
+          <mxGeometry x="432" y="319" width="116" height="116" as="geometry" />
+        </mxCell>
+        <mxCell id="zElmDHNvidVek9H3AHMp-6" value="" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_3" target="zElmDHNvidVek9H3AHMp-5" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="820" y="260" as="sourcePoint" />
+            <mxPoint x="820" y="480" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="zElmDHNvidVek9H3AHMp-5" value="" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;editableCssRules=.*;image=data:image/svg+xml,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjIuNSAyLjUgMTE1IDExNSIgaGVpZ2h0PSIxMTUiIHdpZHRoPSIxMTUiPiYjeGE7ICA8ZGVmcz4mI3hhOyAgICA8bGluZWFyR3JhZGllbnQgeTI9IjEiIHgyPSIxIiB5MT0iMCIgeDE9IjAiIGlkPSJiZyI+JiN4YTsgICAgICA8c3RvcCBzdG9wLWNvbG9yPSIjZjRmYmY0IiBvZmZzZXQ9IjAlIi8+JiN4YTsgICAgICA8c3RvcCBzdG9wLWNvbG9yPSIjZmZmZmZmIiBvZmZzZXQ9IjEwMCUiLz4mI3hhOyAgICA8L2xpbmVhckdyYWRpZW50PiYjeGE7ICA8L2RlZnM+JiN4YTsgIDxyZWN0IHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjODJiMzY2IiBmaWxsPSJ1cmwoI2JnKSIgcng9IjE2IiBoZWlnaHQ9IjExMiIgd2lkdGg9IjExMiIgeT0iNCIgeD0iNCIvPiYjeGE7ICA8Y2lyY2xlIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjNmM4ZWJmIiBmaWxsPSIjZWZmN2ZmIiByPSIyNCIgY3k9IjUyIiBjeD0iNjAiLz4mI3hhOyAgPGNpcmNsZSBzdHJva2UtZGFzaGFycmF5PSI0IDMiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjMmY1ZDg3IiBmaWxsPSJub25lIiByPSIxMSIgY3k9IjUyIiBjeD0iNjAiLz4mI3hhOyAgPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoNjAgNTIpIHJvdGF0ZSgtMTgpIj4mI3hhOyAgICA8cmVjdCBzdHJva2UtZGFzaGFycmF5PSI1IDQiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlPSIjZDZiNjU2IiBmaWxsPSJub25lIiBoZWlnaHQ9IjQwIiB3aWR0aD0iNTYiIHk9Ii0yMCIgeD0iLTI4Ii8+JiN4YTsgICAgPGxpbmUgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2U9IiNkNmI2NTYiIHkyPSItMjAiIHgyPSItMTgiIHkxPSItMjAiIHgxPSItMjgiLz4mI3hhOyAgICA8bGluZSBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZT0iI2Q2YjY1NiIgeTI9Ii0xMCIgeDI9Ii0yOCIgeTE9Ii0yMCIgeDE9Ii0yOCIvPiYjeGE7ICAgIDxsaW5lIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlPSIjZDZiNjU2IiB5Mj0iMjAiIHgyPSIxOCIgeTE9IjIwIiB4MT0iMjgiLz4mI3hhOyAgICA8bGluZSBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZT0iI2Q2YjY1NiIgeTI9IjEwIiB4Mj0iMjgiIHkxPSIyMCIgeDE9IjI4Ii8+JiN4YTsgIDwvZz4mI3hhOyAgPHBhdGggc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiNiOGNiZTAiIGQ9Ik0yNCA3OGg3MiIvPiYjeGE7ICA8cGF0aCBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlPSIjODJiMzY2IiBkPSJNMzMgNzZsLTcgN004NyA3Nmw3IDciLz4mI3hhOyAgPHRleHQgZmlsbD0iIzJmNWQ4NyIgZm9udC13ZWlnaHQ9IjcwMCIgZm9udC1zaXplPSIxMSIgZm9udC1mYW1pbHk9IlZlcmRhbmEsQXJpYWwsc2Fucy1zZXJpZiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgeT0iMTA0IiB4PSI2MCI+T0JCPC90ZXh0PiYjeGE7PC9zdmc+;" parent="1" vertex="1">
+          <mxGeometry x="762.5" y="319" width="115" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="zElmDHNvidVek9H3AHMp-8" value="" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_4" target="zElmDHNvidVek9H3AHMp-7" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1155" y="260" as="sourcePoint" />
+            <mxPoint x="1155" y="480" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="zElmDHNvidVek9H3AHMp-7" value="" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;editableCssRules=.*;image=data:image/svg+xml,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjIgMiAxMTYgMTE2IiBoZWlnaHQ9IjExNiIgd2lkdGg9IjExNiI+JiN4YTsgIDxkZWZzPiYjeGE7ICAgIDxsaW5lYXJHcmFkaWVudCB5Mj0iMSIgeDI9IjEiIHkxPSIwIiB4MT0iMCIgaWQ9ImJnIj4mI3hhOyAgICAgIDxzdG9wIHN0b3AtY29sb3I9IiNmZmY4ZTgiIG9mZnNldD0iMCUiLz4mI3hhOyAgICAgIDxzdG9wIHN0b3AtY29sb3I9IiNmZmZmZmYiIG9mZnNldD0iMTAwJSIvPiYjeGE7ICAgIDwvbGluZWFyR3JhZGllbnQ+JiN4YTsgIDwvZGVmcz4mI3hhOyAgPHJlY3Qgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiNkNmI2NTYiIGZpbGw9InVybCgjYmcpIiByeD0iMTYiIGhlaWdodD0iMTEyIiB3aWR0aD0iMTEyIiB5PSI0IiB4PSI0Ii8+JiN4YTsgIDxjaXJjbGUgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiM2YzhlYmYiIGZpbGw9IiNlZWY2ZmYiIHI9IjIyIiBjeT0iNTIiIGN4PSI2MCIvPiYjeGE7ICA8cGF0aCBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS13aWR0aD0iNCIgc3Ryb2tlPSIjZDZiNjU2IiBkPSJNMzggMzBoMTRNMzggMzB2MTRNODIgMzBoLTE0TTgyIDMwdjE0TTM4IDc0aDE0TTM4IDc0di0xNE04MiA3NGgtMTRNODIgNzR2LTE0Ii8+JiN4YTsgIDxyZWN0IHN0cm9rZS1kYXNoYXJyYXk9IjUgNCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiM4MmIzNjYiIGZpbGw9Im5vbmUiIHJ4PSI4IiBoZWlnaHQ9IjY0IiB3aWR0aD0iNjQiIHk9IjIyIiB4PSIyOCIvPiYjeGE7ICA8cGF0aCBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjODJiMzY2IiBkPSJNMjggNDNoLThNMjggNDN2OE05MiA0M2g4TTkyIDQzdjhNMjggNjVoLThNMjggNjV2LThNOTIgNjVoOE05MiA2NXYtOCIvPiYjeGE7ICA8cGF0aCBzdHJva2UtbGluZWpvaW49InJvdW5kIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlPSIjODJiMzY2IiBmaWxsPSJub25lIiBkPSJNNTYgNTJsOCA4IDE4LTE4Ii8+JiN4YTsgIDx0ZXh0IGZpbGw9IiM4ZDZhMDAiIGZvbnQtd2VpZ2h0PSI3MDAiIGZvbnQtc2l6ZT0iMTEiIGZvbnQtZmFtaWx5PSJWZXJkYW5hLEFyaWFsLHNhbnMtc2VyaWYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIHk9IjEwNCIgeD0iNjAiPkNST1A8L3RleHQ+JiN4YTs8L3N2Zz4=;" parent="1" vertex="1">
+          <mxGeometry x="1097" y="319.5" width="116" height="116" as="geometry" />
+        </mxCell>
+        <mxCell id="zElmDHNvidVek9H3AHMp-10" value="" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_5" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1490" y="260" as="sourcePoint" />
+            <mxPoint x="1490" y="320" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="zElmDHNvidVek9H3AHMp-12" value="" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cnn_tech_6" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1820" y="260" as="sourcePoint" />
+            <mxPoint x="1820" y="320.5" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="V077Ls7bwzFt84BWvUJ_-1" value="Current Live AI Cascade Process Steps" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=16;" parent="1" vertex="1">
+          <mxGeometry y="60" width="350" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="SH4CUb0vDkVNlqwSd1lD-1" value="" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;editableCssRules=.*;image=data:image/svg+xml,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjIuNSAyLjUgMTE1IDExNSIgaGVpZ2h0PSIxMTUiIHdpZHRoPSIxMTUiPiYjeGE7ICA8ZGVmcz4mI3hhOyAgICA8bGluZWFyR3JhZGllbnQgeTI9IjEiIHgyPSIxIiB5MT0iMCIgeDE9IjAiIGlkPSJiZyI+JiN4YTsgICAgICA8c3RvcCBzdG9wLWNvbG9yPSIjZjhmMGZiIiBvZmZzZXQ9IjAlIi8+JiN4YTsgICAgICA8c3RvcCBzdG9wLWNvbG9yPSIjZmZmZmZmIiBvZmZzZXQ9IjEwMCUiLz4mI3hhOyAgICA8L2xpbmVhckdyYWRpZW50PiYjeGE7ICA8L2RlZnM+JiN4YTsgIDxyZWN0IHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjOTY3M2E2IiBmaWxsPSJ1cmwoI2JnKSIgcng9IjE2IiBoZWlnaHQ9IjExMiIgd2lkdGg9IjExMiIgeT0iNCIgeD0iNCIvPiYjeGE7ICA8cmVjdCBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZT0iIzk2NzNhNiIgZmlsbD0iI2ZmZmZmZiIgcng9IjYiIGhlaWdodD0iNTYiIHdpZHRoPSI0MCIgeT0iMjAiIHg9IjE4Ii8+JiN4YTsgIDxwYXRoIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjOTY3M2E2IiBmaWxsPSIjZjhmMGZiIiBkPSJNNDggMjB2MTJoMTAiLz4mI3hhOyAgPHBhdGggc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZT0iIzk2NzNhNiIgZD0iTTI2IDQ2aDE2TTI2IDU0aDE2TTI2IDYyaDE0Ii8+JiN4YTsgIDxwYXRoIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2U9IiNkNmI2NTYiIGQ9Ik01OCA1MWgxMCIvPiYjeGE7ICA8cGF0aCBzdHJva2UtbGluZWpvaW49InJvdW5kIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlPSIjZDZiNjU2IiBkPSJNNjggNTFsLTQtNE02OCA1MWwtNCA0Ii8+JiN4YTsgIDxyZWN0IHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjOTY3M2E2IiBmaWxsPSIjZTFkNWU3IiByeD0iOCIgaGVpZ2h0PSI1MCIgd2lkdGg9IjM0IiB5PSIyOCIgeD0iNjgiLz4mI3hhOyAgPHBhdGggc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZT0iI2M0YjNjZiIgZD0iTTc2IDQwaDE4Ii8+JiN4YTsgIDxwYXRoIHN0cm9rZS1saW5lam9pbj0icm91bmQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2U9IiM4MmIzNjYiIGZpbGw9Im5vbmUiIGQ9Ik04MCA1MGw0IDQgMTAtMTIiLz4mI3hhOyAgPHRleHQgZmlsbD0iIzdlNWM4YiIgZm9udC13ZWlnaHQ9IjcwMCIgZm9udC1zaXplPSIxNCIgZm9udC1mYW1pbHk9IlZlcmRhbmEsQXJpYWwsc2Fucy1zZXJpZiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgeT0iNjEiIHg9Ijg1Ij4zMS43PC90ZXh0PiYjeGE7ICA8dGV4dCBmaWxsPSIjN2U1YzhiIiBmb250LXdlaWdodD0iNzAwIiBmb250LXNpemU9IjEwIiBmb250LWZhbWlseT0iVmVyZGFuYSxBcmlhbCxzYW5zLXNlcmlmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiB5PSI3MiIgeD0iODUiPkM8L3RleHQ+JiN4YTsgIDx0ZXh0IGZpbGw9IiM3ZTVjOGIiIGZvbnQtd2VpZ2h0PSI3MDAiIGZvbnQtc2l6ZT0iMTEiIGZvbnQtZmFtaWx5PSJWZXJkYW5hLEFyaWFsLHNhbnMtc2VyaWYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIHk9IjEwNCIgeD0iNjAiPk9VVFBVVDwvdGV4dD4mI3hhOzwvc3ZnPg==;" parent="1" vertex="1">
+          <mxGeometry x="1762.5" y="319" width="115" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="LBQWEnL1_VHaJIz2CVFE-1" value="&lt;img src=&quot;data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMTYgMTE2IiB3aWR0aD0iMTE2IiBoZWlnaHQ9IjExNiI+CiAgPGRlZnM+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCIgeTE9IjAiIHgyPSIwIiB5Mj0iMSI+CiAgICAgIDxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNmM2Y3ZmYiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjZmZmZmZmIi8+CiAgICA8L2xpbmVhckdyYWRpZW50PgogIDwvZGVmcz4KICA8cmVjdCB4PSI0IiB5PSI0IiB3aWR0aD0iMTA4IiBoZWlnaHQ9IjEwOCIgcng9IjE2IiBmaWxsPSJ1cmwoI2JnKSIgc3Ryb2tlPSIjODJiMzY2IiBzdHJva2Utd2lkdGg9IjIiLz4KICA8Y2lyY2xlIGN4PSI1OCIgY3k9IjU2IiByPSIyOSIgZmlsbD0iI2VlZjZmZiIgc3Ryb2tlPSIjNmM4ZWJmIiBzdHJva2Utd2lkdGg9IjIiLz4KICA8Y2lyY2xlIGN4PSI1OCIgY3k9IjU2IiByPSI4IiBmaWxsPSIjZmZmZmZmIiBzdHJva2U9IiMyNDM0NDciIHN0cm9rZS13aWR0aD0iMiIvPgogIDxwYXRoIGQ9Ik01OCA1NiBMODkgMjkiIHN0cm9rZT0iIzgyYjM2NiIgc3Ryb2tlLXdpZHRoPSI0IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KICA8Y2lyY2xlIGN4PSI1OCIgY3k9IjU2IiByPSI0IiBmaWxsPSIjMjQzNDQ3Ii8+CiAgPGNpcmNsZSBjeD0iODkiIGN5PSIyOSIgcj0iNiIgZmlsbD0iI2ZmN2Y1MCIgc3Ryb2tlPSIjOGQ2YTAwIiBzdHJva2Utd2lkdGg9IjIiLz4KICA8cGF0aCBkPSJNODkgMjkgTDgyIDMxIE04OSAyOSBMODcgMzYiIHN0cm9rZT0iIzhkNmEwMCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KICA8cGF0aCBkPSJNNTggNTYgTDI5IDc3IiBzdHJva2U9IiNkNmI2NTYiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWRhc2hhcnJheT0iNCAzIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KICA8Y2lyY2xlIGN4PSIyOSIgY3k9Ijc3IiByPSI2IiBmaWxsPSIjZmZjYzk5IiBzdHJva2U9IiM4ZDZhMDAiIHN0cm9rZS13aWR0aD0iMiIvPgogIDxwYXRoIGQ9Ik0yOSA3NyBMMjMgNzUgTTI5IDc3IEwyNiA3MSIgc3Ryb2tlPSIjOGQ2YTAwIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxwYXRoIGQ9Ik01OCA1NiBMNTggMjIiIHN0cm9rZT0iIzZjOGViZiIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtZGFzaGFycmF5PSIzIDMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDx0ZXh0IHg9Ijg5IiB5PSIyMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9IlZlcmRhbmEsQXJpYWwsc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMCIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iIzhkNmEwMCI+VElQPC90ZXh0PgogIDx0ZXh0IHg9IjI5IiB5PSI5NCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9IlZlcmRhbmEsQXJpYWwsc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMCIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iIzhkNmEwMCI+Q0VOVEVSPC90ZXh0PgogIDx0ZXh0IHg9IjU4IiB5PSIxMDYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJWZXJkYW5hLEFyaWFsLHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTEiIGZvbnQtd2VpZ2h0PSI3MDAiIGZpbGw9IiMyZjVkODciPktFWVBPSU5UUzwvdGV4dD4KPC9zdmc+Cg==&quot; alt=&quot;Image preview&quot;&gt;" style="text;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="1430" y="310" width="30" height="40" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
-  <diagram id="iEwAvYdhQwxvyET7TsUA" name="End-to-End Technical System">
-    <mxGraphModel dx="845" dy="586" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+  <diagram id="classicalCVBaseline01" name="Classical_CV_Baseline_Process">
+    <mxGraphModel dx="964" dy="674" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1300" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="title" value="Industrial Sights - End-to-End Technical Architecture" style="text;html=1;fontSize=30;fontStyle=1;" parent="1" vertex="1">
-          <mxGeometry x="40" y="20" width="900" height="40" as="geometry" />
+        <mxCell id="cv_title_tech" value="Classical Firmware Baseline Process" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=16;" parent="1" vertex="1">
+          <mxGeometry y="30" width="350" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="site_container" value="" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;container=1;fillColor=#eeeeee;strokeColor=#36393d;" parent="1" vertex="1">
-          <mxGeometry x="40" y="80" width="560" height="760" as="geometry" />
+        <mxCell id="cv_tech_1" value="A 224x224 YUV422 preview-frame snapshot is copied from the capture buffer into SRAM. The firmware profiles mean luma and bright-pixel ratio first, then switches to a bright-relaxed threshold set when the frame is overexposed." style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#d5e8d4;strokeColor=#82b366;image=process_diagrams_assets/cv_01_yuv422_snapshot.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" parent="1" vertex="1">
+          <mxGeometry x="40" y="90" width="240" height="200" as="geometry" />
         </mxCell>
-        <mxCell id="pods_note" value="Each pod reads a single gauge&amp;nbsp;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;periodically, processes&amp;nbsp;&lt;/span&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;the image to&amp;nbsp;&lt;/span&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;get a value, then uploads it to the&amp;nbsp;&lt;/span&gt;&lt;div&gt;LoRaWAN gateway.&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;The reading is then forwarded over the Internet to the&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;backend server.&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;" style="text;html=1;fontSize=14;" parent="site_container" vertex="1">
-          <mxGeometry x="100" y="650" width="360" height="100" as="geometry" />
+        <mxCell id="cv_tech_2" value="Five center hypotheses are tested: bright centroid, fixed training crop, board prior, rim geometry, and the inner image center. All candidates stay inside the training crop and the bright centroid only wins if it survives the local polar vote." style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#d5e8d4;strokeColor=#82b366;image=process_diagrams_assets/cv_02_center_hypotheses.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" parent="1" vertex="1">
+          <mxGeometry x="320" y="90" width="320" height="200" as="geometry" />
         </mxCell>
-        <mxCell id="site_backhaul" value="Backhaul / Router&lt;br&gt;(LTE, Microwave, Satellite,Fiber uplink)" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#ffff88;strokeColor=#36393d;" parent="site_container" vertex="1">
-          <mxGeometry x="300" y="430" width="230" height="90" as="geometry" />
+        <mxCell id="cv_tech_3" value="For each seed, the baseline votes over 360 polar bins to find a dark spoke. It rejects saturated pixels and the subdial mask, weights the middle shaft more heavily, checks radial and tangential alignment, boosts hub and tip continuity, and can rescue a hot-zone wrap-around peak near the sweep boundary." style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#d5e8d4;strokeColor=#82b366;image=process_diagrams_assets/cv_03_hough_votes.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" parent="1" vertex="1">
+          <mxGeometry x="680" y="90" width="320" height="200" as="geometry" />
         </mxCell>
-        <mxCell id="pod2" value="Camera Pod #2&#xa;- Camera + MCU&#xa;- Battery + Solar&#xa;- Local inference (optional)&#xa;- LoRaWAN radio" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#cce5ff;strokeColor=#36393d;" parent="site_container" vertex="1">
-          <mxGeometry x="20" y="250" width="220" height="160" as="geometry" />
+        <mxCell id="cv_tech_4" value="When the local geometry sweep is enabled, each accepted seed is refined over a small 5x5 offset grid and the best-quality estimate wins. The selector then compares source priority, peak quality, and consensus across all valid hypotheses." style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#d5e8d4;strokeColor=#82b366;image=process_diagrams_assets/cv_04_confidence_selection.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" parent="1" vertex="1">
+          <mxGeometry x="1030" y="90" width="320" height="200" as="geometry" />
         </mxCell>
-        <mxCell id="pod1" value="Camera Pod #1&#xa;- Camera + MCU&#xa;- Battery + Solar&#xa;- Local inference (optional)&#xa;- LoRaWAN radio" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#cce5ff;strokeColor=#36393d;" parent="site_container" vertex="1">
-          <mxGeometry x="20" y="60" width="220" height="160" as="geometry" />
+        <mxCell id="cv_tech_5" value="A confidence and peak-separation gate must pass before publishing. Low-confidence, ambiguous, or off-center estimates are rejected, and the firmware can hold the last stable value or smooth the small history buffer across up to three frames." style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#d5e8d4;strokeColor=#82b366;image=process_diagrams_assets/cv_05_threshold_gate.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" parent="1" vertex="1">
+          <mxGeometry x="1390" y="90" width="300" height="200" as="geometry" />
         </mxCell>
-        <mxCell id="pod3" value="Camera Pod #3&#xa;- Camera + MCU&#xa;- Battery + Solar&#xa;- Local inference (optional)&#xa;- LoRaWAN radio" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#cce5ff;strokeColor=#36393d;" parent="site_container" vertex="1">
-          <mxGeometry x="20" y="440" width="220" height="160" as="geometry" />
+        <mxCell id="cv_tech_6" value="The winning angle is converted to temperature with the calibrated sweep map. The firmware applies a small angle offset, clamps the sweep to 135°..405°, and maps 270° of sweep to -30°C to +50°C before logging the result." style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#d5e8d4;strokeColor=#82b366;image=process_diagrams_assets/cv_06_angle_to_temperature.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" parent="1" vertex="1">
+          <mxGeometry x="1730" y="90" width="290" height="200" as="geometry" />
         </mxCell>
-        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-1" value="One industrial customer site/plant" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1" parent="site_container" vertex="1">
-          <mxGeometry x="165" y="10" width="230" height="30" as="geometry" />
+        <mxCell id="cv_why_1" value="The baseline works directly on the raw YUV422 preview buffer so it stays cheap in memory and compute. Luma is enough for this detector, so color channels are ignored." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="40" y="480" width="240" height="220" as="geometry" />
         </mxCell>
-        <mxCell id="gateway" value="LoRaWAN Gateway&#xa;- Concentrator&#xa;- Packet forwarder&#xa;- Site power (mains/solar)&#xa;- Backhaul: Ethernet/LTE" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#ffff88;strokeColor=#36393d;" parent="1" vertex="1">
-          <mxGeometry x="340" y="280" width="230" height="170" as="geometry" />
+        <mxCell id="cv_why_2" value="Using five hypotheses makes the baseline robust to glare, crop drift, and board framing changes. The bright centroid is helpful, but the fixed crop, board prior, rim geometry, and image center can all rescue frames where the obvious guess is wrong." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="320" y="480" width="320" height="220" as="geometry" />
         </mxCell>
-        <mxCell id="internet" value="Internet" style="ellipse;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#60a917;strokeColor=#2D7600;fontColor=#ffffff;" parent="1" vertex="1">
-          <mxGeometry x="680" y="390" width="180" height="120" as="geometry" />
+        <mxCell id="cv_why_3" value="The needle is a thin dark radial spoke with edge structure, not just a line segment. Combining darkness, edge magnitude, radial and tangential alignment, hub continuity, tip extension, and a hot-zone rescue helps avoid false locks on dial markings." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="680" y="480" width="310" height="220" as="geometry" />
         </mxCell>
-        <mxCell id="cloud_container" value="" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;container=1;fillColor=#f9f7ed;strokeColor=#36393d;" parent="1" vertex="1">
-          <mxGeometry x="890" y="280" width="980" height="760" as="geometry" />
+        <mxCell id="cv_why_4" value="The local sweep lets the firmware adjust for a few-pixel crop error without changing the overall geometry. Keeping the best-quality refined candidate and then collapsing to a consensus avoids letting one lucky anchor dominate the final read." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="1030" y="480" width="320" height="220" as="geometry" />
         </mxCell>
-        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-2" value="Cloud Architecture" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1" parent="cloud_container" vertex="1">
-          <mxGeometry x="355.6451612903226" y="10" width="268.7096774193549" height="30" as="geometry" />
+        <mxCell id="cv_why_5" value="The gate protects the board from unstable or ambiguous frames. When the best peak is too weak or too close to the runner-up, or the estimate jumps too much, the firmware holds the last stable value instead of publishing a noisy one." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="1390" y="480" width="300" height="220" as="geometry" />
         </mxCell>
-        <mxCell id="lns" value="LoRaWAN Network Server (LNS)&#xa;(The Things Stack / ChirpStack / Managed LNS)&#xa;- Device registry&#xa;- Join/keys&#xa;- Uplink decode&#xa;- Downlink scheduling" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#b0e3e6;strokeColor=#0e8088;" parent="cloud_container" vertex="1">
-          <mxGeometry x="47.42" y="90" width="202.58" height="160" as="geometry" />
+        <mxCell id="cv_why_6" value="The gauge has a known 270° sweep from 135° and the calibration offset is measured, not learned. That makes angle-to-temperature a deterministic decode step once the needle angle is accepted." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="1730" y="470" width="290" height="220" as="geometry" />
         </mxCell>
-        <mxCell id="mqtt" value="Message Bus&#xa;(MQTT / Webhook / Queue)&#xa;- Uplink events&#xa;- Retry + buffering" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#b0e3e6;strokeColor=#0e8088;" parent="cloud_container" vertex="1">
-          <mxGeometry x="310" y="120" width="240" height="100" as="geometry" />
-        </mxCell>
-        <mxCell id="e_lns_mqtt" style="endArrow=classic;html=1;strokeWidth=3;" parent="cloud_container" source="lns" target="mqtt" edge="1">
+        <mxCell id="cve1" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_tech_1" target="cv_tech_2" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="drf" value="Django REST Framework API&#xa;- Readings endpoints&#xa;- Alerts endpoints&#xa;- Sites/gauges/devices&#xa;- Webhooks for integrations" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" parent="cloud_container" vertex="1">
-          <mxGeometry x="310" y="450" width="240" height="160" as="geometry" />
-        </mxCell>
-        <mxCell id="django" value="Django Backend&#xa;- Auth + tenants&#xa;- Device management&#xa;- Business logic&#xa;- Admin UI (optional)" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#bac8d3;strokeColor=#23445d;" parent="cloud_container" vertex="1">
-          <mxGeometry x="290" y="260" width="280" height="160" as="geometry" />
-        </mxCell>
-        <mxCell id="e_mqtt_django" style="endArrow=classic;html=1;strokeWidth=3;" parent="cloud_container" source="mqtt" target="django" edge="1">
+        <mxCell id="cve2" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_tech_2" target="cv_tech_3" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e_django_drf" style="endArrow=open;html=1;strokeWidth=3;startArrow=open;startFill=0;endFill=0;" parent="cloud_container" source="django" target="drf" edge="1">
+        <mxCell id="cve3" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_tech_3" target="cv_tech_4" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="frontend" value="Frontend (Web App)&#xa;- Dashboards&#xa;- Trends&#xa;- Alerts&#xa;- Device health" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#b1ddf0;strokeColor=#10739e;" parent="cloud_container" vertex="1">
-          <mxGeometry x="619.9999999999999" y="475" width="280" height="110" as="geometry" />
-        </mxCell>
-        <mxCell id="e_frontend_drf" style="endArrow=open;html=1;strokeWidth=3;edgeStyle=orthogonalEdgeStyle;startArrow=open;startFill=0;endFill=0;" parent="cloud_container" source="frontend" target="drf" edge="1">
+        <mxCell id="cve4" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_tech_4" target="cv_tech_5" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="clients" value="Clients&#xa;- Browser&#xa;- Mobile app&#xa;- Integrations (SCADA / CMMS)" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=3;fillColor=#ffcc99;strokeColor=#36393d;" parent="cloud_container" vertex="1">
-          <mxGeometry x="310" y="640" width="240" height="110" as="geometry" />
-        </mxCell>
-        <mxCell id="e_clients_frontend" style="endArrow=open;html=1;strokeWidth=3;exitX=1;exitY=0.5;exitDx=0;exitDy=0;edgeStyle=orthogonalEdgeStyle;endFill=0;startArrow=open;startFill=0;" parent="cloud_container" source="clients" target="frontend" edge="1">
+        <mxCell id="cve5" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="cv_tech_5" target="cv_tech_6" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e_clients_drf" style="endArrow=open;html=1;strokeWidth=3;dashed=1;endFill=0;startArrow=open;startFill=0;" parent="cloud_container" source="clients" target="drf" edge="1">
+        <mxCell id="cvw2" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="kAxTJiGilQFAcQdgw8WS-3" target="cv_why_2" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="db" value="Database&#xa;(PostgreSQL)&#xa;- Devices&#xa;- Readings&#xa;- Alerts&#xa;- Users/roles" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;fillColor=#bac8d3;strokeColor=#23445d;" parent="cloud_container" vertex="1">
-          <mxGeometry x="70" y="275" width="180" height="130" as="geometry" />
-        </mxCell>
-        <mxCell id="e_django_db" style="endArrow=open;html=1;strokeWidth=3;endFill=0;startArrow=open;startFill=0;" parent="cloud_container" source="django" target="db" edge="1">
+        <mxCell id="cvw3" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="kAxTJiGilQFAcQdgw8WS-5" target="cv_why_3" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-3" value="" style="image;aspect=fixed;perimeter=ellipsePerimeter;html=1;align=center;shadow=0;dashed=0;spacingTop=3;image=img/lib/active_directory/database.svg;" parent="cloud_container" vertex="1">
-          <mxGeometry x="80" y="285" width="40.54" height="30" as="geometry" />
-        </mxCell>
-        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-4" value="" style="outlineConnect=0;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;shape=mxgraph.aws3.queue;fillColor=#D9A741;gradientColor=none;" parent="cloud_container" vertex="1">
-          <mxGeometry x="340" y="130" width="40" height="18" as="geometry" />
-        </mxCell>
-        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-5" value="" style="image;html=1;image=img/lib/clip_art/computers/Server_128x128.png" parent="cloud_container" vertex="1">
-          <mxGeometry x="305.65" y="270" width="50" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-6" value="" style="aspect=fixed;sketch=0;html=1;dashed=0;whitespace=wrap;verticalLabelPosition=bottom;verticalAlign=top;fillColor=#2875E2;strokeColor=#ffffff;points=[[0.005,0.63,0],[0.1,0.2,0],[0.9,0.2,0],[0.5,0,0],[0.995,0.63,0],[0.72,0.99,0],[0.5,1,0],[0.28,0.99,0]];shape=mxgraph.kubernetes.icon2;prIcon=api" parent="cloud_container" vertex="1">
-          <mxGeometry x="326.48" y="460" width="29.17" height="28" as="geometry" />
-        </mxCell>
-        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-7" value="" style="image;aspect=fixed;perimeter=ellipsePerimeter;html=1;align=center;shadow=0;dashed=0;spacingTop=3;image=img/lib/active_directory/user_accounts.svg;" parent="cloud_container" vertex="1">
-          <mxGeometry x="324.72" y="660" width="30.93" height="30" as="geometry" />
-        </mxCell>
-        <mxCell id="DUbwKN0YmCOqAmX4_Q1j-8" value="" style="image;html=1;image=img/lib/clip_art/finance/Graph_128x128.png" parent="cloud_container" vertex="1">
-          <mxGeometry x="640" y="500" width="40" height="52" as="geometry" />
-        </mxCell>
-        <mxCell id="DadrbJDqd3xpfDusq-m6-1" value="" style="points=[];aspect=fixed;html=1;align=center;shadow=0;dashed=0;fillColor=#FF6A00;strokeColor=none;shape=mxgraph.alibaba_cloud.cen_cloud_enterprise_network;" parent="cloud_container" vertex="1">
-          <mxGeometry x="63.46" y="90" width="16.54" height="17" as="geometry" />
-        </mxCell>
-        <mxCell id="e_pod1_gw" style="endArrow=classic;html=1;strokeWidth=3;dashed=1;" parent="1" source="pod1" target="gateway" edge="1">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e_pod2_gw" style="endArrow=classic;html=1;strokeWidth=3;dashed=1;" parent="1" source="pod2" target="gateway" edge="1">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e_pod3_gw" style="endArrow=classic;html=1;strokeWidth=3;dashed=1;" parent="1" source="pod3" target="gateway" edge="1">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e_gw_backhaul" style="endArrow=classic;html=1;strokeWidth=3;" parent="1" source="gateway" target="site_backhaul" edge="1">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e_backhaul_net" style="endArrow=classic;html=1;strokeWidth=3;" parent="1" source="site_backhaul" target="internet" edge="1">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e_net_lns" style="endArrow=classic;html=1;strokeWidth=3;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="internet" target="lns" edge="1">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-      </root>
-    </mxGraphModel>
-  </diagram>
-  <diagram id="6fHF2__YJ60N_B--ARtN" name="Vision_Model_Process">
-    <mxGraphModel dx="670" dy="465" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="850" math="0" shadow="0">
-      <root>
-        <mxCell id="0" />
-        <mxCell id="1" parent="0" />
-        <mxCell id="sample" value="An input image Sample is fed with data for the&lt;br&gt;center &amp;amp; tip" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1">
-          <mxGeometry x="20" y="210" width="180" height="130" as="geometry" />
-        </mxCell>
-        <mxCell id="spec" value="Set the GaugeSpec:&lt;br&gt;min_angle_rad&lt;br&gt;sweep_rad&lt;br&gt;min_value&lt;div&gt;max_value&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1">
-          <mxGeometry x="500" y="60" width="180" height="120" as="geometry" />
-        </mxCell>
-        <mxCell id="angle_fn" value="&lt;div&gt;We compute the angle of the needle in a standardized circle using the&lt;/div&gt;atan2() function" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
-          <mxGeometry x="240" y="210" width="200" height="130" as="geometry" />
-        </mxCell>
-        <mxCell id="fraction_fn" value="Get the value of the current needle position relative to the min tick by subtracting the min_angle and taking a modulus of 2&lt;span style=&quot;color: rgb(32, 33, 34); font-family: sans-serif; font-size: 16px; text-align: start;&quot;&gt;&lt;span style=&quot;font-family: &amp;quot;Nimbus Roman No9 L&amp;quot;, &amp;quot;Times New Roman&amp;quot;, Times, serif; font-size: 18.88px; line-height: 1; font-variant-numeric: lining-nums tabular-nums; font-kerning: none; text-wrap-mode: nowrap; font-style: italic;&quot; class=&quot;texhtml mvar&quot;&gt;π&lt;/span&gt;&lt;/span&gt;&amp;nbsp;&amp;nbsp;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
-          <mxGeometry x="480" y="210" width="220" height="130" as="geometry" />
-        </mxCell>
-        <mxCell id="fraction" value="Compute the fraction of the needle by dividing this value over the entire sweep range, and clamping to 0 or 1 as necessary" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
-          <mxGeometry x="740" y="210" width="160" height="130" as="geometry" />
-        </mxCell>
-        <mxCell id="value_fn" value="Compute the actual needle value by using linear approximation across the entire sweep range" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
-          <mxGeometry x="740" y="60" width="175" height="120" as="geometry" />
-        </mxCell>
-        <mxCell id="value" value="The output of the current needle value is obtained" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
-          <mxGeometry x="940" y="60" width="160" height="120" as="geometry" />
-        </mxCell>
-        <mxCell id="e1" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="sample" target="angle_fn" edge="1">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e2" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="angle_fn" edge="1">
+        <mxCell id="cvw4" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" target="cv_why_4" edge="1">
           <mxGeometry relative="1" as="geometry">
-            <mxPoint x="470" y="275" as="targetPoint" />
+            <mxPoint x="1190" y="433" as="sourcePoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="e4" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="spec" target="fraction_fn" edge="1">
+        <mxCell id="cvw5" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_5" target="cv_why_5" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e5" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="fraction_fn" target="fraction" edge="1">
+        <mxCell id="cvw6" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="kAxTJiGilQFAcQdgw8WS-10" target="cv_why_6" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e6" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="fraction" target="value_fn" edge="1">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="kAxTJiGilQFAcQdgw8WS-2" value="" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;editableCssRules=.*;image=data:image/svg+xml,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjIuNSAyLjUgMTE1IDExNSIgaGVpZ2h0PSIxMTUiIHdpZHRoPSIxMTUiPiYjeGE7ICA8ZGVmcz4mI3hhOyAgICA8bGluZWFyR3JhZGllbnQgeTI9IjEiIHgyPSIxIiB5MT0iMCIgeDE9IjAiIGlkPSJiZyI+JiN4YTsgICAgICA8c3RvcCBzdG9wLWNvbG9yPSIjZjRmYmY0IiBvZmZzZXQ9IjAlIi8+JiN4YTsgICAgICA8c3RvcCBzdG9wLWNvbG9yPSIjZmZmZmZmIiBvZmZzZXQ9IjEwMCUiLz4mI3hhOyAgICA8L2xpbmVhckdyYWRpZW50PiYjeGE7ICA8L2RlZnM+JiN4YTsgIDxyZWN0IHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjODJiMzY2IiBmaWxsPSJ1cmwoI2JnKSIgcng9IjE2IiBoZWlnaHQ9IjExMiIgd2lkdGg9IjExMiIgeT0iNCIgeD0iNCIvPiYjeGE7ICA8cmVjdCBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZT0iIzZjOGViZiIgZmlsbD0iIzI0MzQ0NyIgcng9IjUiIGhlaWdodD0iMzQiIHdpZHRoPSI4NCIgeT0iMzAiIHg9IjE4Ii8+JiN4YTsgIDxyZWN0IGZpbGw9IiNmZmQ5NjYiIGhlaWdodD0iMjIiIHdpZHRoPSIxMiIgeT0iMzYiIHg9IjIyIi8+JiN4YTsgIDxyZWN0IGZpbGw9IiM2ZmE4ZGMiIGhlaWdodD0iMjIiIHdpZHRoPSIxMiIgeT0iMzYiIHg9IjM0Ii8+JiN4YTsgIDxyZWN0IGZpbGw9IiNmZmQ5NjYiIGhlaWdodD0iMjIiIHdpZHRoPSIxMiIgeT0iMzYiIHg9IjQ2Ii8+JiN4YTsgIDxyZWN0IGZpbGw9IiM2ZmE4ZGMiIGhlaWdodD0iMjIiIHdpZHRoPSIxMiIgeT0iMzYiIHg9IjU4Ii8+JiN4YTsgIDxyZWN0IGZpbGw9IiNmZmQ5NjYiIGhlaWdodD0iMjIiIHdpZHRoPSIxMiIgeT0iMzYiIHg9IjcwIi8+JiN4YTsgIDxyZWN0IGZpbGw9IiM2ZmE4ZGMiIGhlaWdodD0iMjIiIHdpZHRoPSIxMiIgeT0iMzYiIHg9IjgyIi8+JiN4YTsgIDxjaXJjbGUgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2U9IiM4MmIzNjYiIGZpbGw9Im5vbmUiIHI9IjEwIiBjeT0iNDciIGN4PSI0NSIvPiYjeGE7ICA8cGF0aCBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlPSIjODJiMzY2IiBkPSJNNTMgNTVsOCA4Ii8+JiN4YTsgIDxwYXRoIHN0cm9rZS1kYXNoYXJyYXk9IjQgMyIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiM4ZmE3YzAiIGQ9Ik0zMSA3MGg1OCIvPiYjeGE7ICA8dGV4dCBmaWxsPSIjMmY1ZDg3IiBmb250LXdlaWdodD0iNzAwIiBmb250LXNpemU9IjExIiBmb250LWZhbWlseT0iVmVyZGFuYSxBcmlhbCxzYW5zLXNlcmlmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiB5PSIxMDQiIHg9IjYwIj5ZVVY0MjI8L3RleHQ+JiN4YTs8L3N2Zz4=;" parent="1" vertex="1">
+          <mxGeometry x="102.5" y="321" width="115" height="115" as="geometry" />
         </mxCell>
-        <mxCell id="e8" style="endArrow=block;html=1;strokeColor=#000000;" parent="1" source="value_fn" target="value" edge="1">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="kAxTJiGilQFAcQdgw8WS-4" value="" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_2" target="kAxTJiGilQFAcQdgw8WS-3" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="480" y="290" as="sourcePoint" />
+            <mxPoint x="480" y="470" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="kAxTJiGilQFAcQdgw8WS-3" value="" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;editableCssRules=.*;image=data:image/svg+xml,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjMgMyAxMTQgMTE0IiBoZWlnaHQ9IjExNCIgd2lkdGg9IjExNCI+JiN4YTsgIDxkZWZzPiYjeGE7ICAgIDxsaW5lYXJHcmFkaWVudCB5Mj0iMSIgeDI9IjEiIHkxPSIwIiB4MT0iMCIgaWQ9ImJnIj4mI3hhOyAgICAgIDxzdG9wIHN0b3AtY29sb3I9IiNmZmY5ZTgiIG9mZnNldD0iMCUiLz4mI3hhOyAgICAgIDxzdG9wIHN0b3AtY29sb3I9IiNmZmZmZmYiIG9mZnNldD0iMTAwJSIvPiYjeGE7ICAgIDwvbGluZWFyR3JhZGllbnQ+JiN4YTsgIDwvZGVmcz4mI3hhOyAgPHJlY3Qgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiNkNmI2NTYiIGZpbGw9InVybCgjYmcpIiByeD0iMTYiIGhlaWdodD0iMTEyIiB3aWR0aD0iMTEyIiB5PSI0IiB4PSI0Ii8+JiN4YTsgIDxjaXJjbGUgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiM2YzhlYmYiIGZpbGw9IiNlZWY2ZmYiIHI9IjI0IiBjeT0iNDgiIGN4PSI2MCIvPiYjeGE7ICA8Y2lyY2xlIGZpbGw9IiMyNDM0NDciIHI9IjQiIGN5PSI0OCIgY3g9IjYwIi8+JiN4YTsgIDxjaXJjbGUgZmlsbD0iIzgyYjM2NiIgcj0iNCIgY3k9IjQwIiBjeD0iNDQiLz4mI3hhOyAgPGNpcmNsZSBmaWxsPSIjZDZiNjU2IiByPSI0IiBjeT0iNDAiIGN4PSI3NiIvPiYjeGE7ICA8Y2lyY2xlIGZpbGw9IiM5NjczYTYiIHI9IjQiIGN5PSI2OCIgY3g9IjYwIi8+JiN4YTsgIDxwYXRoIHN0cm9rZS1kYXNoYXJyYXk9IjMgMiIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiM4ZmE3YzAiIGQ9Ik02MCA0OGwtMTYtOE02MCA0OGwxNi04TTYwIDQ4djIwIi8+JiN4YTsgIDx0ZXh0IGZpbGw9IiMyZjVkODciIGZvbnQtd2VpZ2h0PSI3MDAiIGZvbnQtc2l6ZT0iMTAiIGZvbnQtZmFtaWx5PSJWZXJkYW5hLEFyaWFsLHNhbnMtc2VyaWYiIHk9IjM4IiB4PSI0MCI+QTwvdGV4dD4mI3hhOyAgPHRleHQgZmlsbD0iIzhkNmEwMCIgZm9udC13ZWlnaHQ9IjcwMCIgZm9udC1zaXplPSIxMCIgZm9udC1mYW1pbHk9IlZlcmRhbmEsQXJpYWwsc2Fucy1zZXJpZiIgeT0iMzgiIHg9Ijc0Ij5CPC90ZXh0PiYjeGE7ICA8dGV4dCBmaWxsPSIjN2U1YzhiIiBmb250LXdlaWdodD0iNzAwIiBmb250LXNpemU9IjEwIiBmb250LWZhbWlseT0iVmVyZGFuYSxBcmlhbCxzYW5zLXNlcmlmIiB5PSI4NCIgeD0iNTYiPkM8L3RleHQ+JiN4YTsgIDx0ZXh0IGZpbGw9IiM4ZDZhMDAiIGZvbnQtd2VpZ2h0PSI3MDAiIGZvbnQtc2l6ZT0iMTEiIGZvbnQtZmFtaWx5PSJWZXJkYW5hLEFyaWFsLHNhbnMtc2VyaWYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIHk9IjEwNCIgeD0iNjAiPkNFTlRFUjwvdGV4dD4mI3hhOzwvc3ZnPg==;" parent="1" vertex="1">
+          <mxGeometry x="423" y="320" width="114" height="114" as="geometry" />
+        </mxCell>
+        <mxCell id="kAxTJiGilQFAcQdgw8WS-6" value="" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_3" target="kAxTJiGilQFAcQdgw8WS-5" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="839" y="290" as="sourcePoint" />
+            <mxPoint x="836" y="480" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="kAxTJiGilQFAcQdgw8WS-5" value="" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;editableCssRules=.*;image=data:image/svg+xml,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjIgMiAxMTYgMTE2IiBoZWlnaHQ9IjExNiIgd2lkdGg9IjExNiI+JiN4YTsgIDxkZWZzPiYjeGE7ICAgIDxsaW5lYXJHcmFkaWVudCB5Mj0iMSIgeDI9IjEiIHkxPSIwIiB4MT0iMCIgaWQ9ImJnIj4mI3hhOyAgICAgIDxzdG9wIHN0b3AtY29sb3I9IiNmM2ZiZmYiIG9mZnNldD0iMCUiLz4mI3hhOyAgICAgIDxzdG9wIHN0b3AtY29sb3I9IiNmZmZmZmYiIG9mZnNldD0iMTAwJSIvPiYjeGE7ICAgIDwvbGluZWFyR3JhZGllbnQ+JiN4YTsgIDwvZGVmcz4mI3hhOyAgPHJlY3Qgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiM2YzhlYmYiIGZpbGw9InVybCgjYmcpIiByeD0iMTYiIGhlaWdodD0iMTEyIiB3aWR0aD0iMTEyIiB5PSI0IiB4PSI0Ii8+JiN4YTsgIDxjaXJjbGUgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiM2YzhlYmYiIGZpbGw9IiNlZWY2ZmYiIHI9IjE4IiBjeT0iNDgiIGN4PSI2MCIvPiYjeGE7ICA8ZyBzdHJva2UtbGluZWNhcD0icm91bmQiPiYjeGE7ICAgIDxwYXRoIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjYjhjYmUwIiBkPSJNNjAgNDhMNjAgMTYiLz4mI3hhOyAgICA8cGF0aCBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZT0iI2I4Y2JlMCIgZD0iTTYwIDQ4TDc5IDIyIi8+JiN4YTsgICAgPHBhdGggc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiNiOGNiZTAiIGQ9Ik02MCA0OEw5NCAzNCIvPiYjeGE7ICAgIDxwYXRoIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjYjhjYmUwIiBkPSJNNjAgNDhMOTUgNTYiLz4mI3hhOyAgICA8cGF0aCBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZT0iI2I4Y2JlMCIgZD0iTTYwIDQ4TDg0IDgyIi8+JiN4YTsgICAgPHBhdGggc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiNiOGNiZTAiIGQ9Ik02MCA0OEw2MCA5MiIvPiYjeGE7ICAgIDxwYXRoIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjYjhjYmUwIiBkPSJNNjAgNDhMMzYgODIiLz4mI3hhOyAgICA8cGF0aCBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZT0iI2I4Y2JlMCIgZD0iTTYwIDQ4TDI1IDU2Ii8+JiN4YTsgICAgPHBhdGggc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiNiOGNiZTAiIGQ9Ik02MCA0OEwyNiAzNCIvPiYjeGE7ICAgIDxwYXRoIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjYjhjYmUwIiBkPSJNNjAgNDhMNDEgMjIiLz4mI3hhOyAgICA8cGF0aCBzdHJva2Utd2lkdGg9IjQiIHN0cm9rZT0iIzgyYjM2NiIgZD0iTTYwIDQ4TDg2IDU4Ii8+JiN4YTsgIDwvZz4mI3hhOyAgPGNpcmNsZSBmaWxsPSIjMjQzNDQ3IiByPSI0IiBjeT0iNDgiIGN4PSI2MCIvPiYjeGE7ICA8dGV4dCBmaWxsPSIjMmY1ZDg3IiBmb250LXdlaWdodD0iNzAwIiBmb250LXNpemU9IjExIiBmb250LWZhbWlseT0iVmVyZGFuYSxBcmlhbCxzYW5zLXNlcmlmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiB5PSIxMDQiIHg9IjYwIj5WT1RFUzwvdGV4dD4mI3hhOzwvc3ZnPg==;" parent="1" vertex="1">
+          <mxGeometry x="782" y="318" width="116" height="116" as="geometry" />
+        </mxCell>
+        <mxCell id="kAxTJiGilQFAcQdgw8WS-8" value="" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_4" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1190" y="290" as="sourcePoint" />
+            <mxPoint x="1190" y="318" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="kAxTJiGilQFAcQdgw8WS-9" value="" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;editableCssRules=.*;image=data:image/svg+xml,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjIgMiAxMTYgMTE2IiBoZWlnaHQ9IjExNiIgd2lkdGg9IjExNiI+JiN4YTsgIDxkZWZzPiYjeGE7ICAgIDxsaW5lYXJHcmFkaWVudCB5Mj0iMSIgeDI9IjEiIHkxPSIwIiB4MT0iMCIgaWQ9ImJnIj4mI3hhOyAgICAgIDxzdG9wIHN0b3AtY29sb3I9IiNmZWZiZTgiIG9mZnNldD0iMCUiLz4mI3hhOyAgICAgIDxzdG9wIHN0b3AtY29sb3I9IiNmZmZmZmYiIG9mZnNldD0iMTAwJSIvPiYjeGE7ICAgIDwvbGluZWFyR3JhZGllbnQ+JiN4YTsgIDwvZGVmcz4mI3hhOyAgPHJlY3Qgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiNkNmI2NTYiIGZpbGw9InVybCgjYmcpIiByeD0iMTYiIGhlaWdodD0iMTEyIiB3aWR0aD0iMTEyIiB5PSI0IiB4PSI0Ii8+JiN4YTsgIDxyZWN0IHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjZDZiNjU2IiBmaWxsPSIjZmZmZmZmIiByeD0iOCIgaGVpZ2h0PSI0OCIgd2lkdGg9IjcyIiB5PSIyNCIgeD0iMjQiLz4mI3hhOyAgPHBhdGggc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2Utd2lkdGg9IjQiIHN0cm9rZT0iIzgyYjM2NiIgZmlsbD0ibm9uZSIgZD0iTTM2IDY0YzAtMTAgOC0xOCAxOC0xOGgxMmMxMCAwIDE4IDggMTggMTgiLz4mI3hhOyAgPHBhdGggc3Ryb2tlLWRhc2hhcnJheT0iNCAzIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZT0iI2Q3OWIwMCIgZD0iTTYwIDIwdjU2Ii8+JiN4YTsgIDxwYXRoIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiMyNDM0NDciIGQ9Ik01MiAzNmgxNk01MiA0NGgxNk01MiA1MmgxNiIvPiYjeGE7ICA8cGF0aCBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS13aWR0aD0iNCIgc3Ryb2tlPSIjODJiMzY2IiBkPSJNNjggNDRoMTgiLz4mI3hhOyAgPHBhdGggc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiM4ZmE3YzAiIGQ9Ik0yOCA3Nmg2NCIvPiYjeGE7ICA8dGV4dCBmaWxsPSIjOGQ2YTAwIiBmb250LXdlaWdodD0iNzAwIiBmb250LXNpemU9IjExIiBmb250LWZhbWlseT0iVmVyZGFuYSxBcmlhbCxzYW5zLXNlcmlmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiB5PSIxMDQiIHg9IjYwIj5HQVRFPC90ZXh0PiYjeGE7PC9zdmc+;" parent="1" vertex="1">
+          <mxGeometry x="1482" y="320" width="116" height="116" as="geometry" />
+        </mxCell>
+        <mxCell id="kAxTJiGilQFAcQdgw8WS-11" value="" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" parent="1" source="cv_tech_6" target="kAxTJiGilQFAcQdgw8WS-10" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1875" y="290" as="sourcePoint" />
+            <mxPoint x="1875" y="470" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="kAxTJiGilQFAcQdgw8WS-10" value="" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;editableCssRules=.*;image=data:image/svg+xml,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjIgMiAxMTYgMTE2IiBoZWlnaHQ9IjExNiIgd2lkdGg9IjExNiI+JiN4YTsgIDxkZWZzPiYjeGE7ICAgIDxsaW5lYXJHcmFkaWVudCB5Mj0iMSIgeDI9IjEiIHkxPSIwIiB4MT0iMCIgaWQ9ImJnIj4mI3hhOyAgICAgIDxzdG9wIHN0b3AtY29sb3I9IiNmN2YwZmIiIG9mZnNldD0iMCUiLz4mI3hhOyAgICAgIDxzdG9wIHN0b3AtY29sb3I9IiNmZmZmZmYiIG9mZnNldD0iMTAwJSIvPiYjeGE7ICAgIDwvbGluZWFyR3JhZGllbnQ+JiN4YTsgIDwvZGVmcz4mI3hhOyAgPHJlY3Qgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiM5NjczYTYiIGZpbGw9InVybCgjYmcpIiByeD0iMTYiIGhlaWdodD0iMTEyIiB3aWR0aD0iMTEyIiB5PSI0IiB4PSI0Ii8+JiN4YTsgIDxwYXRoIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlPSIjNmM4ZWJmIiBmaWxsPSJub25lIiBkPSJNMjggNjBhMzIgMzIgMCAxIDEgNjQgMCIvPiYjeGE7ICA8cGF0aCBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZT0iI2Q2YjY1NiIgZmlsbD0ibm9uZSIgZD0iTTM2IDYwYTI0IDI0IDAgMSAxIDQ4IDAiLz4mI3hhOyAgPHBhdGggc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2Utd2lkdGg9IjQiIHN0cm9rZT0iIzgyYjM2NiIgZD0iTTYwIDYwTDgzIDM4Ii8+JiN4YTsgIDxjaXJjbGUgZmlsbD0iIzI0MzQ0NyIgcj0iNCIgY3k9IjYwIiBjeD0iNjAiLz4mI3hhOyAgPHBhdGggc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2U9IiM4ZmE3YzAiIGQ9Ik0zMCA4Nmg2MCIvPiYjeGE7ICA8cGF0aCBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZT0iIzk2NzNhNiIgZmlsbD0iI2ZmZmZmZiIgZD0iTTgwIDI4aDEydjQ4SDgweiIvPiYjeGE7ICA8cGF0aCBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjOTY3M2E2IiBkPSJNODQgMzRoNE04NCA0Mmg0TTg0IDUwaDRNODQgNThoNCIvPiYjeGE7ICA8dGV4dCBmaWxsPSIjN2U1YzhiIiBmb250LXdlaWdodD0iNzAwIiBmb250LXNpemU9IjExIiBmb250LWZhbWlseT0iVmVyZGFuYSxBcmlhbCxzYW5zLXNlcmlmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiB5PSIxMDQiIHg9IjYwIj5URU1QPC90ZXh0PiYjeGE7PC9zdmc+;" parent="1" vertex="1">
+          <mxGeometry x="1817" y="320" width="116" height="116" as="geometry" />
+        </mxCell>
+        <mxCell id="kAxTJiGilQFAcQdgw8WS-12" value="" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="cv_tech_1" target="kAxTJiGilQFAcQdgw8WS-2" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="130" y="300" as="sourcePoint" />
+            <mxPoint x="130" y="330" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="kAxTJiGilQFAcQdgw8WS-13" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="kAxTJiGilQFAcQdgw8WS-2" target="cv_why_1" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="50" y="440" as="sourcePoint" />
+            <mxPoint x="50" y="486" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="kAxTJiGilQFAcQdgw8WS-14" value="" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;editableCssRules=.*;image=data:image/svg+xml,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjIuMjUgMi4yNSAxMTUuNSAxMTUuNSIgaGVpZ2h0PSIxMTUuNSIgd2lkdGg9IjExNS41Ij4mI3hhOyAgPGRlZnM+JiN4YTsgICAgPGxpbmVhckdyYWRpZW50IHkyPSIxIiB4Mj0iMSIgeTE9IjAiIHgxPSIwIiBpZD0iYmciPiYjeGE7ICAgICAgPHN0b3Agc3RvcC1jb2xvcj0iI2ZmZjRmMSIgb2Zmc2V0PSIwJSIvPiYjeGE7ICAgICAgPHN0b3Agc3RvcC1jb2xvcj0iI2ZmZmZmZiIgb2Zmc2V0PSIxMDAlIi8+JiN4YTsgICAgPC9saW5lYXJHcmFkaWVudD4mI3hhOyAgPC9kZWZzPiYjeGE7ICA8cmVjdCBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZT0iI2Q3OWIwMCIgZmlsbD0idXJsKCNiZykiIHJ4PSIxNiIgaGVpZ2h0PSIxMTIiIHdpZHRoPSIxMTIiIHk9IjQiIHg9IjQiLz4mI3hhOyAgPHJlY3Qgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZT0iIzgyYjM2NiIgZmlsbD0iI2Q1ZThkNCIgcng9IjIiIGhlaWdodD0iMTgiIHdpZHRoPSIxMiIgeT0iNTYiIHg9IjI0Ii8+JiN4YTsgIDxyZWN0IHN0cm9rZS13aWR0aD0iMS41IiBzdHJva2U9IiNkNmI2NTYiIGZpbGw9IiNmZmYyY2MiIHJ4PSIyIiBoZWlnaHQ9IjM0IiB3aWR0aD0iMTIiIHk9IjQwIiB4PSI0MiIvPiYjeGE7ICA8cmVjdCBzdHJva2Utd2lkdGg9IjEuNSIgc3Ryb2tlPSIjNmM4ZWJmIiBmaWxsPSIjZGFlOGZjIiByeD0iMiIgaGVpZ2h0PSI0OCIgd2lkdGg9IjEyIiB5PSIyNiIgeD0iNjAiLz4mI3hhOyAgPHBhdGggZmlsbD0iIzgyYjM2NiIgZD0iTTYwIDIwbDUgOGgtMTB6Ii8+JiN4YTsgIDxwYXRoIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlPSIjOGZhN2MwIiBkPSJNMjggODRoNjQiLz4mI3hhOyAgPHBhdGggc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2Utd2lkdGg9IjMuNSIgc3Ryb2tlPSIjODJiMzY2IiBmaWxsPSJub25lIiBkPSJNNjQgNDZsNSA1IDktMTQiLz4mI3hhOyAgPHRleHQgZmlsbD0iIzhkNmEwMCIgZm9udC13ZWlnaHQ9IjcwMCIgZm9udC1zaXplPSIxMSIgZm9udC1mYW1pbHk9IlZlcmRhbmEsQXJpYWwsc2Fucy1zZXJpZiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgeT0iMTA0IiB4PSI2MCI+Q09ORjwvdGV4dD4mI3hhOzwvc3ZnPg==;" parent="1" vertex="1">
+          <mxGeometry x="1132" y="321" width="116" height="116" as="geometry" />
+        </mxCell>
+        <mxCell id="kAxTJiGilQFAcQdgw8WS-15" value="Why each step is performed" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=16;" parent="1" vertex="1">
+          <mxGeometry y="710" width="350" height="30" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>

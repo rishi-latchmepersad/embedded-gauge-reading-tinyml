@@ -23,11 +23,11 @@ set "REPO_ROOT=%SCRIPT_DIR%..\..\..\"
 set "FSBL_BIN=%SCRIPT_DIR%FSBL\Debug\n657_FSBL.bin"
 set "FSBL_TRUSTED=%SCRIPT_DIR%FSBL\Debug\FSBL_trusted.bin"
 set "CENTER_DETECTOR_RAW=%SCRIPT_DIR%st_ai_output\packages\heatmap_cd_v4s_80\st_ai_output\heatmap_cd_atonbuf.xSPI2.raw"
-REM QARepVGG-Pro α=1.75 — single-model OBB+heatmap centre (replaces OBB+Center MNv2)
-set "OBB_RAW=%SCRIPT_DIR%st_ai_output\packages\qarepvgg_pro_a175_int8\st_ai_output\qarepvgg_pro_a175_int8_atonbuf.xSPI2.raw"
+REM Board bbox OBB deploy candidate flashed into the OBB slot at 0x70700000.
+set "OBB_RAW=%SCRIPT_DIR%st_ai_output\packages\obb_box_board_bbox_deploy_candidate\st_ai_output\obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw"
 
 if not exist "%CENTER_DETECTOR_RAW%" set "CENTER_DETECTOR_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\heatmap_cd_v4s_80\st_ai_output\heatmap_cd_atonbuf.xSPI2.raw"
-if not exist "%OBB_RAW%" set "OBB_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\qarepvgg_pro_a175_int8\st_ai_output\qarepvgg_pro_a175_int8_atonbuf.xSPI2.raw"
+if not exist "%OBB_RAW%" set "OBB_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\obb_box_board_bbox_deploy_candidate\st_ai_output\obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw"
 
 REM CubeProgrammer v2.21 does not accept .raw extension with -w; stage as .bin
 set "CENTER_DETECTOR_BIN=%SCRIPT_DIR%Appli\Debug\center_detector_model_stage.bin"
@@ -70,10 +70,10 @@ if "%FLASH_APP%"=="1" if not exist "%APP_BIN%" (
     exit /b 1
 )
 if "%FLASH_MODEL%"=="1" if not exist "%CENTER_DETECTOR_RAW%" (
-    echo WARNING: Center detector model not found (optional — QARepVGG-Pro provides heatmap centre): "%CENTER_DETECTOR_RAW%"
+    echo WARNING: Center detector model not found (optional — board bbox candidate provides the centre): "%CENTER_DETECTOR_RAW%"
 )
 if "%FLASH_MODEL%"=="1" if not exist "%OBB_RAW%" (
-    echo ERROR: QARepVGG-Pro model not found: "%OBB_RAW%"
+    echo ERROR: Board bbox OBB model not found: "%OBB_RAW%"
     exit /b 1
 )
 
@@ -120,20 +120,20 @@ if "%FLASH_MODEL%"=="1" (
         echo === Step 4a: Skipping center detector (not found — joint model provides the centre) ===
     )
 
-    echo === Step 4b: Flash QARepVGG-Pro α=1.75 (OBB + heatmap centre) at 0x70700000 (required) ===
-    echo QARepVGG-Pro source: "%OBB_RAW%"
-    for %%I in ("%OBB_RAW%") do echo QARepVGG-Pro source size: %%~zI bytes
+    echo === Step 4b: Flash board bbox OBB candidate at 0x70700000 (required) ===
+    echo Board bbox source: "%OBB_RAW%"
+    for %%I in ("%OBB_RAW%") do echo Board bbox source size: %%~zI bytes
     copy /y "%OBB_RAW%" "%OBB_BIN%" >nul
     if errorlevel 1 (
-        echo ERROR: Could not stage joint OBB+Center model as .bin.
+        echo ERROR: Could not stage board bbox OBB model as .bin.
         exit /b 1
     )
     "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%OBB_BIN%" 0x70700000
     if errorlevel 1 (
-        echo ERROR: Joint OBB+Center model flash failed.
+        echo ERROR: Board bbox OBB model flash failed.
         exit /b 1
     )
-    echo QARepVGG-Pro model flashed at 0x70700000.
+    echo Board bbox OBB model flashed at 0x70700000.
 )
 
 if "%FLASH_MODEL%"=="1" (
@@ -149,10 +149,10 @@ if "%FLASH_MODEL%"=="1" (
     )
     python "%REPO_ROOT%ml\scripts\extract_model_signature.py" "%OBB_RAW%" > "%SIG_REPORT_DIR%\obb_signature.txt"
     if errorlevel 1 (
-        echo ERROR: Joint OBB+Center signature extraction failed.
+        echo ERROR: Board bbox OBB signature extraction failed.
         exit /b 1
     )
-    echo Joint OBB+Center signature report: "%SIG_REPORT_DIR%\obb_signature.txt"
+    echo Board bbox OBB signature report: "%SIG_REPORT_DIR%\obb_signature.txt"
 )
 
 if "%FLASH_APP%"=="1" (

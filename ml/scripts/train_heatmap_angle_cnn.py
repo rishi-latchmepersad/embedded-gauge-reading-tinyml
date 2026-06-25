@@ -33,8 +33,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
+import cv2
 import numpy as np
+import os as _os
 import tensorflow as tf
+
+# Cap GPU allocation before TensorFlow initializes the runtime.
+_GPU_MEMORY_LIMIT_MB = int(_os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "3900"))
+gpus = tf.config.list_physical_devices("GPU")
+if gpus:
+    tf.config.set_logical_device_configuration(
+        gpus[0],
+        [tf.config.LogicalDeviceConfiguration(memory_limit=_GPU_MEMORY_LIMIT_MB)],
+    )
+del _os, _GPU_MEMORY_LIMIT_MB
+
 from tensorflow import keras
 
 # Import project modules
@@ -44,8 +57,9 @@ from embedded_gauge_reading_tinyml.gauge_geometry import (
     celsius_from_inner_dial_angle_degrees,
 )
 from embedded_gauge_reading_tinyml.heatmap_losses import (
-    weighted_heatmap_mse_loss,
-    softargmax_coordinate_loss,
+    combined_heatmap_loss,
+    mean_predicted_heatmap_peak,
+    softargmax_coordinate_mae,
 )
 
 # ---------------------------------------------------------------------------
@@ -55,6 +69,7 @@ from embedded_gauge_reading_tinyml.heatmap_losses import (
 DEFAULT_IMAGE_SIZE: Final[int] = 224
 HEATMAP_SIZE: Final[int] = 112
 GAUSSIAN_SIGMA: Final[float] = 8.0  # Heatmap Gaussian spread
+REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 
 
 @dataclass
@@ -174,6 +189,17 @@ def load_geometry_manifest(manifest_path: Path) -> list[dict[str, Any]]:
     return samples
 
 
+def _resolve_image_path(raw_path: str) -> Path:
+    """Resolve a manifest image path against the repository root."""
+
+    candidate = Path(raw_path.strip())
+    if candidate.is_absolute():
+        return candidate
+    if candidate.parts and candidate.parts[0] == "ml":
+        return REPO_ROOT / candidate
+    return REPO_ROOT / "ml" / candidate
+
+
 def load_board_manifest(manifest_path: Path) -> list[dict[str, Any]]:
     """Load board capture samples from labeled manifest.
 
@@ -270,48 +296,55 @@ def load_and_preprocess_image(
         heatmap_size: Output heatmap size
 
     Returns:
-        Tuple of (image, center_heatmap, tip_heatmap, angle_degrees, temperature_c)
+    Tuple of (image, center_heatmap, tip_heatmap, angle_degrees, temperature_c)
     """
-    # Load image
-    img = tf.io.read_file(image_path)
-    img = tf.image.decode_png(img, channels=3)
-    img = tf.cast(img, tf.float32)
+    # Load RGB image with OpenCV so PNG and JPG inputs work uniformly.
+    resolved_image_path = _resolve_image_path(image_path)
+    img_bgr = cv2.imread(str(resolved_image_path), cv2.IMREAD_COLOR)
+    if img_bgr is None:
+        raise FileNotFoundError(f"Cannot read image: {resolved_image_path}")
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
-    # Crop
-    crop_h = crop_y2 - crop_y1
-    crop_w = crop_x2 - crop_x1
-    img = tf.image.crop_to_bounding_box(
-        img,
-        offset_height=max(0, crop_y1),
-        offset_width=max(0, crop_x1),
-        target_height=min(crop_h, tf.shape(img)[0] - crop_y1),
-        target_width=min(crop_w, tf.shape(img)[1] - crop_x1),
-    )
+    # Clamp the crop box to image bounds before extracting the region.
+    img_h, img_w = img_rgb.shape[:2]
+    x1 = max(0, min(int(crop_x1), img_w - 1))
+    y1 = max(0, min(int(crop_y1), img_h - 1))
+    x2 = max(x1 + 1, min(int(crop_x2), img_w))
+    y2 = max(y1 + 1, min(int(crop_y2), img_h))
+    crop = img_rgb[y1:y2, x1:x2]
+    if crop.size == 0:
+        raise ValueError(f"Empty crop for {image_path}")
 
-    # Resize with pad
-    img = tf.image.resize_with_pad(
-        img, image_size, image_size, method="bilinear"
-    )
-    img = img / 255.0  # Normalize to [0, 1]
+    # Resize the crop into a centered square canvas so aspect changes do not
+    # smear the keypoint geometry.
+    crop_h = max(1, y2 - y1)
+    crop_w = max(1, x2 - x1)
+    scale = min(image_size / float(crop_w), image_size / float(crop_h))
+    resized_w = max(1, int(round(crop_w * scale)))
+    resized_h = max(1, int(round(crop_h * scale)))
+    resized = cv2.resize(crop, (resized_w, resized_h), interpolation=cv2.INTER_LINEAR)
+    canvas = np.zeros((image_size, image_size, 3), dtype=np.float32)
+    pad_x = (image_size - resized_w) // 2
+    pad_y = (image_size - resized_h) // 2
+    canvas[pad_y : pad_y + resized_h, pad_x : pad_x + resized_w] = resized.astype(np.float32)
+    img = canvas / 255.0
 
-    # Transform coordinates to crop space
-    crop_x1_f = float(crop_x1)
-    crop_y1_f = float(crop_y1)
+    # Transform coordinates into crop-normalized space.
+    crop_x1_f = float(x1)
+    crop_y1_f = float(y1)
+    crop_w_f = float(max(1.0, x2 - x1))
+    crop_h_f = float(max(1.0, y2 - y1))
 
-    # Handle edge cases where crop dimensions might be zero
-    crop_w = max(1.0, float(crop_x2) - crop_x1_f)
-    crop_h = max(1.0, float(crop_y2) - crop_y1_f)
-
-    center_x_crop = (center_x_src - crop_x1_f) / crop_w
-    center_y_crop = (center_y_src - crop_y1_f) / crop_h
-    tip_x_crop = (tip_x_src - crop_x1_f) / crop_w
-    tip_y_crop = (tip_y_src - crop_y1_f) / crop_h
+    center_x_crop = (center_x_src - crop_x1_f) / crop_w_f
+    center_y_crop = (center_y_src - crop_y1_f) / crop_h_f
+    tip_x_crop = (tip_x_src - crop_x1_f) / crop_w_f
+    tip_y_crop = (tip_y_src - crop_y1_f) / crop_h_f
 
     # Scale to heatmap coordinates
-    center_x_hm = center_x_crop * heatmap_size
-    center_y_hm = center_y_crop * heatmap_size
-    tip_x_hm = tip_x_crop * heatmap_size
-    tip_y_hm = tip_y_crop * heatmap_size
+    center_x_hm = center_x_crop * (heatmap_size - 1)
+    center_y_hm = center_y_crop * (heatmap_size - 1)
+    tip_x_hm = tip_x_crop * (heatmap_size - 1)
+    tip_y_hm = tip_y_crop * (heatmap_size - 1)
 
     # Build heatmaps
     center_hm = build_gaussian_heatmap(center_x_hm, center_y_hm, heatmap_size)
@@ -333,6 +366,7 @@ def create_dataset(
     heatmap_size: int = HEATMAP_SIZE,
     shuffle: bool = True,
     seed: int = 21,
+    repeat: bool = False,
 ) -> tf.data.Dataset:
     """Create a tf.data.Dataset from samples.
 
@@ -387,6 +421,8 @@ def create_dataset(
         ds = ds.shuffle(buffer_size=len(samples), seed=seed)
 
     ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    if repeat:
+        ds = ds.repeat()
     return ds
 
 
@@ -415,10 +451,10 @@ def compile_model(
     """
 
     def center_loss(y_true, y_pred):
-        return center_weight * keras.losses.MSE(y_true, y_pred)
+        return center_weight * combined_heatmap_loss(y_true, y_pred)
 
     def tip_loss(y_true, y_pred):
-        return tip_weight * keras.losses.MSE(y_true, y_pred)
+        return tip_weight * combined_heatmap_loss(y_true, y_pred)
 
     def confidence_loss(y_true, y_pred):
         return confidence_weight * keras.losses.binary_crossentropy(y_true, y_pred)
@@ -444,8 +480,8 @@ def compile_model(
             "confidence": confidence_loss,
         },
         metrics={
-            "center_heatmap": "mae",
-            "tip_heatmap": "mae",
+            "center_heatmap": [softargmax_coordinate_mae, mean_predicted_heatmap_peak],
+            "tip_heatmap": [softargmax_coordinate_mae, mean_predicted_heatmap_peak],
         },
     )
 
@@ -505,6 +541,7 @@ def train(config: TrainConfig) -> keras.Model:
         config.heatmap_size,
         shuffle=True,
         seed=config.seed,
+        repeat=True,
     )
     val_ds = create_dataset(
         val_samples,
@@ -512,6 +549,7 @@ def train(config: TrainConfig) -> keras.Model:
         config.image_size,
         config.heatmap_size,
         shuffle=False,
+        repeat=False,
     )
 
     # Build model
@@ -552,14 +590,17 @@ def train(config: TrainConfig) -> keras.Model:
         ),
     ]
 
+    steps_per_epoch = max(1, math.ceil(len(train_samples) / float(config.batch_size)))
+    validation_steps = max(1, math.ceil(len(val_samples) / float(config.batch_size)))
+
     # Train
     print("Starting training...")
     history = model.fit(
         train_ds,
         validation_data=val_ds,
         epochs=config.epochs,
-        steps_per_epoch=config.steps_per_epoch,
-        validation_steps=config.validation_steps,
+        steps_per_epoch=config.steps_per_epoch or steps_per_epoch,
+        validation_steps=config.validation_steps or validation_steps,
         callbacks=callbacks,
     )
 
@@ -581,6 +622,18 @@ def main() -> None:
         type=Path,
         default=Path(__file__).resolve().parents[1] / "data",
         help="Path to ml/data directory",
+    )
+    parser.add_argument(
+        "--geometry-manifest",
+        type=str,
+        default="geometry_reader_manifest_v2_clean.csv",
+        help="Geometry manifest filename relative to --data-dir.",
+    )
+    parser.add_argument(
+        "--board-manifest",
+        type=str,
+        default="board_captures_labeled_v2.csv",
+        help="Board manifest filename relative to --data-dir.",
     )
     parser.add_argument(
         "--epochs",
@@ -622,6 +675,8 @@ def main() -> None:
 
     config = TrainConfig(
         data_dir=args.data_dir,
+        geometry_manifest=args.geometry_manifest,
+        board_manifest=args.board_manifest,
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,

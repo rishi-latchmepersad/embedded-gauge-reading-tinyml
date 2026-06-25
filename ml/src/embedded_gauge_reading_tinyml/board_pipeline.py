@@ -61,6 +61,7 @@ OBB_MIN_BOX_RATIO: Final[float] = 0.05
 OBB_TRAINING_CROP_MIN_RATIO: Final[float] = 0.15
 OBB_TRAINING_CROP_MAX_RATIO: Final[float] = 1.60
 OBB_MIN_CROP_SIZE_PIXELS: Final[float] = 48.0
+OBB_TRAINING_CENTER_MAX_OFFSET_RATIO: Final[float] = 0.45
 
 RECTIFIER_MIN_BOX_RATIO: Final[float] = 0.05
 RECTIFIER_FIXED_SCALE_CROP: Final[bool] = False
@@ -397,6 +398,55 @@ def _expand_axis_aligned_box(
     return (new_x_min, new_y_min, new_x_max, new_y_max)
 
 
+def _evaluate_training_crop_window(
+    *,
+    crop_x_min_f: float,
+    crop_y_min_f: float,
+    crop_x_max_f: float,
+    crop_y_max_f: float,
+    source_width: int,
+    source_height: int,
+) -> tuple[bool, str | None, dict[str, float]]:
+    """Score a decoded crop against the training crop window guardrails."""
+    crop_width = crop_x_max_f - crop_x_min_f
+    crop_height = crop_y_max_f - crop_y_min_f
+    training_crop_x0, training_crop_y0, training_crop_x1, training_crop_y1 = (
+        _training_crop_box(source_width, source_height)
+    )
+    training_crop_width = max(training_crop_x1 - training_crop_x0, 1.0)
+    training_crop_height = max(training_crop_y1 - training_crop_y0, 1.0)
+    crop_width_ratio = crop_width / training_crop_width
+    crop_height_ratio = crop_height / training_crop_height
+    training_center_x = 0.5 * (training_crop_x0 + training_crop_x1)
+    training_center_y = 0.5 * (training_crop_y0 + training_crop_y1)
+    crop_center_x = 0.5 * (crop_x_min_f + crop_x_max_f)
+    crop_center_y = 0.5 * (crop_y_min_f + crop_y_max_f)
+    center_x_offset_ratio = abs(crop_center_x - training_center_x) / training_crop_width
+    center_y_offset_ratio = abs(crop_center_y - training_center_y) / training_crop_height
+
+    accepted = (
+        OBB_TRAINING_CROP_MIN_RATIO <= crop_width_ratio <= OBB_TRAINING_CROP_MAX_RATIO
+        and OBB_TRAINING_CROP_MIN_RATIO <= crop_height_ratio <= OBB_TRAINING_CROP_MAX_RATIO
+        and center_x_offset_ratio <= OBB_TRAINING_CENTER_MAX_OFFSET_RATIO
+        and center_y_offset_ratio <= OBB_TRAINING_CENTER_MAX_OFFSET_RATIO
+    )
+    if accepted:
+        fallback_reason = None
+    elif center_x_offset_ratio > OBB_TRAINING_CENTER_MAX_OFFSET_RATIO or center_y_offset_ratio > OBB_TRAINING_CENTER_MAX_OFFSET_RATIO:
+        fallback_reason = "crop center outside training window"
+    else:
+        fallback_reason = "crop outside training window"
+    details = {
+        "training_crop_width": training_crop_width,
+        "training_crop_height": training_crop_height,
+        "crop_width_ratio": crop_width_ratio,
+        "crop_height_ratio": crop_height_ratio,
+        "center_x_offset_ratio": center_x_offset_ratio,
+        "center_y_offset_ratio": center_y_offset_ratio,
+    }
+    return accepted, fallback_reason, details
+
+
 def load_capture_image(
     capture_path: Path,
     *,
@@ -608,21 +658,14 @@ def decode_obb_crop_box(
         crop_y_max_f = float(source_height)
         crop_y_min_f = max(0.0, crop_y_max_f - source_height_f)
 
-    crop_width = crop_x_max_f - crop_x_min_f
-    crop_height = crop_y_max_f - crop_y_min_f
-    training_crop_x0, training_crop_y0, training_crop_x1, training_crop_y1 = (
-        _training_crop_box(source_width, source_height)
+    accepted, fallback_reason, window_details = _evaluate_training_crop_window(
+        crop_x_min_f=crop_x_min_f,
+        crop_y_min_f=crop_y_min_f,
+        crop_x_max_f=crop_x_max_f,
+        crop_y_max_f=crop_y_max_f,
+        source_width=source_width,
+        source_height=source_height,
     )
-    training_crop_width = max(training_crop_x1 - training_crop_x0, 1.0)
-    training_crop_height = max(training_crop_y1 - training_crop_y0, 1.0)
-    crop_width_ratio = crop_width / training_crop_width
-    crop_height_ratio = crop_height / training_crop_height
-
-    accepted = (
-        OBB_TRAINING_CROP_MIN_RATIO <= crop_width_ratio <= OBB_TRAINING_CROP_MAX_RATIO
-        and OBB_TRAINING_CROP_MIN_RATIO <= crop_height_ratio <= OBB_TRAINING_CROP_MAX_RATIO
-    )
-    fallback_reason = None if accepted else "crop outside training window"
     details = {
         "center_x": center_x_norm,
         "center_y": center_y_norm,
@@ -639,11 +682,127 @@ def decode_obb_crop_box(
         "source_height_scale": obb_source_height_scale,
         "width_scale": obb_width_scale,
         "height_scale": obb_height_scale,
-        "training_crop_width": training_crop_width,
-        "training_crop_height": training_crop_height,
-        "crop_width_ratio": crop_width_ratio,
-        "crop_height_ratio": crop_height_ratio,
     }
+    details.update(window_details)
+    return CropDecodeDecision(
+        stage="obb",
+        accepted=accepted,
+        crop_box_xyxy=(crop_x_min_f, crop_y_min_f, crop_x_max_f, crop_y_max_f),
+        fallback_reason=fallback_reason,
+        details=details,
+    )
+
+
+def decode_obb_box_crop_box(
+    obb_confidence: float,
+    obb_box: NDArray[np.float32],
+    *,
+    source_width: int,
+    source_height: int,
+    input_size: int = DEFAULT_IMAGE_SIZE,
+    obb_crop_scale: float = OBB_CROP_SCALE,
+    obb_width_scale: float = OBB_WIDTH_SCALE,
+    obb_height_scale: float = OBB_HEIGHT_SCALE,
+    obb_source_width_scale: float = OBB_SOURCE_WIDTH_SCALE,
+    obb_source_height_scale: float = OBB_SOURCE_HEIGHT_SCALE,
+    min_crop_size: float = OBB_MIN_CROP_SIZE_PIXELS,
+    obb_center_x_bias_pixels: float = 0.0,
+    obb_center_y_bias_pixels: float = 0.0,
+    obb_source_x_bias_pixels: float = 0.0,
+    obb_source_y_bias_pixels: float = 0.0,
+) -> CropDecodeDecision:
+    """Decode an axis-aligned OBB box output into a source-space crop."""
+
+    if obb_box.size < 4:
+        raise ValueError("OBB box prediction did not contain four parameters.")
+
+    center_x_norm = _clamp_norm(float(obb_box[0]))
+    center_y_norm = _clamp_norm(float(obb_box[1]))
+    box_w_norm = max(OBB_MIN_BOX_RATIO, min(1.0, float(obb_box[2])))
+    box_h_norm = max(OBB_MIN_BOX_RATIO, min(1.0, float(obb_box[3])))
+
+    canvas_center_x = (center_x_norm * float(input_size)) + obb_center_x_bias_pixels
+    canvas_center_y = (center_y_norm * float(input_size)) + obb_center_y_bias_pixels
+    half_width = 0.5 * box_w_norm * float(input_size) * obb_crop_scale * obb_width_scale
+    half_height = 0.5 * box_h_norm * float(input_size) * obb_crop_scale * obb_height_scale
+
+    source_points: list[tuple[float, float]] = []
+    for dx, dy in (
+        (-half_width, -half_height),
+        (half_width, -half_height),
+        (half_width, half_height),
+        (-half_width, half_height),
+    ):
+        canvas_x = canvas_center_x + dx
+        canvas_y = canvas_center_y + dy
+        source_point = source_xy_from_resized_xy(
+            (canvas_x, canvas_y),
+            crop_box_xyxy=(0.0, 0.0, float(source_width), float(source_height)),
+            image_height=source_height,
+            image_width=source_width,
+        )
+        source_points.append(source_point)
+
+    x_values = [point[0] for point in source_points]
+    y_values = [point[1] for point in source_points]
+    crop_x_min_f, crop_y_min_f, crop_x_max_f, crop_y_max_f = _expand_axis_aligned_box(
+        min(x_values),
+        min(y_values),
+        max(x_values),
+        max(y_values),
+        image_width=source_width,
+        image_height=source_height,
+        min_size=min_crop_size,
+    )
+    crop_x_min_f += obb_source_x_bias_pixels
+    crop_y_min_f += obb_source_y_bias_pixels
+
+    source_center_x = 0.5 * (crop_x_min_f + crop_x_max_f)
+    source_center_y = 0.5 * (crop_y_min_f + crop_y_max_f)
+    source_width_f = max(1.0, (crop_x_max_f - crop_x_min_f) * obb_source_width_scale)
+    source_height_f = max(1.0, (crop_y_max_f - crop_y_min_f) * obb_source_height_scale)
+    crop_x_min_f = source_center_x - (0.5 * source_width_f)
+    crop_y_min_f = source_center_y - (0.5 * source_height_f)
+    crop_x_max_f = crop_x_min_f + source_width_f
+    crop_y_max_f = crop_y_min_f + source_height_f
+
+    if crop_x_min_f < 0.0:
+        crop_x_min_f = 0.0
+        crop_x_max_f = min(float(source_width), source_width_f)
+    if crop_y_min_f < 0.0:
+        crop_y_min_f = 0.0
+        crop_y_max_f = min(float(source_height), source_height_f)
+    if crop_x_max_f > float(source_width):
+        crop_x_max_f = float(source_width)
+        crop_x_min_f = max(0.0, crop_x_max_f - source_width_f)
+    if crop_y_max_f > float(source_height):
+        crop_y_max_f = float(source_height)
+        crop_y_min_f = max(0.0, crop_y_max_f - source_height_f)
+
+    accepted, fallback_reason, window_details = _evaluate_training_crop_window(
+        crop_x_min_f=crop_x_min_f,
+        crop_y_min_f=crop_y_min_f,
+        crop_x_max_f=crop_x_max_f,
+        crop_y_max_f=crop_y_max_f,
+        source_width=source_width,
+        source_height=source_height,
+    )
+    details = {
+        "confidence": float(obb_confidence),
+        "center_x": center_x_norm,
+        "center_y": center_y_norm,
+        "box_w": box_w_norm,
+        "box_h": box_h_norm,
+        "center_x_bias_pixels": obb_center_x_bias_pixels,
+        "center_y_bias_pixels": obb_center_y_bias_pixels,
+        "source_x_bias_pixels": obb_source_x_bias_pixels,
+        "source_y_bias_pixels": obb_source_y_bias_pixels,
+        "source_width_scale": obb_source_width_scale,
+        "source_height_scale": obb_source_height_scale,
+        "width_scale": obb_width_scale,
+        "height_scale": obb_height_scale,
+    }
+    details.update(window_details)
     return CropDecodeDecision(
         stage="obb",
         accepted=accepted,

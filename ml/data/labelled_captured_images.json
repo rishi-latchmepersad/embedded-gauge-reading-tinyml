@@ -15930,6 +15930,650 @@
           }
         }
       ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-15_11-56-26.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-15_11-56-26.png",
+            "center_x_source": 107.0,
+            "center_y_source": 109.0,
+            "tip_x_source": 137.0,
+            "tip_y_source": 121.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 32.31098884280702,
+            "true_angle_degrees": 338.1985905136482,
+            "temperature_c": 45.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-15_13-31-58.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-15_13-31-58.png",
+            "center_x_source": 98.0,
+            "center_y_source": 107.0,
+            "tip_x_source": 128.0,
+            "tip_y_source": 117.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 31.622776601683793,
+            "true_angle_degrees": 341.565051177078,
+            "temperature_c": 45.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-18_13-40-52.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-18_13-40-52.png",
+            "center_x_source": 121.0,
+            "center_y_source": 109.0,
+            "tip_x_source": 121.0,
+            "tip_y_source": 72.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 37.0,
+            "true_angle_degrees": 90.0,
+            "temperature_c": 15.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-18_17-32-57.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-18_17-32-57.png",
+            "center_x_source": 119.0,
+            "center_y_source": 126.0,
+            "tip_x_source": 160.0,
+            "tip_y_source": 111.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 43.657759905886145,
+            "true_angle_degrees": 20.095231191904816,
+            "temperature_c": 25.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-19_13-38-29.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-19_13-38-29.png",
+            "center_x_source": 119.0,
+            "center_y_source": 130.0,
+            "tip_x_source": 161.0,
+            "tip_y_source": 119.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 43.41658669218482,
+            "true_angle_degrees": 14.676393137450013,
+            "temperature_c": 32.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-19_17-12-44.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-19_17-12-44.png",
+            "center_x_source": 119.0,
+            "center_y_source": 130.0,
+            "tip_x_source": 160.0,
+            "tip_y_source": 118.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 42.720018726587654,
+            "true_angle_degrees": 16.31385242626056,
+            "temperature_c": 32.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-20_16-11-24.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-20_16-11-24.png",
+            "center_x_source": 128.0,
+            "center_y_source": 103.0,
+            "tip_x_source": 185.0,
+            "tip_y_source": 89.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 58.69412236331676,
+            "true_angle_degrees": 13.799485396019369,
+            "temperature_c": 32.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-20_16-20-58.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-20_16-20-58.png",
+            "center_x_source": 112.0,
+            "center_y_source": 117.0,
+            "tip_x_source": 138.0,
+            "tip_y_source": 109.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 27.202941017470888,
+            "true_angle_degrees": 17.102728969052375,
+            "temperature_c": 32.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-24_22-26-24.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-24_22-26-24.png",
+            "center_x_source": 111.0,
+            "center_y_source": 111.0,
+            "tip_x_source": 115.0,
+            "tip_y_source": 70.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 41.19465984809196,
+            "true_angle_degrees": 84.42780219603621,
+            "temperature_c": 12.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-24_22-29-11.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-24_22-29-11.png",
+            "center_x_source": 110.0,
+            "center_y_source": 113.0,
+            "tip_x_source": 114.0,
+            "tip_y_source": 71.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 42.190046219457976,
+            "true_angle_degrees": 84.55966796899449,
+            "temperature_c": 11.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-29_09-40-14.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-29_09-40-14.png",
+            "center_x_source": 116.0,
+            "center_y_source": 93.0,
+            "tip_x_source": 113.0,
+            "tip_y_source": 67.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 26.1725046566048,
+            "true_angle_degrees": 96.58194465517802,
+            "temperature_c": 6.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-30_12-21-34.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-30_12-21-34.png",
+            "center_x_source": 113.0,
+            "center_y_source": 114.0,
+            "tip_x_source": 111.0,
+            "tip_y_source": 83.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 31.064449134018133,
+            "true_angle_degrees": 93.69138598645128,
+            "temperature_c": 8.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-30_18-53-07.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-30_18-53-07.png",
+            "center_x_source": 125.0,
+            "center_y_source": 114.0,
+            "tip_x_source": 86.0,
+            "tip_y_source": 130.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 42.15447781671598,
+            "true_angle_degrees": 202.30620505490765,
+            "temperature_c": -30.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-05-27_07-07-22.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-05-27_07-07-22.png",
+            "center_x_source": 110.0,
+            "center_y_source": 114.0,
+            "tip_x_source": 103.0,
+            "tip_y_source": 84.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 30.805843601498726,
+            "true_angle_degrees": 103.13402230639633,
+            "temperature_c": 6.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-05-27_16-46-14.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-05-27_16-46-14.png",
+            "center_x_source": 108.0,
+            "center_y_source": 120.0,
+            "tip_x_source": 105.0,
+            "tip_y_source": 84.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 36.124783736376884,
+            "true_angle_degrees": 94.76364169072617,
+            "temperature_c": 10.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-15_11-29-40.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-15_11-29-40.png",
+            "center_x_source": 114.0,
+            "center_y_source": 82.0,
+            "tip_x_source": 149.0,
+            "tip_y_source": 76.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 35.510561809129406,
+            "true_angle_degrees": 9.727578551401603,
+            "temperature_c": 34.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-18_13-21-46.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-18_13-21-46.png",
+            "center_x_source": 121.0,
+            "center_y_source": 108.0,
+            "tip_x_source": 122.0,
+            "tip_y_source": 74.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 34.0147027033899,
+            "true_angle_degrees": 88.31531568210372,
+            "temperature_c": 15.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-19_12-57-14.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-19_12-57-14.png",
+            "center_x_source": 118.0,
+            "center_y_source": 130.0,
+            "tip_x_source": 158.0,
+            "tip_y_source": 117.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 42.05948168962618,
+            "true_angle_degrees": 18.00416160591338,
+            "temperature_c": 33.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-20_16-02-50.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-20_16-02-50.png",
+            "center_x_source": 131.0,
+            "center_y_source": 106.0,
+            "tip_x_source": 182.0,
+            "tip_y_source": 89.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 53.75872022286245,
+            "true_angle_degrees": 18.43494882292201,
+            "temperature_c": 33.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-24_22-25-14.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-24_22-25-14.png",
+            "center_x_source": 110.0,
+            "center_y_source": 114.0,
+            "tip_x_source": 116.0,
+            "tip_y_source": 68.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 46.389654018972806,
+            "true_angle_degrees": 82.5685920288275,
+            "temperature_c": 10.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-29_09-35-33.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-29_09-35-33.png",
+            "center_x_source": 115.0,
+            "center_y_source": 94.0,
+            "tip_x_source": 114.0,
+            "tip_y_source": 63.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 31.016124838541646,
+            "true_angle_degrees": 91.8476102659946,
+            "temperature_c": 10.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-30_05-52-17.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-30_05-52-17.png",
+            "center_x_source": 114.0,
+            "center_y_source": 84.0,
+            "tip_x_source": 98.0,
+            "tip_y_source": 48.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 39.395431207184416,
+            "true_angle_degrees": 113.96248897457819,
+            "temperature_c": 6.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-05-27_06-01-47.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-05-27_06-01-47.png",
+            "center_x_source": 110.0,
+            "center_y_source": 91.0,
+            "tip_x_source": 99.0,
+            "tip_y_source": 58.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 34.785054261852174,
+            "true_angle_degrees": 108.43494882292201,
+            "temperature_c": 6.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-15_11-31-17.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-15_11-31-17.png",
+            "center_x_source": 113.0,
+            "center_y_source": 83.0,
+            "tip_x_source": 148.0,
+            "tip_y_source": 77.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 35.510561809129406,
+            "true_angle_degrees": 9.727578551401603,
+            "temperature_c": 35.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-18_13-23-37.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-18_13-23-37.png",
+            "center_x_source": 119.0,
+            "center_y_source": 108.0,
+            "tip_x_source": 121.0,
+            "tip_y_source": 74.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 34.058772731852805,
+            "true_angle_degrees": 86.63353933657021,
+            "temperature_c": 15.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-19_12-58-27.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-19_12-58-27.png",
+            "center_x_source": 117.0,
+            "center_y_source": 130.0,
+            "tip_x_source": 161.0,
+            "tip_y_source": 118.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 45.60701700396552,
+            "true_angle_degrees": 15.255118703057777,
+            "temperature_c": 35.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-20_16-04-03.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-20_16-04-03.png",
+            "center_x_source": 126.0,
+            "center_y_source": 104.0,
+            "tip_x_source": 182.0,
+            "tip_y_source": 89.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 57.97413216254298,
+            "true_angle_degrees": 14.995079129175986,
+            "temperature_c": 35.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
+    },
+    {
+      "image_path": "ml/data/captured_images/capture_2026-04-24_22-28-00.png",
+      "annotation_count": 1,
+      "annotations": [
+        {
+          "source_kind": "reviewed_geometry",
+          "source_row": {
+            "image_path": "ml/data/captured_images/capture_2026-04-24_22-28-00.png",
+            "center_x_source": 109.0,
+            "center_y_source": 112.0,
+            "tip_x_source": 114.0,
+            "tip_y_source": 70.0,
+            "source_width": 224,
+            "source_height": 224,
+            "center_tip_distance_pixels": 42.2965719651132,
+            "true_angle_degrees": 83.21102542556122,
+            "temperature_c": 10.0,
+            "label_quality": "manual",
+            "label_source": "board_v2_labeling"
+          }
+        }
+      ]
     }
   ]
 }

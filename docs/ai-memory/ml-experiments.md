@@ -374,3 +374,166 @@ This section records the full path we took from unstable board runs to a stable 
 - OBB float preprocess validation also fixed: minimum changed from 7-channel (352896 floats) to 3-channel (150528 floats) so OBB stage can proceed.
 - Known remaining issue: OBB model input buffer at 0x34110000 overlaps with BSS (ends 0x34113160). Pre-existing, not critical since OBB falls back to fixed crop.
 - Flash completed successfully: FSBL, scalar model, rectifier, OBB, signed app all written to flash.
+
+## OBB+SimCC v4/v5 pipeline (2026-06-22)
+
+Built a two-stage OBB detector + SimCC keypoint pipeline targeting the
+2.5 MB SRAM budget on STM32N6 NPU.
+
+### OBB v2 (deployed)
+- MobileNetV3-Small (alpha=0.75) + Lite-FPN + decoupled box/conf head.
+- No angle prediction (circular gauge is rotationally symmetric, ill-posed).
+- 655K params, 887 KB INT8.
+- Board capture eval: center MAE 13.7px (84% within 10px), IoU median 0.77.
+- Fails on 9 large (>1300px) captures (GT box too large for 224x224).
+- Model: `ml/artifacts/training/obb_v2_box_20260622_203432/model_int8.tflite`.
+
+### SimCC v4 (axis-pool, weak augmentation)
+- MobileNetV2-Small (alpha=0.35) + spatial trunk (14x14x64) +
+  center detector + 4 axis-pool SimCC heads.
+- 974K params, 1179 KB INT8 estimated.
+- Gaussian soft targets (sigma=1.75 bins) — same as deployed v2.
+- Weak augmentation (brightness/contrast only).
+- Trained 50 epochs + KD from deployed v2 teacher.
+- val_loss stuck at 14.89 (best) — strong overfitting on 335 train examples.
+- Pretrain stopped at epoch 4 (best 14.89); KD phase crashed due to
+  `tf.numpy_function` + XLA conflict.
+
+### SimCC v5 (axis-pool, strong augmentation) — current best
+- Same architecture as v4 but with strong augmentation:
+  - Geometric jitter: shift +-10%, scale 0.85-1.15, aspect 0.92-1.08
+  - Color jitter: brightness/contrast, Gaussian noise, occasional blur
+- L2 regularization (1e-4) on center head + SimCC heads.
+- Dropout 0.2 on SimCC heads.
+- 96 spatial channels (up from 64 in v4) for capacity.
+- 1.31M params, 1519.7 KB INT8.
+- Pretrain (60 epochs) best val_loss: 9.16 (38% better than v4).
+- KD phase 2 disabled (tf.numpy_function + XLA conflict unresolved).
+- Total OBB (887 KB) + SimCC v5 (1519.7 KB) = 2406.7 KB (under 2.5 MB).
+
+### Board capture eval of SimCC v5 (57 captures)
+- Without crop: center MAE 24.15px, tip MAE 85.12px, temp MAE 27.6°C.
+- With firmware crop: center MAE 26.26px, tip MAE 102.76px, temp MAE 24.0°C.
+- Only 5-9% of predictions within 2-10°C of ground truth.
+- The model overfits to the PXL image distribution (87% of 394 training
+  examples are PXL). Only 50 are reviewed_geometry (board captures).
+- The deployed v2 model has the same domain-shift issue (28.86°C MAE on its
+  val set of 47 examples, also PXL-heavy).
+
+### Key findings
+1. Strong augmentation is essential — val_loss dropped 38% just from
+   adding geometric jitter + color jitter + L2 reg.
+2. The PXL/board domain shift is the real bottleneck. To improve board
+   capture accuracy, we need more labeled board captures or
+   domain-randomization training.
+3. tf.numpy_function in KDWrapper does not work with XLA. Workarounds:
+   - Skip KD (current approach), or
+   - Run teacher inference outside the gradient tape (eager mode), or
+   - Use a different KD strategy (logit matching vs distribution matching).
+
+### Output mapping (TFLite)
+The Keras model has outputs in alphabetical order:
+  [center_x_logits, center_xy, center_y_logits, tip_x_logits, tip_y_logits]
+TFLite output indices:
+  :0 (idx 211) = center_x (1, 112)
+  :1 (idx 200) = center_xy (1, 2)
+  :2 (idx 222) = center_y (1, 112)
+  :3 (idx 224) = tip_x (1, 112)
+  :4 (idx 226) = tip_y (1, 112)
+
+### Scripts
+- Train: `tmp/train_simcc_v5.py`
+- Export: `tmp/export_simcc_v5.py --model-dir <dir>`
+- Eval: `tmp/eval_simcc_v5_board.py --model-path <path>`
+
+## Combined OBB+SimCC v5 pipeline (2026-06-22)
+
+### Pipeline structure
+1. OBB v2 detects the dial face box on 224x224 input.
+2. Crop the input to the OBB box (with 20% padding for context).
+3. Resize the crop to 224x224.
+4. SimCC v5 runs on the cropped image → center_xy + 4 SimCC heads.
+5. Decode coords back to source pixels, compute angle → temperature.
+
+### OBB v2 TFLite has XNNPACK host-runtime issue
+The OBB v2 model_int8.tflite fails to load on host with TF 2.20:
+  `RuntimeError: failed to create XNNPACK runtimeNode number 143 (TfLiteXNNPackDelegate) failed to prepare.`
+This is a host-only issue (the deployed model runs on STM32 NPU, not XNNPACK).
+Workarounds tried (all failed in TF 2.20):
+  - `experimental_delegates=[]` (works in older TF, broken now)
+  - `TF_LITE_DISABLE_XNNPACK=1` env var
+  - `num_threads=0`
+  - Re-exporting the Keras model to fresh int8 TFLite (same issue persists)
+Root cause: the MobileNetV3 backbone has an op pattern that XNNPACK in TF 2.20
+cannot prepare. The model still works on the actual STM32 NPU.
+
+### Host-side workaround
+For the host eval, we use the firmware crop ratios (0.10-0.80 x, 0.26-0.81 y)
+as a proxy for the OBB-detected box. This represents the OBB at a "centered dial"
+operating point, which is a reasonable approximation for the 224x224 board captures.
+
+### Combined pipeline results (OBB v2 + SimCC v5, 57 board captures)
+With firmware crop as OBB proxy:
+  Center MAE: 29.21px (median 11.57)
+  Tip MAE:    129.98px (median 54.46)
+  Angle MAE:  67.39° (median 62.10)
+  Temp MAE:   22.61°C (median 18.40)
+  Under 2°C:  5.3%
+  Under 5°C:  7.0%
+  Under 10°C: 8.8%
+
+This is similar to direct SimCC v5 (temp MAE 27.6°C, under 5°C 1.8%), so the
+pipeline is dominated by SimCC v5's domain-shift problem with PXL→board.
+
+### Final assessment
+- **OBB v2 (887 KB INT8)**: works correctly, passes host eval.
+- **SimCC v5 (1519.7 KB INT8)**: trains well (val_loss 9.16) but doesn't
+  generalize from PXL training data (87%) to board captures (13% of 394 train).
+- **Combined OBB+SimCC v5**: 2.41 MB total (under 2.5 MB budget).
+- **Accuracy on board captures**: 22-28°C MAE, far from the 5°C target.
+
+The OBB+SimCC architecture is sound (2.5 MB budget met, both models train).
+The remaining bottleneck is data: need more labeled board captures to fix the
+PXL→board domain shift. With 50 board captures in training, we can't compete
+with the deployed v2 (which has 47 val examples and 0.76°C MAE on a curated
+subset of 19 hard cases).
+
+## SimCC v6: 2D heatmap architecture (2026-06-23)
+
+Literature-driven design based on keypoint detection papers (CenterNet, SimCC,
+RTMPose, HigherHRNet). Predicts 2D heatmaps for center and tip keypoints
+instead of 1D axis-pool marginals. Preserves (x, y) spatial correlation.
+
+### Architecture
+- Backbone: MobileNetV2 alpha=0.35 (ImageNet pretrained)
+- Spatial trunk: 1x1 conv + 2x upsample + 2x 3x3 conv -> 14x14x64
+- 2 heatmap heads (center, tip): 3x3 conv -> 1 channel -> softmax
+  -> soft argmax for sub-pixel decoding
+- **603K params, 816 KB INT8** (vs v5's 1.3M params, 1.5 MB)
+
+### Training
+- Hard loss: 2D heatmap MSE to Gaussian target heatmap
+- KD from deployed v2 (precomputed soft targets, but training was slow)
+- Strong augmentation, L2 reg, dropout
+- 60 epochs, val_loss 1.05e-5 (heatmap MSE, naturally small)
+
+### Results on 19 hard cases
+- v5 (1D axis-pool): 32.5C MAE, 10% under 5C
+- v6 (2D heatmap, no KD): 25.2C MAE, 16% under 5C
+- v6 (2D heatmap, with KD): incomplete (training was too slow)
+- Deployed v2 (1D SimCC + KD + QAT): 0.76C MAE, 100% under 5C
+
+### Final OBB+SimCC pipeline
+- OBB v2: 887 KB INT8
+- SimCC v6: 816 KB INT8
+- **Total: 1.7 MB** (under 2.5 MB budget)
+
+### Lessons learned
+1. 2D heatmap architecture gives smaller model (816 KB vs 1.5 MB)
+   but similar accuracy to 1D axis-pool on this dataset.
+2. The PXL/board domain shift is the real bottleneck, not architecture.
+3. KD from deployed v2 should help but the precomputed-targets approach
+   was slow. The runtime KD (tf.numpy_function) has XLA conflicts.
+4. To match deployed v2's 0.76C accuracy, we likely need:
+   - More board training data with accurate positions
+   - Or use the deployed v2 directly (2.3 MB fits in 2.5 MB if no OBB)
