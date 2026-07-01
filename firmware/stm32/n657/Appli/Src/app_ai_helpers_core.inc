@@ -1,6 +1,6 @@
 /* This file is included by app_ai_helpers.inc. */
 
-static uint32_t AppAI_GrayToFloatBits(uint8_t gray)
+uint32_t AppAI_GrayToFloatBits(uint8_t gray)
 {
 	/* Convert luma to a normalized float32 payload without reserving extra RAM. */
 	union
@@ -12,70 +12,70 @@ static uint32_t AppAI_GrayToFloatBits(uint8_t gray)
 
 	return gray_value.u;
 }
-static uint8_t AppAI_ReadYuv422Luma(const uint8_t *frame_bytes,
+uint8_t AppAI_ReadYuv422Luma(const uint8_t *frame_bytes,
 									size_t frame_size_bytes,
 									size_t frame_width_pixels, size_t source_x, size_t source_y);
-static void AppAI_ReadYuv422Quartet(const uint8_t *frame_bytes,
+void AppAI_ReadYuv422Quartet(const uint8_t *frame_bytes,
 									size_t frame_size_bytes,
 									size_t frame_width_pixels, size_t source_x, size_t source_y,
 									uint8_t *quad_out);
-static float AppAI_ReadNormalizedGrayFromYuv422Pixel(const uint8_t *frame_bytes,
+float AppAI_ReadNormalizedGrayFromYuv422Pixel(const uint8_t *frame_bytes,
 													 size_t frame_size_bytes,
 													 size_t frame_width_pixels, size_t source_x, size_t source_y);
-static void AppAI_ReadRgbFromYuv422Pixel(const uint8_t *frame_bytes,
+void AppAI_ReadRgbFromYuv422Pixel(const uint8_t *frame_bytes,
 										 size_t frame_size_bytes,
 										 size_t frame_width_pixels, size_t source_x, size_t source_y,
 										 float *r_out, float *g_out, float *b_out);
-static void AppAI_ReadRgbFromYuv422Bilinear(const uint8_t *frame_bytes,
+void AppAI_ReadRgbFromYuv422Bilinear(const uint8_t *frame_bytes,
 											size_t frame_size_bytes,
 											size_t frame_width_pixels,
 											size_t frame_height_pixels,
 											float source_x, float source_y,
 											float *r_out, float *g_out, float *b_out);
-static void AppAI_ReadRgbFromRgbBilinear(const uint8_t *rgb_bytes,
+void AppAI_ReadRgbFromRgbBilinear(const uint8_t *rgb_bytes,
 										 size_t frame_width_pixels,
 										 size_t frame_height_pixels,
 										 float source_x, float source_y,
 										 float *r_out, float *g_out, float *b_out);
-static uint8_t AppAI_FindHistogramPercentile(const uint32_t *histogram,
+uint8_t AppAI_FindHistogramPercentile(const uint32_t *histogram,
 											 size_t histogram_len,
 											 uint32_t total_count,
 											 float percentile);
-static float AppAI_ScorePolarAlignmentCandidate(
+float AppAI_ScorePolarAlignmentCandidate(
 	const uint8_t *resized_rgb,
 	size_t output_dim,
 	float center_x,
 	float center_y,
 	float max_radius,
 	uint8_t *polar_luma_out);
-static void AppAI_SetForcedCrop(const char *label, size_t x_min,
+void AppAI_SetForcedCrop(const char *label, size_t x_min,
 								size_t y_min, size_t width, size_t height);
-static void AppAI_ClearForcedCrop(void);
+void AppAI_ClearForcedCrop(void);
 #if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
-static bool AppAI_DecodeObbCropBox(const LL_Buffer_InfoTypeDef *output_buffer_info,
+bool AppAI_DecodeObbCropBox(const LL_Buffer_InfoTypeDef *output_buffer_info,
 									   AppAI_SourceCrop *crop_out, AppAI_ObbBox *obb_box_out);
 #if APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE
-static bool AppAI_DecodeSourceCropBox(
+bool AppAI_DecodeSourceCropBox(
 	const LL_Buffer_InfoTypeDef *output_buffer_info,
 	AppAI_SourceCrop *crop_out,
 	AppAI_SourceCropBox *box_out);
 #endif /* APP_AI_ENABLE_SOURCE_CROP_BOX_STAGE */
-static bool AppAI_DecodeRectifierCropBox(
+bool AppAI_DecodeRectifierCropBox(
 	const LL_Buffer_InfoTypeDef *output_buffer_info,
 	AppAI_SourceCrop *crop_out,
 	AppAI_RectifierBox *rectifier_box_out);
 #if !defined(APP_AI_DISABLE_LEGACY_TOPK_DECODE)
-static bool AppAI_DecodeScalarTopKExpectationFromOutput(
+bool AppAI_DecodeScalarTopKExpectationFromOutput(
 	const LL_Buffer_InfoTypeDef *output_info,
 	const uint8_t *output_ptr,
 	size_t output_len_bytes,
 	float *decoded_value_out);
 #endif /* !APP_AI_DISABLE_LEGACY_TOPK_DECODE */
-static bool AppAI_DecodeCircularVoteFromOutput(
+bool AppAI_DecodeCircularVoteFromOutput(
 	const uint8_t *output_ptr,
 	size_t output_len_bytes,
 	float *decoded_value_out);
-static bool AppAI_PreprocessYuv422FrameToPolarInput(
+bool AppAI_PreprocessYuv422FrameToPolarInput(
 	const uint8_t *frame_bytes, size_t frame_size,
 	uint8_t *input_ptr, size_t input_len_bytes,
 	const LL_Buffer_InfoTypeDef *input_info);
@@ -96,7 +96,7 @@ int mcu_cache_clean_invalidate_range(uint32_t start_addr, uint32_t end_addr)
 	return AppAI_ApplyCacheRange(start_addr, end_addr, true, true);
 }
 
-static bool AppAI_EnsureNpuHardwareReady(void)
+bool AppAI_EnsureNpuHardwareReady(void)
 {
 	if (app_ai_npu_hw_initialized)
 	{
@@ -127,7 +127,7 @@ static bool AppAI_EnsureNpuHardwareReady(void)
 	return true;
 }
 
-static bool AppAI_EnsureXspi2MemoryReady(void)
+bool AppAI_EnsureXspi2MemoryReady(void)
 {
 	BSP_XSPI_NOR_Init_t flash = {0};
 	RCC_PeriphCLKInitTypeDef periph_clk = {0};
@@ -178,7 +178,7 @@ static bool AppAI_EnsureXspi2MemoryReady(void)
 	return true;
 }
 
-static bool AppAI_ReconfigureXspi2ForRuntime(void)
+bool AppAI_ReconfigureXspi2ForRuntime(void)
 {
 	BSP_XSPI_NOR_Init_t flash = {0};
 	RCC_PeriphCLKInitTypeDef periph_clk = {0};
@@ -257,7 +257,7 @@ static bool AppAI_ReconfigureXspi2ForRuntime(void)
 	return true;
 }
 
-static bool AppAI_Xspi2EnableMemoryMappedMode(void)
+bool AppAI_Xspi2EnableMemoryMappedMode(void)
 {
 #if APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
 	(void)DebugConsole_WriteString("[AI] xSPI2 enable MM start.\r\n");
@@ -275,7 +275,21 @@ static bool AppAI_Xspi2EnableMemoryMappedMode(void)
 	return true;
 }
 
-static bool AppAI_Xspi2ReadFlashProbe(const uint32_t chip_base_offset,
+void AppAI_LogXspi2ProbeBytes(const char *label, const uint8_t *bytes)
+{
+	if ((label == NULL) || (bytes == NULL))
+	{
+		return;
+	}
+
+	DebugConsole_Printf(
+		"[AI] %s %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+		label, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
+		bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11],
+		bytes[12], bytes[13], bytes[14], bytes[15]);
+}
+
+bool AppAI_Xspi2ReadFlashProbe(const uint32_t chip_base_offset,
 									  const uint32_t flash_offset,
 									  const uint8_t *expected_bytes, const size_t expected_length)
 {
@@ -296,7 +310,7 @@ static bool AppAI_Xspi2ReadFlashProbe(const uint32_t chip_base_offset,
 	return (memcmp(flash_bytes, expected_bytes, expected_length) == 0);
 }
 
-static bool AppAI_Xspi2ReadMappedProbe(const uint32_t flash_offset,
+bool AppAI_Xspi2ReadMappedProbe(const uint32_t flash_offset,
 									   const uint8_t *expected_bytes, const size_t expected_length)
 {
 	const uint8_t *const flash_ptr = (const uint8_t *)(APP_AI_XSPI2_MODEL_BASE_ADDR + flash_offset);
@@ -312,7 +326,7 @@ static bool AppAI_Xspi2ReadMappedProbe(const uint32_t flash_offset,
 	return (memcmp(flash_ptr, expected_bytes, expected_length) == 0);
 }
 
-static bool AppAI_Xspi2ReadStageProbe(const AppAI_ModelStageSpec *stage,
+bool AppAI_Xspi2ReadStageProbe(const AppAI_ModelStageSpec *stage,
 									  const uint32_t flash_offset,
 									  const uint8_t *expected_bytes,
 									  const size_t expected_length)
@@ -323,17 +337,8 @@ static bool AppAI_Xspi2ReadStageProbe(const AppAI_ModelStageSpec *stage,
 		return false;
 	}
 
-	/* After stage provisioning we can already be back in memory-mapped mode.
-	 * In that state, compare directly through the mapped stage window. */
-	if (app_ai_xspi2_mm_enabled)
-	{
-		const uint8_t *const flash_ptr =
-			(const uint8_t *)(stage->xspi2_base_addr + flash_offset);
-		(void)mcu_cache_invalidate_range((uint32_t)(uintptr_t)flash_ptr,
-										 (uint32_t)((uintptr_t)flash_ptr + (uint32_t)expected_length));
-		return (memcmp(flash_ptr, expected_bytes, expected_length) == 0);
-	}
-
+	/* Stage verification should read the programmed bytes directly from xSPI2
+	 * so it does not depend on whether the mapped window is currently valid. */
 	return AppAI_Xspi2ReadFlashProbe(stage->xspi2_chip_offset, flash_offset,
 									 expected_bytes, expected_length);
 }

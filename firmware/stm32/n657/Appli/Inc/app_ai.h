@@ -27,7 +27,7 @@ extern "C" {
 #endif
 #define APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE 1U
 
-/* Tip-focus SimCC coordinate stage.
+/* Tip-focus heatmap UNET stage.
  * This is the active live-board geometry model wrapper, so expose it through
  * the public AI header for the runtime and the ThreadX bootstrap. */
 #include "ai_network_tip_focus_v4_112_int8.h"
@@ -46,9 +46,9 @@ bool App_AI_Model_Init(void);
 /**
  * @brief Run a one-shot inference using a captured 224x224 YUV422 frame.
  *
- * The helper converts the colour frame into the model int8 RGB input buffer,
- * runs the generated LL_ATON runtime once, and logs the SimCC output
- * summary.
+ * The helper converts the colour frame into the model float RGB input
+ * buffer, runs the generated LL_ATON runtime once, and logs the heatmap
+ * output summary.
  *
  * @param frame_bytes Pointer to the captured frame bytes.
  * @param frame_size Number of valid bytes in the captured frame.
@@ -85,7 +85,7 @@ bool App_AI_GetLastInferenceResult(float *value_out);
  * @brief Verify that tip-focus weights are programmed in xSPI2 flash.
  *
  * Reads the signature bytes from xSPI2 at 0x70400000 and compares
- * against the expected simcc_gauge_v2_spatial_qat_sc128_int8_atonbuf.xSPI2.raw header.
+ * against the expected tip_focus_v18_int8_atonbuf.xSPI2.raw header.
  *
  * @retval true xSPI2 contains valid tip-focus weights.
  * @retval false xSPI2 is empty or corrupted - run flash_boot.ps1.
