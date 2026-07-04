@@ -7,8 +7,6 @@ import numpy as np
 import tensorflow as tf
 import keras
 
-from ._backbones import _norm
-
 
 def _build_interval_expectation_head(
     logits: keras.KerasTensor,
@@ -319,3 +317,4 @@ def _cbam_refine(
     )(fused)
     fused = keras.layers.Activation("swish")(fused)
     return fused
+

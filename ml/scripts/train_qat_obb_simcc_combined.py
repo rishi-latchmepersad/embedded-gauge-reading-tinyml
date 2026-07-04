@@ -25,7 +25,7 @@ import numpy as np
 from PIL import Image
 from sklearn.model_selection import train_test_split
 
-_GPU_MEMORY_LIMIT_MB = int(_os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "3900"))
+_GPU_MEMORY_LIMIT_MB = int(_os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "3800"))
 _SKIP_EXPLICIT_GPU_CONFIG = _os.environ.get("TF_SKIP_EXPLICIT_GPU_CONFIG", "0") == "1"
 import tensorflow as tf
 
@@ -95,7 +95,6 @@ DEFAULT_CENTER_DISTILL_WEIGHT: float = 0.25
 DEFAULT_CENTER_DISTILL_TEMPERATURE: float = 1.0
 DEFAULT_CENTER_DISTILL_HUBER_DELTA: float = 0.03
 DEFAULT_TEMPERATURE_LOSS_WEIGHT: float = 0.25
-DEFAULT_TIP_LOSS_WEIGHT: float = 1.5
 
 _CENTER_PRIORITY: dict[str, int] = {
     "reviewed_geometry": 5,
@@ -964,7 +963,6 @@ class CenterSimCCDistillTrainer(keras.Model):
         *,
         teacher_model: keras.Model | None = None,
         center_loss_weight: float = DEFAULT_CENTER_LOSS_WEIGHT,
-        tip_loss_weight: float = DEFAULT_TIP_LOSS_WEIGHT,
         center_distill_weight: float = DEFAULT_CENTER_DISTILL_WEIGHT,
         center_huber_delta: float = DEFAULT_CENTER_DISTILL_HUBER_DELTA,
         include_temperature_head: bool = False,
@@ -975,7 +973,6 @@ class CenterSimCCDistillTrainer(keras.Model):
         self.student_model = student_model
         self.teacher_model = teacher_model
         self.center_loss_weight = float(center_loss_weight)
-        self.tip_loss_weight = float(tip_loss_weight)
         self.center_distill_weight = float(center_distill_weight)
         self.center_huber_delta = float(center_huber_delta)
         self.include_temperature_head = bool(include_temperature_head)
@@ -1049,7 +1046,8 @@ class CenterSimCCDistillTrainer(keras.Model):
             + self.center_distill_weight * center_distill_loss
             + center_x_loss
             + center_y_loss
-            + self.tip_loss_weight * (tip_x_loss + tip_y_loss)
+            + tip_x_loss
+            + tip_y_loss
         )
 
         center_mae_px = tf.reduce_mean(
@@ -1372,12 +1370,6 @@ def _parse_args() -> argparse.Namespace:
         help="Teacher-student Huber weight for the center head distillation term.",
     )
     parser.add_argument(
-        "--tip-loss-weight",
-        type=float,
-        default=DEFAULT_TIP_LOSS_WEIGHT,
-        help="Weight applied to the tip SimCC cross-entropy losses.",
-    )
-    parser.add_argument(
         "--center-huber-delta",
         type=float,
         default=DEFAULT_CENTER_DISTILL_HUBER_DELTA,
@@ -1536,7 +1528,6 @@ def main() -> None:
         student_model,
         teacher_model=teacher_model,
         center_loss_weight=args.center_loss_weight,
-        tip_loss_weight=args.tip_loss_weight,
         center_distill_weight=args.center_distill_weight if teacher_model is not None else 0.0,
         center_huber_delta=args.center_huber_delta,
         include_temperature_head=bool(args.include_temperature_head),
@@ -1574,7 +1565,6 @@ def main() -> None:
         qat_student,
         teacher_model=teacher_model,
         center_loss_weight=args.center_loss_weight,
-        tip_loss_weight=args.tip_loss_weight,
         center_distill_weight=args.center_distill_weight if teacher_model is not None else 0.0,
         center_huber_delta=args.center_huber_delta,
         include_temperature_head=bool(args.include_temperature_head),

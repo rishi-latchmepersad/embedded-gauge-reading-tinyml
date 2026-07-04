@@ -498,23 +498,14 @@ uint8_t _mem_pool_xSPI2_mobilenetv2_source_crop_box_v1_stripped_int8[32U] = {
 };
 #endif
 
-/* Tip-focus SimCC model pool. The generated network keeps the xSPI2 pool
- * symbol alive at the address where the NPU weight blob
- * (simcc_gauge_v2_spatial_qat_sc128_int8_atonbuf.xSPI2.raw) is flashed
- * (0x70400000).
- *
- * IMPORTANT: The actual weights data (2.2MB) is NOT stored in this array.
- * The data lives in xSPI2 flash at 0x70400000, and must be flashed using
- * flash_boot.ps1 before running inference. This 32-byte symbol is just a
- * linker marker that gets placed at 0x70400000 by the .xspi2_tip_focus_pool
- * section. When the NPU accesses weights, it reads from xSPI2 flash through
- * the memory-mapped window (0x70000000+), not from this RAM array.
- *
- * If you see a HardFault at address 0x8D or similar during inference, it
- * means the xSPI2 flash was not programmed. Run flash_boot.ps1 to flash
- * simcc_gauge_v2_spatial_qat_sc128_int8_atonbuf.xSPI2.raw to 0x70400000. */
+/* v16_160 compact UNet needle model pool (2026-06-30).
+ * Replaces the old simcc spatial tip-focus.  160x160 input, 40x40 heatmap
+ * output, 525K params, 622 KB xSPI2 flash.  NO HyperRAM (xSPI1=0 bytes).
+ * The linker places this 32-byte marker at 0x70400000 via .xspi2_tip_focus_pool.
+ * Flash the raw blob with flash_boot.ps1 before running inference.
+ * Weight blob: tip_focus_v16_160_int8_atonbuf.xSPI2.raw (621,976 bytes). */
 __attribute__((section(".xspi2_tip_focus_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
-uint8_t _mem_pool_xSPI2_simcc_gauge_v2_spatial_qat_sc128_int8[32U] = { 0U, };
+uint8_t _mem_pool_xSPI2_tip_focus_v16_160_int8[32U] = { 0U, };
 static uint8_t app_ai_xspi2_program_buffer[APP_AI_XSPI2_PROGRAM_CHUNK_BYTES];
 __attribute__((aligned(APP_AI_CACHE_LINE_BYTES)))
 static uint8_t app_ai_scalar_row_scratch[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL];
@@ -580,12 +571,12 @@ static const uint8_t app_ai_source_crop_box_xspi2_signature_tail[APP_AI_XSPI2_PR
  * network_atonbuf.xSPI2.raw.
  * Flashed to 0x70400000. Size: 2,201,505 bytes. */
 static const uint8_t app_ai_tip_focus_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
-	0x04U, 0x2FU, 0x1FU, 0xF2U, 0x62U, 0xE7U, 0x3EU, 0xFDU,
-	0x0AU, 0x1EU, 0xF4U, 0x32U, 0xD4U, 0x9AU, 0xFEU, 0xC2U,
+	0x0DU, 0xE2U, 0x24U, 0x39U, 0xFEU, 0xEDU, 0xF1U, 0x12U,
+	0xE5U, 0xDFU, 0xF5U, 0x0DU, 0x01U, 0x0CU, 0x19U, 0x1FU,
 };
 static const uint8_t app_ai_tip_focus_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
-	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x80U,
+	0x80U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
 };
 #if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 /* Per-stage programmed sizes. Set during provisioning and used by the verify

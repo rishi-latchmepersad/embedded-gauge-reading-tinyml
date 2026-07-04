@@ -30,6 +30,7 @@ $FsblBin     = "$ScriptDir\FSBL\Debug\n657_FSBL.bin"
 $FsblTrusted = "$ScriptDir\FSBL\Debug\FSBL_trusted.bin"
 $ObbRaw      = "$ScriptDir\st_ai_output\packages\obb_box_board_bbox_deploy_candidate\st_ai_output\obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw"
 $TipFocusRaw = "$ScriptDir\st_ai_output\packages\tip_focus_v4_112_int8_n6_npu\st_ai_output\network_atonbuf.xSPI2.raw"
+$SignatureTool = "$ScriptDir\tools\extract_model_signature.py"
 
 if (-not (Test-Path $ObbRaw -PathType Leaf)) {
     $ObbRaw = "$RepoRoot\firmware\stm32\n657\st_ai_output\packages\obb_box_board_bbox_deploy_candidate\st_ai_output\obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw"
@@ -86,6 +87,10 @@ if (-not (Test-Path $FsblBin   -PathType Leaf)) { Die "FSBL binary not found: $F
 if (-not (Test-Path $AppBin    -PathType Leaf)) { Die "Application binary not found: $AppBin" }
 if (-not (Test-Path $ObbRaw -PathType Leaf)) { Die "OBB model not found: $ObbRaw" }
 if (-not (Test-Path $TipFocusRaw -PathType Leaf)) { Die "Tip-focus model not found: $TipFocusRaw" }
+if (-not (Test-Path $SignatureTool -PathType Leaf)) {
+    $SignatureTool = "$RepoRoot\ml\scripts\extract_model_signature.py"
+}
+if (-not (Test-Path $SignatureTool -PathType Leaf)) { Die "Signature tool not found: $SignatureTool" }
 
 if (-not (Test-Path $SigReportDir -PathType Container)) {
     New-Item -ItemType Directory -Path $SigReportDir -Force | Out-Null
@@ -113,9 +118,9 @@ Copy-Item -LiteralPath $TipFocusRaw -Destination $TipFocusBin -Force
 Do-Flash -bin $TipFocusBin -addr 0x70400000 -label "TipFocus-SimCC"
 
 Write-Host "`n=== Step 5: Extract model signatures ==="
-python "$RepoRoot\ml\scripts\extract_model_signature.py" "$ObbRaw" > "$SigReportDir\obb_signature.txt"
+python "$SignatureTool" "$ObbRaw" > "$SigReportDir\obb_signature.txt"
 if ($LASTEXITCODE -ne 0) { Die "OBB signature extraction failed" }
-python "$RepoRoot\ml\scripts\extract_model_signature.py" "$TipFocusRaw" > "$SigReportDir\tip_focus_signature.txt"
+python "$SignatureTool" "$TipFocusRaw" > "$SigReportDir\tip_focus_signature.txt"
 if ($LASTEXITCODE -ne 0) { Die "Tip-focus signature extraction failed" }
 Write-Host "OBB signature: $SigReportDir\obb_signature.txt"
 Write-Host "Tip-focus signature: $SigReportDir\tip_focus_signature.txt"

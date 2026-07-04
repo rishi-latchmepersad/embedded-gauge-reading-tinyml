@@ -49,7 +49,7 @@ TRAINING_CROP_Y_MAX_RATIO: Final[float] = 0.8071
 
 # The exact V28 replay on the hard-case board set preferred a tighter OBB crop;
 # the 0.83 sweep beat the board heuristic and every larger OBB scale we tried.
-OBB_CROP_SCALE: Final[float] = 0.83
+OBB_CROP_SCALE: Final[float] = 1.20
 OBB_WIDTH_SCALE: Final[float] = 1.0
 OBB_HEIGHT_SCALE: Final[float] = 1.0
 OBB_SOURCE_WIDTH_SCALE: Final[float] = 1.0
