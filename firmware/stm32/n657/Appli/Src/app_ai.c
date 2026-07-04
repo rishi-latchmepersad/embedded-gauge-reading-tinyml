@@ -139,16 +139,14 @@ __attribute__((section(".xspi2_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
 uint8_t _mem_pool_xSPI2_heatmap_cd[32U] = {
 	0U,
 };
-/* Compact OBB 320 localizer pool lives in the dedicated OBB flash slot (0x71400000). so the linker script can map it to
- * the rectifier flash region at 0x70600000 ??? matching FLASH_RECTIFIER in
- * flash_boot.ps1.  The NPU resolves all weight addresses as:
- *   _mem_pool_xSPI2_mobilenetv2_rectifier_hardcase_finetune + internal_offset
- * so this symbol MUST live at the base of the flashed blob. */
+/* Compact OBB 320 localizer pool lives in the dedicated OBB flash slot.
+ * Keep the linker marker aligned with the flashed blob so the generated
+ * reloc runtime can resolve the weight base correctly. */
 __attribute__((section(".xspi2_rectifier_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
 uint8_t _mem_pool_xSPI2_mobilenetv2_rectifier_hardcase_finetune[32U] = {
 	0U,
 };
-/* Board bbox OBB pool lives in the dedicated OBB flash slot (0x71400000).
+/* Board bbox OBB pool lives in the dedicated OBB flash slot.
  * The generated network references:
  *   _mem_pool_xSPI2_obb_box_board_bbox_deploy_candidate — weight-addressing.
  * 32-byte placeholder ensures the symbol resolves at link time.
@@ -1082,6 +1080,16 @@ bool AppAI_DumpTipFocusInputTensorOnce(
  */
 uintptr_t AppAI_GetRelocRuntimeR9(const NN_Instance_TypeDef *nn_instance)
 {
+	if (nn_instance == &NN_Instance_obb_box_board_bbox_deploy_candidate)
+	{
+		/* The OBB package is flashed as a fixed XIP image, but the generated
+		 * epoch blocks still expect a stable runtime base in r9 for their
+		 * internal SW helpers. When the reloc handle is intentionally cleared
+		 * during init, fall back to the model's fixed runtime window instead of
+		 * inheriting whatever junk r9 happened to contain on entry. */
+		return (uintptr_t)APP_AI_OBB_RELOC_RAM_BASE_ADDR;
+	}
+
 	if ((nn_instance != NULL) && (nn_instance->exec_state.inst_reloc != 0U))
 	{
 		const struct ai_reloc_rt_ctx *rt_ctx =

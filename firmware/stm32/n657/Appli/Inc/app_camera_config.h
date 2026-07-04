@@ -60,9 +60,10 @@ extern "C" {
  * under-reading.  Crop-mean thresholds are calibrated from captured frames:
  * good frames (13:xx session, model reading ~31C) had crop mean 97-156;
  * bad frames (18:xx, model reading 14-20C) had crop mean 43-87.
- * DARK threshold=100 rejects the dim frames; BRIGHT threshold=180 plus a
- * 50% bright-pixel ratio catches the still-overexposed frames, while a
- * 220/45 solid-overexposure fallback still catches the near-white frame from
+ * DARK threshold=100 rejects the dim frames; BRIGHT threshold=190 plus a
+ * 50% bright-pixel ratio catches the still-overexposed frames a little
+ * earlier, while a 215/45 solid-overexposure fallback still catches the
+ * near-white frame from
  * 11:51. */
 /* Mean luma below 150 triggers a brightness nudge.  The OBB localizer's
  * x-centre drifts 3–6 px at mean ≤ 130 and stabilizes by mean ≈ 170.
@@ -70,19 +71,26 @@ extern "C" {
  * lighting-invariant regardless of initial scene brightness. */
 #define CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD     150U
 #define CAMERA_CAPTURE_BRIGHTNESS_DARK_MAX_THRESHOLD      240U
-#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD   200U
+#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD   190U
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_PIXEL_LEVEL_THRESHOLD 220U
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_RATIO_PERCENT     50U
-#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_SOLID_MEAN_THRESHOLD 220U
+#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_SOLID_MEAN_THRESHOLD 215U
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MIN_THRESHOLD     45U
-#define CAMERA_CAPTURE_BRIGHTNESS_RETRY_LIMIT              6U
-/* Multiplicative step: exposure multiplied/divided by 2 per nudge (1 stop).
- * Linear steps across the full sensor range (26–33333 µs) are too coarse at
- * low exposures — a 1/20-range step (1662 µs) straddled the entire acceptable
- * window and caused infinite bright↔dark oscillation. */
-/* Active sensor nudge: use a 25% fractional step instead of a 2x jump. */
-#define CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_FRACTION_SHIFT  2U
-#define CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_FRACTION_SHIFT      2U
+/* Keep brightness nudges centered around the usable band instead of using a
+ * single fixed step that can bounce between too-dark and too-bright frames.
+ * The runtime scales the step from this target mean and damps it when the
+ * retry direction flips. */
+#define CAMERA_CAPTURE_BRIGHTNESS_TARGET_MEAN             165U
+#define CAMERA_CAPTURE_BRIGHTNESS_STEP_MIN_PERCENT          3U
+#define CAMERA_CAPTURE_BRIGHTNESS_STEP_MAX_PERCENT         10U
+#define CAMERA_CAPTURE_BRIGHTNESS_STEP_FLIP_PENALTY_PERCENT  2U
+/* Count brightness retries as manual exposure/gain nudges, not raw capture
+ * attempts. Starting from the conservative 1/3-range seed can take seven
+ * 10%-of-range exposure nudges to reach max exposure on a very dark scene,
+ * and we still want one or two post-max captures to verify whether gain
+ * needs to move. Fourteen nudges keeps that path reachable without making the
+ * capture loop unbounded. */
+#define CAMERA_CAPTURE_BRIGHTNESS_RETRY_LIMIT             14U
 #define CAMERA_CAPTURE_BRIGHTNESS_SETTLE_DELAY_MS         250U
 /* Capture crop is expressed directly in pixels/lines. */
 #define CAMERA_CAPTURE_CROP_HSTART_PIXELS   0U

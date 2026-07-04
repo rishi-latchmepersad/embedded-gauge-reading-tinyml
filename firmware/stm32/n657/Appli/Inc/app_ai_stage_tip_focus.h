@@ -29,6 +29,9 @@ extern "C" {
 
 extern bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 	const uint8_t *frame_bytes, size_t frame_size);
+extern const LL_Buffer_InfoTypeDef *LL_ATON_Input_Buffers_Info_tip_focus_v18_int8(void);
+extern const LL_Buffer_InfoTypeDef *LL_ATON_Output_Buffers_Info_tip_focus_v18_int8(void);
+extern const LL_Buffer_InfoTypeDef *LL_ATON_Internal_Buffers_Info_tip_focus_v18_int8(void);
 
 extern bool AppAI_TipFocus_ResolveObbCropForLogging(
 	const uint8_t *frame_bytes,

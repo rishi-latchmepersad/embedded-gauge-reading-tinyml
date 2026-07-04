@@ -89,6 +89,17 @@
 #define APP_AI_ENABLE_SCALAR_SD_REPROVISION 0U
 #endif
 
+/* OBB reloc runtime base.
+ * The generated OBB package expects its relocatable runtime tables to live
+ * in this AXISRAM window, and the firmware needs a stable fallback base even
+ * when the reloc handle is temporarily cleared during init. */
+#ifndef APP_AI_OBB_RELOC_RAM_BASE_ADDR
+#define APP_AI_OBB_RELOC_RAM_BASE_ADDR 0x34100000UL
+#endif
+#ifndef APP_AI_OBB_RELOC_RAM_SIZE
+#define APP_AI_OBB_RELOC_RAM_SIZE 2883576UL
+#endif
+
 /* ---- Application constants (legacy Camera / capture wrappers) ---- */
 #define APP_AI_CACHE_LINE_BYTES 32U
 #define APP_AI_CAPTURE_FRAME_WIDTH_PIXELS CAMERA_CAPTURE_WIDTH_PIXELS

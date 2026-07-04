@@ -17,15 +17,23 @@ extern "C" {
 #include "tx_api.h"
 
 /**
- * @brief Start the low-priority captured-image cleanup worker.
+ * @brief Start the low-priority captured-image maintenance worker.
  *
- * The worker keeps the newest capture in each 10-minute bucket and deletes
- * older images from the same bucket.
+ * The worker keeps the newest capture in each 10-minute bucket, deletes older
+ * images from the same bucket, and also services pending FileX media flushes.
  *
  * @retval TX_SUCCESS when the thread already exists or is created.
  * @retval ThreadX status code on creation failure.
  */
 UINT AppImageCleanup_Start(void);
+
+/**
+ * @brief Record the boot tick so cleanup can run 30 minutes after first boot.
+ *
+ * @param boot_tick System tick captured near boot.
+ * @retval TX_SUCCESS always.
+ */
+UINT AppImageCleanup_SetBootTick(ULONG boot_tick);
 
 #ifdef __cplusplus
 }

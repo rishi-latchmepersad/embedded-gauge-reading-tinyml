@@ -162,6 +162,7 @@ UINT App_ThreadX_Start(void) {
 	BSP_LED_Off(LED_RED);
 	BSP_LED_Off(LED_BLUE);
 	BSP_LED_Off(LED_GREEN);
+	(void) AppImageCleanup_SetBootTick(tx_time_get());
 	if (camera_init_thread_created && camera_isp_thread_created
 			&& camera_heartbeat_thread_created) {
 		DebugConsole_Printf(
@@ -440,7 +441,7 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 				"[CAMERA][THREAD] Entering capture/inference loop (period=60s)...\r\n");
 		while (1) {
 			const bool storage_ready = AppFileX_IsMediaReady();
-			uint32_t next_delay_ms = 60000U;
+			uint32_t next_delay_ms = CAMERA_CAPTURE_PERIOD_MS;
 
 			if (AppCameraCapture_CaptureAndStoreSingleFrame()) {
 				DebugConsole_Printf(

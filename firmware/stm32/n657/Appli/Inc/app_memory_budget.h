@@ -24,9 +24,9 @@ extern "C" {
 #define CAMERA_INIT_THREAD_STACK_SIZE_BYTES     16384U
 #define CAMERA_ISP_THREAD_STACK_SIZE_BYTES      4096U
 #define CAMERA_HEARTBEAT_THREAD_STACK_SIZE_BYTES 1024U
-/* Keep the AI worker stack large enough for the OBB->scalar cascade.
- * Now placed in AXISRAM6 (.npusram6) to avoid the OBB input buffer at 0x34110000.  */
-#define CAMERA_AI_THREAD_STACK_SIZE_BYTES      131072U
+/* Keep the AI worker stack large enough for the OBB->UNet cascade while
+ * leaving room in RAM for the OBB reloc image and the rest of the app. */
+#define CAMERA_AI_THREAD_STACK_SIZE_BYTES      16384U
 #define BASELINE_RUNTIME_THREAD_STACK_SIZE_BYTES 16384U
 #define IMAGE_CLEANUP_THREAD_STACK_SIZE_BYTES    4096U
 

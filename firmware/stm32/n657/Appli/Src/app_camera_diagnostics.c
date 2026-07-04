@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "app_camera_buffers.h"
+#include "app_camera_config.h"
 #include "debug_console.h"
 #include "main.h"
 
@@ -85,6 +86,96 @@ static void AppCameraDiagnostics_LogRawDominantLevels(
 			(unsigned long) top2_level, (unsigned long) top2_count,
 			(unsigned long) top2_pct, (unsigned long) bright_count,
 			(unsigned long) bright_pct);
+}
+
+/* Summarize the chroma channels in the packed YUV422 frame so we can tell
+ * whether the live sensor/ISP path is really producing color or just neutral
+ * chroma around 128. */
+void AppCameraDiagnostics_LogYuv422ChromaSummary(const char *reason,
+		const uint8_t *buffer_ptr, uint32_t length_bytes) {
+	const uint32_t frame_width_pixels = CAMERA_CAPTURE_WIDTH_PIXELS;
+	const uint32_t frame_height_lines = CAMERA_CAPTURE_HEIGHT_PIXELS;
+	const uint32_t bytes_per_pixel = CAMERA_CAPTURE_BYTES_PER_PIXEL;
+	const uint32_t stride_bytes = frame_width_pixels * bytes_per_pixel;
+	uint64_t sum_y = 0U;
+	uint64_t sum_u = 0U;
+	uint64_t sum_v = 0U;
+	uint32_t sample_pair_count = 0U;
+	uint8_t min_y = 0xFFU;
+	uint8_t max_y = 0U;
+	uint8_t min_u = 0xFFU;
+	uint8_t max_u = 0U;
+	uint8_t min_v = 0xFFU;
+	uint8_t max_v = 0U;
+
+	if ((buffer_ptr == NULL) || (length_bytes < stride_bytes)) {
+		return;
+	}
+
+	if ((frame_width_pixels < 2U) || ((frame_width_pixels % 2U) != 0U)) {
+		return;
+	}
+
+	for (uint32_t row = 0U; row < frame_height_lines; row++) {
+		const uint32_t row_base = row * stride_bytes;
+
+		if ((row_base + stride_bytes) > length_bytes) {
+			break;
+		}
+
+		for (uint32_t col = 0U; col < frame_width_pixels; col += 2U) {
+			const uint32_t index = row_base + (col * bytes_per_pixel);
+			const uint8_t y0 = buffer_ptr[index];
+			const uint8_t u = buffer_ptr[index + 1U];
+			const uint8_t y1 = buffer_ptr[index + 2U];
+			const uint8_t v = buffer_ptr[index + 3U];
+
+			if (y0 < min_y) {
+				min_y = y0;
+			}
+			if (y1 < min_y) {
+				min_y = y1;
+			}
+			if (y0 > max_y) {
+				max_y = y0;
+			}
+			if (y1 > max_y) {
+				max_y = y1;
+			}
+			if (u < min_u) {
+				min_u = u;
+			}
+			if (u > max_u) {
+				max_u = u;
+			}
+			if (v < min_v) {
+				min_v = v;
+			}
+			if (v > max_v) {
+				max_v = v;
+			}
+
+			sum_y += (uint64_t) y0 + (uint64_t) y1;
+			sum_u += (uint64_t) u;
+			sum_v += (uint64_t) v;
+			sample_pair_count++;
+		}
+	}
+
+	if (sample_pair_count == 0U) {
+		return;
+	}
+
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] YUV422 chroma (%s): Y_mean=%lu Y_min=%u Y_max=%u U_mean=%lu U_min=%u U_max=%u V_mean=%lu V_min=%u V_max=%u pairs=%lu.\r\n",
+			(reason != NULL) ? reason : "capture",
+			(unsigned long) (sum_y / (sample_pair_count * 2U)),
+			(unsigned int) min_y, (unsigned int) max_y,
+			(unsigned long) (sum_u / sample_pair_count),
+			(unsigned int) min_u, (unsigned int) max_u,
+			(unsigned long) (sum_v / sample_pair_count),
+			(unsigned int) min_v, (unsigned int) max_v,
+			(unsigned long) sample_pair_count);
 }
 
 /* Summarize a raw Pipe0 buffer using padded 16-bit raw pixels. */

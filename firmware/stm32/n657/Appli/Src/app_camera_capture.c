@@ -96,6 +96,72 @@ typedef struct {
 } AppCameraCapture_BrightnessStats_t;
 
 /**
+ * @brief Clamp a brightness nudge step to a safe runtime range.
+ */
+static uint32_t AppCameraCapture_ClampBrightnessStepPercent(uint32_t step_percent) {
+	if (step_percent < CAMERA_CAPTURE_BRIGHTNESS_STEP_MIN_PERCENT) {
+		return CAMERA_CAPTURE_BRIGHTNESS_STEP_MIN_PERCENT;
+	}
+	if (step_percent > CAMERA_CAPTURE_BRIGHTNESS_STEP_MAX_PERCENT) {
+		return CAMERA_CAPTURE_BRIGHTNESS_STEP_MAX_PERCENT;
+	}
+	return step_percent;
+}
+
+/**
+ * @brief Pick a damped exposure/gain nudge size from the current gate stats.
+ *
+ * Frames far from the target mean can take a larger step, while near-target
+ * frames take a smaller step so we do not bounce back and forth between two
+ * adjacent exposure settings.
+ */
+static uint32_t AppCameraCapture_ComputeBrightnessStepPercent(
+		const AppCameraCapture_BrightnessStats_t *stats,
+		AppCameraCapture_BrightnessGate_t gate,
+		AppCameraCapture_BrightnessGate_t previous_gate) {
+	uint32_t mean_error = 0U;
+	uint32_t step_percent = CAMERA_CAPTURE_BRIGHTNESS_STEP_MIN_PERCENT;
+	const uint32_t target_mean = CAMERA_CAPTURE_BRIGHTNESS_TARGET_MEAN;
+
+	if (stats == NULL) {
+		return CAMERA_CAPTURE_BRIGHTNESS_STEP_MAX_PERCENT;
+	}
+
+	if (stats->mean_y > target_mean) {
+		mean_error = stats->mean_y - target_mean;
+	} else {
+		mean_error = target_mean - stats->mean_y;
+	}
+
+	/* Use a coarse/fine ladder instead of a purely linear ramp.
+	 * Very dark or very bright frames need a full-range step so the gate can
+	 * cross the usable band in a handful of nudges rather than exhausting the
+	 * retry budget while still far from the target. */
+	if (mean_error >= 80U) {
+		step_percent = CAMERA_CAPTURE_BRIGHTNESS_STEP_MAX_PERCENT;
+	} else if (mean_error >= 60U) {
+		step_percent = 9U;
+	} else if (mean_error >= 40U) {
+		step_percent = 8U;
+	} else if (mean_error >= 20U) {
+		step_percent = 6U;
+	} else {
+		step_percent = 4U;
+	}
+	step_percent = AppCameraCapture_ClampBrightnessStepPercent(step_percent);
+
+	/* If the retry direction just flipped, damp the next nudge so we do not
+	 * bounce back and forth between the same two exposure settings. */
+	if ((previous_gate != APP_CAMERA_CAPTURE_BRIGHTNESS_OK)
+			&& (previous_gate != gate)
+			&& (step_percent > CAMERA_CAPTURE_BRIGHTNESS_STEP_FLIP_PENALTY_PERCENT)) {
+		step_percent -= CAMERA_CAPTURE_BRIGHTNESS_STEP_FLIP_PENALTY_PERCENT;
+	}
+
+	return AppCameraCapture_ClampBrightnessStepPercent(step_percent);
+}
+
+/**
  * @brief Measure luma over the full training crop region of a YUV422 frame.
  *
  * Sampling the entire training crop (rather than a small centre ROI) avoids
@@ -444,6 +510,7 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	ULONG next_wait_log_tick = 0U;
 	ULONG deadline_tick = 0U;
 	UINT semaphore_status = TX_SUCCESS;
+	bool should_reset_sensor_stream = false;
 	DCMIPP_HandleTypeDef *capture_dcmipp =
 			CameraPlatform_GetCaptureDcmippHandle();
 
@@ -582,6 +649,8 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 					(unsigned long) camera_capture_error_code);
 			AppCameraDiagnostics_LogDcmippErrorCode(camera_capture_error_code);
 			AppCameraCapture_LogCaptureState("capture-error");
+			should_reset_sensor_stream =
+			AppCameraCapture_ShouldRetryDcmippError(camera_capture_error_code);
 			break;
 		}
 
@@ -603,6 +672,12 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 
 	(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp, CAMERA_CAPTURE_PIPE,
 	DCMIPP_VIRTUAL_CHANNEL0);
+	if (should_reset_sensor_stream) {
+		if (!CameraPlatform_StopImx335Stream()) {
+			DebugConsole_WriteString(
+					"[CAMERA][CAPTURE] IMX335 stream stop failed during DCMIPP recovery.\r\n");
+		}
+	}
 	camera_capture_snapshot_armed = false;
 	camera_capture_isp_loop_paused = false;
 	return false;
@@ -622,11 +697,16 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	const bool storage_ready = AppFileX_IsMediaReady();
 	const CHAR *file_extension = camera_capture_use_cmw_pipeline ? "yuv422"
 			: "raw16";
-	const uint32_t max_capture_attempts =
+	const uint32_t max_brightness_adjustments =
 	CAMERA_CAPTURE_BRIGHTNESS_RETRY_LIMIT;
+	const uint32_t max_dcmipp_retries = 1U;
 	uint32_t capture_attempt = 0U;
+	uint32_t brightness_adjustment_count = 0U;
+	uint32_t dcmipp_retry_count = 0U;
 	bool capture_ok = false;
 	bool discard_next_successful_frame = false;
+	AppCameraCapture_BrightnessGate_t previous_brightness_gate =
+	APP_CAMERA_CAPTURE_BRIGHTNESS_OK;
 	AppCameraCapture_BrightnessStats_t brightness_stats = { 0 };
 	AppCameraCapture_BrightnessGate_t brightness_gate =
 	APP_CAMERA_CAPTURE_BRIGHTNESS_OK;
@@ -644,8 +724,7 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 		(void)CameraPlatform_AeSettleAndLock();
 	}
 
-	for (capture_attempt = 0U; capture_attempt < max_capture_attempts;
-			capture_attempt++) {
+	for (capture_attempt = 0U;; capture_attempt++) {
 		if (capture_attempt > 0U) {
 			if (camera_capture_error_code != 0U) {
 				DebugConsole_Printf(
@@ -678,7 +757,8 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 					DebugConsole_Printf(
 							"[CAMERA][CAPTURE] Brightness gate could not analyze processed frame; retrying capture.\r\n");
 					capture_ok = false;
-					if ((capture_attempt + 1U) < max_capture_attempts) {
+					if (brightness_adjustment_count
+							< max_brightness_adjustments) {
 						DelayMilliseconds_ThreadX(CAMERA_CAPTURE_RETRY_DELAY_MS);
 						continue;
 					}
@@ -690,18 +770,33 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 				if (brightness_gate != APP_CAMERA_CAPTURE_BRIGHTNESS_OK) {
 					AppCameraCapture_LogBrightnessGateDecision(&brightness_stats,
 							brightness_gate);
+					if (brightness_adjustment_count
+							>= max_brightness_adjustments) {
+						DebugConsole_Printf(
+								"[CAMERA][CAPTURE] Brightness gate exhausted its %lu manual nudges; stopping retries.\r\n",
+								(unsigned long) max_brightness_adjustments);
+						capture_ok = false;
+						break;
+					}
+					const uint32_t brightness_step_percent =
+						AppCameraCapture_ComputeBrightnessStepPercent(
+								&brightness_stats, brightness_gate,
+								previous_brightness_gate);
 					/* Let the retry path move the fixed manual exposure/gain toward
 					 * the gate target. A static scene should converge in a few nudges;
 					 * if the sensor hits its limit, fail fast instead of looping on the
 					 * same underexposed or overexposed settings. */
 					if (!CameraPlatform_AdjustImx335ExposureGain(
 							brightness_gate ==
-							APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_DARK)) {
+							APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_DARK,
+							brightness_step_percent)) {
 						DebugConsole_WriteString(
 								"[CAMERA][CAPTURE] Brightness gate could not nudge IMX335 exposure/gain; stopping retries.\r\n");
 						capture_ok = false;
 						break;
 					}
+					previous_brightness_gate = brightness_gate;
+					brightness_adjustment_count++;
 					DebugConsole_WriteString(
 							"[CAMERA][CAPTURE] Brightness gate triggered; retrying capture after exposure/gain nudge.\r\n");
 					capture_ok = false;
@@ -717,6 +812,14 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 			break;
 		}
 
+		if (dcmipp_retry_count >= max_dcmipp_retries) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] DCMIPP retry budget exhausted after %lu transport retry.\r\n",
+					(unsigned long) max_dcmipp_retries);
+			break;
+		}
+
+		dcmipp_retry_count++;
 		discard_next_successful_frame = true;
 	}
 
@@ -745,6 +848,8 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	AppCameraDiagnostics_LogCaptureBufferPreview("ready-to-save", image_ptr,
 			(uint32_t) image_length);
 #endif
+	AppCameraDiagnostics_LogYuv422ChromaSummary("ready-to-save", image_ptr,
+			(uint32_t) image_length);
 
 	if (camera_capture_use_cmw_pipeline) {
 	if (storage_ready) {

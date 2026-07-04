@@ -28,7 +28,8 @@ int32_t CameraPlatform_GetTickMs(void);
 ULONG CameraPlatform_MillisecondsToTicks(uint32_t timeout_ms);
 void CameraPlatform_CacheAcceptedExposureGain(void);
 bool CameraPlatform_SeedImx335ExposureGain(void);
-bool CameraPlatform_AdjustImx335ExposureGain(bool brighten);
+bool CameraPlatform_AdjustImx335ExposureGain(bool brighten,
+		uint32_t step_percent);
 bool CameraPlatform_EnableImx335AutoExposure(void);
 bool CameraPlatform_DisableImx335AutoExposure(void);
 bool CameraPlatform_AeSettleAndLock(void);
@@ -36,6 +37,7 @@ bool CameraPlatform_LockImx335WhiteBalance(uint32_t ref_color_temp);
 bool CameraPlatform_LogImx335AutoExposureState(const char *reason);
 void CameraPlatform_ReapplyImx335TestPattern(void);
 bool CameraPlatform_StartImx335Stream(void);
+bool CameraPlatform_StopImx335Stream(void);
 bool CameraPlatform_PrepareDcmippSnapshot(void);
 bool CameraPlatform_StartDcmippSnapshot(void);
 bool CameraPlatform_ConfigureCsiLineByteProbe(void);

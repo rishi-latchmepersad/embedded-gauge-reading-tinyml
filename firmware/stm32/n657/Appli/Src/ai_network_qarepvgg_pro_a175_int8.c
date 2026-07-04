@@ -19,12 +19,32 @@
 #define LL_ATON_DBG_BUFFER_INFO_EXCLUDED 1
 #endif
 
+/* The relocatable OBB package uses the generic `_network_*` symbol names that
+ * ST's reloc runtime emits. Rename those symbols locally so the OBB reloc
+ * metadata can coexist with the tip-focus package in the same firmware image.
+ * This keeps the reloc machinery enabled for OBB without colliding with the
+ * other model's generated globals. */
+#define BUILD_AI_NETWORK_RELOC 1
+#define _network_rt_ctx _network_rt_ctx_obb
+#define _network_entries _network_entries_obb
+#define _network_flags _network_flags_obb
+#define _itf_network _itf_network_obb
+#define LL_ATON_Internal_Buffers_Info_Default_Empty LL_ATON_Internal_Buffers_Info_Default_Empty_obb
+
 #include "ll_aton_NN_interface.h"
 #include "ll_aton_rt_user_api.h"
 #include "ll_aton_reloc_network.h"
 #include "debug_console.h"
+#include "app_ai_config.h"
 #include "C:/Users/rishi_latchmepersad/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Middlewares/ST/AI/Npu/ll_aton/ll_aton_reloc_network.c"
 #include "../../st_ai_output/packages/obb_box_board_bbox_deploy_candidate/st_ai_output/obb_box_board_bbox_deploy_candidate.h"
+
+#undef LL_ATON_Internal_Buffers_Info_Default_Empty
+#undef _itf_network
+#undef _network_flags
+#undef _network_entries
+#undef _network_rt_ctx
+#undef BUILD_AI_NETWORK_RELOC
 
 LL_ATON_DECLARE_NAMED_NN_INTERFACE(obb_box_board_bbox_deploy_candidate);
 
@@ -35,7 +55,7 @@ NN_Instance_TypeDef NN_Instance_obb_box_board_bbox_deploy_candidate = {
 
 #include "../../st_ai_output/packages/obb_box_board_bbox_deploy_candidate/st_ai_ws/build_obb_box_board_bbox_deploy_candidate/obb_box_board_bbox_deploy_candidate_reloc.c"
 
-extern struct ai_reloc_rt_ctx _network_rt_ctx;
+extern struct ai_reloc_rt_ctx _network_rt_ctx_obb;
 
 /* The generated reloc C only gives us the epoch code and runtime metadata.
  * The actual reloc binary must be aligned so the ST installer can read the
@@ -46,11 +66,6 @@ static const uint8_t app_ai_obb_reloc_bin[] = {
 };
 static uintptr_t app_ai_obb_reloc_handle = 0U;
 
-/* The relocatable OBB package keeps its live runtime tables in the shared
- * AXISRAM window that the board init code exposes to the NPU. Use the actual
- * on-chip base here, not the virtual reloc alias from the generated ELF. */
-#define APP_AI_OBB_RELOC_RAM_BASE_ADDR 0x34100000UL
-#define APP_AI_OBB_RELOC_RAM_SIZE      2883576UL
 #ifndef APP_AI_XSPI2_OBB_BASE_ADDR
 #define APP_AI_XSPI2_OBB_BASE_ADDR     0x71400000UL
 #endif

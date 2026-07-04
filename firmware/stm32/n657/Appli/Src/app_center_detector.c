@@ -20,12 +20,16 @@
 
 /* The LL_ATON runtime headers require the target platform and OSAL macros
  * before they are included, so keep the local app wrapper explicit here. */
+#ifndef LL_ATON_RT_RELOC
+#define LL_ATON_RT_RELOC 1
+#endif
 #define LL_ATON_PLATFORM LL_ATON_PLAT_STM32N6
 #define LL_ATON_OSAL LL_ATON_OSAL_THREADX
 #ifndef LL_ATON_DBG_BUFFER_INFO_EXCLUDED
 #define LL_ATON_DBG_BUFFER_INFO_EXCLUDED 1
 #endif
 #include "ll_aton_rt_user_api.h"
+#include "ll_aton_reloc_network.h"
 
 /* The input/output cache helpers live in app_ai.c, where the NPU bring-up
  * code already owns the cache maintenance policy for ATON buffers. */
@@ -34,6 +38,25 @@ extern int mcu_cache_invalidate_range(uint32_t start_addr, uint32_t end_addr);
 
 /* Generated ST Edge AI package for the heatmap center detector. */
 #include "../../st_ai_output/packages/heatmap_cd_v4s_80/st_ai_output/heatmap_cd.h"
+
+/**
+ * @brief Return the relocatable runtime base that the generated CNN expects
+ *        in r9.
+ */
+static uintptr_t AppCenterDetector_GetRuntimeR9(const NN_Instance_TypeDef *instance)
+{
+	if ((instance != NULL) && (instance->exec_state.inst_reloc != 0U))
+	{
+		const struct ai_reloc_rt_ctx *rt_ctx =
+			(const struct ai_reloc_rt_ctx *)(uintptr_t)instance->exec_state.inst_reloc;
+		if ((rt_ctx != NULL) && (rt_ctx->ram_addr != 0U))
+		{
+			return (uintptr_t)rt_ctx->ram_addr;
+		}
+	}
+
+	return 0U;
+}
 
 /* USER CODE END Includes */
 
@@ -310,8 +333,14 @@ bool AppCenterDetector_Run(const uint8_t *frame_bytes, size_t frame_size,
 		(void)mcu_cache_clean_range((uint32_t)(uintptr_t)input_ptr,
 			(uint32_t)((uintptr_t)input_ptr + input_len_bytes));
 
+		const uintptr_t runtime_r9 = AppCenterDetector_GetRuntimeR9(instance);
+
 		for (;;)
 		{
+			if (runtime_r9 != 0U)
+			{
+				__asm volatile("mov r9, %0" ::"r"(runtime_r9) : "r9");
+			}
 			const LL_ATON_RT_RetValues_t run_status =
 				LL_ATON_RT_RunEpochBlock(instance);
 
@@ -322,6 +351,10 @@ bool AppCenterDetector_Run(const uint8_t *frame_bytes, size_t frame_size,
 			if (run_status == LL_ATON_RT_WFE)
 			{
 				LL_ATON_OSAL_WFE();
+				if (runtime_r9 != 0U)
+				{
+					__asm volatile("mov r9, %0" ::"r"(runtime_r9) : "r9");
+				}
 				continue;
 			}
 			if (run_status != LL_ATON_RT_NO_WFE)

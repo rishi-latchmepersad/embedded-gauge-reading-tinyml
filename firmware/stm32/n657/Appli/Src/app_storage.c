@@ -7,9 +7,6 @@
 
 #include "app_storage.h"
 
-#include <stdio.h>
-#include <string.h>
-
 #include "main.h"
 #include "app_camera_config.h"
 #include "app_camera_platform.h"
@@ -90,36 +87,18 @@ void AppStorage_NotifyMediaReady(void) {
 }
 
 /**
- * @brief Build a capture filename from the DS3231 time if available.
+ * @brief Build a capture filename from the RTC time if available.
+ *
+ * The FileX helper keeps the timestamped naming logic in one place and falls
+ * back to a numbered name only when the RTC is unavailable.
  */
 bool AppStorage_BuildCaptureFileName(CHAR *file_name_ptr,
 		ULONG file_name_length, const CHAR *file_extension_ptr) {
-	CHAR rtc_stamp[32] = { 0 };
-	int written = 0;
-	const bool rtc_ready = App_Clock_GetCaptureTimestamp(rtc_stamp,
-			sizeof(rtc_stamp));
-
 	if ((file_name_ptr == NULL) || (file_name_length == 0U)
 			|| (file_extension_ptr == NULL) || (file_extension_ptr[0] == '\0')) {
 		return false;
 	}
 
-	if (rtc_ready) {
-#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Using RTC timestamp %s for capture name.\r\n",
-				rtc_stamp);
-#endif
-		written = snprintf(file_name_ptr, (size_t) file_name_length,
-				"capture_%s.%s", rtc_stamp, file_extension_ptr);
-		return (written > 0)
-				&& ((ULONG) written < file_name_length);
-	}
-
-#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
-	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] RTC timestamp unavailable; using numbered fallback.\r\n");
-#endif
 	return (AppFileX_GetNextCapturedImageName(file_name_ptr, file_name_length,
 			file_extension_ptr) == FX_SUCCESS);
 }

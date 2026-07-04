@@ -47,10 +47,12 @@
 #define APP_BASELINE_SWEEP_DEG 270.0f
 #define APP_BASELINE_MIN_VALUE_C -30.0f
 #define APP_BASELINE_MAX_VALUE_C 50.0f
-/* Calibration offset removed (2026-05-01). The ~2° "low" bias was an
- * artifact of the incorrect 180° sweep; with the correct 270° sweep the
- * mapping now aligns with the Python reference without extra offset. */
-#define APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG 0.0f
+/* Temporary board-fit calibration shift (2026-07-01).
+ * The live OBB -> UNet path is decoding a stable needle angle, but the
+ * gauge temperature increases in the opposite angular direction from the
+ * first mapping assumption. Re-center the 0C anchor here and keep the
+ * shared angle-to-temp decode consistent with the physical sweep direction. */
+#define APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG (-3.78f)
 #define APP_BASELINE_BRIGHT_THRESHOLD 150U
 /* Pixels above this luma are considered saturated/glare and excluded from
  * the bright-centroid calculation and ray scoring.
@@ -2012,10 +2014,10 @@ static bool AppBaselineRuntime_SelectSmoothedEstimate(
 float AppBaselineRuntime_ConvertAngleToTemperature(float angle_rad)
 {
 	/* Apply calibration offset determined from hard-case analysis.
-	 * The detected angles are consistently ~2° low compared to expected
-	 * values from the hard-case manifest. This corrects the systematic bias. */
+	 * The detected angles are stable, but the gauge runs hot-to-cold in the
+	 * opposite direction from the first decode pass. */
 	const float calibrated_angle_rad = angle_rad + (APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG * (APP_BASELINE_PI / 180.0f));
-	return APP_BASELINE_MIN_VALUE_C + (AppBaselineRuntime_ConvertAngleToFraction(calibrated_angle_rad) * (APP_BASELINE_MAX_VALUE_C - APP_BASELINE_MIN_VALUE_C));
+	return APP_BASELINE_MAX_VALUE_C - (AppBaselineRuntime_ConvertAngleToFraction(calibrated_angle_rad) * (APP_BASELINE_MAX_VALUE_C - APP_BASELINE_MIN_VALUE_C));
 }
 
 /**

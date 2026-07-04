@@ -23,14 +23,17 @@ set "REPO_ROOT=%SCRIPT_DIR%..\..\..\"
 set "FSBL_BIN=%SCRIPT_DIR%FSBL\Debug\n657_FSBL.bin"
 set "FSBL_TRUSTED=%SCRIPT_DIR%FSBL\Debug\FSBL_trusted.bin"
 set "CENTER_DETECTOR_RAW=%SCRIPT_DIR%st_ai_output\packages\heatmap_cd_v4s_80\st_ai_output\heatmap_cd_atonbuf.xSPI2.raw"
-REM Board bbox OBB deploy candidate flashed into the OBB slot at 0x70700000.
+set "TIP_FOCUS_RAW=%SCRIPT_DIR%st_ai_output\packages\tip_focus_v18_int8_n6_npu\st_ai_output\tip_focus_v18_int8_atonbuf.xSPI2.raw"
+REM Board bbox OBB deploy candidate flashed into the OBB slot at 0x71400000.
 set "OBB_RAW=%SCRIPT_DIR%st_ai_output\packages\obb_box_board_bbox_deploy_candidate\st_ai_output\obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw"
 
 if not exist "%CENTER_DETECTOR_RAW%" set "CENTER_DETECTOR_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\heatmap_cd_v4s_80\st_ai_output\heatmap_cd_atonbuf.xSPI2.raw"
+if not exist "%TIP_FOCUS_RAW%" set "TIP_FOCUS_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\tip_focus_v18_int8_n6_npu\st_ai_output\tip_focus_v18_int8_atonbuf.xSPI2.raw"
 if not exist "%OBB_RAW%" set "OBB_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\obb_box_board_bbox_deploy_candidate\st_ai_output\obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw"
 
 REM CubeProgrammer v2.21 does not accept .raw extension with -w; stage as .bin
 set "CENTER_DETECTOR_BIN=%SCRIPT_DIR%Appli\Debug\center_detector_model_stage.bin"
+set "TIP_FOCUS_BIN=%SCRIPT_DIR%Appli\Debug\tip_focus_v18_int8_n6_npu.bin"
 set "OBB_BIN=%SCRIPT_DIR%Appli\Debug\obb_model_stage.bin"
 
 set "APP_BIN=%SCRIPT_DIR%Appli\Debug\n657_Appli.bin"
@@ -71,6 +74,10 @@ if "%FLASH_APP%"=="1" if not exist "%APP_BIN%" (
 )
 if "%FLASH_MODEL%"=="1" if not exist "%CENTER_DETECTOR_RAW%" (
     echo WARNING: Center detector model not found (optional — board bbox candidate provides the centre): "%CENTER_DETECTOR_RAW%"
+)
+if "%FLASH_MODEL%"=="1" if not exist "%TIP_FOCUS_RAW%" (
+    echo ERROR: Tip-focus model not found: "%TIP_FOCUS_RAW%"
+    exit /b 1
 )
 if "%FLASH_MODEL%"=="1" if not exist "%OBB_RAW%" (
     echo ERROR: Board bbox OBB model not found: "%OBB_RAW%"
@@ -120,7 +127,22 @@ if "%FLASH_MODEL%"=="1" (
         echo === Step 4a: Skipping center detector (not found — joint model provides the centre) ===
     )
 
-    echo === Step 4b: Flash board bbox OBB candidate at 0x70700000 (required) ===
+    echo === Step 4b: Flash tip-focus UNet v18 model at 0x70400000 (required) ===
+    echo Tip-focus source: "%TIP_FOCUS_RAW%"
+    for %%I in ("%TIP_FOCUS_RAW%") do echo Tip-focus source size: %%~zI bytes
+    copy /y "%TIP_FOCUS_RAW%" "%TIP_FOCUS_BIN%" >nul
+    if errorlevel 1 (
+        echo ERROR: Could not stage tip-focus UNet model as .bin.
+        exit /b 1
+    )
+    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%TIP_FOCUS_BIN%" 0x70400000
+    if errorlevel 1 (
+        echo ERROR: Tip-focus UNet model flash failed.
+        exit /b 1
+    )
+    echo Tip-focus UNet v18 model flashed at 0x70400000.
+
+    echo === Step 4c: Flash board bbox OBB candidate at 0x71400000 (required) ===
     echo Board bbox source: "%OBB_RAW%"
     for %%I in ("%OBB_RAW%") do echo Board bbox source size: %%~zI bytes
     copy /y "%OBB_RAW%" "%OBB_BIN%" >nul
@@ -128,26 +150,32 @@ if "%FLASH_MODEL%"=="1" (
         echo ERROR: Could not stage board bbox OBB model as .bin.
         exit /b 1
     )
-    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%OBB_BIN%" 0x70700000
+    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%OBB_BIN%" 0x71400000
     if errorlevel 1 (
         echo ERROR: Board bbox OBB model flash failed.
         exit /b 1
     )
-    echo Board bbox OBB model flashed at 0x70700000.
+    echo Board bbox OBB model flashed at 0x71400000.
 )
 
 if "%FLASH_MODEL%"=="1" (
     echo.
-    echo === Step 4c: Extract model signatures for firmware update ===
+    echo === Step 4d: Extract model signatures for firmware update ===
     if exist "%CENTER_DETECTOR_RAW%" (
-        python "%REPO_ROOT%ml\scripts\extract_model_signature.py" "%CENTER_DETECTOR_RAW%" > "%SIG_REPORT_DIR%\heatmap_cd_signature.txt"
+        python "%SCRIPT_DIR%tools\extract_model_signature.py" "%CENTER_DETECTOR_RAW%" > "%SIG_REPORT_DIR%\heatmap_cd_signature.txt"
         if errorlevel 1 (
             echo ERROR: Heatmap center detector signature extraction failed.
             exit /b 1
         )
         echo Heatmap center detector signature report: "%SIG_REPORT_DIR%\heatmap_cd_signature.txt"
     )
-    python "%REPO_ROOT%ml\scripts\extract_model_signature.py" "%OBB_RAW%" > "%SIG_REPORT_DIR%\obb_signature.txt"
+    python "%SCRIPT_DIR%tools\extract_model_signature.py" "%TIP_FOCUS_RAW%" > "%SIG_REPORT_DIR%\tip_focus_v18_signature.txt"
+    if errorlevel 1 (
+        echo ERROR: Tip-focus UNet signature extraction failed.
+        exit /b 1
+    )
+    echo Tip-focus signature report: "%SIG_REPORT_DIR%\tip_focus_v18_signature.txt"
+    python "%SCRIPT_DIR%tools\extract_model_signature.py" "%OBB_RAW%" > "%SIG_REPORT_DIR%\obb_signature.txt"
     if errorlevel 1 (
         echo ERROR: Board bbox OBB signature extraction failed.
         exit /b 1
