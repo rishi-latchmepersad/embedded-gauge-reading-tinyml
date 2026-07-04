@@ -565,6 +565,7 @@ bash tmp/run_geometry_candidates_all.sh
 - The script writes a balanced starter CSV to `tmp/captured_image_review_batch_50.csv`.
 - The batch is selected in temperature bins with a round-robin sampler, and manual-verification rows are preferred over inverse-mapped rows inside each bin.
 - Launch the GUI against the generated CSV with `poetry run python scripts/label_captured_images_for_models.py --input tmp/captured_image_review_batch_50.csv`.
+- `ml/data/captured_images/clean_board_captures/board_captures_4.zip` is the newer cold-end capture bundle; it has 35 annotated images and now feeds the merged board manifest, with the six filename overlaps removed from the older board CSV so the merged board set lands at 105 rows total.
 
 ## Center-detector + SimCC scripts now have dedicated entrypoints (2026-06-19)
 

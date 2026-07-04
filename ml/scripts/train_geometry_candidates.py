@@ -850,7 +850,7 @@ def parse_args() -> argparse.Namespace:
     # Paths
     parser.add_argument(
         "--manifest", type=str,
-        default="ml/data/geometry_board_heatmap_manifest_v1.csv",
+        default="ml/data/merged_geometry_board_manifest.csv",
         help="CSV manifest path (relative to repo root).",
     )
     parser.add_argument(
