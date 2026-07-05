@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import math
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -35,10 +36,18 @@ import numpy as np
 import tensorflow as tf
 from sklearn.model_selection import train_test_split
 
-# Limit GPU memory growth
+# Cap GPU memory on the larger WSL GPU while still leaving headroom.
+_GPU_MEMORY_LIMIT_MB = int(os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "14000"))
 gpus = tf.config.list_physical_devices("GPU")
 if gpus:
-    tf.config.experimental.set_memory_growth(gpus[0], True)
+    if _GPU_MEMORY_LIMIT_MB > 0:
+        tf.config.set_logical_device_configuration(
+            gpus[0],
+            [tf.config.LogicalDeviceConfiguration(memory_limit=_GPU_MEMORY_LIMIT_MB)],
+        )
+        print(f"[GPU] Memory limit set to {_GPU_MEMORY_LIMIT_MB} MB")
+    else:
+        tf.config.experimental.set_memory_growth(gpus[0], True)
 
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
 SRC_DIR: Path = PROJECT_ROOT / "src"
@@ -565,6 +574,10 @@ def main() -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = f"obb_board_only_320_{timestamp}"
     run_dir = ARTIFACTS_DIR / run_name
+    export_only = os.environ.get("OBB_EXPORT_ONLY", "0") == "1"
+    run_dir_override = os.environ.get("OBB_RUN_DIR")
+    if run_dir_override:
+        run_dir = Path(run_dir_override)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"=== Board-Only OBB Training at 320x320 ===")
@@ -690,6 +703,10 @@ def main() -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = f"obb_board_only_320_{timestamp}"
     run_dir = ARTIFACTS_DIR / run_name
+    export_only = os.environ.get("OBB_EXPORT_ONLY", "0") == "1"
+    run_dir_override = os.environ.get("OBB_RUN_DIR")
+    if run_dir_override:
+        run_dir = Path(run_dir_override)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"=== Board-Only OBB Training at 320x320 ===")
@@ -764,56 +781,76 @@ def main() -> None:
     val_ds = make_dataset(val_exs, shuffle=False)
     test_ds = make_dataset(test_exs, shuffle=False)
 
-    # Build model
-    print("\n[4/5] Building model...")
-    model = build_compact_obb_model(
-        image_height=IMAGE_HEIGHT,
-        image_width=IMAGE_WIDTH,
-        head_units=96,
-    )
-    model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE, clipnorm=1.0),
-        loss={"obb_params": OBBEqualLoss(delta=0.05)},
-        metrics={"obb_params": [keras.metrics.MeanAbsoluteError(name="mae")]},
-    )
-    model.summary(print_fn=lambda s: print(f"  {s}"))
+    if export_only:
+        print("\n[4/5] Loading existing model for export-only run...")
+        model_path = run_dir / "final_model.keras"
+        if not model_path.exists():
+            raise FileNotFoundError(
+                f"Export-only run requested, but {model_path} does not exist."
+            )
+        model = keras.models.load_model(
+            model_path,
+            custom_objects={"OBBEqualLoss": OBBEqualLoss},
+            compile=False,
+        )
+        model.compile(
+            optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE, clipnorm=1.0),
+            loss={"obb_params": OBBEqualLoss(delta=0.05)},
+            metrics={"obb_params": [keras.metrics.MeanAbsoluteError(name="mae")]},
+        )
+        model.summary(print_fn=lambda s: print(f"  {s}"))
+        history = None
+    else:
+        # Build model
+        print("\n[4/5] Building model...")
+        model = build_compact_obb_model(
+            image_height=IMAGE_HEIGHT,
+            image_width=IMAGE_WIDTH,
+            head_units=96,
+        )
+        model.compile(
+            optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE, clipnorm=1.0),
+            loss={"obb_params": OBBEqualLoss(delta=0.05)},
+            metrics={"obb_params": [keras.metrics.MeanAbsoluteError(name="mae")]},
+        )
+        model.summary(print_fn=lambda s: print(f"  {s}"))
 
-    # Callbacks
-    callbacks = [
-        keras.callbacks.EarlyStopping(
-            monitor="val_mae",
-            mode="min",
-            patience=30,
-            restore_best_weights=True,
-            verbose=1,
-        ),
-        keras.callbacks.ReduceLROnPlateau(
-            monitor="val_mae",
-            mode="min",
-            factor=0.5,
-            patience=10,
-            min_lr=1e-7,
-            verbose=1,
-        ),
-        keras.callbacks.CSVLogger(str(run_dir / "training_log.csv")),
-        keras.callbacks.ModelCheckpoint(
-            str(run_dir / "best_model.keras"),
-            monitor="val_mae",
-            mode="min",
-            save_best_only=True,
-            verbose=1,
-        ),
-    ]
+        # Callbacks
+        callbacks = [
+            keras.callbacks.EarlyStopping(
+                monitor="val_mae",
+                mode="min",
+                patience=30,
+                restore_best_weights=True,
+                verbose=1,
+            ),
+            keras.callbacks.ReduceLROnPlateau(
+                monitor="val_mae",
+                mode="min",
+                factor=0.5,
+                patience=10,
+                min_lr=1e-7,
+                verbose=1,
+            ),
+            keras.callbacks.CSVLogger(str(run_dir / "training_log.csv")),
+            keras.callbacks.ModelCheckpoint(
+                str(run_dir / "best_model.keras"),
+                monitor="val_mae",
+                mode="min",
+                save_best_only=True,
+                verbose=1,
+            ),
+        ]
 
-    # Train
-    print("\n[5/5] Training...")
-    history = model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=EPOCHS,
-        callbacks=callbacks,
-        verbose=2,
-    )
+        # Train
+        print("\n[5/5] Training...")
+        history = model.fit(
+            train_ds,
+            validation_data=val_ds,
+            epochs=EPOCHS,
+            callbacks=callbacks,
+            verbose=2,
+        )
 
     # Evaluate on test set
     print("\n=== Test Set Evaluation ===")
@@ -841,18 +878,40 @@ def main() -> None:
 
     # Save model
     model_path = run_dir / "final_model.keras"
-    model.save(model_path)
-    print(f"\n  Model saved to: {model_path}")
+    if not export_only:
+        model.save(model_path)
+        print(f"\n  Model saved to: {model_path}")
+    else:
+        print(f"\n  Using existing model at: {model_path}")
 
     # Export TFLite int8
     print("\n=== Exporting TFLite int8 ===")
     # Representative dataset from test set
     def representative_dataset():
+        yielded = 0
+        skipped = 0
         for ex in test_exs[:50]:
-            img = tf.io.read_file(ex.image_path)
-            img = tf.io.decode_image(img, channels=3, expand_animations=False)
-            img = _preprocess_colour(img, IMAGE_HEIGHT, IMAGE_WIDTH)
-            yield [tf.expand_dims(img, 0)]
+            try:
+                image, _, _ = _load_fullframe_obb_data_colour(
+                    tf.constant(ex.image_path),
+                    tf.constant(ex.value, dtype=tf.float32),
+                    tf.constant(ex.obb_params, dtype=tf.float32),
+                    tf.constant(ex.crop_box_xyxy, dtype=tf.float32),
+                    IMAGE_HEIGHT,
+                    IMAGE_WIDTH,
+                    tf.constant(1.0, dtype=tf.float32),
+                )
+                yield [tf.expand_dims(image, 0)]
+                yielded += 1
+            except (tf.errors.InvalidArgumentError, tf.errors.NotFoundError, ValueError) as exc:
+                print(f"  [TFLite calib] skipping {ex.image_path}: {exc}")
+                skipped += 1
+                continue
+
+        if yielded == 0:
+            raise RuntimeError("No valid representative samples were available for TFLite calibration.")
+
+        print(f"  [TFLite calib] yielded {yielded} samples, skipped {skipped} samples")
 
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
@@ -880,8 +939,8 @@ def main() -> None:
         "per_param_mae": {name: float(mae) for name, mae in zip(param_names, per_param_mae)},
         "image_size": [IMAGE_HEIGHT, IMAGE_WIDTH],
         "batch_size": BATCH_SIZE,
-        "epochs_trained": len(history.history["loss"]),
-        "final_val_mae": float(min(history.history["val_mae"])),
+        "epochs_trained": 0 if history is None else len(history.history["loss"]),
+        "final_val_mae": float("nan") if history is None else float(min(history.history["val_mae"])),
     }
 
     import json

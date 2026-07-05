@@ -11,18 +11,89 @@ Usage:
 from __future__ import annotations
 
 import csv
+import math
 import random
 from pathlib import Path
+from typing import Any
+from zipfile import ZipFile
+import xml.etree.ElementTree as ET
 
 
 BOARD_CAPTURES_CSV = Path(__file__).resolve().parent.parent / "data" / "board_captures_labeled_v2.csv"
+BOARD_CAPTURES_4_ZIP = (
+    Path(__file__).resolve().parent.parent
+    / "data"
+    / "captured_images"
+    / "clean_board_captures"
+    / "board_captures_4.zip"
+)
+BOARD_CAPTURES_4_IMAGE_DIR = Path("ml/data/captured_images/clean_board_captures")
 GEOMETRY_MANIFEST_CSV = Path(__file__).resolve().parent.parent / "data" / "geometry_reader_manifest_v2_clean.csv"
 OUTPUT_CSV = Path(__file__).resolve().parent.parent / "data" / "merged_geometry_board_manifest.csv"
 
 
-def load_board_captures() -> list[dict]:
-    """Load board captures and convert to geometry manifest format."""
-    samples = []
+def _angle_degrees_from_center_to_tip(center_x: float, center_y: float, tip_x: float, tip_y: float) -> float:
+    """Return the gauge angle convention used by the board label CSVs."""
+    dx = tip_x - center_x
+    dy = tip_y - center_y
+    angle = math.degrees(math.atan2(dy, dx))
+    return (360.0 - angle) % 360.0
+
+
+def _make_board_manifest_row(
+    *,
+    image_path: str,
+    temperature_c: float,
+    source_width: int,
+    source_height: int,
+    center_x: float,
+    center_y: float,
+    tip_x: float,
+    tip_y: float,
+    source_manifest: str,
+    label_quality: str,
+    quality_flag: str,
+) -> dict[str, Any]:
+    """Build one board-capture row in the merged-manifest schema."""
+    angle_degrees = _angle_degrees_from_center_to_tip(center_x, center_y, tip_x, tip_y)
+    center_tip_distance = ((tip_x - center_x) ** 2 + (tip_y - center_y) ** 2) ** 0.5
+    return {
+        "image_path": image_path,
+        "temperature_c": temperature_c,
+        "split": "train",
+        "source_width": source_width,
+        "source_height": source_height,
+        "loose_crop_x1": 0,
+        "loose_crop_y1": 0,
+        "loose_crop_x2": source_width,
+        "loose_crop_y2": source_height,
+        "center_x_source": center_x,
+        "center_y_source": center_y,
+        "tip_x_source": tip_x,
+        "tip_y_source": tip_y,
+        "dial_radius_source": 80.0,
+        "label_quality": label_quality,
+        "source_manifest": source_manifest,
+        "notes": "",
+        "angle_degrees_from_labels": angle_degrees,
+        "deterministic_temperature_c": temperature_c,
+        "absolute_temperature_difference_c": 0.0,
+        "center_tip_distance_pixels": center_tip_distance,
+        "quality_flag": quality_flag,
+    }
+
+
+def _read_cvat_object_attribute(element: ET.Element, attribute_name: str) -> float | None:
+    """Read a nested CVAT object attribute from an ellipse or point element."""
+    for child in element.findall("attribute"):
+        if child.attrib.get("name") == attribute_name and child.text is not None:
+            return float(child.text.strip())
+    return None
+
+
+def load_board_capture_csv() -> list[dict[str, Any]]:
+    """Load the legacy board capture CSV into merged-manifest rows."""
+    samples: list[dict[str, Any]] = []
     with open(BOARD_CAPTURES_CSV, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -39,38 +110,92 @@ def load_board_captures() -> list[dict]:
             except (ValueError, KeyError):
                 continue
 
-            # Board captures are already cropped; use full image as crop box
-            samples.append({
-                "image_path": row["image_path"],
-                "temperature_c": temp,
-                "split": "train",  # Will be reassigned below
-                "source_width": src_w,
-                "source_height": src_h,
-                "loose_crop_x1": 0,
-                "loose_crop_y1": 0,
-                "loose_crop_x2": src_w,
-                "loose_crop_y2": src_h,
-                "center_x_source": center_x,
-                "center_y_source": center_y,
-                "tip_x_source": tip_x,
-                "tip_y_source": tip_y,
-                "dial_radius_source": 80.0,  # approximate for 224x224
-                "label_quality": "manual",
-                "source_manifest": "board_captures_v2",
-                "notes": "",
-                "angle_degrees_from_labels": float(row.get("angle_degrees", 0)),
-                "deterministic_temperature_c": temp,
-                "absolute_temperature_difference_c": 0.0,
-                "center_tip_distance_pixels": ((tip_x - center_x) ** 2 + (tip_y - center_y) ** 2) ** 0.5,
-                "quality_flag": "clean",
-            })
+            samples.append(
+                _make_board_manifest_row(
+                    image_path=row["image_path"],
+                    temperature_c=temp,
+                    source_width=src_w,
+                    source_height=src_h,
+                    center_x=center_x,
+                    center_y=center_y,
+                    tip_x=tip_x,
+                    tip_y=tip_y,
+                    source_manifest="board_captures_v2",
+                    label_quality="manual",
+                    quality_flag="clean",
+                ),
+            )
 
     return samples
 
 
-def load_geometry_samples() -> list[dict]:
+def load_board_capture_zip() -> list[dict[str, Any]]:
+    """Load the cold-end CVAT zip and convert it to merged-manifest rows."""
+    if not BOARD_CAPTURES_4_ZIP.exists():
+        return []
+
+    samples: list[dict[str, Any]] = []
+    with ZipFile(BOARD_CAPTURES_4_ZIP, "r") as zf:
+        with zf.open("annotations.xml") as f:
+            tree = ET.parse(f)
+
+    root = tree.getroot()
+    for image in root.findall("image"):
+        file_name = image.attrib["name"]
+        image_path = str(BOARD_CAPTURES_4_IMAGE_DIR / file_name)
+        source_width = int(image.attrib["width"])
+        source_height = int(image.attrib["height"])
+
+        center_x = center_y = tip_x = tip_y = temperature_c = None
+        for point in image.findall("points"):
+            label = point.attrib.get("label")
+            x_str, y_str = point.attrib["points"].split(",")
+            if label == "temp_center":
+                center_x = float(x_str)
+                center_y = float(y_str)
+            elif label == "temp_tip":
+                tip_x = float(x_str)
+                tip_y = float(y_str)
+
+        for ellipse in image.findall("ellipse"):
+            if ellipse.attrib.get("label") == "temp_dial":
+                temperature_c = _read_cvat_object_attribute(ellipse, "temp_c")
+
+        if None in (center_x, center_y, tip_x, tip_y, temperature_c):
+            raise ValueError(f"Missing labels in {BOARD_CAPTURES_4_ZIP} for image {file_name}")
+
+        samples.append(
+            _make_board_manifest_row(
+                image_path=image_path,
+                temperature_c=temperature_c,
+                source_width=source_width,
+                source_height=source_height,
+                center_x=center_x,
+                center_y=center_y,
+                tip_x=tip_x,
+                tip_y=tip_y,
+                source_manifest="board_captures_4.zip",
+                label_quality="manual",
+                quality_flag="clean",
+            ),
+        )
+
+    return samples
+
+
+def load_board_captures() -> list[dict[str, Any]]:
+    """Load the board capture sources and prefer the newest cold-end labels."""
+    samples_by_name: dict[str, dict[str, Any]] = {}
+    for row in load_board_capture_csv():
+        samples_by_name[Path(str(row["image_path"])).name] = row
+    for row in load_board_capture_zip():
+        samples_by_name[Path(str(row["image_path"])).name] = row
+    return list(samples_by_name.values())
+
+
+def load_geometry_samples() -> list[dict[str, Any]]:
     """Load geometry manifest rows as dicts."""
-    samples = []
+    samples: list[dict[str, Any]] = []
     with open(GEOMETRY_MANIFEST_CSV, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -91,15 +216,20 @@ def main() -> None:
     print(f"Geometry samples: {len(geometry)}")
     print(f"Board captures: {len(board)}")
 
-    # Assign splits to board captures (15% val)
+    # Assign splits to board captures (15% val) after deduping and merging the new zip.
     rng = random.Random(42)
     rng.shuffle(board)
     n_val = max(1, int(len(board) * 0.15))
     for i, s in enumerate(board):
         s["split"] = "val" if i < n_val else "train"
 
-    # Merge
-    merged = geometry + board
+    # Merge and dedupe by image path so the newer board_captures_4 rows win on overlap.
+    merged_by_path: dict[str, dict[str, Any]] = {}
+    for row in geometry:
+        merged_by_path[str(row["image_path"])] = row
+    for row in board:
+        merged_by_path[str(row["image_path"])] = row
+    merged = list(merged_by_path.values())
     rng.shuffle(merged)
 
     # Write

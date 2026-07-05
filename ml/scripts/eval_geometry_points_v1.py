@@ -39,6 +39,20 @@ from embedded_gauge_reading_tinyml.geometry_crop_dataset import (
     create_jittered_crop,
     generate_jitter_params,
 )
+
+
+def _load_yuv422_as_rgb(image_path: Path, source_width: int, source_height: int) -> np.ndarray:
+    """Decode a packed YUV422 board capture into an RGB array via luma repetition."""
+
+    raw = image_path.read_bytes()
+    expected = source_height * (source_width // 2) * 4
+    if len(raw) < expected:
+        raise ValueError(f"{image_path} is too small for {source_width}x{source_height} YUV422")
+    yuyv = np.frombuffer(raw[:expected], dtype=np.uint8).reshape(source_height, source_width // 2, 4)
+    luma = np.empty((source_height, source_width), dtype=np.uint8)
+    luma[:, 0::2] = yuyv[:, :, 0]
+    luma[:, 1::2] = yuyv[:, :, 2]
+    return np.repeat(luma[:, :, None], 3, axis=2)
 from embedded_gauge_reading_tinyml.gauge_geometry import (
     angle_degrees_from_center_to_tip,
     celsius_from_inner_dial_angle_degrees,
@@ -140,13 +154,17 @@ def create_identity_crop_input(
         return None
     
     try:
-        image = Image.open(image_path).convert("RGB")
+        if image_path.suffix.lower() == ".yuv422":
+            image_array = _load_yuv422_as_rgb(image_path, example.source_width, example.source_height)
+        else:
+            image = Image.open(image_path).convert("RGB")
+            image_array = np.asarray(image, dtype=np.uint8)
     except Exception:
         return None
     
     # Extract crop region
     crop_box = (crop.crop_x1, crop.crop_y1, crop.crop_x2, crop.crop_y2)
-    crop_image = image.crop(crop_box)
+    crop_image = Image.fromarray(image_array).crop(crop_box)
     
     # Resize to input size
     crop_resized = crop_image.resize((input_size, input_size), Image.LANCZOS)
@@ -536,6 +554,12 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate geometry points model")
     parser.add_argument("--model-path", type=str, default=None, help="Path to trained model")
     parser.add_argument("--output-dir", type=str, default=None, help="Output directory")
+    parser.add_argument(
+        "--manifest-path",
+        type=str,
+        default=None,
+        help="CSV manifest path. Defaults to ml/data/geometry_reader_manifest_v2_clean.csv.",
+    )
     args = parser.parse_args()
     
     print("=" * 80)
@@ -544,7 +568,10 @@ def main():
     
     # Paths
     base_path = Path(__file__).parent.parent.parent
-    manifest_path = base_path / "ml" / "data" / "geometry_reader_manifest_v2_clean.csv"
+    if args.manifest_path:
+        manifest_path = Path(args.manifest_path)
+    else:
+        manifest_path = base_path / "ml" / "data" / "geometry_reader_manifest_v2_clean.csv"
     
     if args.model_path:
         model_path = Path(args.model_path)
@@ -568,16 +595,14 @@ def main():
         print("Run train_geometry_points_v1.py first.")
         sys.exit(1)
     
-    model = keras.models.load_model(model_path)
+    model = keras.models.load_model(model_path, compile=False)
     print("Model loaded successfully")
     
-    # Load manifest
+    # Load manifest using the shared geometry manifest parser so board rows
+    # and pxl rows share the same structure.
     print("\nLoading clean manifest...")
-    rows = load_clean_manifest(manifest_path)
-    print(f"Loaded {len(rows)} clean rows")
-    
-    # Convert to examples
-    examples = [prepare_example_from_row(row) for row in rows]
+    examples = [example for example in load_geometry_manifest(manifest_path) if example.quality_flag == "clean"]
+    print(f"Loaded {len(examples)} clean rows")
     
     # Split by train/val/test
     train_examples = [ex for ex in examples if ex.split == "train"]

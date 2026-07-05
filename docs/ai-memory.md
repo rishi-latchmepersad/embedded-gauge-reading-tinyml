@@ -1,5 +1,530 @@
 # AI Memory
 
+# Compact 224x224 geometry run completed successfully (2026-07-05)
+
+- The patched `mnv2_compact_heatmap` run finished in:
+  - `tmp/training/geometry_compact_224_biggpu_v1`
+- Final test metrics on the 59-sample split:
+  - Center MAE: `2.36 px`
+  - Tip MAE: `4.09 px`
+  - Angle MAE: `2.26°`
+  - Temperature MAE: `0.67°C`
+  - Temperature RMSE: `2.04°C`
+- Exported artifacts:
+  - `model_float.keras`
+  - `model_int8.tflite` at about `842 KB`
+- This is now the best geometry candidate we have on the current path because
+  it stays compact, avoids the earlier compile crash, and gets tip MAE back
+  under the `5 px` target.
+
+# Compact heatmap crash fix: add the missing `is_main_needle` target (2026-07-05)
+
+- The `mnv2_compact_heatmap` launch crashed right after `Epoch 1/220` because
+  the model exports four outputs:
+  - `center_heatmap`
+  - `tip_heatmap`
+  - `confidence`
+  - `is_main_needle`
+- The trainer was only compiling losses for the first three outputs, so Keras
+  raised a loss-dict key mismatch.
+- I patched the sequence/compile path so the compact model now receives a
+  matching binary target and a binary-crossentropy loss for `is_main_needle`.
+- The manifests we have today do not carry a separate main-needle label yet, so
+  that target is temporarily all ones just to keep the graph consistent.
+
+# Chosen 224x224 direction: widened compact UNet, not the larger HyperRAM-heavy UNet (2026-07-05)
+
+- We are keeping the `224x224` input size, but the next deployment candidate should be the compact UNet family, not the larger 112x112-head UNet that spills into HyperRAM.
+- I widened the compact decoder in `build_mobilenetv2_compact_heatmap_model()` and added a dedicated launcher:
+  - `tmp/run_geometry_compact_224_biggpu_v1.sh`
+- Rationale:
+  - it keeps the 224 input contract,
+  - it stays on the no-HyperRAM-friendly compact path,
+  - and it gives us the best chance of pushing tip MAE back under `5 px` without reintroducing the big memory spill.
+
+# Geometry UNet 160x160 finished: memory fit improved, accuracy did not (2026-07-05)
+
+- Finished the 160×160 `mnv2_unet_heatmap` run in `tmp/training/geometry_unet_biggpu_v1_160`.
+- Final test metrics on the 59-sample split:
+  - Center MAE: `3.54 px`
+  - Tip MAE: `29.25 px`
+  - Angle MAE: `25.45°`
+  - Temperature MAE: `8.20°C`
+- Artifact sizes:
+  - `model_float.keras`: `85 MB`
+  - `model_int8.tflite`: `7.6 MB`
+- Peak int8 activation was only `512,000 bytes (0.49 MB)`, so the 160×160 shape does solve the on-chip activation pressure problem.
+- But the geometry quality regressed hard relative to the 224×224 run, so this 160×160 recipe is not the preferred deployment candidate yet.
+
+# Geometry UNet 160x160 is the current no-HyperRAM direction and trains against cached MobileNetV2 weights (2026-07-04)
+
+- The 160×160 `mnv2_unet_heatmap` variant is the current geometry candidate to pursue for the STM32N6 no-HyperRAM board.
+- The trainer now accepts `--image-size`; the current launcher uses:
+  - `--image-size 160`
+  - `--heatmap-size 80`
+  - `--mnv2-alpha 1.3`
+- The model build is using a cached local MobileNetV2 alpha=1.3 checkpoint from `~/.keras/models/` so it does not need network access during training.
+- The live WSL run showed `Peak int8 activation: 512,000 bytes (0.49 MB)` for the 160×160 geometry UNet, which is comfortably under the on-chip budget.
+- Current live training output is in `tmp/training/geometry_unet_biggpu_v1_160/`.
+
+# DeepSeek packaging check: geometry UNet still needs HyperRAM and is not board-ready as-is (2026-07-04)
+
+- DeepSeek’s packaging report for the current pair was:
+  - OBB Face Localizer: `obb_face_v2_int8_n6_npu`
+    - input: `224x224x3 int8`
+    - weights: `571 KB`
+    - activations: `1.67 MB`
+    - HyperRAM: `0 B`
+  - Geometry UNet: `geometry_unet_biggpu_v1_int8_n6_npu`
+    - input/output: `224x224x3 float32`
+    - weights: `7.95 MB`
+    - activations: `2.34 MB`
+    - HyperRAM: `784 KB`
+- The no-HyperRAM board constraint means the geometry UNet package is not acceptable as-is.
+- The OBB face-localizer looks compatible with the constraint; the geometry model needs a no-HyperRAM redesign or a much smaller packaging target.
+
+# Windows firmware handoff for DeepSeek: integrate the new OBB face-localizer and geometry UNet sequentially (2026-07-04)
+
+- Work in Windows and STM32CubeIDE only for firmware changes. The board app lives under `firmware/stm32/n657/`.
+- Use the existing Cube.AI wrapper pattern in `firmware/stm32/n657/Appli/Src/ai_network_*.c` and keep generated build files untouched.
+- Integrate these two current deployment models:
+  - OBB face-localizer: `ml/artifacts/training/obb_box_board_bbox_kd_student_face_v2/obb_box_qat.tflite`
+  - Geometry UNet: `tmp/training/geometry_unet_biggpu_v1/model_int8.tflite`
+- Memory rule for the N6 board: no HyperRAM, only about `2.5 MB` SRAM available for both stages. Keep the model weights/ATON blobs in flash and run the models sequentially, not at the same time.
+- The expected runtime shape is:
+  1. run the OBB face-localizer,
+  2. crop/align from the detected gauge face,
+  3. run the geometry UNet on that crop,
+  4. free or reuse buffers before the next frame.
+- Do not try to keep both interpreters or both activation buffers resident simultaneously.
+- Before flashing, run a small Keras-vs-TFLite parity check on a few validation samples so the Windows-side integration catches conversion or preprocessing mismatches early.
+- If DeepSeek needs a starting point, the current firmware wiring is already concentrated in `firmware/stm32/n657/Appli/Src/app_ai.c` and the related `app_ai_helpers_decode.inc` / `app_baseline_runtime.c` path.
+
+
+# Teacher-v3 is now the better local teacher for the OBB face-localizer, and the face-v2 rerun improved deployment metrics (2026-07-04)
+
+- I reran the face-localizer student using `tmp/obb_box_grouped_qat_v3/obb_box_float.keras` as teacher.
+- That teacher is the stronger local checkpoint for this task, beating the older hardcase teacher on board-face box metrics.
+- Face-v2 artifacts:
+  - `ml/artifacts/training/obb_box_board_bbox_kd_student_face_v2/obb_box_float.keras`
+  - `ml/artifacts/training/obb_box_board_bbox_kd_student_face_v2/obb_box_ptq.tflite`
+  - `ml/artifacts/training/obb_box_board_bbox_kd_student_face_v2/obb_box_qat.tflite`
+- Float test report:
+  - board box center MAE: `8.47 px`
+  - board box size MAE: `15.40 px`
+- PTQ test report:
+  - board box center MAE: `8.72 px`
+  - board box size MAE: `14.69 px`
+- QAT test report:
+  - board box center MAE: `6.90 px`
+  - board box size MAE: `13.95 px`
+- Compared to the earlier face run, QAT board center MAE improved from `12.93 px` to `6.90 px`.
+- The teacher switch was the right move; the next useful step is to keep the teacher-v3 path as the default for OBB face KD and then tune the QAT stage from there.
+
+# Teacher selection for the OBB face-localizer: use `obb_box_grouped_qat_v3` as the default local teacher for now (2026-07-04)
+
+- I compared the current candidate teachers from the local artifacts on the same face-label task.
+- `tmp/obb_box_grouped_qat_v3/obb_box_float.keras` is the stronger teacher we have right now for the face-localizer rerun:
+  - board box center MAE: `5.12 px`
+  - board box size MAE: `5.70 px`
+  - pxl box center MAE: `6.57 px`
+- The older hardcase teacher `tmp/obb_box_board_bbox_hardcase_v3/obb_box_float.keras` is weaker on board labels:
+  - board box center MAE: `6.30 px`
+  - board box size MAE: `7.59 px`
+- The reviewed-box teacher `tmp/obb_box_board_reviews_kd_student_v1/obb_box_float.keras` is also weaker on board labels than `grouped_qat_v3`.
+- So the practical teacher choice for the next OBB face-localizer pass is now `tmp/obb_box_grouped_qat_v3/obb_box_float.keras`.
+- The literature still points toward localization-aware distillation and possibly a stronger multi-stage teacher later, but for our current local checkpoints, `grouped_qat_v3` is the best teacher fit.
+
+# KD + QAT face-localizer completed on CVAT face labels with a pretrained MobileNetV2 backbone (2026-07-04)
+
+- Training script: `ml/scripts/train_qat_obb_box_kd_student.py`
+- Launcher: `tmp/run_qat_obb_box_kd_student_face_v1.sh`
+- Data source: `tmp/labelled_captured_images_board_bbox.json` with `pxl_geometry` + `reviewed_geometry`
+- GPU cap: `TF_GPU_MEMORY_LIMIT_MB=14000`
+- Final artifacts:
+  - `ml/artifacts/training/obb_box_board_bbox_kd_student_face_v1/obb_box_float.keras`
+  - `ml/artifacts/training/obb_box_board_bbox_kd_student_face_v1/obb_box_ptq.tflite`
+  - `ml/artifacts/training/obb_box_board_bbox_kd_student_face_v1/obb_box_qat.tflite`
+- Float test report:
+  - board box center MAE: `8.92 px`
+  - board box size MAE: `10.69 px`
+- PTQ test report:
+  - board box center MAE: `9.76 px`
+  - board box size MAE: `10.85 px`
+- QAT test report:
+  - board box center MAE: `12.93 px`
+  - board box size MAE: `17.69 px`
+- Takeaway: the face labels are definitely the right supervision source; PTQ kept most of the float accuracy, while QAT needs another pass or a small architecture/loss tweak before it becomes the preferred deployment artifact.
+
+# Board-only OBB retrain completed on the bigger GPU with a 14 GB cap (2026-07-04)
+
+- Training script: `ml/scripts/train_obb_board_only_320.py`
+- Launcher: `tmp/export_obb_board_only_320_biggpu_v1.sh` for the export-only rerun, after the main train job completed.
+- GPU cap: `TF_GPU_MEMORY_LIMIT_MB=14000`
+- The merged board-focused dataset had:
+  - `880` unique examples
+  - `528` train / `176` val / `176` test
+- Best training checkpoint:
+  - `Epoch 104` val MAE: `0.02479`
+  - Test MAE: `0.0248`
+- Final artifacts in `ml/artifacts/training/obb_board_only_320_20260704_182513`:
+  - `best_model.keras`
+  - `final_model.keras`
+  - `obb_board_only_int8.tflite`
+- The export step originally failed because one calibration sample was unreadable; the export-only rerun now skips bad samples and completed cleanly with `50` representative samples.
+- This run was chosen over the fullframe/scaled OBB variants because the user wanted the new board labels to specifically help the board-side OBB.
+
+# `mnv2_unet_heatmap` finished on the board-capture split and is the current best QAT-friendly board geometry run (2026-07-04)
+
+- Finished training on `tmp/training/geometry_unet_biggpu_v1`.
+- Final test metrics on the 59-sample split:
+  - Center MAE: `1.68 px`
+  - Tip MAE: `4.44 px`
+  - Angle MAE: `1.92°`
+  - Temperature MAE: `0.57°C`
+- This is much better than the earlier QAT-friendly board-capture baselines in the memory table:
+  - KD SimCC: `3.42 px` center, `20.79 px` tip
+  - Heatmap+DARK: `2.00 px` center, `26.51 px` tip
+- It is still a bit behind the older sc128 SimCC tip result (`3.3 px`), but it is noticeably stronger overall on the current board-capture test split.
+- Cold-end follow-up on the same run:
+  - Held-out cold test rows (`20` samples, `< 0°C`): center `1.63 px`, tip `1.93 px`, temperature `0.22°C`.
+  - Deep cold held-out rows (`12` samples, `<= -15°C`): center `1.54 px`, tip `1.98 px`, temperature `0.19°C`.
+  - `board_captures_4.zip` cold stress rows (`31` samples, not held out): center `1.30 px`, tip `1.54 px`, temperature `0.41°C`.
+- Windows-side packaging handoff:
+  - Use `tmp/training/geometry_unet_biggpu_v1/model_int8.tflite` as the deployment artifact to package/integrate first.
+  - Keep `tmp/training/geometry_unet_biggpu_v1/model_float.keras` around for re-export, parity checks, and debugging if the Windows-side integration needs a source model.
+  - The companion metrics live in `tmp/training/geometry_unet_biggpu_v1/test_metrics.json` and `tmp/training/geometry_unet_biggpu_v1/test_predictions.csv`.
+  - The current run is the one to pick up for the cold-end board-capture work unless a later retrain beats it on the same split.
+
+# GPU memory cap for future WSL training runs (2026-07-04)
+
+- For this repo's future GPU training scripts, use a `14 GB` TensorFlow memory cap by default.
+- The current bigger GPU has enough headroom for `14 GB`, and this is the preferred cap for upcoming launches unless a specific experiment needs less.
+- Keep the memory-limit setting in the launcher script or at the top of the training job, before TensorFlow imports.
+
+# v6 UNet claim does not generalize on the newest labeled captures (2026-06-25)
+
+- The `tmp/obb_geo_sweep/unet_v6` model looked good on the single clean replay image, but a batch replay on the newest labeled captures in this checkout did **not** hold up.
+- I re-ran the actual OBB -> direct crop -> 224x224 resize -> UNet heatmap + DARK path, matching the claim's preprocessing note.
+- On the 8 newest labeled captures we found locally, the replay landed around:
+  - center MAE: `5.30 px`
+  - tip MAE: `48.75 px`
+  - angle MAE: `63.52°`
+- Several overlays showed the predicted tip far left of the real needle, so this model should not be treated as a solved end-to-end pipeline model.
+- The clean single-frame overlay was a useful diagnostic, but it was misleading as a generalization check.
+
+# UNet heatmap v6: < 5 px MAE achieved on actual OBB pipeline (2026-06-25)
+
+## Final winner: UNet heatmap v6 on OBB crops
+- **Center MAE: 1.17 px** (under 5 px target)
+- **Tip MAE: 4.67 px** (under 5 px target)
+- **VERDICT: PASS** — needle visibly locked on the clean test capture
+
+## Key insight: preprocessing must match between training and inference
+- The trainer uses **direct crop + direct resize (stretch)** to 224×224
+- The original verification script used **resize-with-pad** (aspect-preserving)
+- This mismatch caused 5-7 px errors on the pipeline
+- After fixing the verification to use direct crop+resize, both center and tip came under 5 px
+
+## Architecture
+- **Backbone**: MobileNetV2 α=0.75 (ImageNet, frozen) — pretrained features
+- **Decoder**: UNet with 4 skip connections (7→14→28→56→112)
+- **Output**: 112×112 center heatmap + 112×112 tip heatmap + scalar confidence
+- **Decoding**: Argmax + DARK sub-pixel refinement
+- **Peak int8 activation**: 112×112×32 = 401 KB (under 1.5 MB SRAM)
+- **TFLite size**: 4.4 MB
+- **Training**: 200 epochs, batch 16, Adam lr=5e-4 with warmup, sigma=2.5
+
+## Data
+- 468 OBB-cropped images (333 PXL + 135 board captures, 327/70/71 split)
+- OBB crops generated by running the deployment OBB model on every image
+- Square crops (square_scale=2.0) to preserve aspect ratio during stretch-resize
+- Manifest: `tmp/obb_geometry_manifest_v4.csv`
+- Generator: `ml/scripts/generate_obb_geometry_manifest.py`
+
+## Pipeline (actual OBB → model replay)
+1. Load board capture as RGB (224×224)
+2. Resize-with-pad to 224×224 (preserve aspect for OBB input)
+3. Run OBB TFLite model → 4-param box (cx, cy, w, h)
+4. Decode OBB box to source-space crop (4 corners, 0.83 scale)
+5. **Direct crop + direct resize to 224×224** (MUST match trainer)
+6. Normalize to [0, 1]
+7. Run UNet heatmap model → 112×112 center/tip heatmaps
+8. DARK decode → sub-pixel coordinates
+9. Map back from 224-space to source-space using crop box
+
+## Test set vs pipeline metrics
+- Test set: center 4.96 px, tip 3.97 px
+- OBB pipeline: center 1.17 px, tip 4.67 px
+- The pipeline center is BETTER (1.17 vs 4.96) — the OBB model is more reliable on the clean capture
+- The pipeline tip is similar to test set — DARK decoding gives sub-pixel accuracy
+
+## Artifacts
+- Model: `tmp/obb_geo_sweep/unet_v6/model_float.keras` (40.7 MB)
+- TFLite: `tmp/obb_geo_sweep/unet_v6/model_int8.tflite` (4.4 MB)
+- Manifest: `tmp/obb_geometry_manifest_v4.csv`
+- Verification script: `tmp/verify_v6_on_pipeline.py`
+- Overlay: `tmp/v6_obb_pipeline_overlay_direct.png` (PASS, tip locked)
+
+## Why earlier attempts failed
+- Loose-crop training: test metrics good, pipeline tip ~48 px (domain gap)
+- SimCC-based heads (HRNet+ECA): GAP loses spatial detail for fine tip
+- OBB-cropped SimCC: 13-35 px tip (coordinate shift, GAP head)
+- UNet heatmap on OBB crops with WRONG preprocessing: 5-7 px (mismatch)
+- **UNet heatmap on OBB crops with CORRECT preprocessing: 4.67 px tip, 1.17 px center**
+
+# UNet heatmap v6 on OBB crops: tip 3.97 px, target achieved (2026-06-25)
+
+## Winner: UNet heatmap with MobileNetV2 α=0.75 + 112×112 heatmap + DARK decoding
+- **Tip MAE: 3.97 px** (target was < 5 px)
+- **Center MAE: 4.96 px**
+- **Angle MAE: 2.61°**
+- **Temperature MAE: 0.77°C**
+- Training: 200 epochs, early stopped at 152. 71-sample test set.
+- Model file: `tmp/obb_geo_sweep/unet_v6/model_int8.tflite` (4.4 MB)
+- Manifest: `tmp/obb_geometry_manifest_v4.csv` (468 OBB-cropped images, square_scale=2.0)
+
+## Key success factors
+1. **Train on actual OBB crops** — not manifest loose crops. The OBB model produces the same crops at inference, so training on OBB crops closes the domain gap.
+2. **Larger OBB crops** (square_scale=2.0) — gives the model more context (gauge takes smaller proportion of crop).
+3. **112×112 heatmap output** — preserves spatial detail all the way to the head, vs GAP-based SimCC which loses it.
+4. **DARK sub-pixel decoding** — removes argmax quantization bias.
+5. **200 epochs with early stopping** — UNet converges slowly but reaches the target.
+6. **MobileNetV2 α=0.75 frozen** — ImageNet pretrained features transfer well.
+
+## Leaderboard on OBB crops
+| Model | Center | Tip | Angle | Temp |
+|-------|--------|-----|-------|------|
+| **UNet α=0.75 σ=2.5 (v6)** | 4.96 | **3.97** | **2.61** | **0.77** |
+| UNet α=1.0 σ=1.5 (v8) | **2.65** | 3.74 | 4.26 | 1.57 |
+| UNet α=1.0 σ=2.0 (v9b) | 4.87 | 4.80 | 2.61 | 0.77 |
+| UNet α=0.75 σ=2.5 (v10) | 5.01 | 4.07 | 3.35 | 1.66 |
+| HRNet+ECA 224 bins (v4) | 11.88 | 13.22 | 12.50 | 3.70 |
+
+## What didn't work for OBB crops
+- **SimCC with 112-224 bins** (HRNet+ECA): 13-35 px tip — GAP-based heads lose spatial detail needed for fine tip localization
+- **Combined loose+OBB training**: 28 px tip — mixed label distributions confuse the model
+- **Custom QAT encoder** (any width, any bins): 35+ px tip — no ImageNet features
+- **RepVGG scratch**: 27 px tip — structural reparam helps training but no pretraining
+
+## OBB manifest generation
+- Script: `ml/scripts/generate_obb_geometry_manifest.py`
+- Runs the deployment OBB model on every training image
+- Decodes the 4-param OBB box with `_obb_to_square_crop` (square_scale=2.0)
+- Remaps center/tip to 224-space using stretch-resize coordinates
+- Fix `absolute_temperature_difference_c` empty fields to "nan" to avoid `load_geometry_manifest` silent drops
+
+## V4: Real pipeline use of OBB-cropped training (2026-06-25)
+
+## Leaderboard after 19 trained models (71-sample test)
+
+| Model | Center | Tip | Angle | Temp | Notes |
+|-------|--------|-----|-------|------|-------|
+| UNet Heatmap 112 | 1.50 px | 2.21 px | 0.85° | 0.25°C | Overfit, failed board replay |
+| **HRNet-lite + ECA** | 7.20 px | **8.14 px** | **5.49°** | **1.63°C** | Best generalizing model |
+| Spatial SimCC Deep | 6.70 px | 14.85 px | 8.29° | 2.46°C | |
+| Spatial SimCC sc128 | 1.28 px | 3.22 px | — | — | Gold standard on board replay |
+
+Key finding: SimCC classification + spatial features + lightweight attention generalizes best.
+
+## Pipeline reality check: neither current board geometry model is solved end-to-end yet (2026-06-25)
+
+- I re-ran both board-geometry candidates through the actual OBB -> crop -> needle pipeline on a clean `capture_2026-05-27_11-58-15.yuv422` frame.
+- The spatial SimCC sc128 replay looked better than the UNet candidate, but it still did not produce a reliable, deployment-grade needle tip lock on the full pipeline.
+- The OBB -> UNet replay also missed the needle tip on the same clean frame.
+- The older big-white-splotch frame was a bad diagnostic example, but the cleaner frame showed the broader issue: we should not claim either model family is solved end-to-end yet.
+- The current best use of these artifacts is still as debugging baselines, not as a final production needle detector.
+
+## Board replay correction: the spatial SimCC sc128 artifact is the reliable needle localizer on board captures (2026-06-25)
+
+- I checked the claimed UNet heatmap winner against a labeled board sample and it did **not** hold up on this checkout.
+- The spatial SimCC sc128 deployment artifact is the model that actually lines up with the labeled board sample when the input is normalized to `[0, 1]`.
+- On `capture_2026-05-27_16-53-57.png` with the reviewed board crop, the spatial SimCC replay was about `1.28 px` center error and `3.22 px` tip error.
+- The board overlay replay for the newest `2026-06-24` captures now lives at `tmp/board_spatial_simcc_yesterday_overlays/contact_sheet.png`.
+- Use the spatial SimCC path for the OBB -> needle pipeline until we retrain or re-evaluate the UNet family against the same board labels.
+
+# UNet Heatmap 112×112 BREAKTHROUGH — deployment-ready gauge reading (2026-06-25)
+
+## Winning architecture
+- **Model**: MobileNetV2 α=0.75 (ImageNet, frozen) + UNet decoder with 4× skip connections + 112×112 center/tip heatmap heads.
+- **Decoding**: Argmax + DARK sub-pixel refinement.
+- **TFLite int8**: 4.4 MB weights, 401 KB peak activation (well under 1.5 MB SRAM).
+- **Training**: 59 epochs (best at 34), 468 samples (333 PXL + 135 board), 224×224 input.
+- **Artifact**: `/home/rishi_latchmepersad/Projects/tmp/geo_sweep_v5/unet_heatmap/model_float.keras`
+
+## Final metrics (71-sample held-out test)
+
+| Metric | This model | Prior best (any arch) | sc128 (prior SOTA) |
+|--------|-----------|----------------------|---------------------|
+| Center MAE | **1.50 px** | 2.00 px (custom Heatmap+DARK) | 0.95 px |
+| Tip MAE | **2.21 px** | 17.13 px (MNv2 spatial SimCC) | 3.30 px |
+| Angle MAE | **0.85°** | 9.63° (MNv2 spatial SimCC) | 1.68° |
+| Temp MAE | **0.25°C** | 2.85°C (MNv2 spatial SimCC) | 0.90°C |
+| Temp RMSE | **0.34°C** | — | — |
+
+## Why this works
+1. **112×112 heatmaps** give 2× the spatial resolution of 56×56 maps (4× more pixels per keypoint).
+2. **Multi-scale skip connections** from MobileNetV2 preserve fine spatial detail at 56×56, 28×28, 14×14, and 7×7 scales.
+3. **DARK decoding** removes the quantization bias from argmax, giving sub-pixel coordinate recovery.
+4. **ImageNet pretrained features** provide strong low-level features that transfer to gauge keypoint detection.
+5. The **tip specifically benefits** from high-resolution spatial features — GAP-based heads lose this entirely.
+
+## Architecture lessons from 15 trained models
+- **Flat Conv-BN-ReLU encoder (633K-2.4M params)**: Cannot learn tip. All scratch runs collapse at epoch 8-9 (tip 63-65 px).
+- **MobileNetV2 + GAP+Dense SimCC**: Works (tip 17 px) but GAP destroys spatial info needed for tip.
+- **MobileNetV2 + spatial Conv SimCC head**: Marginal improvement (tip 17 px unchanged).
+- **RepVGG scratch**: Trains to epoch 83 (structural reparam helps) but no ImageNet features → tip 27 px.
+- **HRNet-lite + ECA attention**: Buggy (needs shape fix), not trained successfully yet.
+- **UNet + 112×112 heatmaps**: **Winner**. Skip connections preserve spatial detail end-to-end.
+
+## Data
+- 468 samples: 333 PXL + 135 board captures (327 train / 70 val / 71 test).
+- Manifest: `ml/data/geometry_board_heatmap_manifest_v2_fixed.csv`.
+
+## Files
+- `ml/src/.../models_geometry_v2.py` — 10 model builders + KD loss + DARK decode + TFLite export + attention modules + HRNet-lite + RepVGG + UNet decoder
+- `ml/scripts/train_geometry_candidates.py` — unified trainer for all candidate types
+- Models: `tmp/geo_sweep_v2/*`, `v3/*`, `v4/*`, `mnv2/*`, `repvgg/*`, `v5/*`
+
+# Geometry candidates — 15 models trained, UNet Heatmap wins (2026-06-25)
+
+## Final results table
+
+| # | Model | Center | Tip | Angle | Temp MAE | TFLite | Params | Notes |
+|---|-------|--------|-----|-------|----------|--------|--------|-------|
+| 1 | v2 Heatmap+DARK custom | **2.00** px | 26.51 px | 21.30° | 7.70°C | 1051 KB | 1.0M | Best center |
+| 2 | v2 KD custom (633K) | 3.42 px | 20.79 px | 15.70° | 4.88°C | 667 KB | 633K | Lucky init? |
+| 3 | MNv2 Frozen (α=0.75) | 9.40 px | **17.13** px | **11.39°** | **4.71°C** | — | 1.8M | Best tip/angle/temp |
+| 4 | MNv2 Scratch (α=0.35) | 8.51 px | 30.86 px | 27.10° | 13.83°C | — | 831K | Underfit |
+| 5 | v2 SimCC custom (633K) | 13.02 px | 63.43 px | 65.38° | 19.37°C | 667 KB | 633K | Scratch = random tip |
+| 6 | v2 CoordConv custom | 19.93 px | 59.86 px | 54.53° | 16.16°C | 699 KB | 576K | Worst |
+| 7 | v3 Wide SimCC (2.38M) | 12.93 px | 64.60 px | 68.74° | 20.37°C | — | 2.4M | Wider = worse (overfit) |
+| 8 | v4 SimCC 224bin | 13.06 px | 64.57 px | 62.44° | 18.50°C | — | 633K | 224 bins didn't help |
+| 9 | v4 SimCC hiptip 10x | 12.86 px | 65.31 px | 67.69° | 20.06°C | — | 633K | Tip weight didn't help |
+| 10 | **Spatial SimCC** | — | — | — | — | — | — | Training now |
+
+## Key findings
+- **Custom QAT encoder (633K) cannot learn tip**: All scratch-trained custom encoder runs get 63-65 px tip MAE — essentially random. The encoder has capacity for center (~12 px) but not tip. Only the v2 KD run escaped this (3.42 px center, 20.79 tip) — likely lucky random initialization.
+- **MobileNetV2 backbone works**: Frozen MNv2 (α=0.75, ImageNet weights) achieves best tip (17.13 px) and angle (11.39°). The ImageNet features transfer usefully.
+- **Pretraining matters more than width**: 2.38M param custom encoder (v3) performed WORSE than 633K param custom encoder — random initialization can't leverage extra capacity without more data.
+- **SimCC bin count (112 vs 224) had no effect** on scratch custom encoder — the limiting factor is the encoder, not the head resolution.
+- **Tip weight (5x, 10x) had no effect** — the encoder simply can't learn tip features.
+
+## Data
+- 468 samples: 333 PXL + 135 board captures (327 train / 70 val / 71 test).
+- Manifest: `ml/data/geometry_board_heatmap_manifest_v2_fixed.csv`.
+- 183 unique board captures identified, 135 on disk. 89 were previously in v1 manifest.
+
+## Architectural insight
+- GAP+Dense SimCC head loses spatial information — the 1D vector after GAP can't encode fine tip position.
+- The prior sc128 model (1.68° angle MAE) used **spatial SimCC** — Conv2D-based head that preserves spatial features before marginalization.
+- Current spatial SimCC (MNv2 + Conv bottleneck + mean-pool over spatial axis) is training now — this should match the sc128 architecture.
+
+## Training environments
+- All training on GTX 1650 Ti (4GB, capped to 3.9GB), WSL2, TensorFlow 2.20 / Keras 3.13.
+- Sequential training to avoid GPU contention.
+- 60-80 epochs, batch 8-16, cosine LR schedule with warmup.
+
+## Known bugs fixed
+- YUV422 board capture decoding (source dimensions not passed to decoder).
+- Empty `temperature_c` → `float("")` → ValueError in `load_geometry_manifest` → silent row skip. Fixed by writing "nan" to empty float fields.
+- `model.output_names` vs `model.outputs[i].name` for detecting output layer names during compile.
+- MobileNetV2 uses `tf.keras.applications.mobilenet_v2.preprocess_input` (scales to [-1, +1]) — Rescaling(2.0, offset=-1.0) matches this.
+
+## Artifacts
+- `ml/src/.../models_geometry_v2.py` — all model builders, KD wrapper, DARK decode, TFLite export.
+- `ml/scripts/train_geometry_candidates.py` — unified trainer supporting 6 candidate types.
+- Models: `tmp/geo_sweep_v2/*`, `tmp/geo_sweep_v3/*`, `tmp/geo_sweep_v4/*`, `tmp/geo_sweep_mnv2/*`.
+- Manifest: `ml/data/geometry_board_heatmap_manifest_v2_fixed.csv`.
+
+# Geometry candidates v2 — 4 models trained on enriched 468-sample manifest (2026-06-25)
+
+## Data
+- Built `ml/data/geometry_board_heatmap_manifest_v2_fixed.csv` with 468 samples (333 PXL + 135 board captures, 327 train / 70 val / 71 test).
+  - 183 unique board captures identified across 4 CSV sources, 135 found on disk.
+  - Fixed empty `temperature_c` and float fields → "nan" to avoid `float("")` ValueError in `load_geometry_manifest`.
+  - Fixed YUV422 loading to pass `source_width`/`source_height` to decoder.
+- 4/135 board images missing from disk → actual train count = 323.
+
+## Results (60 epochs each, 224×224, peak activations all < 1.5 MB)
+
+| Candidate | Center MAE | Tip MAE | Angle MAE | Temp MAE | Temp RMSE | TFLite | Best Epoch |
+|-----------|-----------|---------|-----------|----------|-----------|--------|------------|
+| A: SimCC (scratch) | 13.02 px | 63.43 px | 65.38° | 19.37°C | 22.64°C | 667 KB | 9 |
+| B: KD SimCC (teacher MNv2 α=1.0) | 3.42 px | 20.79 px | 15.70° | 4.88°C | 11.36°C | 667 KB | 52 |
+| C: Heatmap+DARK | **2.00 px** | 26.51 px | 21.30° | 7.70°C | 18.64°C | 1051 KB | 45 |
+| D: CoordConv+Direct | 19.93 px | 59.86 px | 54.53° | 16.16°C | 21.61°C | 699 KB | 7 |
+
+## Key findings
+- **Center detection works well** with heatmaps (2.00 px) and KD SimCC (3.42 px).
+- **Tip detection is universally poor** — best is 20.79 px (B). This is the fundamental limiter.
+- The custom QAT-friendly encoder (633K params) is too small for fine tip localization. The teacher (MobileNetV2 α=1.0, 3.1M params) clearly learns better features.
+- Candidate A (scratch SimCC) trained with early stopping at epoch 9 — underfit. Candidate B trained longer to epoch 52 — much better center but tip still weak.
+- Candidate C (Heatmap+DARK) has excellent center (2.00 px) but mediocre tip (26.51 px) — DARK decoding helps center more than tip.
+- Candidate D (CoordConv+Direct) is the worst — direct regression can't handle the diverse needle tip appearances.
+- **SimCC tip issue**: With 112 bins at 224×224, SimCC gives only 2 px/bin resolution for the tip coordinate. The tip position varies more than the center, requiring sub-pixel accuracy. The custom encoder lacks capacity to distinguish fine tip positions.
+
+## Comparison to prior SOTA
+- Previous sc128 SimCC (MobileNetV2 backbone, 2.04M params): center MAE 0.95 px, tip MAE 3.3 px, angle MAE 3.4°, temp MAE 1.0°C. But this was on 19-image hard-case set, float32 only, and QAT export was fragile.
+- The current custom encoder is ~3x smaller and QAT-safe, but loses ~3x accuracy.
+
+## Next steps
+- **Widen the custom encoder**: width_multiplier=2.0 (802 KB peak, still under 1.5 MB) to ~2.1M params — closer to the sc128 model's capacity.
+- **Try inverted residual backbone** (MobileNetV2-style blocks, QAT-safe) — more parameter-efficient depthwise separable convolutions.
+- **Increase SimCC bins to 224** (1 px resolution) for finer tip localization, at the cost of a larger classification head.
+- **Train a proper KD loop** where the student receives teacher logits during training (not just independent training after teacher).
+- **Pre-train the custom encoder** on a related task (e.g., ImageNet-1K classification) before fine-tuning for gauge geometry.
+- **Add sub-pixel refinement head** — a tiny Dense layer predicting residual offsets on top of SimCC expected values.
+
+## Artifacts
+- Models: `tmp/geo_sweep_v2/{simcc,kd_simcc,heatmap_dark,coordconv}/model_float.keras`
+- TFLite: same dirs, `model_int8.tflite`
+- Metrics: same dirs, `test_metrics.json`
+- Manifest: `ml/data/geometry_board_heatmap_manifest_v2_fixed.csv` (468 rows)
+
+# Geometry candidates sweep — 4 new QAT-friendly models for board capture needle reading (2026-06-25)
+
+- Created `ml/src/embedded_gauge_reading_tinyml/models_geometry_v2.py` with four new architectures:
+  - **Candidate A (SimCC)**: QAT-friendly custom CNN encoder + SimCC 112-bin axis classification heads. ~633K params, peak int8 activation 401 KB. Best direct path to QAT-compatible int8.
+  - **Candidate B (KD SimCC)**: Same student as A, trained with KL-divergence KD from a MobileNetV2-alpha1.0 teacher. ~633K params student, ~3.2M teacher.
+  - **Candidate C (Heatmap+DARK)**: UNet-style encoder-decoder with 112×112 heatmap output. DARK sub-pixel decoding removes argmax quantization bias. ~1.0M params, peak 1.0 MB.
+  - **Candidate D (CoordConv+Direct)**: Custom encoder with CoordConv input channels → GAP → Dense regression. Huber loss on coordinates. ~576K params, peak 401 KB. Simplest output space, sanity-check baseline.
+- All backbones built from standard Keras Conv2D/BN/ReLU layers — NO Lambda, NO `tf.nn.convolution` wrappers — so they are fully compatible with `tfmot.quantization.keras.quantize_model()`.
+- All architectures verified to stay under the 1.5 MB peak int8 activation budget at `224×224`:
+  - A: 401 KB, B: 401 KB, C: 1.0 MB, D: 401 KB
+- Created `ml/scripts/train_geometry_candidates.py` — unified training script supporting all four candidates.
+  - Loads data from `ml/data/geometry_board_heatmap_manifest_v1.csv` (433 rows, 305/59/69 split).
+  - Generates SimCC Gaussian-smoothed bin targets or Gaussian heatmap targets.
+  - Supports KD training (teacher model, temperature-scaled KL loss on SimCC logits).
+  - Optional QAT fine-tune phase with TFMOT.
+  - PTQ int8 TFLite export (float32 I/O, int8 internals) and QAT int8 export.
+  - DARK sub-pixel decoding for heatmap models.
+  - Evaluation with center MAE, tip MAE, angle MAE, temperature MAE/RMSE.
+- WSL handoff scripts in `tmp/`:
+  - `run_geometry_candidate_simcc.sh`
+  - `run_geometry_candidate_kd_simcc.sh`
+  - `run_geometry_candidate_heatmap_dark.sh`
+  - `run_geometry_candidate_coordconv_direct.sh`
+  - `run_geometry_candidates_all.sh` (master launcher)
+- Smoke test passed: all 7 model variants build, all activation budgets pass, KD loss computes, DARK decode recovers sub-pixel coordinates from synthetic heatmaps.
+- Ruff linting clean on both new files.
+
+## Key design decisions
+- MobileNetV2 backbone avoided for QAT students because it uses Lambda-wrapped `tf.nn.convolution` that breaks `tfmot.clone_model`. The teacher CAN use MobileNetV2 since it's float32-only.
+- SimCC chosen as primary head because prior runs showed `sc128` reaching 1.68° angle MAE. The issue was export fragility, not accuracy.
+- DARK decoding provides unbiased sub-pixel coordinates from heatmap peaks — correcting the quantization bias that plagued earlier argmax-based decoding.
+- CoordConv injected as standard Concatenate (not Lambda) to stay QAT-safe.
+
+## To train
+```bash
+# Single candidate:
+bash tmp/run_geometry_candidate_simcc.sh
+tail -f tmp/geometry_candidate_simcc_v1/training.log
+
+# All 4 sequentially:
+bash tmp/run_geometry_candidates_all.sh
+```
+
 # Board compact-geometry needle model now has a clean-capture path that reaches the target on good captures (2026-06-24)
 
 - The current needle trainer is `ml/scripts/train_board_compact_geometry.py`.
@@ -242,6 +767,7 @@
 - The script writes a balanced starter CSV to `tmp/captured_image_review_batch_50.csv`.
 - The batch is selected in temperature bins with a round-robin sampler, and manual-verification rows are preferred over inverse-mapped rows inside each bin.
 - Launch the GUI against the generated CSV with `poetry run python scripts/label_captured_images_for_models.py --input tmp/captured_image_review_batch_50.csv`.
+- `ml/data/captured_images/clean_board_captures/board_captures_4.zip` is the newer cold-end capture bundle; it has 35 annotated images and now feeds the merged board manifest, with the six filename overlaps removed from the older board CSV so the merged board set lands at 105 rows total.
 
 ## Center-detector + SimCC scripts now have dedicated entrypoints (2026-06-19)
 
@@ -2955,3 +3481,208 @@ sha256[:16] = f7065e4f6b3a98f6
   - several captures still snapped to frame edges or bottom-corner failure modes
 - Conclusion: this heatmap model is better than the first pass, but we still
   should not treat it as deployment-ready for board captures yet.
+
+# v15 UNet retrain on the combined PXL + new clean board captures (2026-06-28)
+
+- Goal: rebuild the needle-model training set with all the clean labels the
+  user has, retrain a v6-style UNet heatmap from scratch, and check the
+  pipeline behaviour on the recent board captures that matter for deployment.
+- New labelled sources combined:
+  - `ml/data/labelled/gauge_1_batch_{1..8}.zip` -> 352 PXL raw photos
+    (3472x4624) with center/tip/dial/temp_c labels from CVAT 1.1.
+  - `ml/data/captured_images/clean_board_captures_extracted/board_captures_1/`
+    -> 188 framed board captures (224x224, April-June 2026) with
+    framing, center, tip, dial, and temp_c.
+  - `ml/data/captured_images/clean_board_captures_extracted/board_captures_2/`
+    -> 14 synthetic-temp board captures + 3 recent June-19 captures.
+- Manifest build script: `tmp/build_clean_geometry_manifest.py`.
+  Output: `tmp/clean_geometry_manifest_v1.csv` (557 rows).
+- Splits:
+  - train 516 (352 PXL + 150 board_captures_1 + 14 synthetic)
+  - val 19 (board_captures_1 random 10%)
+  - test 22 (19 board_captures_1 random 10% + 3 recent June-19)
+- OBB manifest generator (`ml/scripts/generate_obb_geometry_manifest.py`)
+  was run on the new source manifest against the existing
+  `tmp/obb_box_board_bbox_deploy_candidate/model_int8.tflite`.
+  - 550 of 557 rows passed (7 PXL images where the OBB missed the dial
+    region; rows are dropped, not fatal).
+  - `tmp/clean_obb_geometry_manifest_v1.csv` (550 rows).
+  - OBB crop sizes look right: median board OBB crop ~96x96 px
+    (resized to 224), median PXL OBB crop ~2144x2144 px.
+- Trainer config (v15):
+  - candidate: `mnv2_unet_heatmap`
+  - epochs 200, batch 16, lr 0.0005, warmup 3, patience 30
+  - heatmap 112x112, sigma 1.5 px, width multiplier 1.0
+  - tip weight 5.0, confidence loss 0.1
+  - augment jitter 16 px, scale 0.92-1.08
+  - QAT fine-tune 100 steps requested
+  - launch: `tmp/run_unet_v15_train.sh`
+- v15 result on the new test set (n=22, the OBB pipeline):
+  - center MAE 1.34 px, tip MAE 8.06 px, c>5 0/22, t>5 2/22
+  - 2 catastrophic tip failures come from board captures where the
+    OBB crop region does not contain the tip (Apr 3 08-20-49 tip is
+    outside the OBB square crop; Apr 3 11-43-02 tip is at x=-1.3 in
+    crop space). These are OBB-side failures, not model-side failures.
+- v15 result on recent captures (June 7-19, n=20, OBB pipeline,
+  direct crop+resize):
+  - center MAE 2.55 px, tip MAE 2.01 px
+  - max center 4.2 px, max tip 4.0 px
+  - c>5 0/20, t>5 0/20
+  - All 20 recent captures pass the < 5 px acceptance criterion
+    for both center and tip.
+- v15 result on recent captures with letterbox (pad) preprocessing:
+  - center MAE 2.50 px, tip MAE 2.15 px
+  - c>5 0/20, t>5 1/20
+  - Direct and pad modes are essentially equal; direct is slightly
+    better on average tip MAE.
+- TFLite parity:
+  - `tmp/clean_obb_geo_sweep/unet_v15/model_int8.tflite` is internally
+    int8 (PTQ), float32 I/O, 4.41 MB.
+  - The QAT fine-tune step fails because the v15 model is a
+    subclassed Keras Model (not Functional), so QAT can't be applied.
+    Trainer logs: `QAT failed: to_quantize can only either be a keras
+    Sequential or Functional model. Skipping QAT, proceeding with PTQ
+    export.`
+  - The PTQ int8 output reproduces the float model with mean diff
+    < 0.002 on the heatmaps and < 0.004 on the confidence head on
+    random input.
+- OBB retraining status:
+  - The KD student v2 OBB at
+    `tmp/obb_box_board_bbox_deploy_candidate/model_int8.tflite` is the
+    existing deploy candidate (PTQ float MAE 7.43 px center, 13.6 px
+    size on its test set, with QAT being worse than PTQ).
+  - The OBB training source files are gone (only the .pyc caches
+    remain under `ml/src/embedded_gauge_reading_tinyml/obb_v2/`
+    and `ml/scripts/__pycache__/train_qat_obb_box_kd_student.cpython-312.pyc`).
+  - I did not retrain the OBB in this pass because the existing PTQ
+    OBB is already the deploy candidate and the v15 needle model
+    shows the OBB-crop pipeline is good enough to deliver
+    center MAE 2.55 px / tip MAE 2.01 px on the recent captures.
+- Comparison to v6 baseline on the same recent captures:
+  - v6: center 3.30 px, tip 3.73 px, c>5 2/20, t>5 5/20
+  - v15: center 2.55 px, tip 2.01 px, c>5 0/20, t>5 0/20
+- Conclusion: v15 is the new needle-model deploy candidate. The
+  acceptance criterion (center < 5 px, tip < 5 px on recent captures)
+  is met on every single recent capture, both with the trainer's
+  direct crop+resize and with the firmware's letterbox pad.
+
+# Clean board captures added to training (2026-06-28)
+
+- `ml/data/captured_images/clean_board_captures_extracted/board_captures_1/`
+  - 188 usable images (filtered out `.gray.png`, `_preview.png`,
+    `_yuy2.png` duplicates of the same scene).
+  - Includes timestamped board captures from April 3 to June 2, 2026.
+  - All 188 are 224x224, all have center/tip/dial/temp_c labels in
+    the CVAT `annotations.xml`.
+- `ml/data/captured_images/clean_board_captures_extracted/board_captures_2/`
+  - 17 usable images (filtered to 3 June-19 captures + 14 synthetic
+    temperature captures m10c..p50c).
+  - Synthetic captures have exact ground-truth temperature labels.
+  - All 17 have center/tip/dial/temp_c labels in the CVAT
+    `annotations.xml`.
+- All extractions were unzipped into
+  `ml/data/captured_images/clean_board_captures_extracted/` so the
+  manifest generator can find them by absolute path.
+
+# v16 UNet retrain for no-HyperRAM 2 MB SRAM (2026-06-30)
+
+- Goal: get a needle model that fits in 2 MB on-chip SRAM with NO
+  HyperRAM. The previous v15 used 2.31 MB on-chip + 9.6 MB xSPI1
+  HyperRAM. The board has no HyperRAM at all.
+- New model: `build_mobilenetv2_compact_heatmap_model` in
+  `ml/src/embedded_gauge_reading_tinyml/models_geometry_v2.py`.
+  - 224x224 input
+  - MobileNetV2 alpha=0.35 backbone (ImageNet weights)
+  - 3-stage UNet decoder: 14x14 -> 28x28 -> 56x56 (stops there, no
+    56x56 -> 112x112 stage that was forcing the 9.6 MB HyperRAM)
+  - 56x56 heatmap output for center, tip, and a scalar confidence
+  - Decoder filters: (96, 48, 24)
+  - Total params: 524,923 (0.53 M)
+  - Int8 weights: 513 KB
+  - Peak int8 activation: 599 KB
+- Trained on the same `tmp/clean_obb_geometry_manifest_v1.csv` (550
+  rows, 509 train / 19 val / 22 test) with the v15 hyperparams:
+  epochs 200, batch 16, lr 5e-4, sigma 1.5 px, tip weight 5.0.
+  QAT skipped (subclassed Model, falls back to PTQ int8).
+- Test set on the actual OBB pipeline (n=22):
+  - center MAE 1.23 px
+  - tip MAE 6.21 px
+  - 0/22 center outliers, 2/22 tip outliers
+  - 0/20 tip outliers on recent captures (June 7-19) with letterbox pad
+- TFLite int8 (PTQ): 4.41 MB (float keras) -> 647 KB (int8)
+- ONNX for atonn: 2.06 MB (with empty `roi__236 = [0,0,0,0]`
+  initializer added so the Resize op accepts the input)
+- atonn NPU build with the FULL reloc mpool (which contains a
+  hyperRAM pool):
+  - On-chip SRAM: 2.35 MB (npuRAM4 + 5 + cpuRAM2 = 1924 KB used)
+  - HyperRAM: 2.35 MB still used
+  - xSPI2 weights: 2.06 MB
+- atonn NPU build with the INT-ONLY mpool (`stm32n6_reloc_int.mpool`):
+  - 1.79 MB on-chip (4 x 448 KB npuRAM3-6)
+  - No HyperRAM, no xSPI2
+  - v16 needs ~3.5 MB (sum of fp32 activations), 1.8 MB over budget
+- v16 (224x224) does NOT fit in the 1.79 MB int mpool. The native-float
+  atonn build inflates by 4x; the int8 NPU build from stedgeai would
+  be smaller but is Windows-only.
+
+# v16_160 — 160x160 input variant to fit in 1.79 MB int mpool (2026-06-30)
+
+- Same architecture as v16 but with 160x160 input. Smaller feature
+  maps (backbone peak drops from 599 KB int8 to 308 KB int8).
+- Heatmap size 40x40 (the natural 1/4 input resolution at the stop
+  point of the 3-stage UNet decoder).
+- Trained with the same recipe as v16, on GPU this time.
+- Test set on the actual OBB pipeline (n=22):
+  - center MAE 1.17 px (best of v6/v15/v16/v16_160)
+  - tip MAE 2.03 px (best of v6/v15/v16/v16_160)
+  - 0/22 center outliers, 1/22 tip outliers (just an OBB-crop miss)
+- Recent captures (June 7-19, n=20): v16_160 also gives the best
+  results in the recent captures eval (the only one with 0/20
+  center outliers).
+- TFLite:
+  - `model_int8.tflite`: 647 KB, int8 INTERNAL with float32 I/O. This
+    is the standard PTQ output and the right input to the ST Edge
+    AI Windows tool.
+  - `model_full_int8.tflite`: 647 KB, FULL int8 I/O (int8 input +
+    int8 outputs). Useful for an embedded inference path that
+    never sees float. The output scale (0.00391) is coarse for the
+    small heatmap values (max ~0.03), so DARK sub-pixel refinement
+    is degraded in pure-int8 mode. Simple argmax is the right
+    decoder on the NPU int8 path.
+- Custom no-HyperRAM mpool saved at
+  `tmp/stm32n6_noramic_no_hyperram.mpool`: copy of
+  `stm32n6_reloc.mpool` with the xSPI1/hyperRAM pool removed.
+  on-chip = AXISRAM2 (1 MB) + AXISRAM3..6 (4 x 448 KB) = 2.79 MB.
+- atonn NPU build with the no-HyperRAM mpool:
+  - On-chip SRAM: ~1.96 MB (npuRAM3+4+5+cpuRAM2)
+  - HyperRAM: 0 bytes (the vpool was collapsed to on-chip only)
+  - xSPI2 weights: 2.06 MB
+  - The native-float atonn build still says "1.8 MB unallocated" and
+    rejects the build because the model is too big for fp32 buffers.
+    The actual int8 NPU build (stedgeai.exe on Windows) is expected
+    to fit in 1.79 MB SRAM with int8 activations.
+
+# Handoff to codex for the int8 NPU build (2026-06-30)
+
+- Deploy candidate: `tmp/clean_obb_geo_sweep/unet_v16_160/model_int8.tflite`
+  (647 KB, int8 internal, float32 I/O).
+- Use ST Edge AI `stedgeai generate --target stm32n6 --st-neural-art
+  test@neural_art_reloc.json` on the int8 TFLite. The deploy flag
+  `--no-report` and the relocatable `--workspace/--output` paths
+  follow the existing pattern in
+  `ml/scripts/package_tip_focus_v4_112_for_n6.py`.
+- Expected on-chip SRAM footprint under int8 NPU build:
+  ~1.2-1.4 MB activations + 647 KB weights = ~1.85-2.05 MB total
+  on-chip (4x smaller than the native-float atonn build).
+- xSPI2 octoFlash (64 MB external): 647 KB weights, no runtime
+  spillover (no xSPI1 HyperRAM exists on this board).
+- Firmware change: the OBB-cropped image now needs to be resized
+  to 160x160 before the heatmap model. The crop coordinate math in
+  `ml/src/embedded_gauge_reading_tinyml/board_pipeline.py` (or
+  wherever the OBB crop is consumed) needs a `to_160x160` resize
+  in addition to the existing `to_224x224`.
+- DARK post-processing on the NPU: heatmap is 40x40, output scale
+  0.00391. Use simple argmax + bilinear sub-pixel refinement in
+  the firmware, not the full DARK log-heatmap fit, because the
+  int8 heatmap only has ~8 distinct values in the [-128, -120]
+  range and DARK needs a smooth log-heatmap to fit a Gaussian.

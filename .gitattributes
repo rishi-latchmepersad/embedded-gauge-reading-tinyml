@@ -1,0 +1,24 @@
+# Normalize text files in the repository to LF so Git does not treat
+# cross-platform checkouts as massive content rewrites.
+* text=auto eol=lf
+
+# Keep Windows-only script entrypoints comfortable for native Windows tools.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Treat common generated assets as binary so they are not line-ending normalized.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.svg binary
+*.pdf binary
+*.docx binary
+*.xlsx binary
+*.zip binary
+*.tflite binary
+*.npy binary
+*.so binary
+*.dll binary
+*.pt binary

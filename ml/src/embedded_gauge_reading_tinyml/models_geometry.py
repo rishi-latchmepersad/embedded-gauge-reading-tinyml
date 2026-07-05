@@ -757,9 +757,8 @@ def compile_geometry_model(
         true_conf = y_true[:, 4]  # confidence
         pred_conf = y_pred[:, 4]
 
-        # Coordinate loss: MSE
-        coord_loss = keras.losses.mean_squared_error(true_coords, pred_coords)
-        coord_loss = tf.reduce_mean(coord_loss)
+        # Coordinate loss: mean squared error over the four normalized values.
+        coord_loss = tf.reduce_mean(tf.square(true_coords - pred_coords))
 
         # Confidence loss: Binary crossentropy
         conf_loss = keras.losses.binary_crossentropy(true_conf, pred_conf)

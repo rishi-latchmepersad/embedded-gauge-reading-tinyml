@@ -9,39 +9,39 @@ for predicting dial center and needle tip coordinates.
 
 ### Training Set
 
-- **Samples:** 226
-- **Temperature MAE:** 7.37°C
-- **Temperature RMSE:** 11.92°C
-- **Angle MAE:** 22.19°
-- **Center Pixel MAE (224x224):** 10.64px
-- **Tip Pixel MAE (224x224):** 18.20px
-- **Under 2°C:** 18.1%
-- **Under 5°C:** 44.7%
-- **Under 10°C:** 78.3%
+- **Samples:** 272
+- **Temperature MAE:** 4.39°C
+- **Temperature RMSE:** 8.47°C
+- **Angle MAE:** 11.91°
+- **Center Pixel MAE (224x224):** 7.72px
+- **Tip Pixel MAE (224x224):** 11.84px
+- **Under 2°C:** 30.5%
+- **Under 5°C:** 71.0%
+- **Under 10°C:** 96.7%
 
 ### Validation Set
 
-- **Samples:** 47
-- **Temperature MAE:** 13.99°C
-- **Temperature RMSE:** 23.75°C
-- **Angle MAE:** 35.80°
-- **Center Pixel MAE (224x224):** 13.21px
-- **Tip Pixel MAE (224x224):** 26.68px
-- **Under 2°C:** 14.9%
-- **Under 5°C:** 34.0%
-- **Under 10°C:** 61.7%
+- **Samples:** 59
+- **Temperature MAE:** 8.36°C
+- **Temperature RMSE:** 16.82°C
+- **Angle MAE:** 22.58°
+- **Center Pixel MAE (224x224):** 10.59px
+- **Tip Pixel MAE (224x224):** 20.24px
+- **Under 2°C:** 25.4%
+- **Under 5°C:** 61.0%
+- **Under 10°C:** 79.7%
 
 ### Test Set
 
-- **Samples:** 59
-- **Temperature MAE:** 7.91°C
-- **Temperature RMSE:** 12.70°C
-- **Angle MAE:** 25.16°
-- **Center Pixel MAE (224x224):** 11.30px
-- **Tip Pixel MAE (224x224):** 21.82px
-- **Under 2°C:** 25.4%
-- **Under 5°C:** 52.5%
-- **Under 10°C:** 72.9%
+- **Samples:** 69
+- **Temperature MAE:** 10.60°C
+- **Temperature RMSE:** 18.65°C
+- **Angle MAE:** 28.09°
+- **Center Pixel MAE (224x224):** 8.26px
+- **Tip Pixel MAE (224x224):** 19.37px
+- **Under 2°C:** 15.9%
+- **Under 5°C:** 40.6%
+- **Under 10°C:** 66.7%
 
 ## Worst Failure Modes
 
@@ -58,7 +58,7 @@ See `worst_30_predictions.csv` for detailed analysis of worst cases.
 
 This coordinate-regression baseline provides a sanity check for the full pipeline.
 
-**Temperature MAE < 10°C:** Acceptable for a first baseline. Some annotation errors or model capacity issues. Recommend reviewing worst cases before proceeding.
+**Temperature MAE > 10°C:** Baseline needs improvement. Likely annotation errors or data pipeline issues. Review worst cases and clean manifest before proceeding.
 
 
 ---

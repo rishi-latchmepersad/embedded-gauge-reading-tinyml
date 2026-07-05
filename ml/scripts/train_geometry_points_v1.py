@@ -41,6 +41,7 @@ from tensorflow import keras
 
 from embedded_gauge_reading_tinyml.models_geometry import (
     build_mobilenetv2_geometry_points_v1,
+    compile_geometry_model,
 )
 from embedded_gauge_reading_tinyml.geometry_crop_dataset import (
     SourceGeometryExample,
@@ -48,6 +49,24 @@ from embedded_gauge_reading_tinyml.geometry_crop_dataset import (
     generate_jitter_params,
     JitterParams,
 )
+
+
+def _load_yuv422_as_rgb(image_path: Path, source_width: int, source_height: int) -> np.ndarray:
+    """Decode a packed YUV422 board capture into a simple RGB array.
+
+    We only need stable geometry training input here, so we keep the decoder
+    intentionally small and convert the luma plane to three identical channels.
+    """
+
+    raw = image_path.read_bytes()
+    expected = source_height * (source_width // 2) * 4
+    if len(raw) < expected:
+        raise ValueError(f"{image_path} is too small for {source_width}x{source_height} YUV422")
+    yuyv = np.frombuffer(raw[:expected], dtype=np.uint8).reshape(source_height, source_width // 2, 4)
+    luma = np.empty((source_height, source_width), dtype=np.uint8)
+    luma[:, 0::2] = yuyv[:, :, 0]
+    luma[:, 1::2] = yuyv[:, :, 2]
+    return np.repeat(luma[:, :, None], 3, axis=2)
 
 
 @dataclass
@@ -104,11 +123,6 @@ def load_sample(
     if not image_path.exists():
         return None
     
-    try:
-        image = Image.open(image_path).convert("RGB")
-    except Exception:
-        return None
-    
     # Get crop coordinates
     x1 = float(row["loose_crop_x1"])
     y1 = float(row["loose_crop_y1"])
@@ -118,6 +132,15 @@ def load_sample(
     # Get source dimensions
     source_w = int(row["source_width"])
     source_h = int(row["source_height"])
+
+    try:
+        if image_path.suffix.lower() == ".yuv422":
+            image_array = _load_yuv422_as_rgb(image_path, source_w, source_h)
+        else:
+            image = Image.open(image_path).convert("RGB")
+            image_array = np.asarray(image, dtype=np.uint8)
+    except Exception:
+        return None
     
     # Apply jitter for training
     if training and rng is not None:
@@ -144,8 +167,8 @@ def load_sample(
         x1, y1, x2, y2 = x1_new, y1_new, x2_new, y2_new
     
     # Extract crop
-    crop_box = (x1, y1, x2, y2)
-    crop = image.crop(crop_box)
+    crop_box = (int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2)))
+    crop = Image.fromarray(image_array).crop(crop_box)
     
     # Resize to input size
     crop_resized = crop.resize((input_size, input_size), Image.LANCZOS)
@@ -233,6 +256,12 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--output-dir", type=str, default=None, help="Output directory")
+    parser.add_argument(
+        "--manifest-path",
+        type=str,
+        default=None,
+        help="CSV manifest path. Defaults to ml/data/geometry_reader_manifest_v2_clean.csv.",
+    )
     args = parser.parse_args()
     
     print("=" * 80)
@@ -249,7 +278,10 @@ def main():
     
     # Paths
     base_path = Path(__file__).parent.parent.parent
-    manifest_path = base_path / "ml" / "data" / "geometry_reader_manifest_v2_clean.csv"
+    if args.manifest_path:
+        manifest_path = Path(args.manifest_path)
+    else:
+        manifest_path = base_path / "ml" / "data" / "geometry_reader_manifest_v2_clean.csv"
     
     if args.output_dir:
         output_dir = Path(args.output_dir)
@@ -310,11 +342,7 @@ def main():
     
     # Compile model
     print("\nCompiling model...")
-    model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=config.learning_rate),
-        loss="mse",
-        metrics=["mae"],
-    )
+    compile_geometry_model(model, learning_rate=config.learning_rate)
     
     # Callbacks
     callbacks = [
