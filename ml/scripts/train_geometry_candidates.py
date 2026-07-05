@@ -2,7 +2,8 @@
 """
 Unified training script for geometric reading candidates (A/B/C/D).
 
-Supports four architectures for 224x224 gauge keypoint detection:
+Supports multiple architectures for configurable square gauge keypoint
+detection:
   A.  simcc          -- QAT-friendly custom CNN + SimCC classification heads
   B.  kd_simcc       -- Same as A, trained with KD from a frozen teacher
   C.  heatmap_dark   -- Custom encoder-decoder + 56x56 heatmap + DARK decoding
@@ -136,6 +137,7 @@ class TrainConfig:
     simcc_dense_units: int = 256
     heatmap_size: int = 112
     heatmap_sigma_px: float = 3.0
+    image_size: int = 224
     width_multiplier: float = 1.0
     backbone_variant: str = "standard"
     dropout_rate: float = 0.15
@@ -266,12 +268,12 @@ def prepare_samples_from_manifest(
             crop_y1 = int(float(raw_row["obb_crop_y1"]))
             crop_x2 = int(float(raw_row["obb_crop_x2"]))
             crop_y2 = int(float(raw_row["obb_crop_y2"]))
-            center_x_224_scale = 224.0 / max(1, crop_x2 - crop_x1)
-            center_y_224_scale = 224.0 / max(1, crop_y2 - crop_y1)
-            cx_224 = (ex.center_x_source - float(crop_x1)) * center_x_224_scale
-            cy_224 = (ex.center_y_source - float(crop_y1)) * center_y_224_scale
-            tx_224 = (ex.tip_x_source - float(crop_x1)) * center_x_224_scale
-            ty_224 = (ex.tip_y_source - float(crop_y1)) * center_y_224_scale
+            target_scale_x = float(target_size) / max(1, crop_x2 - crop_x1)
+            target_scale_y = float(target_size) / max(1, crop_y2 - crop_y1)
+            cx_224 = (ex.center_x_source - float(crop_x1)) * target_scale_x
+            cy_224 = (ex.center_y_source - float(crop_y1)) * target_scale_y
+            tx_224 = (ex.tip_x_source - float(crop_x1)) * target_scale_x
+            ty_224 = (ex.tip_y_source - float(crop_y1)) * target_scale_y
             accepted = True
         else:
             # Use the existing loose crop logic.
@@ -424,7 +426,8 @@ class GeometrySequence(keras.utils.PyDataset):
 
     The target format depends on candidate_type:
       - "simcc" / "kd_simcc": (simcc_logits (4, bins), confidence [, subpixel_offsets])
-      - "heatmap_dark": (center_heatmap, tip_heatmap, confidence)
+      - "heatmap_dark" / "mnv2_unet_heatmap" / "mnv2_compact_heatmap":
+        (center_heatmap, tip_heatmap, confidence[, is_main_needle])
       - "coordconv_direct": (cx_norm, cy_norm, tx_norm, ty_norm, conf)
     """
 
@@ -437,6 +440,7 @@ class GeometrySequence(keras.utils.PyDataset):
         simcc_sigma_bins: float = 1.5,
         heatmap_size: int = 112,
         heatmap_sigma_px: float = 3.0,
+        image_size: int = 224,
         with_subpixel_refine: bool = False,
         shuffle: bool = True,
         augment: bool = False,
@@ -451,6 +455,7 @@ class GeometrySequence(keras.utils.PyDataset):
         self._simcc_sigma_bins = simcc_sigma_bins
         self._heatmap_size = heatmap_size
         self._heatmap_sigma_px = heatmap_sigma_px
+        self._image_size = image_size
         self._with_subpixel_refine = with_subpixel_refine
         self._shuffle = shuffle
         self._augment = augment
@@ -479,6 +484,7 @@ class GeometrySequence(keras.utils.PyDataset):
                 simcc_t, conf_t, subp_t = make_simcc_targets(
                     s, simcc_bins=self._simcc_bins,
                     sigma_bins=self._simcc_sigma_bins,
+                    image_size=self._image_size,
                 )
                 simcc_targets[i] = simcc_t
                 conf_targets[i] = conf_t
@@ -497,26 +503,32 @@ class GeometrySequence(keras.utils.PyDataset):
             )
             tip_hms = np.zeros_like(center_hms)
             conf_targets = np.zeros((len(batch_samples), 1), dtype=np.float32)
-            is_main_targets = np.ones((len(batch_samples), 1), dtype=np.float32)
+            # Current manifests do not carry a separate needle-class label yet.
+            # The compact model exposes an auxiliary binary head, so we train it
+            # with a stable positive target for now to keep the graph consistent.
+            is_main_needle_targets = np.ones((len(batch_samples), 1), dtype=np.float32)
             for i, s in enumerate(batch_samples):
                 c_hm, t_hm, conf_t = make_heatmap_targets(
                     s, heatmap_size=self._heatmap_size,
                     sigma_px=self._heatmap_sigma_px,
+                    image_size=self._image_size,
                 )
                 # make_heatmap_targets returns (1, H, W) → (H, W, 1)
                 center_hms[i, ..., 0] = c_hm.squeeze(0)
                 tip_hms[i, ..., 0] = t_hm.squeeze(0)
                 conf_targets[i] = conf_t
-            return images, (center_hms, tip_hms, conf_targets, is_main_targets)
+            if self._candidate_type == "mnv2_compact_heatmap":
+                return images, (center_hms, tip_hms, conf_targets, is_main_needle_targets)
+            return images, (center_hms, tip_hms, conf_targets)
 
         else:  # coordconv_direct
             targets = np.zeros((len(batch_samples), 5), dtype=np.float32)
             for i, s in enumerate(batch_samples):
                 targets[i] = [
-                    s.center_x_224 / 224.0,
-                    s.center_y_224 / 224.0,
-                    s.tip_x_224 / 224.0,
-                    s.tip_y_224 / 224.0,
+                    s.center_x_224 / float(self._image_size),
+                    s.center_y_224 / float(self._image_size),
+                    s.tip_x_224 / float(self._image_size),
+                    s.tip_y_224 / float(self._image_size),
                     1.0,
                 ]
             return images, targets
@@ -590,20 +602,23 @@ def compile_model_for_candidate(
     elif (candidate_type == "heatmap_dark"
           or candidate_type == "mnv2_unet_heatmap"
           or candidate_type == "mnv2_compact_heatmap"):
+        loss_dict = {
+            "center_heatmap": keras.losses.MeanSquaredError(),
+            "tip_heatmap": keras.losses.MeanSquaredError(),
+            "confidence": keras.losses.BinaryCrossentropy(),
+        }
+        loss_weight_dict = {
+            "center_heatmap": coordinate_loss_weight,
+            "tip_heatmap": coordinate_loss_weight * tip_weight_multiplier,
+            "confidence": confidence_loss_weight,
+        }
+        if candidate_type == "mnv2_compact_heatmap":
+            loss_dict["is_main_needle"] = keras.losses.BinaryCrossentropy()
+            loss_weight_dict["is_main_needle"] = confidence_loss_weight
         model.compile(
             optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
-            loss={
-                "center_heatmap": keras.losses.MeanSquaredError(),
-                "tip_heatmap": keras.losses.MeanSquaredError(),
-                "confidence": keras.losses.BinaryCrossentropy(),
-                "is_main_needle": keras.losses.BinaryCrossentropy(),
-            },
-            loss_weights={
-                "center_heatmap": coordinate_loss_weight,
-                "tip_heatmap": coordinate_loss_weight * tip_weight_multiplier,
-                "confidence": confidence_loss_weight,
-                "is_main_needle": 0.5,
-            },
+            loss=loss_dict,
+            loss_weights=loss_weight_dict,
         )
 
     else:  # coordconv_direct
@@ -734,6 +749,7 @@ def evaluate_model_on_samples(
     candidate_type: str,
     simcc_bins: int = 112,
     heatmap_size: int = 112,
+    image_size: int = 224,
     use_dark: bool = True,
 ) -> List[EvalResult]:
     """Run model on a list of samples and compute geometry metrics."""
@@ -752,6 +768,7 @@ def evaluate_model_on_samples(
             subp_offsets = preds[2][i] if len(preds) >= 3 else None
             cx, cy, tx, ty, _ = decode_simcc_prediction(
                 simcc_logits, conf, simcc_bins=simcc_bins,
+                image_size=image_size,
                 subpixel_offsets=subp_offsets,
             )
 
@@ -764,15 +781,16 @@ def evaluate_model_on_samples(
             cx, cy, tx, ty, _ = decode_heatmap_prediction(
                 c_hm, t_hm, conf,
                 heatmap_size=heatmap_size,
+                image_size=image_size,
                 use_dark=use_dark,
             )
 
         else:  # coordconv_direct
             pred = preds[i]
-            cx = float(pred[0]) * 224.0
-            cy = float(pred[1]) * 224.0
-            tx = float(pred[2]) * 224.0
-            ty = float(pred[3]) * 224.0
+            cx = float(pred[0]) * float(image_size)
+            cy = float(pred[1]) * float(image_size)
+            tx = float(pred[2]) * float(image_size)
+            ty = float(pred[3]) * float(image_size)
             conf = float(pred[4])
 
         center_err = math.sqrt(
@@ -875,6 +893,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--simcc-dense-units", type=int, default=256)
     parser.add_argument("--heatmap-size", type=int, default=112)
     parser.add_argument("--heatmap-sigma-px", type=float, default=3.0)
+    parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--width-multiplier", type=float, default=1.0)
     parser.add_argument(
         "--backbone-variant", type=str, default="standard",
@@ -965,6 +984,7 @@ def main() -> None:
         simcc_dense_units=args.simcc_dense_units,
         heatmap_size=args.heatmap_size,
         heatmap_sigma_px=args.heatmap_sigma_px,
+        image_size=args.image_size,
         width_multiplier=args.width_multiplier,
         backbone_variant=args.backbone_variant,
         dropout_rate=args.dropout_rate,
@@ -998,6 +1018,7 @@ def main() -> None:
     print(f"  Manifest: {config.manifest_path}")
     print(f"  Epochs: {config.epochs}, Batch: {config.batch_size}, LR: {config.learning_rate}")
     print(f"  Width multiplier: {config.width_multiplier}, Backbone: {config.backbone_variant}")
+    print(f"  Image size: {config.image_size}x{config.image_size}")
     print(f"  SimCC bins: {config.simcc_bins}, Sigma: {config.simcc_sigma_bins}")
     print(f"  Tip weight: {config.tip_weight_multiplier}")
     if config.candidate == "kd_simcc":
@@ -1011,17 +1032,17 @@ def main() -> None:
     # -----------------------------------------------------------------------
     print("[1/6] Loading training data...")
     train_samples = prepare_samples_from_manifest(
-        manifest_path, "train", target_size=224, augment=True,
+        manifest_path, "train", target_size=config.image_size, augment=True,
         rng=random.Random(config.seed),
         max_shift_px=config.augment_jitter_max_shift_px,
         scale_min=config.augment_scale_min,
         scale_max=config.augment_scale_max,
     )
     val_samples = prepare_samples_from_manifest(
-        manifest_path, "val", target_size=224, augment=False,
+        manifest_path, "val", target_size=config.image_size, augment=False,
     )
     test_samples = prepare_samples_from_manifest(
-        manifest_path, "test", target_size=224, augment=False,
+        manifest_path, "test", target_size=config.image_size, augment=False,
     )
 
     print(f"  Train: {len(train_samples)}, Val: {len(val_samples)}, Test: {len(test_samples)}")
@@ -1034,7 +1055,7 @@ def main() -> None:
     # Build model.
     # -----------------------------------------------------------------------
     print("[2/6] Building model...")
-    input_shape = (224, 224, 3)
+    input_shape = (config.image_size, config.image_size, 3)
 
     if config.candidate in ("simcc", "kd_simcc", "mobilenetv2_simcc", "spatial_simcc", "spatial_simcc_attn", "repvgg_simcc", "mnv2_hrnet_eca"):
         if config.candidate == "mobilenetv2_simcc":
@@ -1114,6 +1135,7 @@ def main() -> None:
             input_shape=input_shape,
             heatmap_size=config.heatmap_size,
             alpha=args.mnv2_alpha,
+            backbone_frozen=args.mnv2_frozen,
             dropout_rate=config.dropout_rate,
             model_name="mnv2_compact_heatmap",
         )
@@ -1189,6 +1211,7 @@ def main() -> None:
                 batch_size=config.batch_size,
                 simcc_bins=config.simcc_bins,
                 simcc_sigma_bins=config.simcc_sigma_bins,
+                image_size=config.image_size,
                 shuffle=True, augment=True,
             )
             teacher_model.fit(
@@ -1226,6 +1249,7 @@ def main() -> None:
         simcc_sigma_bins=config.simcc_sigma_bins,
         heatmap_size=config.heatmap_size,
         heatmap_sigma_px=config.heatmap_sigma_px,
+        image_size=config.image_size,
         with_subpixel_refine=config.with_subpixel_refine,
         shuffle=True, augment=True,
     )
@@ -1236,6 +1260,7 @@ def main() -> None:
         simcc_sigma_bins=config.simcc_sigma_bins,
         heatmap_size=config.heatmap_size,
         heatmap_sigma_px=config.heatmap_sigma_px,
+        image_size=config.image_size,
         with_subpixel_refine=config.with_subpixel_refine,
         shuffle=False, augment=False,
     )
@@ -1380,6 +1405,7 @@ def main() -> None:
             model, test_samples, candidate_type=config.candidate,
             simcc_bins=config.simcc_bins,
             heatmap_size=config.heatmap_size,
+            image_size=config.image_size,
             use_dark=True,
         )
         metrics = aggregate_metrics(test_results)

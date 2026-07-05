@@ -18,6 +18,7 @@ Candidates:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -78,6 +79,15 @@ def _depthwise_conv_bn_relu(
     x = layers.BatchNormalization(name=f"{name}_dw_bn")(x)
     x = layers.ReLU(name=f"{name}_dw_relu")(x)
     return x
+
+
+def _mobilenetv2_weights_arg(alpha: float) -> Optional[str]:
+    """Reuse cached MobileNetV2 weights when available, without network fetches."""
+    weight_name = f"mobilenet_v2_weights_tf_dim_ordering_tf_kernels_{alpha:g}_224_no_top.h5"
+    cached_path = Path.home() / ".keras" / "models" / weight_name
+    if cached_path.exists():
+        return str(cached_path)
+    return None
 
 
 def _inverted_residual_block(
@@ -681,7 +691,7 @@ def build_teacher_model(
         input_shape=input_shape,
         alpha=alpha,
         include_top=False,
-        weights="imagenet",
+        weights=_mobilenetv2_weights_arg(alpha),
         pooling=None,
     )
     backbone.trainable = not backbone_frozen
@@ -1039,7 +1049,7 @@ def build_mobilenetv2_hrnet_eca_simcc_model(
 
     backbone = keras.applications.MobileNetV2(
         input_shape=input_shape, alpha=alpha, include_top=False,
-        weights="imagenet", pooling=None,
+        weights=_mobilenetv2_weights_arg(alpha), pooling=None,
     )
     backbone.trainable = not backbone_frozen
 
@@ -1168,7 +1178,7 @@ def build_mobilenetv2_unet_heatmap_model(
 
     backbone = keras.applications.MobileNetV2(
         input_shape=input_shape, alpha=alpha, include_top=False,
-        weights="imagenet", pooling=None,
+        weights=_mobilenetv2_weights_arg(alpha), pooling=None,
     )
     backbone.trainable = not backbone_frozen
 
@@ -1259,8 +1269,9 @@ def build_mobilenetv2_compact_heatmap_model(
     *,
     heatmap_size: int = 56,
     alpha: float = 0.35,
-    decoder_filters: Tuple[int, int, int] = (96, 48, 24),
+    decoder_filters: Tuple[int, int, int] = (128, 64, 32),
     dropout_rate: float = 0.0,
+    backbone_frozen: bool = False,
     model_name: str = "mnv2_compact_heatmap",
 ) -> keras.Model:
     """Compact 3-stage UNet heatmap. Stops the decoder at 56x56 so the
@@ -1275,9 +1286,9 @@ def build_mobilenetv2_compact_heatmap_model(
 
     backbone = keras.applications.MobileNetV2(
         input_shape=input_shape, alpha=alpha, include_top=False,
-        weights="imagenet", pooling=None,
+        weights=_mobilenetv2_weights_arg(alpha), pooling=None,
     )
-    backbone.trainable = True
+    backbone.trainable = not backbone_frozen
 
     feature_extractor = keras.Model(
         inputs=backbone.input,
@@ -1355,7 +1366,7 @@ def build_spatial_simcc_attn_model(
 
     backbone = keras.applications.MobileNetV2(
         input_shape=input_shape, alpha=alpha, include_top=False,
-        weights="imagenet", pooling=None,
+        weights=_mobilenetv2_weights_arg(alpha), pooling=None,
     )
     backbone.trainable = not backbone_frozen
     x = backbone(x)
@@ -2006,7 +2017,7 @@ def build_mobilenetv2_spatial_simcc_model(
         input_shape=input_shape,
         alpha=alpha,
         include_top=False,
-        weights="imagenet",
+        weights=_mobilenetv2_weights_arg(alpha),
         pooling=None,
     )
     backbone.trainable = not backbone_frozen

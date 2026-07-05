@@ -4,13 +4,10 @@
 from __future__ import annotations
 
 import math
+import os
 
 import numpy as np
 import tensorflow as tf
-
-
-import tensorflow as tf
-import numpy as np
 
 
 def _augment_glare_blobs(image: tf.Tensor) -> tf.Tensor:
@@ -291,5 +288,4 @@ def _augment_rectifier_image_and_box(
     image = tf.clip_by_value(image + noise, 0.0, 1.0)
 
     return image, new_box
-
 

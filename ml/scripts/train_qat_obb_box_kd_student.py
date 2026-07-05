@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,7 +29,7 @@ from sklearn.model_selection import train_test_split
 
 import tensorflow as tf
 
-_GPU_MEMORY_LIMIT_MB = 3900
+_GPU_MEMORY_LIMIT_MB = int(os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "14000"))
 gpus = tf.config.list_physical_devices("GPU")
 if gpus:
     try:
@@ -36,6 +37,7 @@ if gpus:
             gpus[0],
             [tf.config.LogicalDeviceConfiguration(memory_limit=_GPU_MEMORY_LIMIT_MB)],
         )
+        print(f"[GPU] Memory limit set to {_GPU_MEMORY_LIMIT_MB} MB")
     except Exception:
         pass
 

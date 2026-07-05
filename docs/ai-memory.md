@@ -1,5 +1,207 @@
 # AI Memory
 
+# Compact 224x224 geometry run completed successfully (2026-07-05)
+
+- The patched `mnv2_compact_heatmap` run finished in:
+  - `tmp/training/geometry_compact_224_biggpu_v1`
+- Final test metrics on the 59-sample split:
+  - Center MAE: `2.36 px`
+  - Tip MAE: `4.09 px`
+  - Angle MAE: `2.26°`
+  - Temperature MAE: `0.67°C`
+  - Temperature RMSE: `2.04°C`
+- Exported artifacts:
+  - `model_float.keras`
+  - `model_int8.tflite` at about `842 KB`
+- This is now the best geometry candidate we have on the current path because
+  it stays compact, avoids the earlier compile crash, and gets tip MAE back
+  under the `5 px` target.
+
+# Compact heatmap crash fix: add the missing `is_main_needle` target (2026-07-05)
+
+- The `mnv2_compact_heatmap` launch crashed right after `Epoch 1/220` because
+  the model exports four outputs:
+  - `center_heatmap`
+  - `tip_heatmap`
+  - `confidence`
+  - `is_main_needle`
+- The trainer was only compiling losses for the first three outputs, so Keras
+  raised a loss-dict key mismatch.
+- I patched the sequence/compile path so the compact model now receives a
+  matching binary target and a binary-crossentropy loss for `is_main_needle`.
+- The manifests we have today do not carry a separate main-needle label yet, so
+  that target is temporarily all ones just to keep the graph consistent.
+
+# Chosen 224x224 direction: widened compact UNet, not the larger HyperRAM-heavy UNet (2026-07-05)
+
+- We are keeping the `224x224` input size, but the next deployment candidate should be the compact UNet family, not the larger 112x112-head UNet that spills into HyperRAM.
+- I widened the compact decoder in `build_mobilenetv2_compact_heatmap_model()` and added a dedicated launcher:
+  - `tmp/run_geometry_compact_224_biggpu_v1.sh`
+- Rationale:
+  - it keeps the 224 input contract,
+  - it stays on the no-HyperRAM-friendly compact path,
+  - and it gives us the best chance of pushing tip MAE back under `5 px` without reintroducing the big memory spill.
+
+# Geometry UNet 160x160 finished: memory fit improved, accuracy did not (2026-07-05)
+
+- Finished the 160×160 `mnv2_unet_heatmap` run in `tmp/training/geometry_unet_biggpu_v1_160`.
+- Final test metrics on the 59-sample split:
+  - Center MAE: `3.54 px`
+  - Tip MAE: `29.25 px`
+  - Angle MAE: `25.45°`
+  - Temperature MAE: `8.20°C`
+- Artifact sizes:
+  - `model_float.keras`: `85 MB`
+  - `model_int8.tflite`: `7.6 MB`
+- Peak int8 activation was only `512,000 bytes (0.49 MB)`, so the 160×160 shape does solve the on-chip activation pressure problem.
+- But the geometry quality regressed hard relative to the 224×224 run, so this 160×160 recipe is not the preferred deployment candidate yet.
+
+# Geometry UNet 160x160 is the current no-HyperRAM direction and trains against cached MobileNetV2 weights (2026-07-04)
+
+- The 160×160 `mnv2_unet_heatmap` variant is the current geometry candidate to pursue for the STM32N6 no-HyperRAM board.
+- The trainer now accepts `--image-size`; the current launcher uses:
+  - `--image-size 160`
+  - `--heatmap-size 80`
+  - `--mnv2-alpha 1.3`
+- The model build is using a cached local MobileNetV2 alpha=1.3 checkpoint from `~/.keras/models/` so it does not need network access during training.
+- The live WSL run showed `Peak int8 activation: 512,000 bytes (0.49 MB)` for the 160×160 geometry UNet, which is comfortably under the on-chip budget.
+- Current live training output is in `tmp/training/geometry_unet_biggpu_v1_160/`.
+
+# DeepSeek packaging check: geometry UNet still needs HyperRAM and is not board-ready as-is (2026-07-04)
+
+- DeepSeek’s packaging report for the current pair was:
+  - OBB Face Localizer: `obb_face_v2_int8_n6_npu`
+    - input: `224x224x3 int8`
+    - weights: `571 KB`
+    - activations: `1.67 MB`
+    - HyperRAM: `0 B`
+  - Geometry UNet: `geometry_unet_biggpu_v1_int8_n6_npu`
+    - input/output: `224x224x3 float32`
+    - weights: `7.95 MB`
+    - activations: `2.34 MB`
+    - HyperRAM: `784 KB`
+- The no-HyperRAM board constraint means the geometry UNet package is not acceptable as-is.
+- The OBB face-localizer looks compatible with the constraint; the geometry model needs a no-HyperRAM redesign or a much smaller packaging target.
+
+# Windows firmware handoff for DeepSeek: integrate the new OBB face-localizer and geometry UNet sequentially (2026-07-04)
+
+- Work in Windows and STM32CubeIDE only for firmware changes. The board app lives under `firmware/stm32/n657/`.
+- Use the existing Cube.AI wrapper pattern in `firmware/stm32/n657/Appli/Src/ai_network_*.c` and keep generated build files untouched.
+- Integrate these two current deployment models:
+  - OBB face-localizer: `ml/artifacts/training/obb_box_board_bbox_kd_student_face_v2/obb_box_qat.tflite`
+  - Geometry UNet: `tmp/training/geometry_unet_biggpu_v1/model_int8.tflite`
+- Memory rule for the N6 board: no HyperRAM, only about `2.5 MB` SRAM available for both stages. Keep the model weights/ATON blobs in flash and run the models sequentially, not at the same time.
+- The expected runtime shape is:
+  1. run the OBB face-localizer,
+  2. crop/align from the detected gauge face,
+  3. run the geometry UNet on that crop,
+  4. free or reuse buffers before the next frame.
+- Do not try to keep both interpreters or both activation buffers resident simultaneously.
+- Before flashing, run a small Keras-vs-TFLite parity check on a few validation samples so the Windows-side integration catches conversion or preprocessing mismatches early.
+- If DeepSeek needs a starting point, the current firmware wiring is already concentrated in `firmware/stm32/n657/Appli/Src/app_ai.c` and the related `app_ai_helpers_decode.inc` / `app_baseline_runtime.c` path.
+
+
+# Teacher-v3 is now the better local teacher for the OBB face-localizer, and the face-v2 rerun improved deployment metrics (2026-07-04)
+
+- I reran the face-localizer student using `tmp/obb_box_grouped_qat_v3/obb_box_float.keras` as teacher.
+- That teacher is the stronger local checkpoint for this task, beating the older hardcase teacher on board-face box metrics.
+- Face-v2 artifacts:
+  - `ml/artifacts/training/obb_box_board_bbox_kd_student_face_v2/obb_box_float.keras`
+  - `ml/artifacts/training/obb_box_board_bbox_kd_student_face_v2/obb_box_ptq.tflite`
+  - `ml/artifacts/training/obb_box_board_bbox_kd_student_face_v2/obb_box_qat.tflite`
+- Float test report:
+  - board box center MAE: `8.47 px`
+  - board box size MAE: `15.40 px`
+- PTQ test report:
+  - board box center MAE: `8.72 px`
+  - board box size MAE: `14.69 px`
+- QAT test report:
+  - board box center MAE: `6.90 px`
+  - board box size MAE: `13.95 px`
+- Compared to the earlier face run, QAT board center MAE improved from `12.93 px` to `6.90 px`.
+- The teacher switch was the right move; the next useful step is to keep the teacher-v3 path as the default for OBB face KD and then tune the QAT stage from there.
+
+# Teacher selection for the OBB face-localizer: use `obb_box_grouped_qat_v3` as the default local teacher for now (2026-07-04)
+
+- I compared the current candidate teachers from the local artifacts on the same face-label task.
+- `tmp/obb_box_grouped_qat_v3/obb_box_float.keras` is the stronger teacher we have right now for the face-localizer rerun:
+  - board box center MAE: `5.12 px`
+  - board box size MAE: `5.70 px`
+  - pxl box center MAE: `6.57 px`
+- The older hardcase teacher `tmp/obb_box_board_bbox_hardcase_v3/obb_box_float.keras` is weaker on board labels:
+  - board box center MAE: `6.30 px`
+  - board box size MAE: `7.59 px`
+- The reviewed-box teacher `tmp/obb_box_board_reviews_kd_student_v1/obb_box_float.keras` is also weaker on board labels than `grouped_qat_v3`.
+- So the practical teacher choice for the next OBB face-localizer pass is now `tmp/obb_box_grouped_qat_v3/obb_box_float.keras`.
+- The literature still points toward localization-aware distillation and possibly a stronger multi-stage teacher later, but for our current local checkpoints, `grouped_qat_v3` is the best teacher fit.
+
+# KD + QAT face-localizer completed on CVAT face labels with a pretrained MobileNetV2 backbone (2026-07-04)
+
+- Training script: `ml/scripts/train_qat_obb_box_kd_student.py`
+- Launcher: `tmp/run_qat_obb_box_kd_student_face_v1.sh`
+- Data source: `tmp/labelled_captured_images_board_bbox.json` with `pxl_geometry` + `reviewed_geometry`
+- GPU cap: `TF_GPU_MEMORY_LIMIT_MB=14000`
+- Final artifacts:
+  - `ml/artifacts/training/obb_box_board_bbox_kd_student_face_v1/obb_box_float.keras`
+  - `ml/artifacts/training/obb_box_board_bbox_kd_student_face_v1/obb_box_ptq.tflite`
+  - `ml/artifacts/training/obb_box_board_bbox_kd_student_face_v1/obb_box_qat.tflite`
+- Float test report:
+  - board box center MAE: `8.92 px`
+  - board box size MAE: `10.69 px`
+- PTQ test report:
+  - board box center MAE: `9.76 px`
+  - board box size MAE: `10.85 px`
+- QAT test report:
+  - board box center MAE: `12.93 px`
+  - board box size MAE: `17.69 px`
+- Takeaway: the face labels are definitely the right supervision source; PTQ kept most of the float accuracy, while QAT needs another pass or a small architecture/loss tweak before it becomes the preferred deployment artifact.
+
+# Board-only OBB retrain completed on the bigger GPU with a 14 GB cap (2026-07-04)
+
+- Training script: `ml/scripts/train_obb_board_only_320.py`
+- Launcher: `tmp/export_obb_board_only_320_biggpu_v1.sh` for the export-only rerun, after the main train job completed.
+- GPU cap: `TF_GPU_MEMORY_LIMIT_MB=14000`
+- The merged board-focused dataset had:
+  - `880` unique examples
+  - `528` train / `176` val / `176` test
+- Best training checkpoint:
+  - `Epoch 104` val MAE: `0.02479`
+  - Test MAE: `0.0248`
+- Final artifacts in `ml/artifacts/training/obb_board_only_320_20260704_182513`:
+  - `best_model.keras`
+  - `final_model.keras`
+  - `obb_board_only_int8.tflite`
+- The export step originally failed because one calibration sample was unreadable; the export-only rerun now skips bad samples and completed cleanly with `50` representative samples.
+- This run was chosen over the fullframe/scaled OBB variants because the user wanted the new board labels to specifically help the board-side OBB.
+
+# `mnv2_unet_heatmap` finished on the board-capture split and is the current best QAT-friendly board geometry run (2026-07-04)
+
+- Finished training on `tmp/training/geometry_unet_biggpu_v1`.
+- Final test metrics on the 59-sample split:
+  - Center MAE: `1.68 px`
+  - Tip MAE: `4.44 px`
+  - Angle MAE: `1.92°`
+  - Temperature MAE: `0.57°C`
+- This is much better than the earlier QAT-friendly board-capture baselines in the memory table:
+  - KD SimCC: `3.42 px` center, `20.79 px` tip
+  - Heatmap+DARK: `2.00 px` center, `26.51 px` tip
+- It is still a bit behind the older sc128 SimCC tip result (`3.3 px`), but it is noticeably stronger overall on the current board-capture test split.
+- Cold-end follow-up on the same run:
+  - Held-out cold test rows (`20` samples, `< 0°C`): center `1.63 px`, tip `1.93 px`, temperature `0.22°C`.
+  - Deep cold held-out rows (`12` samples, `<= -15°C`): center `1.54 px`, tip `1.98 px`, temperature `0.19°C`.
+  - `board_captures_4.zip` cold stress rows (`31` samples, not held out): center `1.30 px`, tip `1.54 px`, temperature `0.41°C`.
+- Windows-side packaging handoff:
+  - Use `tmp/training/geometry_unet_biggpu_v1/model_int8.tflite` as the deployment artifact to package/integrate first.
+  - Keep `tmp/training/geometry_unet_biggpu_v1/model_float.keras` around for re-export, parity checks, and debugging if the Windows-side integration needs a source model.
+  - The companion metrics live in `tmp/training/geometry_unet_biggpu_v1/test_metrics.json` and `tmp/training/geometry_unet_biggpu_v1/test_predictions.csv`.
+  - The current run is the one to pick up for the cold-end board-capture work unless a later retrain beats it on the same split.
+
+# GPU memory cap for future WSL training runs (2026-07-04)
+
+- For this repo's future GPU training scripts, use a `14 GB` TensorFlow memory cap by default.
+- The current bigger GPU has enough headroom for `14 GB`, and this is the preferred cap for upcoming launches unless a specific experiment needs less.
+- Keep the memory-limit setting in the launcher script or at the top of the training job, before TensorFlow imports.
+
 # v6 UNet claim does not generalize on the newest labeled captures (2026-06-25)
 
 - The `tmp/obb_geo_sweep/unet_v6` model looked good on the single clean replay image, but a batch replay on the newest labeled captures in this checkout did **not** hold up.

@@ -16,6 +16,7 @@ outside the graph so that the model remains cloneable for QAT.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Final
 
 import tensorflow as tf
@@ -378,9 +379,14 @@ def _transfer_mobilenetv2_weights(
 ) -> None:
     """Copy ImageNet MobileNetV2 weights into the flat backbone layers."""
 
+    local_weights_path = Path.home() / ".keras" / "models" / (
+        f"mobilenet_v2_weights_tf_dim_ordering_tf_kernels_{alpha}_224_no_top.h5"
+    )
+    weights_arg: str | Path = local_weights_path if local_weights_path.exists() else "imagenet"
+
     source_backbone = keras.applications.MobileNetV2(
         include_top=False,
-        weights="imagenet",
+        weights=weights_arg,
         input_shape=image_shape,
         alpha=alpha,
         pooling=None,
