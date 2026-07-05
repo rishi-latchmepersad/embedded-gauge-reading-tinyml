@@ -1,7 +1,7 @@
 /* This file is included by app_ai_helpers.inc. */
 
 #if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
-static void AppAI_LogXspi2PrefixBytes(const char *label,
+void AppAI_LogXspi2PrefixBytes(const char *label,
 									  const uint8_t *bytes)
 {
 	if ((label == NULL) || (bytes == NULL))
@@ -22,7 +22,7 @@ static void AppAI_LogXspi2PrefixBytes(const char *label,
  * This makes it easy to compare whether two runs actually fed different
  * camera data into the model.
  */
-static void AppAI_LogFrameSignature(const uint8_t *frame_bytes,
+void AppAI_LogFrameSignature(const uint8_t *frame_bytes,
 									size_t frame_size)
 {
 	uint8_t first_bytes[8U] = {0U};
@@ -68,7 +68,7 @@ static void AppAI_LogFrameSignature(const uint8_t *frame_bytes,
  * This tells us whether the captured scene is still distinct after the
  * YUV422-to-RGB preprocessing and dial ROI crop.
  */
-static void AppAI_LogInputSignature(const float *input_buffer,
+void AppAI_LogInputSignature(const float *input_buffer,
 									size_t input_float_count)
 {
 	const uint8_t *bytes = NULL;
@@ -130,7 +130,7 @@ static void AppAI_LogInputSignature(const float *input_buffer,
  * The top-left bytes can be padding or background, so this summary looks at the
  * tensor region where the dial should live after cropping and resizing.
  */
-static void AppAI_LogInputTensorWindow(const float *input_buffer,
+void AppAI_LogInputTensorWindow(const float *input_buffer,
 									   size_t input_float_count)
 {
 	const size_t tensor_width = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
@@ -269,7 +269,7 @@ static void AppAI_LogInputTensorWindow(const float *input_buffer,
  * The disabled verbose tensor logs are useful in source, but this helper uses
  * direct console writes so we can see a stable per-frame summary on hardware.
  */
-static void AppAI_LogInputProbeSummary(const float *input_buffer,
+void AppAI_LogInputProbeSummary(const float *input_buffer,
 									   size_t input_float_count)
 {
 	const size_t tensor_width = (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
@@ -423,7 +423,7 @@ static void AppAI_LogInputProbeSummary(const float *input_buffer,
  * This makes it easier to see whether the row contains dial markings, the
  * needle, or only flat background after the crop/resample step.
  */
-static void AppAI_LogTensorRowSamples(const char *label,
+void AppAI_LogTensorRowSamples(const char *label,
 									  const float *input_buffer, size_t tensor_width, size_t row_y,
 									  size_t x_min, size_t x_max)
 {
@@ -471,7 +471,7 @@ static void AppAI_LogTensorRowSamples(const char *label,
 /**
  * @brief Print a compact luma patch from the source YUV422 frame.
  */
-static void AppAI_LogSourcePatch(const char *label, const uint8_t *frame_bytes,
+void AppAI_LogSourcePatch(const char *label, const uint8_t *frame_bytes,
 								 size_t frame_width_pixels, size_t center_x, size_t center_y,
 								 size_t radius_pixels)
 {
@@ -519,7 +519,7 @@ static void AppAI_LogSourcePatch(const char *label, const uint8_t *frame_bytes,
 /**
  * @brief Print a compact tensor patch from the preprocessed input buffer.
  */
-static void AppAI_LogTensorPatch(const char *label, const float *input_buffer,
+void AppAI_LogTensorPatch(const char *label, const float *input_buffer,
 								 size_t tensor_width, size_t center_x, size_t center_y,
 								 size_t radius_pixels)
 {
@@ -575,7 +575,7 @@ static void AppAI_LogTensorPatch(const char *label, const float *input_buffer,
  * are already near zero, the problem is before tensor fill. If they are healthy
  * but the tensor is still zero, then the resize/write path is wrong.
  */
-static void AppAI_LogSourceCropWindow(const uint8_t *frame_bytes,
+void AppAI_LogSourceCropWindow(const uint8_t *frame_bytes,
 									  size_t frame_size, size_t frame_width_pixels, size_t frame_height_pixels,
 									  size_t crop_x_min, size_t crop_y_min, size_t crop_width,
 									  size_t crop_height)
@@ -690,7 +690,7 @@ static void AppAI_LogSourceCropWindow(const uint8_t *frame_bytes,
  * quantized activations are changing even when the final dequantized output is
  * still neutral.
  */
-static void AppAI_LogInt8BufferSignature(const char *label,
+void AppAI_LogInt8BufferSignature(const char *label,
 										 const int8_t *buffer_ptr, size_t buffer_len_bytes)
 {
 	uint8_t first_bytes[16U] = {0U};
@@ -761,7 +761,7 @@ static void AppAI_LogInt8BufferSignature(const char *label,
  * This avoids guessing the tensor type when we just want to know whether the
  * runtime wrote anything other than zero into a model activation.
  */
-static void AppAI_LogRawBufferSignature(const char *label,
+void AppAI_LogRawBufferSignature(const char *label,
 										const uint8_t *buffer_ptr, size_t buffer_len_bytes)
 {
 	uint8_t first_bytes[16U] = {0U};
@@ -827,7 +827,7 @@ static void AppAI_LogRawBufferSignature(const char *label,
 		(unsigned int)first_bytes[15]);
 }
 
-static const char *AppAI_BufferTypeName(const LL_Buffer_InfoTypeDef *buffer_info)
+const char *AppAI_BufferTypeName(const LL_Buffer_InfoTypeDef *buffer_info)
 {
 	if (buffer_info == NULL)
 	{
@@ -849,7 +849,7 @@ static const char *AppAI_BufferTypeName(const LL_Buffer_InfoTypeDef *buffer_info
 	}
 }
 
-static void AppAI_LogBufferInfoAndSignature(const char *label,
+void AppAI_LogBufferInfoAndSignature(const char *label,
 											const LL_Buffer_InfoTypeDef *buffer_info)
 {
 	const void *buffer_addr = NULL;
@@ -921,7 +921,7 @@ static void AppAI_LogBufferInfoAndSignature(const char *label,
  * The hash and middle/tail windows help us avoid a false "everything is zero"
  * conclusion when the tensor origin is padded or naturally blank.
  */
-static void AppAI_LogBufferPreview(const char *label,
+void AppAI_LogBufferPreview(const char *label,
 								   const LL_Buffer_InfoTypeDef *buffer_info)
 {
 	const uint8_t *buffer_bytes = NULL;
@@ -996,7 +996,7 @@ static void AppAI_LogBufferPreview(const char *label,
  * so a simple luma threshold is enough to steer the crop toward the useful
  * region before we resize to the model input tensor.
  */
-static bool AppAI_EstimateGaugeCropBoxFromYuv422(const uint8_t *frame_bytes,
+bool AppAI_EstimateGaugeCropBoxFromYuv422(const uint8_t *frame_bytes,
 												 size_t frame_size, size_t frame_width_pixels, size_t frame_height_pixels,
 												 size_t *crop_x_min, size_t *crop_y_min, size_t *crop_width,
 												 size_t *crop_height)

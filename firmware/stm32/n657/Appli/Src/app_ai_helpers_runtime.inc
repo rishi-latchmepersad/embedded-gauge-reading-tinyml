@@ -1,6 +1,6 @@
 /* This file is included by app_ai_helpers.inc. */
 
-static bool AppAI_WaitForFileXMediaReady(uint32_t timeout_ms)
+bool AppAI_WaitForFileXMediaReady(uint32_t timeout_ms)
 {
 	const ULONG timeout_ticks = (ULONG)((timeout_ms + 9U) / 10U);
 	const ULONG start_tick = tx_time_get();
@@ -21,7 +21,7 @@ static bool AppAI_WaitForFileXMediaReady(uint32_t timeout_ms)
 /**
  * @brief Preprocess one YUV422 frame into the tip-focus int8 tensor layout.
  */
-static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToInt8Input(
+bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToInt8Input(
 	const uint8_t *frame_bytes, size_t frame_size, uint8_t *input_ptr,
 	size_t input_len_bytes, const LL_Buffer_InfoTypeDef *input_info)
 {
@@ -54,11 +54,21 @@ static bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToInt8Input(
 
 	if ((frame_bytes == NULL) || (input_ptr == NULL) || (input_info == NULL))
 	{
+		DebugConsole_Printf(
+			"[AI][DIAG] int8 preprocess: NULL args frame=%p input=%p info=%p\r\n",
+			(const void *)frame_bytes, (void *)input_ptr,
+			(const void *)input_info);
 		return false;
 	}
 	if ((frame_size < (size_t)APP_AI_CAPTURE_FRAME_BYTES) ||
 		(input_len_bytes < required_bytes))
 	{
+		DebugConsole_Printf(
+			"[AI][DIAG] int8 preprocess: size fail frame_sz=%lu min=%lu input_len=%lu required=%lu\r\n",
+			(unsigned long)frame_size,
+			(unsigned long)APP_AI_CAPTURE_FRAME_BYTES,
+			(unsigned long)input_len_bytes,
+			(unsigned long)required_bytes);
 		return false;
 	}
 

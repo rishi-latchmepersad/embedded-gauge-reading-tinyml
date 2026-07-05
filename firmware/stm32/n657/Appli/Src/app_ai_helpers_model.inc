@@ -1,6 +1,6 @@
 /* This file is included by app_ai_helpers.inc. */
 
-static bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr)
+bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr)
 {
 	uint8_t source_bytes[APP_AI_XSPI2_PROBE_BYTES] = {0U};
 	ULONG bytes_read = 0U;
@@ -38,7 +38,7 @@ static bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr)
 	return true;
 }
 
-static bool AppAI_Xspi2ModelImageMatchesMappedFlash(void)
+bool AppAI_Xspi2ModelImageMatchesMappedFlash(void)
 {
 	if (!AppAI_Xspi2ReadMappedProbe(0U, app_ai_xspi2_signature_start,
 									sizeof(app_ai_xspi2_signature_start)))
@@ -61,7 +61,7 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlash(void)
 	return true;
 }
 
-static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
+bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 	const AppAI_ModelStageSpec *stage)
 {
 	const char *stage_label = NULL;
@@ -130,25 +130,17 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 	if (!AppAI_Xspi2ReadStageProbe(stage, 0U,
 								   sig_start, APP_AI_XSPI2_PROBE_BYTES))
 	{
-		/* Log the actual flash bytes so stale hardcoded signatures can be updated. */
-		{
-			uint8_t actual[APP_AI_XSPI2_PROBE_BYTES] = {0U};
-			int32_t read_status = BSP_XSPI_NOR_Read(0U, actual,
-													stage->xspi2_chip_offset, APP_AI_XSPI2_PROBE_BYTES);
-			{
-				char vlog[160];
-				(void)DebugConsole_Snprintf(vlog, sizeof(vlog),
-					"[AI] %s mismatch rc=%ld actual=[%02X%02X%02X%02X%02X%02X%02X%02X] "
-					"expect=[%02X%02X%02X%02X%02X%02X%02X%02X] offset=0x%08lX\r\n",
-					stage->stage_label, (long)read_status,
-					actual[0], actual[1], actual[2], actual[3],
-					actual[4], actual[5], actual[6], actual[7],
-					sig_start[0], sig_start[1], sig_start[2], sig_start[3],
-					sig_start[4], sig_start[5], sig_start[6], sig_start[7],
-					(unsigned long)(stage->xspi2_chip_offset));
-				DebugConsole_WriteString(vlog);
-			}
-		}
+		uint8_t actual[APP_AI_XSPI2_PROBE_BYTES] = {0U};
+		int32_t read_status = BSP_XSPI_NOR_Read(0U, actual,
+												stage->xspi2_chip_offset, APP_AI_XSPI2_PROBE_BYTES);
+
+		DebugConsole_Printf(
+			"[AI] %s mismatch rc=%ld offset=0x%08lX base=0x%08lX\r\n",
+			stage->stage_label, (long)read_status,
+			(unsigned long)(stage->xspi2_chip_offset),
+			(unsigned long)(stage->xspi2_base_addr));
+		AppAI_LogXspi2ProbeBytes("xSPI2 actual:", actual);
+		AppAI_LogXspi2ProbeBytes("xSPI2 expect:", sig_start);
 		(void)DebugConsole_WriteString(
 			"[AI] xSPI2 stage signature mismatch at head probe.\r\n");
 		return false;
@@ -160,15 +152,19 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 								   sig_tail,
 								   APP_AI_XSPI2_PROBE_BYTES))
 	{
-		{
-#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
-			char vlog[64];
-			(void)DebugConsole_Snprintf(vlog, sizeof(vlog),
-						   "[AI] %s flash verify: tail mismatch.\r\n",
-						   stage->stage_label);
-			(void)DebugConsole_WriteString(vlog);
-#endif
-		}
+		uint8_t actual[APP_AI_XSPI2_PROBE_BYTES] = {0U};
+		const uint32_t tail_offset = stage->xspi2_chip_offset
+			+ programmed_size - APP_AI_XSPI2_PROBE_BYTES;
+		int32_t read_status = BSP_XSPI_NOR_Read(0U, actual, tail_offset,
+												APP_AI_XSPI2_PROBE_BYTES);
+
+		DebugConsole_Printf(
+			"[AI] %s tail mismatch rc=%ld offset=0x%08lX base=0x%08lX\r\n",
+			stage->stage_label, (long)read_status,
+			(unsigned long)tail_offset,
+			(unsigned long)(stage->xspi2_base_addr));
+		AppAI_LogXspi2ProbeBytes("xSPI2 actual:", actual);
+		AppAI_LogXspi2ProbeBytes("xSPI2 expect:", sig_tail);
 		(void)DebugConsole_WriteString(
 			"[AI] xSPI2 stage signature mismatch at tail probe.\r\n");
 		return false;
@@ -177,7 +173,7 @@ static bool AppAI_Xspi2ModelImageMatchesMappedFlashForStage(
 	return true;
 }
 
-static bool AppAI_ProgramXspi2ModelImageFromSd(void)
+bool AppAI_ProgramXspi2ModelImageFromSd(void)
 {
 	FX_MEDIA *media_ptr = NULL;
 	FX_FILE model_file = {0};
@@ -380,7 +376,7 @@ static bool AppAI_ProgramXspi2ModelImageFromSd(void)
 	return true;
 }
 
-static void AppAI_SetForcedCrop(const char *label, size_t x_min,
+void AppAI_SetForcedCrop(const char *label, size_t x_min,
 								size_t y_min, size_t width, size_t height)
 {
 	app_ai_forced_crop_active = true;
@@ -391,7 +387,7 @@ static void AppAI_SetForcedCrop(const char *label, size_t x_min,
 	app_ai_forced_crop_height = height;
 }
 
-static void AppAI_ClearForcedCrop(void)
+void AppAI_ClearForcedCrop(void)
 {
 	app_ai_forced_crop_active = false;
 	app_ai_forced_crop_label = NULL;
@@ -401,7 +397,7 @@ static void AppAI_ClearForcedCrop(void)
 	app_ai_forced_crop_height = 0U;
 }
 
-static const LL_Buffer_InfoTypeDef *AppAI_GetStageInputBufferInfo(
+const LL_Buffer_InfoTypeDef *AppAI_GetStageInputBufferInfo(
 	const AppAI_ModelStageSpec *stage)
 {
 	const LL_Buffer_InfoTypeDef *input_info = NULL;
@@ -419,7 +415,7 @@ static const LL_Buffer_InfoTypeDef *AppAI_GetStageInputBufferInfo(
 	return input_info;
 }
 
-static const LL_Buffer_InfoTypeDef *AppAI_GetStageOutputBufferInfo(
+const LL_Buffer_InfoTypeDef *AppAI_GetStageOutputBufferInfo(
 	const AppAI_ModelStageSpec *stage)
 {
 	const LL_Buffer_InfoTypeDef *output_info = NULL;
@@ -437,7 +433,7 @@ static const LL_Buffer_InfoTypeDef *AppAI_GetStageOutputBufferInfo(
 	return output_info;
 }
 
-static bool AppAI_ReadXspi2ModelSourceProbes(FX_FILE *model_file_ptr,
+bool AppAI_ReadXspi2ModelSourceProbes(FX_FILE *model_file_ptr,
 											 ULONG file_size, uint8_t *source_prefix, uint8_t *source_tail,
 											 bool *has_tail_out)
 {
@@ -501,7 +497,7 @@ static bool AppAI_ReadXspi2ModelSourceProbes(FX_FILE *model_file_ptr,
 	return true;
 }
 
-static bool AppAI_EnsureXspi2ModelImageReadyForStage(
+bool AppAI_EnsureXspi2ModelImageReadyForStage(
 	const AppAI_ModelStageSpec *stage)
 {
 	if (stage == NULL)
@@ -573,7 +569,7 @@ static bool AppAI_EnsureXspi2ModelImageReadyForStage(
 	return true;
 }
 
-static bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage)
+bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage)
 {
 	if (stage == NULL)
 	{
@@ -606,7 +602,26 @@ static bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage)
 		return false;
 	}
 
+	/* The current OBB reloc blob ships with a zero ec_network_init vector,
+	 * so calling LL_ATON_RT_Init_Network() in reloc mode branches through a
+	 * null PC. Run that one runtime init with inst_reloc cleared, then restore
+	 * the reloc context before inference so the valid ec_inference_init path
+	 * still uses the reloc binary. */
+	if (stage == &app_ai_obb_stage)
+	{
+		stage->nn_instance->exec_state.inst_reloc = 0U;
+	}
 	LL_ATON_RT_Init_Network(stage->nn_instance);
+
+	if (stage == &app_ai_obb_stage)
+	{
+		if (!AppAI_Obb_InstallRelocContext(stage->nn_instance,
+										   stage->xspi2_base_addr))
+		{
+			AppAI_LogInitFailure(stage->stage_label);
+			return false;
+		}
+	}
 	if (AppAI_ShouldLogStageDiagnostics(stage))
 	{
 		DebugConsole_WriteString("[AI] Stage network init OK.\r\n");
@@ -622,6 +637,19 @@ static bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage)
 		return false;
 	}
 
+	/* The OBB package uses a relocatable runtime base for its software
+	 * resize helper. Reinstall that runtime context here so the generated
+	 * ll_sw_forward_resize_integer() call can read the correct tables. */
+	if (stage == &app_ai_obb_stage)
+	{
+		if (!AppAI_Obb_InstallRelocContext(stage->nn_instance,
+										   stage->xspi2_base_addr))
+		{
+			AppAI_LogInitFailure(stage->stage_label);
+			return false;
+		}
+	}
+
 	if (AppAI_ShouldLogStageDiagnostics(stage))
 	{
 		DebugConsole_WriteString("[AI] Stage inference init OK.\r\n");
@@ -629,7 +657,7 @@ static bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage)
 	return true;
 }
 
-static bool AppAI_DecodeRectifierCropBox(
+bool AppAI_DecodeRectifierCropBox(
 	const LL_Buffer_InfoTypeDef *output_buffer_info,
 	AppAI_SourceCrop *crop_out,
 	AppAI_RectifierBox *rectifier_box_out)
