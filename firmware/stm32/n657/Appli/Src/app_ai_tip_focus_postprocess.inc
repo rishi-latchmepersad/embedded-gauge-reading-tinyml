@@ -198,7 +198,7 @@ bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 {
 	const LL_Buffer_InfoTypeDef *input_info =
 		(const LL_Buffer_InfoTypeDef *)AppAI_TipFocus_GetInputBufferInfo();
-	float *input_buffer = AppAI_TipFocus_GetInputBuffer();
+	uint8_t *input_buffer = (uint8_t *)AppAI_TipFocus_GetInputBuffer();
 	const float *center_heatmap = NULL;
 	const float *tip_heatmap = NULL;
 	float center_x_norm = 0.0f;
@@ -242,17 +242,11 @@ bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 		return false;
 	}
 
-	if (!AppAI_PreprocessYuv422FrameToFloatInput(
+	if (!AppAI_PreprocessYuv422FrameToInt8Input(
 			frame_bytes, frame_size,
 			input_buffer,
-			(size_t)(LL_Buffer_len(input_info) / sizeof(float)),
 			(size_t)LL_Buffer_len(input_info),
-			(size_t)((input_info->mem_shape != NULL) && (input_info->mem_ndims >= 3U)
-				? input_info->mem_shape[2U]
-				: APP_AI_TIP_FOCUS_MODEL_INPUT_WIDTH_PIXELS),
-			(size_t)((input_info->mem_shape != NULL) && (input_info->mem_ndims >= 3U)
-				? input_info->mem_shape[1U]
-				: APP_AI_TIP_FOCUS_MODEL_INPUT_HEIGHT_PIXELS)))
+			input_info))
 	{
 		DebugConsole_WriteString("[AI] Tip-focus preprocess failed.\r\n");
 		return false;
@@ -352,6 +346,21 @@ bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 		}
 
 		temperature_c = AppBaselineRuntime_ConvertAngleToTemperature(angle_rad);
+		{
+			const long raw_angle_100 = lroundf(angle_degrees * 100.0f);
+			const long cold_angle_100 = lroundf(APP_AI_TIP_FOCUS_COLD_ANGLE_DEG * 100.0f);
+			const long sweep_100 = lroundf(APP_AI_TIP_FOCUS_SWEEP_DEG * 100.0f);
+			const long delta_100 = lroundf(angle_delta_degrees * 100.0f);
+			const long temp_100 = lroundf(temperature_c * 100.0f);
+
+			DebugConsole_Printf(
+				"[AI][TIP_FOCUS][ANGLE] raw=%ld.%02lddeg cold=%ld.%02lddeg sweep=%ld.%02lddeg delta=%ld.%02lddeg temp=%ld.%02ldC\r\n",
+				labs(raw_angle_100) / 100L, labs(raw_angle_100) % 100L,
+				labs(cold_angle_100) / 100L, labs(cold_angle_100) % 100L,
+				labs(sweep_100) / 100L, labs(sweep_100) % 100L,
+				labs(delta_100) / 100L, labs(delta_100) % 100L,
+				labs(temp_100) / 100L, labs(temp_100) % 100L);
+		}
 
 		center_peak_ok = (center_peak >= center_axis_peak_floor);
 		tip_peak_ok = (tip_peak >= center_axis_peak_floor);

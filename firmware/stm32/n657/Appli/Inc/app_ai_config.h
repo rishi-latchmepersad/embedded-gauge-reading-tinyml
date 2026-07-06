@@ -88,6 +88,23 @@
 #ifndef APP_AI_ENABLE_SCALAR_SD_REPROVISION
 #define APP_AI_ENABLE_SCALAR_SD_REPROVISION 0U
 #endif
+/* Name of the baseline calibration profile to activate at boot.
+ * Add new named profiles in app_baseline_runtime.c and point this macro at
+ * the matching gauge family when the board is flashed for a different dial. */
+#ifndef APP_BASELINE_CALIBRATION_PROFILE_NAME
+#define APP_BASELINE_CALIBRATION_PROFILE_NAME "board_celsius_v1"
+#endif
+
+/* OBB reloc runtime base.
+ * The generated OBB package expects its relocatable runtime tables to live
+ * in this AXISRAM window, and the firmware needs a stable fallback base even
+ * when the reloc handle is temporarily cleared during init. */
+#ifndef APP_AI_OBB_RELOC_RAM_BASE_ADDR
+#define APP_AI_OBB_RELOC_RAM_BASE_ADDR 0x34100000UL
+#endif
+#ifndef APP_AI_OBB_RELOC_RAM_SIZE
+#define APP_AI_OBB_RELOC_RAM_SIZE 2883576UL
+#endif
 
 /* ---- Application constants (legacy Camera / capture wrappers) ---- */
 #define APP_AI_CACHE_LINE_BYTES 32U
@@ -192,9 +209,9 @@
 /* Live board models use the recent OBB winner plus the board-fit tip-focus
  * heatmap package. */
 #define APP_AI_OBB_XSPI2_MODEL_IMAGE_PATH \
-	"packages/obb_box_board_bbox_deploy_candidate/st_ai_output/obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw" /* Board bbox OBB deploy candidate, ~664 KiB */
+	"packages/obb_box_board_bbox_deploy_candidate/st_ai_output/obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw" /* board-bbox OBB, 664 KB */
 #define APP_AI_TIP_FOCUS_XSPI2_MODEL_IMAGE_PATH \
-	"packages/tip_focus_v18_int8_n6_npu/st_ai_output/tip_focus_v18_int8_atonbuf.xSPI2.raw" /* Tip-focus v18 NPU package, ~815 KiB */
+	"packages/tip_focus_v18_int8_n6_npu/st_ai_output/tip_focus_v18_int8_atonbuf.xSPI2.raw" /* tip-focus heatmap model, 815 KB */
 #define APP_AI_XSPI2_MODEL_IMAGE_PATH APP_AI_TIP_FOCUS_XSPI2_MODEL_IMAGE_PATH
 #define APP_AI_XSPI2_PROGRAM_CHUNK_BYTES 4096U
 #define APP_AI_XSPI2_ERASE_BLOCK_BYTES (64U * 1024U)

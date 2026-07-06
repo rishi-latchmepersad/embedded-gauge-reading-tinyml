@@ -87,6 +87,10 @@ void AppCameraDiagnostics_LogCaptureBufferSummary(const uint8_t *buffer_ptr,
 void AppCameraDiagnostics_LogCaptureBufferPreview(const char *reason,
 		const uint8_t *buffer_ptr, uint32_t length_bytes);
 
+/* Print a compact Y/U/V summary from the packed YUV422 frame buffer. */
+void AppCameraDiagnostics_LogYuv422ChromaSummary(const char *reason,
+		const uint8_t *buffer_ptr, uint32_t length_bytes);
+
 /* Print a compact ROI summary for the processed YUV frame. */
 void AppCameraDiagnostics_LogProcessedFrameDiagnostics(const char *reason,
 		const uint8_t *buffer_ptr, uint32_t length_bytes);

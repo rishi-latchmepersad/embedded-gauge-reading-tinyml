@@ -73,6 +73,9 @@ extern uintptr_t AppAI_GetRelocRuntimeR9(
 /* ------------------------------------------------------------------ */
 extern bool LL_ATON_EC_Network_Init_obb_box_board_bbox_deploy_candidate(void);
 extern bool LL_ATON_EC_Inference_Init_obb_box_board_bbox_deploy_candidate(void);
+extern const LL_Buffer_InfoTypeDef *LL_ATON_Input_Buffers_Info_obb_box_board_bbox_deploy_candidate(void);
+extern const LL_Buffer_InfoTypeDef *LL_ATON_Output_Buffers_Info_obb_box_board_bbox_deploy_candidate(void);
+extern const LL_Buffer_InfoTypeDef *LL_ATON_Internal_Buffers_Info_obb_box_board_bbox_deploy_candidate(void);
 
 /**
  * @brief Install the OBB relocatable runtime context.

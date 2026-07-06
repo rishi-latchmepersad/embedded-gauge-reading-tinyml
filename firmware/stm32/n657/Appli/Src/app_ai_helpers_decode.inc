@@ -1239,6 +1239,14 @@ bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	}
 #endif
 
+	/*
+	 * Re-load the stage runtime base after preprocessing. The shared resize
+	 * helpers make several deep calls, and if any of those paths disturb r9 we
+	 * want the follow-on logs and cache maintenance to run with a clean reloc
+	 * base instead of inheriting a poisoned value.
+	 */
+	__asm volatile("mov r9, %0" ::"r"(app_ai_saved_r9) : "r9");
+
 	if (emit_stage_diagnostics)
 	{
 		(void)DebugConsole_WriteString("[AI] Stage preprocess OK.\r\n");

@@ -273,8 +273,9 @@ bool CameraPlatform_SeedImx335ExposureGain(void) {
 	}
 
 	DebugConsole_Printf(
-			"[CAMERA][PROBE]   - Seeded IMX335 exposure to %lu us and gain to %ld mdB.\r\n",
-			(unsigned long) seed_exposure_us, (long) seed_gain_mdb);
+			"[CAMERA][PROBE]   - Seeded IMX335 exposure to %lu us and gain to %ld mdB (%s).\r\n",
+			(unsigned long) seed_exposure_us, (long) seed_gain_mdb,
+			(camera_cached_exposure_us > 0) ? "cached" : "default");
 
 	return true;
 }
@@ -288,7 +289,8 @@ bool CameraPlatform_SeedImx335ExposureGain(void) {
  *                 When false, move it toward a darker capture.
  * @retval true when the new settings were accepted by the middleware.
  */
-bool CameraPlatform_AdjustImx335ExposureGain(bool brighten) {
+bool CameraPlatform_AdjustImx335ExposureGain(bool brighten,
+		uint32_t step_percent) {
 	ISP_SensorInfoTypeDef sensor_info = { 0 };
 	int32_t current_exposure_us = 0;
 	int32_t current_gain_mdb = 0;
@@ -296,6 +298,8 @@ bool CameraPlatform_AdjustImx335ExposureGain(bool brighten) {
 	int32_t target_gain_mdb = 0;
 	int32_t exposure_step_us = 0;
 	int32_t gain_step_mdb = 0;
+	int32_t exposure_range_us = 0;
+	int32_t gain_range_mdb = 0;
 	bool apply_exposure = false;
 	bool apply_gain = false;
 	int32_t cmw_status = CMW_ERROR_NONE;
@@ -324,35 +328,35 @@ bool CameraPlatform_AdjustImx335ExposureGain(bool brighten) {
 		return false;
 	}
 
-	/* Walk exposure first so a dim frame does not jump straight from
-	 * under-exposed to heavily over-exposed just because gain moved too.
-	 * Steps are multiplicative (geometric): multiply/divide by 2 per nudge.
-	 * Linear steps are too coarse across the full sensor range (26–33333 µs):
-	 * a 1/20-range step of 1662 µs straddles the entire acceptable window at
-	 * low exposures, causing perpetual bright↔dark oscillation. */
-	/* Use a fractional nudge so the gate settles instead of bouncing across
-	 * the bright/dark thresholds. */
 	target_exposure_us = current_exposure_us;
 	target_gain_mdb = current_gain_mdb;
-	exposure_step_us = current_exposure_us
-			>> CAMERA_CAPTURE_BRIGHTNESS_EXPOSURE_STEP_FRACTION_SHIFT;
-	gain_step_mdb = current_gain_mdb
-			>> CAMERA_CAPTURE_BRIGHTNESS_GAIN_STEP_FRACTION_SHIFT;
+	exposure_range_us = (int32_t) sensor_info.exposure_max
+			- (int32_t) sensor_info.exposure_min;
+	gain_range_mdb = sensor_info.gain_max - sensor_info.gain_min;
+	if (step_percent == 0U) {
+		step_percent = CAMERA_CAPTURE_BRIGHTNESS_STEP_MAX_PERCENT;
+	}
+	if (step_percent > 100U) {
+		step_percent = 100U;
+	}
+	exposure_step_us = (exposure_range_us * (int32_t) step_percent) / 100;
+	gain_step_mdb = (gain_range_mdb * (int32_t) step_percent) / 100;
+
+	if (exposure_step_us < 1) {
+		exposure_step_us = 1;
+	}
+	if (gain_step_mdb < 1) {
+		gain_step_mdb = 1;
+	}
 
 	if (brighten) {
 		if (current_exposure_us < (int32_t) sensor_info.exposure_max) {
-			if (exposure_step_us < 1) {
-				exposure_step_us = 1;
-			}
 			target_exposure_us = current_exposure_us + exposure_step_us;
 			if (target_exposure_us > (int32_t) sensor_info.exposure_max) {
 				target_exposure_us = (int32_t) sensor_info.exposure_max;
 			}
 			apply_exposure = (target_exposure_us != current_exposure_us);
 		} else {
-			if (gain_step_mdb < 1) {
-				gain_step_mdb = 1;
-			}
 			target_gain_mdb = current_gain_mdb + gain_step_mdb;
 			if (target_gain_mdb > sensor_info.gain_max) {
 				target_gain_mdb = sensor_info.gain_max;
@@ -361,18 +365,12 @@ bool CameraPlatform_AdjustImx335ExposureGain(bool brighten) {
 		}
 	} else {
 		if (current_exposure_us > (int32_t) sensor_info.exposure_min) {
-			if (exposure_step_us < 1) {
-				exposure_step_us = 1;
-			}
 			target_exposure_us = current_exposure_us - exposure_step_us;
 			if (target_exposure_us < (int32_t) sensor_info.exposure_min) {
 				target_exposure_us = (int32_t) sensor_info.exposure_min;
 			}
 			apply_exposure = (target_exposure_us != current_exposure_us);
 		} else {
-			if (gain_step_mdb < 1) {
-				gain_step_mdb = 1;
-			}
 			target_gain_mdb = current_gain_mdb - gain_step_mdb;
 			if (target_gain_mdb < sensor_info.gain_min) {
 				target_gain_mdb = sensor_info.gain_min;
@@ -407,10 +405,18 @@ bool CameraPlatform_AdjustImx335ExposureGain(bool brighten) {
 		}
 	}
 
+	/* Persist every successful manual nudge so a later DCMIPP transport retry
+	 * resumes from the newest search point instead of falling all the way back
+	 * to the cold-start seed. Without this, a single CSI/DPHY hiccup resets the
+	 * brightness gate search and makes dark-scene convergence look broken. */
+	camera_cached_exposure_us = target_exposure_us;
+	camera_cached_gain_mdb = target_gain_mdb;
+
 	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] Nudged IMX335 %s: exposure=%ld us gain=%ld mdB.%s%s\r\n",
-			brighten ? "brighter" : "darker", (long) target_exposure_us,
-			(long) target_gain_mdb, apply_exposure ? " exposure" : "",
+			"[CAMERA][CAPTURE] Nudged IMX335 %s (%lu%% step): exposure=%ld us gain=%ld mdB.%s%s\r\n",
+			brighten ? "brighter" : "darker", (unsigned long) step_percent,
+			(long) target_exposure_us, (long) target_gain_mdb,
+			apply_exposure ? " exposure" : "",
 			apply_gain ? " gain" : "");
 	return true;
 }
@@ -991,5 +997,33 @@ bool CameraPlatform_StartImx335Stream(void) {
 	}
 
 	camera_stream_started = true;
+	return true;
+}
+
+/**
+ * @brief Put the IMX335 back into standby so a later retry can restart cleanly.
+ *
+ * The DCMIPP fault path can leave the sensor side logically streaming even
+ * after the receiver has been stopped, so we explicitly clear the stream gate
+ * before the next capture attempt.
+ * @retval true when the sensor accepted standby or was already stopped.
+ */
+bool CameraPlatform_StopImx335Stream(void) {
+	uint8_t mode_select = IMX335_MODE_STANDBY;
+
+	if (!camera_stream_started) {
+		return true;
+	}
+
+	if (CameraPlatform_I2cWriteReg(BCAMS_IMX_I2C_ADDRESS_HAL,
+	IMX335_REG_MODE_SELECT, &mode_select, 1U) != IMX335_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Failed to write MODE_SELECT=0x%02X to stop IMX335 streaming.\r\n",
+				(unsigned int) IMX335_MODE_STANDBY);
+		return false;
+	}
+	DelayMilliseconds_ThreadX(20U);
+
+	camera_stream_started = false;
 	return true;
 }

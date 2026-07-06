@@ -55,7 +55,7 @@ MEMORY
    * The rectifier pool symbol must live here so the NPU reads weights from the
    * correct flash region. */
   EXTRAM_RECTIFIER (rw) : ORIGIN = 0x70600000,   LENGTH = 256K
-  EXTRAM_OBB (rw)       : ORIGIN = 0x70700000,   LENGTH = 4096K
+  EXTRAM_OBB (rw)       : ORIGIN = 0x71400000,   LENGTH = 4096K
   /* HyperRAM scratch for QARepVGG-Pro (1 MB activation overflow).
    * The N657 Nucleo has no physical HyperRAM; this section exists
    * for linker resolution only.  NPU access to 0x90000000 will
@@ -65,7 +65,7 @@ MEMORY
   EXTRAM_SOURCE_CROP_BOX (rw) : ORIGIN = 0x70B00000,   LENGTH = 512K
   /* Non-secure alias A/B test — DCMIPP with MSEC=1 writes to 0x24xxxxxx.
    * Placed at top of AXISRAM1 non-secure alias, away from code/data. */
-  RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 384K
+  RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 512K
   /* AXISRAM6 — polar_luma (100K, CD stage only) is overlaid on the bottom
    * of the OBB activation region (0x34350000).  Both use the same memory but
    * at different times: OBB runs first (writes scratch here), then the CD
@@ -291,10 +291,10 @@ SECTIONS
     __bss_end__ = _ebss;
   } >RAM :data
 
-  /* Tip-focus activations scratch buffer (800 KiB — camera_snapshot,
-   * center_det_input_buf, resized_rgb) placed in AXISRAM3+4.
-   * polar_luma is in .npusram6_polar to avoid 4K overflow past TIP_FOCUS_RAM.
-   * Defined with __attribute__((section(".tip_focus_activations"))). */
+  /* Tip-focus / camera scratch stays out of the OBB reloc runtime window.
+   * The OBB vpool starts at 0x34100000, so this section must not live in the
+   * old 0x34200000 AXISRAM3+4 placement. Keeping the shared camera snapshot and
+   * center-detector scratch in RAM_NC avoids colliding with the reloc image. */
   .tip_focus_activations (NOLOAD) :
   {
     . = ALIGN(32);
@@ -302,7 +302,7 @@ SECTIONS
     KEEP(*(.tip_focus_activations))
     KEEP(*(.tip_focus_activations*))
     . = ALIGN(32);
-  } >TIP_FOCUS_RAM
+  } >RAM_NC
 
   /* AXISRAM6 section — AI thread stack lives here, after polar_luma (below)
    * and the OBB activation region (which both share the same 304K below). */

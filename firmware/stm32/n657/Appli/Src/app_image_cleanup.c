@@ -30,9 +30,11 @@
 #define APP_IMAGE_CLEANUP_MAX_BUCKETS            1024U
 #define APP_IMAGE_CLEANUP_CAPTURE_NAME_LENGTH      64U
 #define APP_IMAGE_CLEANUP_THREAD_PRIORITY          16U
-#define APP_IMAGE_CLEANUP_PERIOD_MS            600000U
+#define APP_IMAGE_CLEANUP_FLUSH_INTERVAL_MS      120000U
+#define APP_IMAGE_CLEANUP_PERIOD_MS           1800000U
+#define APP_IMAGE_CLEANUP_SERVICE_POLL_MS         1000U
 #define APP_IMAGE_CLEANUP_MEDIA_READY_TIMEOUT_MS  60000U
-#define APP_IMAGE_CLEANUP_RETRY_DELAY_MS          30000U
+#define APP_IMAGE_CLEANUP_RETRY_DELAY_MS          1000U
 #define APP_IMAGE_CLEANUP_RECENT_WINDOW_SECONDS    86400U
 #define APP_IMAGE_CLEANUP_FILE_NAME_BUFFER_LENGTH FX_MAX_LONG_NAME_LEN
 /* USER CODE END Includes */
@@ -73,12 +75,15 @@ static TX_THREAD app_image_cleanup_thread;
 static ULONG app_image_cleanup_thread_stack[IMAGE_CLEANUP_THREAD_STACK_SIZE_BYTES
 		/ sizeof(ULONG)];
 static bool app_image_cleanup_thread_created = false;
+static ULONG app_image_cleanup_boot_tick = 0U;
+static bool app_image_cleanup_boot_tick_set = false;
 static AppImageCleanup_BucketRecord app_image_cleanup_bucket_records
 		[APP_IMAGE_CLEANUP_MAX_BUCKETS];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
+UINT AppImageCleanup_SetBootTick(ULONG boot_tick);
 static VOID AppImageCleanupThread_Entry(ULONG thread_input);
 static UINT AppImageCleanup_RunSweep(void);
 static bool AppImageCleanup_IsDigit(char ch);
@@ -143,6 +148,17 @@ UINT AppImageCleanup_Start(void) {
 }
 
 /**
+ * @brief Record the boot tick used to schedule the first cleanup sweep.
+ * @param boot_tick System tick captured near boot.
+ * @retval TX_SUCCESS always.
+ */
+UINT AppImageCleanup_SetBootTick(ULONG boot_tick) {
+	app_image_cleanup_boot_tick = boot_tick;
+	app_image_cleanup_boot_tick_set = true;
+	return TX_SUCCESS;
+}
+
+/**
  * @brief Background worker that prunes duplicate captures from /captured_images.
  * @param thread_input Unused ThreadX input value.
  */
@@ -150,11 +166,28 @@ static VOID AppImageCleanupThread_Entry(ULONG thread_input) {
 	(void) thread_input;
 
 	DebugConsole_Printf(
-			"[IMAGE][CLEANUP] Thread started; pruning every %lu ms.\r\n",
+			"[IMAGE][CLEANUP] Thread started; flushing every %lu ms and pruning every %lu ms.\r\n",
+			(unsigned long) APP_IMAGE_CLEANUP_FLUSH_INTERVAL_MS,
 			(unsigned long) APP_IMAGE_CLEANUP_PERIOD_MS);
+
+	ULONG next_cleanup_tick = app_image_cleanup_boot_tick_set
+			? (app_image_cleanup_boot_tick
+					+ ThreadxUtils_MillisecondsToTicks(
+							APP_IMAGE_CLEANUP_PERIOD_MS))
+			: (tx_time_get()
+					+ ThreadxUtils_MillisecondsToTicks(
+							APP_IMAGE_CLEANUP_PERIOD_MS));
 
 	while (1) {
 		UINT sweep_status = TX_SUCCESS;
+		const ULONG now_tick = tx_time_get();
+
+		(void) AppFileX_ServiceCaptureMediaFlush();
+
+		if (now_tick < next_cleanup_tick) {
+			DelayMilliseconds_Cooperative(APP_IMAGE_CLEANUP_SERVICE_POLL_MS);
+			continue;
+		}
 
 		if (!AppStorage_WaitForMediaReady(APP_IMAGE_CLEANUP_MEDIA_READY_TIMEOUT_MS)) {
 			DebugConsole_Printf(
@@ -172,7 +205,12 @@ static VOID AppImageCleanupThread_Entry(ULONG thread_input) {
 			continue;
 		}
 
-		DelayMilliseconds_Cooperative(APP_IMAGE_CLEANUP_PERIOD_MS);
+		do {
+			next_cleanup_tick += ThreadxUtils_MillisecondsToTicks(
+					APP_IMAGE_CLEANUP_PERIOD_MS);
+		} while (next_cleanup_tick <= now_tick);
+
+		DelayMilliseconds_Cooperative(APP_IMAGE_CLEANUP_SERVICE_POLL_MS);
 	}
 }
 

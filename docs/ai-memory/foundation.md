@@ -39,6 +39,7 @@ See `archive.md` for the full chronology.
 - Feature logic should live in small modules with narrow APIs.
 - Generated AI runtime code and vendor glue should stay behind wrappers.
 - The current board image is easier to maintain when model logic stays out of `main.c`.
+- Keep the WSL ML workspace and the Windows firmware workspace separate in practice: train/export in `\\wsl$\Ubuntu-24.04\home\rishi_latchmepersad\Projects\embedded-gauge-reading-tinyml`, then copy only final firmware inputs into `D:\Projects\embedded-gauge-reading-tinyml`.
 
 ## Memory Lessons We Learned
 
@@ -49,6 +50,9 @@ See `archive.md` for the full chronology.
 - Verbose AI bring-up and debug logging strings can also tip the `ROM` image over the limit.
 - The capture path uses large frame buffers and snapshots, so memory ownership must stay explicit.
 - The board has a secure/noncacheable memory story, so DMA and capture buffers must be placed deliberately.
+- The live board path is intended to be OBB first, then UNet v15. Do not disable that handoff just to avoid a debug fault; fix the boundary and keep the model chain intact.
+- A stack-watermark probe right before tip-focus preprocess was too invasive in the hot path and could contribute to a MemManage fault. Keep that style of debug logging out of the OBB-to-UNet handoff.
+- The ATON reloc base must be restored after runtime calls. Leaving `r9` parked on the model reloc base can make the next non-ATON helper fault even when the model output itself looked valid.
 
 ## Secure Buffer / Capture Buffer Lesson
 
@@ -70,6 +74,7 @@ See `archive.md` for the full chronology.
 - The FileX thread should not hold the media mutex while draining the debug log queue.
 - Intermittent DCMIPP error `0x00008100` decodes to `CSI_SYNC | CSI_DPHY_CTRL`, which points at the camera link/CSI side rather than the AI worker or FileX path.
 - When `0x00008100` shows up after a full frame buffer has already been reported, the current capture path retries once because it often behaves like a late CSI/DPHY rearm hiccup rather than a hard failure.
+- The recovery lesson from that fault is that the sensor stream itself may need to be stopped and restarted before the next retry; just restarting the DCMIPP pipe can leave the link half-armed.
 
 ## RTC Facts
 

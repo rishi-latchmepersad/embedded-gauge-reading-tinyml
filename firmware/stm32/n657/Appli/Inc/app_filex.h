@@ -58,10 +58,12 @@ FX_MEDIA *AppFileX_GetMediaHandle(void);
 const CHAR *AppFileX_GetCapturedImagesDirectoryName(void);
 UINT AppFileX_AcquireMediaLock(void);
 void AppFileX_ReleaseMediaLock(void);
+UINT AppFileX_PrepareCaptureSlots(void);
 UINT AppFileX_GetNextCapturedImageName(CHAR *file_name_ptr,
 		ULONG file_name_length, const CHAR *file_extension_ptr);
 UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		const VOID *data_ptr, ULONG data_length);
+UINT AppFileX_ServiceCaptureMediaFlush(void);
 
 /* USER CODE END EFP */
 

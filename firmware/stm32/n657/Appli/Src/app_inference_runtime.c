@@ -66,10 +66,13 @@ static TX_QUEUE inference_log_queue;
 static ULONG inference_log_queue_storage[INFERENCE_LOG_QUEUE_DEPTH];
 
 static TX_THREAD camera_ai_thread;
-/* Use NPU_SRAM6 (AXISRAM6, clock-enabled in main.c) so ThreadX can write
- * initial stack frames without bus-faulting into unclocked memory. */
+/* Keep the AI worker stack out of the OBB reloc runtime window. The OBB
+ * package claims a large AXISRAM span starting at 0x34100000, so placing the
+ * worker stack in .npusram6 can collide with the live reloc image and corrupt
+ * the thread context mid-inference. Let the linker place this in the normal
+ * BSS/stack RAM instead. */
 static ULONG camera_ai_thread_stack[CAMERA_AI_THREAD_STACK_SIZE_BYTES
-		/ sizeof(ULONG)] __attribute__((section(".npusram6")));
+		/ sizeof(ULONG)];
 static bool camera_ai_thread_created = false;
 static TX_SEMAPHORE camera_ai_request_semaphore;
 static bool camera_ai_sync_created = false;
@@ -121,6 +124,14 @@ UINT AppInferenceRuntime_Init(void) {
 		camera_ai_sync_created = false;
 		return status;
 	}
+
+	TX_INTERRUPT_SAVE_AREA
+	TX_DISABLE
+	camera_ai_request_frame_ptr = NULL;
+	camera_ai_request_frame_length = 0U;
+	camera_ai_request_capture_time_us = 0ULL;
+	camera_ai_request_in_flight = false;
+	TX_RESTORE
 
 	app_inference_runtime_initialized = true;
 	return TX_SUCCESS;
@@ -174,15 +185,12 @@ UINT AppInferenceRuntime_Start(void) {
  */
 bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
 		ULONG frame_length) {
+	TX_INTERRUPT_SAVE_AREA
+	bool in_flight = false;
+
 	if (!camera_ai_sync_created) {
 		DebugConsole_Printf(
 				"[AI] Dry-run request dropped; AI queue not initialized.\r\n");
-		return false;
-	}
-
-	if (camera_ai_request_in_flight) {
-		DebugConsole_Printf(
-				"[AI] Dry-run request dropped; previous frame still in flight.\r\n");
 		return false;
 	}
 
@@ -203,6 +211,17 @@ bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
 
 	/* Anchor AI timing before the snapshot copy so the latency includes the
 	 * full request-to-result path, not just worker execution. */
+	TX_DISABLE
+	in_flight = camera_ai_request_in_flight;
+	TX_RESTORE
+
+	if (in_flight) {
+		(void) DebugConsole_WriteString(
+				"[AI] Dry-run request dropped; worker is still busy.\r\n");
+		return false;
+	}
+
+	TX_DISABLE
 	camera_ai_request_capture_time_us = Metrics_GetMicros();
 	Metrics_StartInference("AI");
 	(void) memcpy(camera_inference_frame_snapshot, frame_ptr, (size_t) frame_length);
@@ -212,8 +231,15 @@ bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
 	camera_ai_request_in_flight = true;
 	camera_ai_request_frame_ptr = camera_inference_frame_snapshot;
 	camera_ai_request_frame_length = frame_length;
+	TX_RESTORE
+
 	if (tx_semaphore_put(&camera_ai_request_semaphore) != TX_SUCCESS) {
+		TX_INTERRUPT_SAVE_AREA
+		TX_DISABLE
 		camera_ai_request_in_flight = false;
+		camera_ai_request_frame_ptr = NULL;
+		camera_ai_request_frame_length = 0U;
+		TX_RESTORE
 		Metrics_EndInference("AI", NAN);
 		DebugConsole_Printf(
 				"[AI] Failed to signal dry-run request semaphore.\r\n");
@@ -302,7 +328,10 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 			}
 		}
 
+		TX_INTERRUPT_SAVE_AREA
+		TX_DISABLE
 		camera_ai_request_in_flight = false;
+		TX_RESTORE
 	}
 }
 

@@ -21,6 +21,7 @@ UINT AppStorage_Init(void);
 
 bool AppStorage_WaitForMediaReady(uint32_t timeout_ms);
 void AppStorage_NotifyMediaReady(void);
+
 bool AppStorage_BuildCaptureFileName(CHAR *file_name_ptr,
 		ULONG file_name_length, const CHAR *file_extension_ptr);
 

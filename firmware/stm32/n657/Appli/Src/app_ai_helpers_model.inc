@@ -401,13 +401,33 @@ const LL_Buffer_InfoTypeDef *AppAI_GetStageInputBufferInfo(
 	const AppAI_ModelStageSpec *stage)
 {
 	const LL_Buffer_InfoTypeDef *input_info = NULL;
+	const char *stage_label = NULL;
 
-	if ((stage == NULL) || (stage->nn_instance == NULL) || (stage->nn_instance->network == NULL) || (stage->nn_instance->network->input_buffers_info == NULL))
+	if (stage == NULL)
 	{
 		return NULL;
 	}
 
-	input_info = stage->nn_instance->network->input_buffers_info();
+	stage_label = (stage->stage_label != NULL) ? stage->stage_label : "";
+	if ((stage->nn_instance != NULL) &&
+		(stage->nn_instance->network != NULL) &&
+		(stage->nn_instance->network->input_buffers_info != NULL))
+	{
+		input_info = stage->nn_instance->network->input_buffers_info();
+	}
+	if ((input_info == NULL) || (input_info->name == NULL))
+	{
+		if ((strstr(stage_label, "obb_box") != NULL) ||
+			(strstr(stage_label, "board_bbox") != NULL) ||
+			(strstr(stage_label, "qarepvgg") != NULL))
+		{
+			input_info = LL_ATON_Input_Buffers_Info_obb_box_board_bbox_deploy_candidate();
+		}
+		else if (strstr(stage_label, "tip_focus") != NULL)
+		{
+			input_info = LL_ATON_Input_Buffers_Info_tip_focus_v18_int8();
+		}
+	}
 	if ((input_info == NULL) || (input_info->name == NULL))
 	{
 		return NULL;
@@ -419,13 +439,33 @@ const LL_Buffer_InfoTypeDef *AppAI_GetStageOutputBufferInfo(
 	const AppAI_ModelStageSpec *stage)
 {
 	const LL_Buffer_InfoTypeDef *output_info = NULL;
+	const char *stage_label = NULL;
 
-	if ((stage == NULL) || (stage->nn_instance == NULL) || (stage->nn_instance->network == NULL) || (stage->nn_instance->network->output_buffers_info == NULL))
+	if (stage == NULL)
 	{
 		return NULL;
 	}
 
-	output_info = stage->nn_instance->network->output_buffers_info();
+	stage_label = (stage->stage_label != NULL) ? stage->stage_label : "";
+	if ((stage->nn_instance != NULL) &&
+		(stage->nn_instance->network != NULL) &&
+		(stage->nn_instance->network->output_buffers_info != NULL))
+	{
+		output_info = stage->nn_instance->network->output_buffers_info();
+	}
+	if ((output_info == NULL) || (output_info->name == NULL))
+	{
+		if ((strstr(stage_label, "obb_box") != NULL) ||
+			(strstr(stage_label, "board_bbox") != NULL) ||
+			(strstr(stage_label, "qarepvgg") != NULL))
+		{
+			output_info = LL_ATON_Output_Buffers_Info_obb_box_board_bbox_deploy_candidate();
+		}
+		else if (strstr(stage_label, "tip_focus") != NULL)
+		{
+			output_info = LL_ATON_Output_Buffers_Info_tip_focus_v18_int8();
+		}
+	}
 	if ((output_info == NULL) || (output_info->name == NULL))
 	{
 		return NULL;
@@ -571,6 +611,10 @@ bool AppAI_EnsureXspi2ModelImageReadyForStage(
 
 bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage)
 {
+	uintptr_t caller_r9 = 0U;
+
+	__asm volatile("mov %0, r9" : "=r"(caller_r9));
+
 	if (stage == NULL)
 	{
 		return false;
@@ -589,6 +633,7 @@ bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage)
 			DebugConsole_WriteString(
 				"[AI] Stage runtime ready failed during xSPI2 setup.\r\n");
 		}
+		__asm volatile("mov r9, %0" ::"r"(caller_r9) : "r9");
 		return false;
 	}
 
@@ -599,29 +644,19 @@ bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage)
 	if ((stage->network_init_fn == NULL) || !stage->network_init_fn())
 	{
 		AppAI_LogInitFailure(stage->stage_label);
+		__asm volatile("mov r9, %0" ::"r"(caller_r9) : "r9");
 		return false;
 	}
 
-	/* The current OBB reloc blob ships with a zero ec_network_init vector,
-	 * so calling LL_ATON_RT_Init_Network() in reloc mode branches through a
-	 * null PC. Run that one runtime init with inst_reloc cleared, then restore
-	 * the reloc context before inference so the valid ec_inference_init path
-	 * still uses the reloc binary. */
+	/* The OBB stage now runs through the plain model wrapper path. Keep the
+	 * reloc handle cleared here so the runtime does not try to enter the
+	 * reloc inference-init hook, which was faulting at PC=0 before the first
+	 * epoch could start. */
 	if (stage == &app_ai_obb_stage)
 	{
 		stage->nn_instance->exec_state.inst_reloc = 0U;
 	}
 	LL_ATON_RT_Init_Network(stage->nn_instance);
-
-	if (stage == &app_ai_obb_stage)
-	{
-		if (!AppAI_Obb_InstallRelocContext(stage->nn_instance,
-										   stage->xspi2_base_addr))
-		{
-			AppAI_LogInitFailure(stage->stage_label);
-			return false;
-		}
-	}
 	if (AppAI_ShouldLogStageDiagnostics(stage))
 	{
 		DebugConsole_WriteString("[AI] Stage network init OK.\r\n");
@@ -634,22 +669,11 @@ bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage)
 	if ((stage->inference_init_fn == NULL) || !stage->inference_init_fn())
 	{
 		AppAI_LogInitFailure(stage->stage_label);
+		__asm volatile("mov r9, %0" ::"r"(caller_r9) : "r9");
 		return false;
 	}
 
-	/* The OBB package uses a relocatable runtime base for its software
-	 * resize helper. Reinstall that runtime context here so the generated
-	 * ll_sw_forward_resize_integer() call can read the correct tables. */
-	if (stage == &app_ai_obb_stage)
-	{
-		if (!AppAI_Obb_InstallRelocContext(stage->nn_instance,
-										   stage->xspi2_base_addr))
-		{
-			AppAI_LogInitFailure(stage->stage_label);
-			return false;
-		}
-	}
-
+	__asm volatile("mov r9, %0" ::"r"(caller_r9) : "r9");
 	if (AppAI_ShouldLogStageDiagnostics(stage))
 	{
 		DebugConsole_WriteString("[AI] Stage inference init OK.\r\n");

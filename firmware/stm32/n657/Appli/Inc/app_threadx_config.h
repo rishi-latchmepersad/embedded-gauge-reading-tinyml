@@ -28,6 +28,11 @@ extern "C" {
 #define CAMERA_HEARTBEAT_LED_GPIO_PORT      GPIOG
 #define CAMERA_HEARTBEAT_LED_PIN            GPIO_PIN_0
 
+/* Camera capture cadence --------------------------------------------------- */
+/* Keep the board on a simple one-frame-per-minute duty cycle now that the
+ * save path is no longer the bottleneck. */
+#define CAMERA_CAPTURE_PERIOD_MS           60000U
+
 /* Storage maintenance timing ---------------------------------------------- */
 #define IMAGE_CLEANUP_PERIOD_MS            600000U
 

@@ -63,7 +63,6 @@ extern volatile size_t app_ai_scalar_preprocess_last_row;
 extern DCMIPP_HandleTypeDef hdcmipp;
 extern volatile uint32_t camera_capture_csi_irq_count;
 extern volatile uint32_t camera_capture_dcmipp_irq_count;
-extern void CDNN0_IRQHandler(void);
 extern UART_HandleTypeDef hlpuart1;
 
 static void IT_RawUartWrite(const char *line)
@@ -478,6 +477,27 @@ void DCMIPP_IRQHandler(void)
 {
   camera_capture_dcmipp_irq_count++;
   HAL_DCMIPP_IRQHandler(IT_GetActiveDcmippHandle());
+}
+
+/**
+  * @brief These handlers forward any sibling NPU completion lines to the same
+  * ATON runtime handler as the primary line. The generated model should wake
+  * on NPU0, but this keeps the other completion lines from silently falling
+  * back to the weak default handler if the runtime routes a completion there.
+  */
+void NPU1_IRQHandler(void)
+{
+  NPU0_IRQHandler();
+}
+
+void NPU2_IRQHandler(void)
+{
+  NPU0_IRQHandler();
+}
+
+void NPU3_IRQHandler(void)
+{
+  NPU0_IRQHandler();
 }
 
 /* USER CODE END 1 */
