@@ -434,6 +434,28 @@ void AppCameraCapture_LogCaptureState(const char *reason) {
 }
 
 /**
+ * @brief Log the save-path state for the frame that is about to be written.
+ *
+ * The goal is to keep the message small enough for normal bring-up while
+ * still showing whether the frame came from the processed CMW/ISP path or a
+ * raw fallback path.
+ */
+static void AppCameraCapture_LogSavePathState(const uint8_t *image_ptr,
+		uint32_t image_length) {
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] save-state: pipeline=%s cmw_init=%u stream=%u active_buf=%lu result=%p bytes=%lu\r\n",
+			camera_capture_use_cmw_pipeline ? "processed" : "raw",
+			(unsigned int) (camera_cmw_initialized ? 1U : 0U),
+			(unsigned int) (camera_stream_started ? 1U : 0U),
+			(unsigned long) camera_capture_active_buffer_index,
+			(void *) image_ptr, (unsigned long) image_length);
+
+	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
+		AppCameraCapture_LogCaptureState("save-path");
+	}
+}
+
+/**
  * @brief Capture a single frame, save it to the SD card, and queue inference.
  * @retval true when the frame reaches storage successfully.
  */
@@ -717,6 +739,14 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 			break;
 		}
 
+		/* A CSI sync / DPHY control hiccup usually means the link needs a fresh
+		 * sensor stream start, not just another pipe arm. Force the next attempt
+		 * down the full stream-start path and pulse the module reset so we do not
+		 * wait on a stale link. */
+		DebugConsole_WriteString(
+				"[CAMERA][CAPTURE] CSI sync fault on retryable frame; forcing fresh sensor reset and stream start.\r\n");
+		CameraPlatform_ResetImx335Module();
+		camera_stream_started = false;
 		discard_next_successful_frame = true;
 	}
 
@@ -745,6 +775,7 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	AppCameraDiagnostics_LogCaptureBufferPreview("ready-to-save", image_ptr,
 			(uint32_t) image_length);
 #endif
+	AppCameraCapture_LogSavePathState(image_ptr, (uint32_t) image_length);
 
 	if (camera_capture_use_cmw_pipeline) {
 	if (storage_ready) {

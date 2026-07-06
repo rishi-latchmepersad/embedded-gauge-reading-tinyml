@@ -28,18 +28,18 @@ $RepoRoot   = Resolve-Path "$ScriptDir\..\..\.."
 # ---------- paths ----------
 $FsblBin     = "$ScriptDir\FSBL\Debug\n657_FSBL.bin"
 $FsblTrusted = "$ScriptDir\FSBL\Debug\FSBL_trusted.bin"
-$ObbRaw      = "$ScriptDir\st_ai_output\packages\obb_box_board_bbox_deploy_candidate\st_ai_output\obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw"
+$ObbRaw      = "$ScriptDir\st_ai_output\packages\obb_face_v2_int8_n6_npu\st_ai_output\obb_face_v2_int8_atonbuf.xSPI2.raw"
 $TipFocusRaw = "$ScriptDir\st_ai_output\packages\tip_focus_v4_112_int8_n6_npu\st_ai_output\network_atonbuf.xSPI2.raw"
 $SignatureTool = "$ScriptDir\tools\extract_model_signature.py"
 
 if (-not (Test-Path $ObbRaw -PathType Leaf)) {
-    $ObbRaw = "$RepoRoot\firmware\stm32\n657\st_ai_output\packages\obb_box_board_bbox_deploy_candidate\st_ai_output\obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw"
+    $ObbRaw = "$RepoRoot\firmware\stm32\n657\st_ai_output\packages\obb_face_v2_int8_n6_npu\st_ai_output\obb_face_v2_int8_atonbuf.xSPI2.raw"
 }
 if (-not (Test-Path $TipFocusRaw -PathType Leaf)) {
     $TipFocusRaw = "$RepoRoot\firmware\stm32\n657\st_ai_output\packages\tip_focus_v4_112_int8_n6_npu\st_ai_output\network_atonbuf.xSPI2.raw"
 }
 
-$ObbBin          = "$ScriptDir\Appli\Debug\obb_box_board_bbox_deploy_candidate.bin"
+$ObbBin          = "$ScriptDir\Appli\Debug\obb_model_stage.bin"
 $TipFocusBin     = "$ScriptDir\Appli\Debug\tip_focus_v4_112_int8_n6_npu.bin"
 $AppBin          = "$ScriptDir\Appli\Debug\n657_Appli.bin"
 $AppSign         = "$ScriptDir\Appli\Debug\n657_Appli_sign_new.bin"
