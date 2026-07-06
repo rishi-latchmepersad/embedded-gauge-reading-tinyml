@@ -33,6 +33,7 @@
 #include "app_camera_capture.h"
 #include "app_camera_platform.h"
 #include "app_baseline_runtime.h"
+#include "app_ai_config.h"
 #include "app_inference_runtime.h"
 #include "app_image_cleanup.h"
 #include "app_storage.h"
@@ -242,6 +243,9 @@ UINT App_ThreadX_Start(void) {
 	}
 
 	{
+		AppBaselineRuntime_SetCalibrationProfileByName(
+			APP_BASELINE_CALIBRATION_PROFILE_NAME);
+
 		const UINT baseline_runtime_status = AppBaselineRuntime_Start();
 		if (baseline_runtime_status != TX_SUCCESS) {
 			DebugConsole_Printf(

@@ -20,6 +20,39 @@ extern "C" {
 
 #include "tx_api.h"
 
+/**
+ * @brief Temperature calibration profile for a specific gauge.
+ *
+ * The live firmware keeps the vision stages shared, then applies one of these
+ * profiles to convert the detected needle angle into a board-specific
+ * temperature.  That gives us a scalable per-gauge hook without baking the
+ * correction directly into the vision pipeline.
+ *
+ * Profiles may use the affine fallback fields or provide explicit
+ * angle/temperature anchors for piecewise interpolation.  Anchor points are
+ * ordered in sweep-fraction order from hot to cold, and the runtime will use
+ * them when a profile defines at least two valid anchors.
+ */
+#define APP_BASELINE_CALIBRATION_MAX_POINTS 4U
+
+/** @brief One temperature anchor on a gauge calibration curve. */
+typedef struct
+{
+	float angle_deg;
+	float temperature_c;
+} AppBaselineRuntime_CalibrationPoint_t;
+
+typedef struct
+{
+	const char *profile_name;
+	float angle_offset_deg;
+	float temperature_pivot_c;
+	float temperature_gain;
+	size_t calibration_point_count;
+	AppBaselineRuntime_CalibrationPoint_t
+		calibration_points[APP_BASELINE_CALIBRATION_MAX_POINTS];
+} AppBaselineRuntime_CalibrationProfile_t;
+
 /** @brief A polar-vote estimate: center, angle, temperature, and quality. */
 typedef struct
 {
@@ -93,6 +126,33 @@ bool AppBaselineRuntime_EstimateDialCenterFromRimVotes(
 
 /**
  * @brief Map angle to temperature.
+ */
+const AppBaselineRuntime_CalibrationProfile_t *
+AppBaselineRuntime_GetCalibrationProfile(void);
+
+/**
+ * @brief Select the active gauge calibration profile.
+ *
+ * Pass NULL to restore the built-in default board profile.
+ *
+ * @param profile Calibration profile to use for later angle-to-temperature
+ *        conversions.
+ */
+void AppBaselineRuntime_SetCalibrationProfile(
+	const AppBaselineRuntime_CalibrationProfile_t *profile);
+
+/**
+ * @brief Select the active gauge calibration profile by name.
+ *
+ * Unknown names fall back to the built-in default profile so the board keeps
+ * producing a temperature instead of hard-failing at boot.
+ *
+ * @param profile_name Registered profile name, or NULL for the default.
+ */
+void AppBaselineRuntime_SetCalibrationProfileByName(const char *profile_name);
+
+/**
+ * @brief Map angle to temperature using the active gauge calibration profile.
  */
 float AppBaselineRuntime_ConvertAngleToTemperature(float angle_rad);
 

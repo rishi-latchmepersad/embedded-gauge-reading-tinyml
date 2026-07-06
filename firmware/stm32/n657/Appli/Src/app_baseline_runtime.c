@@ -19,6 +19,7 @@
 
 #include "app_camera_buffers.h"
 #include "app_ai.h"
+#include "app_ai_config.h"
 #include "app_gauge_geometry.h"
 #include "app_inference_log_utils.h"
 #include "app_memory_budget.h"
@@ -47,12 +48,57 @@
 #define APP_BASELINE_SWEEP_DEG 270.0f
 #define APP_BASELINE_MIN_VALUE_C -30.0f
 #define APP_BASELINE_MAX_VALUE_C 50.0f
-/* Temporary board-fit calibration shift (2026-07-01).
+/* Temporary board-fit calibration shift (2026-07-05).
  * The live OBB -> UNet path is decoding a stable needle angle, but the
- * gauge temperature increases in the opposite angular direction from the
- * first mapping assumption. Re-center the 0C anchor here and keep the
- * shared angle-to-temp decode consistent with the physical sweep direction. */
-#define APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG (-3.78f)
+ * shared angle-to-temp mapping was still landing a few degrees too warm at
+ * the cold end. Shift the anchor toward the cold side so a true -30 C needle
+ * resolves closer to the expected temperature before we make any larger
+ * calibration-table changes. */
+#define APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG (9.72f)
+/* Second-stage board-fit calibration gain.
+ * The offset alone fixed the cold anchor, but the hot end still read low.
+ * Preserve the -30 C anchor and stretch the scale so a 35 C readout maps
+ * back to the expected 40 C point. */
+#define APP_BASELINE_TEMPERATURE_CALIBRATION_PIVOT_C (-30.0f)
+#define APP_BASELINE_TEMPERATURE_CALIBRATION_GAIN 1.0769231f
+/* Piecewise calibration anchors for the current board profile.
+ * The logged hot-end capture at raw 148.21 deg corresponds to a calibrated
+ * 157.93 deg point once the board offset is applied, so we pin that as the
+ * +50 C anchor and pair it with the live cold-end capture at raw 33.22 deg. */
+#define APP_BASELINE_PROFILE_BOARD_COLD_ANCHOR_RAW_DEG 33.22f
+#define APP_BASELINE_PROFILE_BOARD_COLD_ANCHOR_CALIBRATED_DEG \
+	(APP_BASELINE_PROFILE_BOARD_COLD_ANCHOR_RAW_DEG + \
+	 APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG)
+#define APP_BASELINE_PROFILE_BOARD_HOT_ANCHOR_RAW_DEG 148.21f
+#define APP_BASELINE_PROFILE_BOARD_HOT_ANCHOR_CALIBRATED_DEG \
+	(APP_BASELINE_PROFILE_BOARD_HOT_ANCHOR_RAW_DEG + \
+	 APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG)
+/* Default calibration profile for the current board-gauge pairing.
+ * Other gauges can define their own profiles and install them at runtime. */
+const AppBaselineRuntime_CalibrationProfile_t AppBaselineRuntime_DefaultCalibrationProfile = {
+	.profile_name = "board_celsius_v1",
+	.angle_offset_deg = APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG,
+	.temperature_pivot_c = APP_BASELINE_TEMPERATURE_CALIBRATION_PIVOT_C,
+	.temperature_gain = APP_BASELINE_TEMPERATURE_CALIBRATION_GAIN,
+	.calibration_point_count = 2U,
+	.calibration_points = {
+		{
+			.angle_deg = APP_BASELINE_PROFILE_BOARD_HOT_ANCHOR_CALIBRATED_DEG,
+			.temperature_c = 50.0f,
+		},
+		{
+			.angle_deg = APP_BASELINE_PROFILE_BOARD_COLD_ANCHOR_CALIBRATED_DEG,
+			.temperature_c = -30.0f,
+		},
+	},
+};
+/* Profile registry used for named selection at boot.
+ * Add one entry per gauge family so the conversion layer can scale without
+ * re-compiling the shared needle-angle math. */
+static const AppBaselineRuntime_CalibrationProfile_t
+	*const camera_baseline_calibration_profiles[] = {
+		&AppBaselineRuntime_DefaultCalibrationProfile,
+};
 #define APP_BASELINE_BRIGHT_THRESHOLD 150U
 /* Pixels above this luma are considered saturated/glare and excluded from
  * the bright-centroid calculation and ray scoring.
@@ -219,6 +265,11 @@ static float camera_baseline_last_confidence = 0.0f;
 static volatile ULONG camera_baseline_last_result_generation = 0U;
 /* Guard for one-time initialisation of the baseline subsystem. */
 static bool app_baseline_runtime_initialized = false;
+/* Active gauge calibration profile. Kept as a pointer so the board can swap
+ * profiles at runtime without rebuilding the shared decode path. */
+static const AppBaselineRuntime_CalibrationProfile_t
+	*camera_baseline_active_calibration_profile =
+	&AppBaselineRuntime_DefaultCalibrationProfile;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -268,6 +319,11 @@ static void AppBaselineRuntime_PushEstimateHistory(
 	const AppBaselineRuntime_Estimate_t *estimate);
 static bool AppBaselineRuntime_IsStableEstimateForHistory(
 	const AppBaselineRuntime_Estimate_t *estimate);
+static bool AppBaselineRuntime_ConvertAnchoredAngleToTemperature(
+	const AppBaselineRuntime_CalibrationProfile_t *profile,
+	float calibrated_angle_deg, float *temperature_out);
+static const AppBaselineRuntime_CalibrationProfile_t *
+AppBaselineRuntime_FindCalibrationProfile(const char *profile_name);
 static bool AppBaselineRuntime_SelectSmoothedEstimate(
 	AppBaselineRuntime_Estimate_t *estimate_out);
 float AppBaselineRuntime_ConvertAngleToTemperature(float angle_rad);
@@ -343,6 +399,40 @@ static void AppBaselineRuntime_StoreLastEstimate(
 	camera_baseline_last_angle_rad = estimate->angle_rad;
 	camera_baseline_last_confidence = estimate->confidence;
 	camera_baseline_last_result_generation++;
+}
+
+/**
+ * @brief Look up a calibration profile by its registered name.
+ *
+ * @param profile_name Name supplied by the board bootstrap code.
+ * @retval Matching profile when the name is known.
+ * @retval Default board profile when the name is NULL or unknown.
+ */
+static const AppBaselineRuntime_CalibrationProfile_t *
+AppBaselineRuntime_FindCalibrationProfile(const char *profile_name)
+{
+	const size_t profile_count =
+		sizeof(camera_baseline_calibration_profiles) /
+		sizeof(camera_baseline_calibration_profiles[0]);
+
+	if ((profile_name == NULL) || (profile_name[0] == '\0'))
+	{
+		return &AppBaselineRuntime_DefaultCalibrationProfile;
+	}
+
+	for (size_t index = 0U; index < profile_count; ++index)
+	{
+		const AppBaselineRuntime_CalibrationProfile_t *candidate =
+			camera_baseline_calibration_profiles[index];
+
+		if ((candidate != NULL) && (candidate->profile_name != NULL) &&
+			(strcmp(candidate->profile_name, profile_name) == 0))
+		{
+			return candidate;
+		}
+	}
+
+	return &AppBaselineRuntime_DefaultCalibrationProfile;
 }
 
 /**
@@ -2011,13 +2101,202 @@ static bool AppBaselineRuntime_SelectSmoothedEstimate(
 /**
  * @brief Map an angle inside the gauge sweep to a temperature.
  */
+const AppBaselineRuntime_CalibrationProfile_t *
+AppBaselineRuntime_GetCalibrationProfile(void)
+{
+	if (camera_baseline_active_calibration_profile != NULL)
+	{
+		return camera_baseline_active_calibration_profile;
+	}
+
+	return &AppBaselineRuntime_DefaultCalibrationProfile;
+}
+
+/**
+ * @brief Select the active gauge calibration profile.
+ */
+void AppBaselineRuntime_SetCalibrationProfile(
+	const AppBaselineRuntime_CalibrationProfile_t *profile)
+{
+	camera_baseline_active_calibration_profile =
+		(profile != NULL) ? profile : &AppBaselineRuntime_DefaultCalibrationProfile;
+}
+
+/**
+ * @brief Select the active gauge calibration profile by its registered name.
+ *
+ * This keeps the board startup path simple: the firmware only needs to point
+ * at the gauge family it was flashed for, while the runtime owns the actual
+ * angle-to-temperature conversion data.
+ */
+void AppBaselineRuntime_SetCalibrationProfileByName(const char *profile_name)
+{
+	const AppBaselineRuntime_CalibrationProfile_t *profile =
+		AppBaselineRuntime_FindCalibrationProfile(profile_name);
+
+	AppBaselineRuntime_SetCalibrationProfile(profile);
+
+	if ((profile_name != NULL) && (profile_name[0] != '\0') &&
+		(profile != NULL) && (profile->profile_name != NULL) &&
+		(strcmp(profile->profile_name, profile_name) != 0))
+	{
+		DebugConsole_Printf(
+			"[BASELINE] Calibration profile '%s' not found; using '%s'.\r\n",
+			profile_name, profile->profile_name);
+	}
+	else
+	{
+		DebugConsole_Printf(
+			"[BASELINE] Calibration profile '%s' active.\r\n",
+			(profile != NULL) && (profile->profile_name != NULL) ?
+			profile->profile_name : "board_celsius_v1");
+	}
+}
+
+/**
+ * @brief Try to convert an angle using explicit calibration anchors.
+ *
+ * The runtime expects anchors to be ordered in sweep-fraction order from the
+ * hot side toward the cold side. When a profile provides at least two
+ * anchors, we interpolate between the surrounding points instead of relying
+ * on the fallback affine fit.
+ */
+static bool AppBaselineRuntime_ConvertAnchoredAngleToTemperature(
+	const AppBaselineRuntime_CalibrationProfile_t *profile,
+	float calibrated_angle_deg, float *temperature_out)
+{
+	const AppBaselineRuntime_CalibrationPoint_t *points = NULL;
+	const size_t point_count =
+		(profile != NULL) ? profile->calibration_point_count : 0U;
+	const float calibrated_angle_rad =
+		calibrated_angle_deg * (APP_BASELINE_PI / 180.0f);
+
+	if ((temperature_out == NULL) || (profile == NULL) ||
+		(point_count < 2U) ||
+		(point_count > APP_BASELINE_CALIBRATION_MAX_POINTS))
+	{
+		return false;
+	}
+
+	points = profile->calibration_points;
+	if (points == NULL)
+	{
+		return false;
+	}
+
+	{
+		const float target_fraction =
+			AppBaselineRuntime_ConvertAngleToFraction(calibrated_angle_rad);
+		float previous_fraction =
+			AppBaselineRuntime_ConvertAngleToFraction(
+				points[0].angle_deg * (APP_BASELINE_PI / 180.0f));
+		float previous_temperature = points[0].temperature_c;
+
+		if (point_count == 2U)
+		{
+			const float next_fraction =
+				AppBaselineRuntime_ConvertAngleToFraction(
+					points[1].angle_deg * (APP_BASELINE_PI / 180.0f));
+			const float denominator = next_fraction - previous_fraction;
+
+			if (fabsf(denominator) <= 1.0e-6f)
+			{
+				return false;
+			}
+
+			*temperature_out = previous_temperature +
+				((points[1].temperature_c - previous_temperature) *
+					((target_fraction - previous_fraction) / denominator));
+			return true;
+		}
+
+		for (size_t index = 1U; index < point_count; ++index)
+		{
+			const float current_fraction =
+				AppBaselineRuntime_ConvertAngleToFraction(
+					points[index].angle_deg * (APP_BASELINE_PI / 180.0f));
+			const float current_temperature = points[index].temperature_c;
+			const float denominator = current_fraction - previous_fraction;
+
+			if (fabsf(denominator) <= 1.0e-6f)
+			{
+				return false;
+			}
+
+			if (target_fraction <= current_fraction)
+			{
+				*temperature_out = previous_temperature +
+					((current_temperature - previous_temperature) *
+						((target_fraction - previous_fraction) / denominator));
+				return true;
+			}
+
+			previous_fraction = current_fraction;
+			previous_temperature = current_temperature;
+		}
+
+		/* Extrapolate beyond the last anchor using the final segment so the
+		 * profile can still represent a usable hot-end correction. */
+		{
+			const float last_fraction =
+				AppBaselineRuntime_ConvertAngleToFraction(
+					points[point_count - 1U].angle_deg *
+					(APP_BASELINE_PI / 180.0f));
+			const float denominator = last_fraction - previous_fraction;
+
+			if (fabsf(denominator) <= 1.0e-6f)
+			{
+				return false;
+			}
+
+			*temperature_out = previous_temperature +
+				((points[point_count - 1U].temperature_c - previous_temperature) *
+					((target_fraction - previous_fraction) / denominator));
+			return true;
+		}
+	}
+}
+
+/**
+ * @brief Map an angle inside the gauge sweep to a temperature.
+ */
 float AppBaselineRuntime_ConvertAngleToTemperature(float angle_rad)
 {
+	const AppBaselineRuntime_CalibrationProfile_t *profile =
+		AppBaselineRuntime_GetCalibrationProfile();
+	const float angle_offset_deg =
+		(profile != NULL) ? profile->angle_offset_deg :
+		APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG;
+	const float temperature_pivot_c =
+		(profile != NULL) ? profile->temperature_pivot_c :
+		APP_BASELINE_TEMPERATURE_CALIBRATION_PIVOT_C;
+	const float temperature_gain =
+		(profile != NULL) ? profile->temperature_gain :
+		APP_BASELINE_TEMPERATURE_CALIBRATION_GAIN;
+	float anchored_temperature_c = 0.0f;
+	const float calibrated_angle_rad =
+		angle_rad + (angle_offset_deg * (APP_BASELINE_PI / 180.0f));
+	const float calibrated_angle_deg =
+		calibrated_angle_rad * (180.0f / APP_BASELINE_PI);
+
+	if (AppBaselineRuntime_ConvertAnchoredAngleToTemperature(
+			profile, calibrated_angle_deg, &anchored_temperature_c))
+	{
+		return anchored_temperature_c;
+	}
+
 	/* Apply calibration offset determined from hard-case analysis.
 	 * The detected angles are stable, but the gauge runs hot-to-cold in the
 	 * opposite direction from the first decode pass. */
-	const float calibrated_angle_rad = angle_rad + (APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG * (APP_BASELINE_PI / 180.0f));
-	return APP_BASELINE_MAX_VALUE_C - (AppBaselineRuntime_ConvertAngleToFraction(calibrated_angle_rad) * (APP_BASELINE_MAX_VALUE_C - APP_BASELINE_MIN_VALUE_C));
+	const float raw_temperature =
+		APP_BASELINE_MAX_VALUE_C -
+		(AppBaselineRuntime_ConvertAngleToFraction(calibrated_angle_rad) *
+			(APP_BASELINE_MAX_VALUE_C - APP_BASELINE_MIN_VALUE_C));
+
+	/* Re-anchor the scale around -30 C so the cold-end fix stays intact while
+	 * the hot end gets a small multiplicative lift. */
+	return temperature_pivot_c +
+		((raw_temperature - temperature_pivot_c) * temperature_gain);
 }
 
 /**

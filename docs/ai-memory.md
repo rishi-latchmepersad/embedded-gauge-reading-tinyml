@@ -3686,3 +3686,31 @@ sha256[:16] = f7065e4f6b3a98f6
   the firmware, not the full DARK log-heatmap fit, because the
   int8 heatmap only has ~8 distinct values in the [-128, -120]
   range and DARK needs a smooth log-heatmap to fit a Gaussian.
+- The current `obb_box_board_bbox_deploy_candidate_rel_bin.inc` has a zero
+  `ec_network_init` vector in its binary header.
+- That means `LL_ATON_RT_Init_Network()` will branch to address `0x00000000`
+  if we leave the OBB reloc handle installed while the runtime does its init
+  pass.
+- Workaround in firmware: clear `inst_reloc` for the `LL_ATON_RT_Init_Network()`
+  call, then reinstall the OBB reloc context immediately afterward so the
+  later inference callback path still uses the reloc binary.
+- This is a packaging/runtime-contract issue, not a camera or crop bug.
+
+## Baseline gauge profile selection (2026-07-05)
+
+- The board-side temperature conversion now uses named calibration profiles
+  instead of baking the correction directly into the needle-angle math.
+- `app_baseline_runtime.c` owns the profile registry and the fallback default.
+- `app_ai_config.h` exposes `APP_BASELINE_CALIBRATION_PROFILE_NAME` so a
+  flashed firmware image can select the matching gauge family at boot.
+- If we add another gauge later, we should add a new named profile entry in
+  the registry and point the boot macro at that name rather than cloning the
+  conversion logic.
+- The calibration profile now supports optional angle/temperature anchors for
+  piecewise interpolation. Profiles can still fall back to the old affine
+  offset/pivot/gain path when no anchors are provided.
+- The current board profile now has two explicit anchors: the hot-end capture
+  logged at raw `148.21deg` is treated as `50C`, and the existing cold-board
+  reference at raw `33.22deg` is treated as `-30C` so the profile can
+  interpolate across the full sweep instead of only storing an affine
+  correction.
