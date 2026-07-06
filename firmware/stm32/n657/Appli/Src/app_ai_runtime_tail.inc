@@ -762,10 +762,11 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 			&app_ai_obb_stage, safe_frame_bytes, frame_size,
 			&full_frame_crop, &obb_output_info, &obb_output_value);
 
-		/* Decode the QARepVGG-Pro heatmap output into obb_crop and obb_box.
-		 * Single-model replacement for the old OBB + centre-detector pipeline. */
+		/* Decode the live OBB face-localizer box/conf outputs into obb_crop and
+		 * obb_box. This is the compact replacement for the older OBB + centre
+		 * detector pipeline. */
 		if (obb_ok &&
-			AppAI_DecodeQarepvggObb(obb_output_info, &obb_crop, &obb_box))
+			AppAI_DecodeObbFaceV2(obb_output_info, &obb_crop, &obb_box))
 		{
 			obb_crop_valid = true;
 			AppAI_LogObbResult(obb_output_info, &obb_box);
@@ -4056,8 +4057,9 @@ uint8_t AppAI_FindHistogramPercentile(const uint32_t *histogram,
  * @brief Decode one 1-D SimCC axis into a normalized coordinate and stats.
  *
  * The exported tip-focus model emits int8 softmax probabilities over 112 bins
- * per axis. We dequantize the probabilities, compute the weighted mean bin,
- * and return the normalized [0,1] coordinate plus a simple spread estimate.
+ * per axis. We dequantize the probabilities, decode a small window around the
+ * peak bin using the same 1D soft-argmax w3 rule used by training/eval, and
+ * return the normalized [0,1] coordinate plus a simple spread estimate.
  */
 bool AppAI_TipFocus_DecodeSimccAxis(const int8_t *axis,
 	int32_t size, float *coord_out, float *peak_out, float *spread_px_out)
@@ -4065,6 +4067,7 @@ bool AppAI_TipFocus_DecodeSimccAxis(const int8_t *axis,
 	float total_weight = 0.0f;
 	float weighted_sum = 0.0f;
 	float peak_value = 0.0f;
+	int32_t peak_bin = 0;
 
 	if ((axis == NULL) || (size <= 1) || (coord_out == NULL))
 	{
@@ -4082,6 +4085,7 @@ bool AppAI_TipFocus_DecodeSimccAxis(const int8_t *axis,
 		if (prob > peak_value)
 		{
 			peak_value = prob;
+			peak_bin = i;
 		}
 
 		total_weight += prob;
@@ -4093,7 +4097,31 @@ bool AppAI_TipFocus_DecodeSimccAxis(const int8_t *axis,
 		return false;
 	}
 
-	*coord_out = (weighted_sum / total_weight) / (float)(size - 1);
+	{
+		/* Match the Python quantization helper: keep only a tiny window around
+		 * the argmax so broad tails do not drag the decoded coordinate toward
+		 * the center of the dial. */
+		const int32_t window_lo = (peak_bin > 0) ? (peak_bin - 1) : 0;
+		const int32_t window_hi = (peak_bin + 1 < size) ? (peak_bin + 1) : (size - 1);
+		float window_weight = 0.0f;
+		float window_sum = 0.0f;
+
+		for (int32_t i = window_lo; i <= window_hi; ++i)
+		{
+			const float prob = (((float)axis[i]) + 128.0f) * 0.00390625f;
+			window_weight += prob;
+			window_sum += prob * (float)i;
+		}
+
+		if (window_weight > 0.0f)
+		{
+			*coord_out = (window_sum / window_weight) / (float)(size - 1);
+		}
+		else
+		{
+			*coord_out = (float)peak_bin / (float)(size - 1);
+		}
+	}
 	if (peak_out != NULL)
 	{
 		*peak_out = peak_value;

@@ -500,6 +500,28 @@ void AppCameraCapture_LogCaptureState(const char *reason) {
 }
 
 /**
+ * @brief Log the save-path state for the frame that is about to be written.
+ *
+ * The goal is to keep the message small enough for normal bring-up while
+ * still showing whether the frame came from the processed CMW/ISP path or a
+ * raw fallback path.
+ */
+static void AppCameraCapture_LogSavePathState(const uint8_t *image_ptr,
+		uint32_t image_length) {
+	DebugConsole_Printf(
+			"[CAMERA][CAPTURE] save-state: pipeline=%s cmw_init=%u stream=%u active_buf=%lu result=%p bytes=%lu\r\n",
+			camera_capture_use_cmw_pipeline ? "processed" : "raw",
+			(unsigned int) (camera_cmw_initialized ? 1U : 0U),
+			(unsigned int) (camera_stream_started ? 1U : 0U),
+			(unsigned long) camera_capture_active_buffer_index,
+			(void *) image_ptr, (unsigned long) image_length);
+
+	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
+		AppCameraCapture_LogCaptureState("save-path");
+	}
+}
+
+/**
  * @brief Capture a single frame, save it to the SD card, and queue inference.
  * @retval true when the frame reaches storage successfully.
  */

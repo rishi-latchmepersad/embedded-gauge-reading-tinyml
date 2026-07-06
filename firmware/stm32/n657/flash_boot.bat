@@ -73,14 +73,14 @@ if "%FLASH_APP%"=="1" if not exist "%APP_BIN%" (
     exit /b 1
 )
 if "%FLASH_MODEL%"=="1" if not exist "%CENTER_DETECTOR_RAW%" (
-    echo WARNING: Center detector model not found (optional — board bbox candidate provides the centre): "%CENTER_DETECTOR_RAW%"
+    echo WARNING: Center detector model not found (optional — OBB face-localizer provides the centre): "%CENTER_DETECTOR_RAW%"
 )
 if "%FLASH_MODEL%"=="1" if not exist "%TIP_FOCUS_RAW%" (
     echo ERROR: Tip-focus model not found: "%TIP_FOCUS_RAW%"
     exit /b 1
 )
 if "%FLASH_MODEL%"=="1" if not exist "%OBB_RAW%" (
-    echo ERROR: Board bbox OBB model not found: "%OBB_RAW%"
+    echo ERROR: OBB face-localizer model not found: "%OBB_RAW%"
     exit /b 1
 )
 
@@ -147,12 +147,12 @@ if "%FLASH_MODEL%"=="1" (
     for %%I in ("%OBB_RAW%") do echo Board bbox source size: %%~zI bytes
     copy /y "%OBB_RAW%" "%OBB_BIN%" >nul
     if errorlevel 1 (
-        echo ERROR: Could not stage board bbox OBB model as .bin.
+        echo ERROR: Could not stage OBB face-localizer model as .bin.
         exit /b 1
     )
     "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%OBB_BIN%" 0x71400000
     if errorlevel 1 (
-        echo ERROR: Board bbox OBB model flash failed.
+        echo ERROR: OBB face-localizer model flash failed.
         exit /b 1
     )
     echo Board bbox OBB model flashed at 0x71400000.
@@ -177,10 +177,10 @@ if "%FLASH_MODEL%"=="1" (
     echo Tip-focus signature report: "%SIG_REPORT_DIR%\tip_focus_v18_signature.txt"
     python "%SCRIPT_DIR%tools\extract_model_signature.py" "%OBB_RAW%" > "%SIG_REPORT_DIR%\obb_signature.txt"
     if errorlevel 1 (
-        echo ERROR: Board bbox OBB signature extraction failed.
+        echo ERROR: OBB signature extraction failed.
         exit /b 1
     )
-    echo Board bbox OBB signature report: "%SIG_REPORT_DIR%\obb_signature.txt"
+    echo OBB signature report: "%SIG_REPORT_DIR%\obb_signature.txt"
 )
 
 if "%FLASH_APP%"=="1" (

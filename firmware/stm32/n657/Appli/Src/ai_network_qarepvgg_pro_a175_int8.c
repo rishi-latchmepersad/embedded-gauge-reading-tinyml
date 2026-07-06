@@ -1,17 +1,12 @@
 /**
  * @file    ai_network_qarepvgg_pro_a175_int8.c
- * @brief   Include the Cube.AI-generated board-bbox OBB int8 model.
+ * @brief   Include the Cube.AI-generated OBB face-localizer int8 model.
  *
  * STM32CubeIDE builds the generated .c directly from the package directory.
- * This thunk forwards the include with the required ATON platform macros and
- * installs the relocatable runtime context that the generated OBB package
- * expects in r9 at inference time.
+ * This thunk forwards the include with the required ATON platform macros.
  */
-#include <stdint.h>
-
 #define LL_ATON_PLATFORM LL_ATON_PLAT_STM32N6
 #define LL_ATON_OSAL LL_ATON_OSAL_THREADX
-#define LL_ATON_RT_RELOC 1
 #ifndef NDEBUG
 #define NDEBUG
 #endif
