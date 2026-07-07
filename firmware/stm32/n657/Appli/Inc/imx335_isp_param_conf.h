@@ -49,9 +49,9 @@ static const ISP_IQParamTypeDef ISP_IQParamCacheInit_IMX335 = {
     },
     .blackLevelStatic = {
         .enable = 1,
-        .BLCR = 12,
-        .BLCG = 12,
-        .BLCB = 12,
+        .BLCR = 0,
+        .BLCG = 0,
+        .BLCB = 0,
     },
     .demosaicing = {
         .enable = 1,

@@ -309,16 +309,30 @@ bool AppCameraCapture_RunImx335Background(void) {
 	/* The ISP background loop is only needed for the processed image path.
 	 * Raw Pipe0 diagnostics bypass the ISP output path, so running AWB/AEC
 	 * updates there can trip middleware code that expects the YUV pipeline. */
-	if (camera_capture_isp_loop_paused) {
+	if (camera_capture_isp_loop_paused && !camera_capture_snapshot_armed) {
 		return true;
 	}
 
-	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
-		/* Keep the background path quiescent for now. The live AEC loop was
-		 * freezing the board; the capture retry gate below is the safer
-		 * steering mechanism for bright and dark scenes. */
+	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized
+			&& camera_stream_started) {
+		/* Run the ISP background process so AEC/AWB update per-frame.
+		 * Without this call the ISP demosaiced output has neutral chroma
+		 * because AWB gains are never applied.
+		 *
+		 * The processed snapshot path now starts the middleware before this
+		 * function can run, so the ISP handle is valid by the time the
+		 * background loop reaches here. */
+		int32_t cmw_ret = CMW_CAMERA_Run();
+		camera_capture_isp_run_count++;
+		if (cmw_ret != CMW_ERROR_NONE) {
+			DebugConsole_Printf(
+				"[CAMERA] ISP background run failed: %ld\r\n",
+				(long)cmw_ret);
+			return false;
+		}
 		return true;
 	}
+
 
 	return true;
 }
@@ -520,7 +534,6 @@ static void AppCameraCapture_LogSavePathState(const uint8_t *image_ptr,
 		AppCameraCapture_LogCaptureState("save-path");
 	}
 }
-
 /**
  * @brief Capture a single frame, save it to the SD card, and queue inference.
  * @retval true when the frame reaches storage successfully.
@@ -872,6 +885,7 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 #endif
 	AppCameraDiagnostics_LogYuv422ChromaSummary("ready-to-save", image_ptr,
 			(uint32_t) image_length);
+	AppCameraCapture_LogSavePathState(image_ptr, (uint32_t) image_length);
 
 	if (camera_capture_use_cmw_pipeline) {
 	if (storage_ready) {

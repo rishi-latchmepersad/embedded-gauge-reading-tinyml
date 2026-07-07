@@ -26,6 +26,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdint.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 
 #include "app_azure_rtos_config.h"
@@ -51,10 +52,46 @@
 #ifndef APP_FILEX_ENABLE_STATE_BREADCRUMBS
 #define APP_FILEX_ENABLE_STATE_BREADCRUMBS 0
 #endif
+#ifndef APP_FILEX_ENABLE_CAPTURE_FILE_TIMESTAMP
+/*
+ * Set this to 1 only if we want to apply the FAT timestamp immediately in the
+ * capture thread. The default keeps the image write fast and lets the
+ * background FileX service stamp the file later.
+ */
+#define APP_FILEX_ENABLE_CAPTURE_FILE_TIMESTAMP 0
+#endif
 #if !APP_FILEX_ENABLE_VERBOSE_CONSOLE_LOGS
 #undef DebugConsole_Printf
 #define DebugConsole_Printf(...) ((void) 0)
 #endif
+
+/**
+ * Emit a FileX timing line even when the local print macro is disabled.
+ *
+ * app_filex.c deliberately compiles most console chatter out, but the capture
+ * timing probes need to stay visible so we can diagnose SD write stalls on the
+ * board. This helper formats into a local stack buffer and writes the result
+ * through the real console string API.
+ */
+static void AppFileX_WriteTimingLine(const char *format_string_pointer, ...)
+{
+	char message_buffer[192];
+	va_list argument_list;
+	int written_length;
+
+	va_start(argument_list, format_string_pointer);
+	written_length = vsnprintf(message_buffer, sizeof(message_buffer),
+			format_string_pointer, argument_list);
+	va_end(argument_list);
+
+	if ((written_length < 0) || ((size_t) written_length >= sizeof(message_buffer))) {
+		(void) DebugConsole_WriteString(
+				"[FILEX][CAPTURE][TIMING] timing-line-format-error\r\n");
+		return;
+	}
+
+	(void) DebugConsole_WriteString(message_buffer);
+}
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -152,9 +189,23 @@ static TX_MUTEX g_filex_media_mutex;
 static volatile bool g_filex_media_ready = false;
 static bool g_capture_blue_gpio_initialized = false;
 static volatile bool g_capture_media_flush_pending = false;
+static volatile bool g_capture_media_timestamp_pending = false;
 static ULONG g_captured_image_fallback_next_index = 0U;
 static bool g_captured_image_fallback_index_seeded = false;
+static ULONG g_capture_slot_next_index = 0U;
 static ULONG g_capture_media_last_flush_tick = 0U;
+
+typedef struct {
+	bool valid;
+	CHAR file_name[CAPTURED_IMAGE_FILE_NAME_LENGTH];
+	CHAR timestamp[32];
+} AppFileX_CaptureTimestampEntry;
+
+#define APP_FILEX_CAPTURE_TIMESTAMP_QUEUE_LENGTH 8U
+static AppFileX_CaptureTimestampEntry g_capture_timestamp_queue[APP_FILEX_CAPTURE_TIMESTAMP_QUEUE_LENGTH];
+static ULONG g_capture_timestamp_queue_head = 0U;
+static ULONG g_capture_timestamp_queue_tail = 0U;
+static ULONG g_capture_timestamp_queue_count = 0U;
 typedef enum {
 	APP_FILEX_CAPTURE_FORMAT_YUV422 = 0U,
 	APP_FILEX_CAPTURE_FORMAT_RAW16 = 1U
@@ -195,7 +246,10 @@ static UINT AppFileX_CloseCaptureSlotsLocked(void);
 static bool AppFileX_ParseCaptureSlotName(const CHAR *file_name_ptr,
 		ULONG *slot_index_ptr, AppFileX_CaptureFileFormat *format_ptr);
 static bool AppFileX_StampCapturedImageTimestampLocked(
+		const CHAR *file_name_ptr, const CHAR *timestamp_string_ptr);
+static UINT AppFileX_QueueCapturedImageTimestampLocked(
 		const CHAR *file_name_ptr);
+static bool AppFileX_ProcessQueuedCapturedImageTimestampsLocked(void);
 static bool AppFileX_ShouldFlushCaptureMediaLocked(void);
 static void AppFileX_FlashCaptureBlue(uint32_t hold_ms);
 static void AppFileX_LogTimingStep(const CHAR *label, ULONG start_tick);
@@ -975,7 +1029,7 @@ static bool AppFileX_ParseCaptureSlotName(const CHAR *file_name_ptr,
 
 /*==============================================================================*/
 static bool AppFileX_StampCapturedImageTimestampLocked(
-		const CHAR *file_name_ptr) {
+		const CHAR *file_name_ptr, const CHAR *timestamp_string_ptr) {
 	char timestamp[32] = { 0 };
 	unsigned int year = 0U;
 	unsigned int month = 0U;
@@ -984,21 +1038,24 @@ static bool AppFileX_StampCapturedImageTimestampLocked(
 	unsigned int minute = 0U;
 	unsigned int second = 0U;
 	int parsed_count = 0;
-	UINT fx_status = FX_SUCCESS;
 
 	if (file_name_ptr == NULL) {
 		return false;
 	}
 
-	/*
-	 * Keep the FileX clock aligned with the DS3231 so any later FAT writes and
-	 * Windows directory stamps stay consistent with the actual capture time.
-	 */
-	if (!App_Clock_GetCurrentTimestamp(timestamp, sizeof(timestamp))) {
-		return false;
+	if ((timestamp_string_ptr == NULL) || (timestamp_string_ptr[0] == '\0')) {
+		/*
+		 * Keep the FileX clock aligned with the DS3231 so any later FAT writes and
+		 * Windows directory stamps stay consistent with the actual capture time.
+		 */
+		if (!App_Clock_GetCurrentTimestamp(timestamp, sizeof(timestamp))) {
+			return false;
+		}
+		timestamp_string_ptr = timestamp;
 	}
 
-	parsed_count = sscanf(timestamp, "%4u-%2u-%2u_%2u-%2u-%2u", &year, &month,
+	parsed_count = sscanf(timestamp_string_ptr,
+			"%4u-%2u-%2u_%2u-%2u-%2u", &year, &month,
 			&day, &hour, &minute, &second);
 	if (parsed_count != 6) {
 		return false;
@@ -1007,21 +1064,126 @@ static bool AppFileX_StampCapturedImageTimestampLocked(
 	(void) fx_system_date_set((UINT) year, (UINT) month, (UINT) day);
 	(void) fx_system_time_set((UINT) hour, (UINT) minute, (UINT) second);
 
+	/* Keep the directory context explicit so we can measure whether the stamp
+	 * update is slowed down by path switching or by the FAT metadata write. */
+	const ULONG dir_set_start_tick = tx_time_get();
+	UINT fx_status = FX_SUCCESS;
 	fx_status = fx_directory_default_set(&g_sd_fx_media,
 			CAPTURED_IMAGES_DIRECTORY_NAME);
 	if (fx_status != FX_SUCCESS) {
+		AppFileX_WriteTimingLine(
+				"[FILEX][CAPTURE][TIMING] stamp-dir=%lu ms path=%s status=%lu\r\n",
+				(unsigned long)(((tx_time_get() - dir_set_start_tick) *
+					1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+				file_name_ptr, (unsigned long) fx_status);
 		return false;
 	}
+	AppFileX_WriteTimingLine(
+			"[FILEX][CAPTURE][TIMING] stamp-dir=%lu ms path=%s status=%lu\r\n",
+			(unsigned long)(((tx_time_get() - dir_set_start_tick) *
+				1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+			file_name_ptr, (unsigned long) fx_status);
 
+	const ULONG file_time_start_tick = tx_time_get();
 	fx_status = fx_file_date_time_set(&g_sd_fx_media, (CHAR*) file_name_ptr,
 			(UINT) year, (UINT) month, (UINT) day, (UINT) hour,
 			(UINT) minute, (UINT) second);
+	AppFileX_WriteTimingLine(
+			"[FILEX][CAPTURE][TIMING] stamp-write-time=%lu ms path=%s status=%lu\r\n",
+			(unsigned long)(((tx_time_get() - file_time_start_tick) *
+				1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+			file_name_ptr, (unsigned long) fx_status);
 	(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
 	if (fx_status != FX_SUCCESS) {
 		return false;
 	}
 
 	return true;
+}
+
+/*==============================================================================*/
+static UINT AppFileX_QueueCapturedImageTimestampLocked(
+		const CHAR *file_name_ptr) {
+	CHAR timestamp[32] = { 0 };
+	AppFileX_CaptureTimestampEntry *entry_ptr = NULL;
+	int written = 0;
+
+	if (file_name_ptr == NULL) {
+		return TX_PTR_ERROR;
+	}
+
+	if (!App_Clock_GetCurrentTimestamp(timestamp, sizeof(timestamp))) {
+		return TX_NOT_AVAILABLE;
+	}
+
+	if (g_capture_timestamp_queue_count
+			>= APP_FILEX_CAPTURE_TIMESTAMP_QUEUE_LENGTH) {
+		DebugConsole_WriteString(
+				"[FILEX][CAPTURE] Timestamp queue full; dropping oldest pending stamp.\r\n");
+		g_capture_timestamp_queue_head =
+				(g_capture_timestamp_queue_head + 1U)
+				% APP_FILEX_CAPTURE_TIMESTAMP_QUEUE_LENGTH;
+		g_capture_timestamp_queue_count--;
+	}
+
+	entry_ptr = &g_capture_timestamp_queue[g_capture_timestamp_queue_tail];
+	(void) memset(entry_ptr, 0, sizeof(*entry_ptr));
+
+	written = snprintf(entry_ptr->file_name, sizeof(entry_ptr->file_name), "%s",
+			file_name_ptr);
+	if ((written < 0) || ((size_t) written >= sizeof(entry_ptr->file_name))) {
+		return TX_SIZE_ERROR;
+	}
+
+	written = snprintf(entry_ptr->timestamp, sizeof(entry_ptr->timestamp), "%s",
+			timestamp);
+	if ((written < 0) || ((size_t) written >= sizeof(entry_ptr->timestamp))) {
+		return TX_SIZE_ERROR;
+	}
+
+	entry_ptr->valid = true;
+	g_capture_timestamp_queue_tail =
+			(g_capture_timestamp_queue_tail + 1U)
+			% APP_FILEX_CAPTURE_TIMESTAMP_QUEUE_LENGTH;
+	g_capture_timestamp_queue_count++;
+	g_capture_media_timestamp_pending = true;
+	return TX_SUCCESS;
+}
+
+/*==============================================================================*/
+static bool AppFileX_ProcessQueuedCapturedImageTimestampsLocked(void) {
+	bool stamped_any = false;
+
+	while (g_capture_timestamp_queue_count > 0U) {
+		AppFileX_CaptureTimestampEntry *entry_ptr =
+				&g_capture_timestamp_queue[g_capture_timestamp_queue_head];
+
+		if (!entry_ptr->valid) {
+			g_capture_timestamp_queue_head =
+					(g_capture_timestamp_queue_head + 1U)
+					% APP_FILEX_CAPTURE_TIMESTAMP_QUEUE_LENGTH;
+			g_capture_timestamp_queue_count--;
+			continue;
+		}
+
+		if (!AppFileX_StampCapturedImageTimestampLocked(entry_ptr->file_name,
+				entry_ptr->timestamp)) {
+			return stamped_any;
+		}
+
+		(void) memset(entry_ptr, 0, sizeof(*entry_ptr));
+		g_capture_timestamp_queue_head =
+				(g_capture_timestamp_queue_head + 1U)
+				% APP_FILEX_CAPTURE_TIMESTAMP_QUEUE_LENGTH;
+		g_capture_timestamp_queue_count--;
+		stamped_any = true;
+	}
+
+	if (g_capture_timestamp_queue_count == 0U) {
+		g_capture_media_timestamp_pending = false;
+	}
+
+	return stamped_any;
 }
 
 /*==============================================================================*/
@@ -1045,8 +1207,12 @@ static bool AppFileX_ShouldFlushCaptureMediaLocked(void) {
 
 UINT AppFileX_ServiceCaptureMediaFlush(void) {
 	UINT flush_status = FX_SUCCESS;
+	const ULONG flush_start_tick = tx_time_get();
+	bool stamped_any = false;
+	bool need_flush = false;
 
-	if (!g_filex_media_ready || !g_capture_media_flush_pending) {
+	if (!g_filex_media_ready && !g_capture_media_flush_pending
+			&& !g_capture_media_timestamp_pending) {
 		return FX_SUCCESS;
 	}
 
@@ -1054,16 +1220,28 @@ UINT AppFileX_ServiceCaptureMediaFlush(void) {
 		return TX_MUTEX_ERROR;
 	}
 
-	if (!g_filex_media_ready || !g_capture_media_flush_pending) {
+	if (!g_filex_media_ready) {
 		AppFileX_UnlockMedia();
 		return FX_SUCCESS;
 	}
 
-	if (!AppFileX_ShouldFlushCaptureMediaLocked()) {
+	stamped_any = AppFileX_ProcessQueuedCapturedImageTimestampsLocked();
+	need_flush = stamped_any;
+
+	if (g_capture_media_flush_pending
+			&& AppFileX_ShouldFlushCaptureMediaLocked()) {
+		need_flush = true;
+	}
+
+	if (!need_flush) {
 		AppFileX_UnlockMedia();
 		return FX_SUCCESS;
 	}
 
+	AppFileX_WriteTimingLine(
+			"[FILEX][CAPTURE][TIMING] flush-start pending=%u stamp=%u\r\n",
+			(unsigned int) (g_capture_media_flush_pending ? 1U : 0U),
+			(unsigned int) (stamped_any ? 1U : 0U));
 	flush_status = fx_media_flush(&g_sd_fx_media);
 	if (flush_status == FX_SUCCESS) {
 		g_capture_media_flush_pending = false;
@@ -1073,6 +1251,11 @@ UINT AppFileX_ServiceCaptureMediaFlush(void) {
 	AppFileX_UnlockMedia();
 
 	if (flush_status == FX_SUCCESS) {
+		AppFileX_WriteTimingLine(
+				"[FILEX][CAPTURE][TIMING] flush=%lu ms status=%lu\r\n",
+				(unsigned long)(((tx_time_get() - flush_start_tick) *
+					1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+				(unsigned long) flush_status);
 		DebugConsole_WriteString(
 				"[FILEX][CAPTURE] Scheduled media flush completed.\r\n");
 		AppFileX_FlashCaptureBlue(3000U);
@@ -1105,6 +1288,7 @@ static UINT AppFileX_CloseCaptureSlotsLocked(void) {
 	g_capture_slots_ready = false;
 	g_capture_media_flush_pending = false;
 	g_capture_media_last_flush_tick = 0U;
+	g_capture_slot_next_index = 0U;
 	return TX_SUCCESS;
 }
 
@@ -1196,6 +1380,7 @@ prepare_fail:
 
 	g_capture_slots_ready = true;
 	g_capture_media_last_flush_tick = tx_time_get();
+	g_capture_slot_next_index = 0U;
 	return TX_SUCCESS;
 }
 
@@ -1203,7 +1388,15 @@ prepare_fail:
  * Function: AppFileX_GetNextCapturedImageName
  *
  * Purpose:
- *   Find the next unused capture_<index>.<extension> name inside /captured_images.
+ *   Return the next capture file name.
+ *
+ *   When rotating capture slots are ready, we hand out the pre-opened
+ *   capture_slot_##.<extension> names so the writer can overwrite the slot in
+ *   place. That keeps the camera path on the fast open-handle path instead of
+ *   forcing a fresh create/open on every frame.
+ *
+ *   If the slots are not ready yet, we fall back to the timestamped name or
+ *   the numbered scan-based fallback used during bring-up.
  *==============================================================================*/
 UINT AppFileX_GetNextCapturedImageName(CHAR *file_name_ptr,
 		ULONG file_name_length, const CHAR *file_extension_ptr) {
@@ -1229,6 +1422,22 @@ UINT AppFileX_GetNextCapturedImageName(CHAR *file_name_ptr,
 	tx_status = AppFileX_LockMedia();
 	if (tx_status != TX_SUCCESS) {
 		return tx_status;
+	}
+
+	if (g_capture_slots_ready && (g_capture_slot_count > 0U)) {
+		const ULONG slot_index = g_capture_slot_next_index;
+
+		written = snprintf(file_name_ptr, (size_t) file_name_length,
+				"capture_slot_%02lu.%s", (unsigned long) slot_index,
+				file_extension_ptr);
+		if ((written > 0) && ((ULONG) written < file_name_length)) {
+			g_capture_slot_next_index = (slot_index + 1U) % g_capture_slot_count;
+			AppFileX_UnlockMedia();
+			return FX_SUCCESS;
+		}
+
+		AppFileX_UnlockMedia();
+		return FX_INVALID_NAME;
 	}
 
 	if (rtc_ready) {
@@ -1305,6 +1514,7 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 	int path_length = 0;
 	UINT tx_status = TX_SUCCESS;
 	UINT fx_status = FX_SUCCESS;
+	const ULONG save_start_tick = tx_time_get();
 	ULONG slot_index = 0U;
 	AppFileX_CaptureFileFormat format = APP_FILEX_CAPTURE_FORMAT_YUV422;
 	bool flash_save_success = false;
@@ -1324,21 +1534,50 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		return FX_INVALID_NAME;
 	}
 
+	AppFileX_WriteTimingLine(
+			"[FILEX][CAPTURE][TIMING] save-start path=%s len=%lu slots=%lu\r\n",
+			path, (unsigned long) data_length,
+			(unsigned long)(g_capture_slots_ready ? 1U : 0U));
+
 	if (g_capture_slots_ready
 			&& AppFileX_ParseCaptureSlotName(file_name_ptr, &slot_index,
 					&format)) {
 		AppFileX_CaptureSlot *slot_ptr = &g_capture_slots[format][slot_index];
+		const ULONG lock_wait_start_tick = tx_time_get();
 
 		tx_status = AppFileX_LockMedia();
 		if (tx_status == TX_SUCCESS) {
+			AppFileX_WriteTimingLine(
+					"[FILEX][CAPTURE][TIMING] fast-lock=%lu ms slot=%lu path=%s\r\n",
+					(unsigned long)(((tx_time_get() - lock_wait_start_tick) *
+						1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+					(unsigned long) slot_index, path);
 			if (slot_ptr->open) {
+				const ULONG fast_seek_start_tick = tx_time_get();
 				fx_status = fx_file_seek(&slot_ptr->file, 0U);
 				if (fx_status == FX_SUCCESS) {
+					const ULONG fast_write_start_tick = tx_time_get();
 					fx_status = fx_file_write(&slot_ptr->file, (VOID*) data_ptr,
 							data_length);
+					AppFileX_WriteTimingLine(
+							"[FILEX][CAPTURE][TIMING] fast-write=%lu ms slot=%lu path=%s status=%lu\r\n",
+							(unsigned long)(((tx_time_get() - fast_write_start_tick) *
+								1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+							(unsigned long) slot_index, path,
+							(unsigned long) fx_status);
 					if (fx_status == FX_SUCCESS) {
+#if APP_FILEX_ENABLE_CAPTURE_FILE_TIMESTAMP
 						(void) AppFileX_StampCapturedImageTimestampLocked(
+								file_name_ptr, NULL);
+#else
+						UINT stamp_status = AppFileX_QueueCapturedImageTimestampLocked(
 								file_name_ptr);
+						if (stamp_status != TX_SUCCESS) {
+							DebugConsole_Printf(
+									"[FILEX][CAPTURE] Failed to queue timestamp for %s, status=%lu.\r\n",
+									path, (unsigned long) stamp_status);
+						}
+#endif
 						flash_save_success = true;
 						g_capture_media_flush_pending = true;
 						if (g_capture_media_last_flush_tick == 0U) {
@@ -1346,6 +1585,12 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 						}
 					}
 				}
+				AppFileX_WriteTimingLine(
+						"[FILEX][CAPTURE][TIMING] fast-seek=%lu ms slot=%lu path=%s status=%lu\r\n",
+						(unsigned long)(((tx_time_get() - fast_seek_start_tick) *
+							1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+						(unsigned long) slot_index, path,
+						(unsigned long) fx_status);
 			} else {
 				fx_status = FX_NOT_OPEN;
 			}
@@ -1359,6 +1604,11 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 					"[FILEX][CAPTURE] Wrote %lu bytes to rotating slot %lu (%s).\r\n",
 					(unsigned long) data_length, (unsigned long) slot_index,
 					path);
+			AppFileX_WriteTimingLine(
+					"[FILEX][CAPTURE][TIMING] save-total=%lu ms path=%s slot=%lu fast=1\r\n",
+					(unsigned long)(((tx_time_get() - save_start_tick) *
+						1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+					path, (unsigned long) slot_index);
 			goto capture_save_finish;
 		}
 
@@ -1367,6 +1617,7 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 				path, (unsigned long) fx_status);
 	}
 
+	const ULONG fallback_lock_wait_start_tick = tx_time_get();
 	tx_status = tx_mutex_get(&g_filex_media_mutex,
 			AppFileX_MillisecondsToTicks(APP_FILEX_CAPTURE_LOCK_TIMEOUT_MS));
 	if (tx_status != TX_SUCCESS) {
@@ -1375,26 +1626,55 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 				(unsigned long) tx_status);
 		return tx_status;
 	}
+	AppFileX_WriteTimingLine(
+			"[FILEX][CAPTURE][TIMING] fallback-lock=%lu ms path=%s\r\n",
+			(unsigned long)(((tx_time_get() - fallback_lock_wait_start_tick) *
+				1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+			path);
 
+	const ULONG fallback_dir_start_tick = tx_time_get();
 	fx_status = fx_directory_default_set(&g_sd_fx_media,
 			CAPTURED_IMAGES_DIRECTORY_NAME);
 	if (fx_status != FX_SUCCESS) {
+		AppFileX_WriteTimingLine(
+				"[FILEX][CAPTURE][TIMING] fallback-dir=%lu ms path=%s status=%lu\r\n",
+				(unsigned long)(((tx_time_get() - fallback_dir_start_tick) *
+					1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+				path, (unsigned long) fx_status);
 		AppFileX_UnlockMedia();
 		return fx_status;
 	}
+	AppFileX_WriteTimingLine(
+			"[FILEX][CAPTURE][TIMING] fallback-dir=%lu ms path=%s status=%lu\r\n",
+			(unsigned long)(((tx_time_get() - fallback_dir_start_tick) *
+				1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+			path, (unsigned long) fx_status);
 
 	{
 		FX_FILE capture_fx_file;
 		UINT file_status = FX_SUCCESS;
 		bool capture_file_open = false;
+		const ULONG fallback_open_start_tick = tx_time_get();
 
 		fx_status = fx_file_open(&g_sd_fx_media, &capture_fx_file,
 				(CHAR*) file_name_ptr, FX_OPEN_FOR_WRITE);
 		if (fx_status == FX_NOT_FOUND) {
+			const ULONG fallback_create_start_tick = tx_time_get();
 			fx_status = fx_file_create(&g_sd_fx_media, (CHAR*) file_name_ptr);
+			AppFileX_WriteTimingLine(
+					"[FILEX][CAPTURE][TIMING] fallback-create=%lu ms path=%s status=%lu\r\n",
+					(unsigned long)(((tx_time_get() - fallback_create_start_tick) *
+						1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+					path, (unsigned long) fx_status);
 			if ((fx_status == FX_SUCCESS) || (fx_status == FX_ALREADY_CREATED)) {
+				const ULONG fallback_reopen_start_tick = tx_time_get();
 				fx_status = fx_file_open(&g_sd_fx_media, &capture_fx_file,
 						(CHAR*) file_name_ptr, FX_OPEN_FOR_WRITE);
+				AppFileX_WriteTimingLine(
+						"[FILEX][CAPTURE][TIMING] fallback-reopen=%lu ms path=%s status=%lu\r\n",
+						(unsigned long)(((tx_time_get() - fallback_reopen_start_tick) *
+							1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+						path, (unsigned long) fx_status);
 			}
 		}
 
@@ -1403,9 +1683,15 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 			AppFileX_UnlockMedia();
 			return fx_status;
 		}
+		AppFileX_WriteTimingLine(
+				"[FILEX][CAPTURE][TIMING] fallback-open=%lu ms path=%s\r\n",
+				(unsigned long)(((tx_time_get() - fallback_open_start_tick) *
+					1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+				path);
 
 		capture_file_open = true;
 
+		const ULONG fallback_seek_start_tick = tx_time_get();
 		file_status = fx_file_seek(&capture_fx_file, 0U);
 		if (file_status != FX_SUCCESS) {
 			(void) fx_file_close(&capture_fx_file);
@@ -1413,11 +1699,33 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 			AppFileX_UnlockMedia();
 			return file_status;
 		}
+		AppFileX_WriteTimingLine(
+				"[FILEX][CAPTURE][TIMING] fallback-seek=%lu ms path=%s\r\n",
+				(unsigned long)(((tx_time_get() - fallback_seek_start_tick) *
+					1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+				path);
 
+		const ULONG fallback_write_start_tick = tx_time_get();
 		file_status = fx_file_write(&capture_fx_file, (VOID*) data_ptr,
 				data_length);
+		AppFileX_WriteTimingLine(
+				"[FILEX][CAPTURE][TIMING] fallback-write=%lu ms path=%s status=%lu\r\n",
+				(unsigned long)(((tx_time_get() - fallback_write_start_tick) *
+					1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+				path, (unsigned long) file_status);
 		if (file_status == FX_SUCCESS) {
-			(void) AppFileX_StampCapturedImageTimestampLocked(file_name_ptr);
+#if APP_FILEX_ENABLE_CAPTURE_FILE_TIMESTAMP
+			(void) AppFileX_StampCapturedImageTimestampLocked(file_name_ptr,
+					NULL);
+#else
+			UINT stamp_status = AppFileX_QueueCapturedImageTimestampLocked(
+					file_name_ptr);
+			if (stamp_status != TX_SUCCESS) {
+				DebugConsole_Printf(
+						"[FILEX][CAPTURE] Failed to queue timestamp for %s, status=%lu.\r\n",
+						path, (unsigned long) stamp_status);
+			}
+#endif
 			flash_save_success = true;
 			g_capture_media_flush_pending = true;
 			if (g_capture_media_last_flush_tick == 0U) {
@@ -1426,7 +1734,13 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		}
 
 		if (capture_file_open) {
+			const ULONG fallback_close_start_tick = tx_time_get();
 			(void) fx_file_close(&capture_fx_file);
+			AppFileX_WriteTimingLine(
+					"[FILEX][CAPTURE][TIMING] fallback-close=%lu ms path=%s\r\n",
+					(unsigned long)(((tx_time_get() - fallback_close_start_tick) *
+						1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+					path);
 		}
 
 		fx_status = file_status;
@@ -1444,6 +1758,11 @@ capture_save_finish:
 		DebugConsole_Printf(
 				"[FILEX][CAPTURE] Saved captured image to /%s (%lu bytes).\r\n",
 				path, (unsigned long) data_length);
+		AppFileX_WriteTimingLine(
+				"[FILEX][CAPTURE][TIMING] save-total=%lu ms path=%s fast=0\r\n",
+				(unsigned long)(((tx_time_get() - save_start_tick) *
+					1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+				path);
 	}
 
 	return fx_status;

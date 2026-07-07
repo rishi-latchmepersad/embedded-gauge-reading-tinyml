@@ -936,6 +936,23 @@ bool CameraPlatform_StartDcmippSnapshot(void) {
 		return false;
 	}
 
+	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
+		const int32_t cmw_status = CMW_CAMERA_Start(CAMERA_CAPTURE_PIPE,
+			camera_capture_result_buffer, CMW_MODE_SNAPSHOT);
+
+		if (cmw_status != CMW_ERROR_NONE) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] CMW_CAMERA_Start() failed for snapshot mode, status=%ld.\r\n",
+					(long) cmw_status);
+			return false;
+		}
+
+		/* Do not mark the sensor stream as running yet.  The capture path still
+		 * needs to call CameraPlatform_StartImx335Stream() so the IMX335 actually
+		 * leaves standby after the receiver has been armed. */
+		return true;
+	}
+
 	if (HAL_DCMIPP_CSI_PIPE_Start(capture_dcmipp, CAMERA_CAPTURE_PIPE,
 	DCMIPP_VIRTUAL_CHANNEL0, (uint32_t) camera_capture_result_buffer,
 	CMW_MODE_SNAPSHOT) != HAL_OK) {
@@ -946,6 +963,7 @@ bool CameraPlatform_StartDcmippSnapshot(void) {
 
 	return true;
 }
+
 
 /**
  * @brief Start the IMX335 sensor stream using the same register order as the

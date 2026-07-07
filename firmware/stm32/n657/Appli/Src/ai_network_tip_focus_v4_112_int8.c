@@ -1,4 +1,4 @@
-/* Thin build wrapper for the board-fit tip-focus v18 NPU network.
+/* Thin build wrapper for the board-fit compact geometry 224 NPU network.
  *
  * The generated package exposes a quantized-internal contract with float32
  * I/O at the firmware boundary:
@@ -8,7 +8,8 @@
  *   - output[3] is_main_needle   [1,1]
  *
  * We keep the firmware-facing API stable by reusing the existing wrapper
- * filename while swapping the underlying generated package to v18.
+ * filename while swapping the underlying generated package to tip_focus_v18.
+ * No HyperRAM needed; 1.72 MiB on-chip activations, 815 KB xSPI2 weights.
  */
 
 #define LL_ATON_PLATFORM LL_ATON_PLAT_STM32N6
@@ -25,7 +26,7 @@
 #ifdef MODEL_CONF
 #undef MODEL_CONF
 #endif
-#define MODEL_CONF "tip_focus_v18_int8_reloc_conf.h"
+#define MODEL_CONF "../../st_ai_output/packages/tip_focus_v18_int8_n6_npu/st_ai_ws/build_tip_focus_v18_int8/tip_focus_v18_int8_reloc_conf.h"
 
 #include "ll_aton_NN_interface.h"
 #include "ll_aton_rt_user_api.h"
