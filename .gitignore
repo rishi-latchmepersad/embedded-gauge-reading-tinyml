@@ -1,173 +1,26 @@
-# Prerequisites
-*.d
+# Codex and STM32CubeIDE workspace noise.
+/.metadata/
+/firmware/stm32/.project
+/firmware/stm32/n657/.metadata/
 
-# Object files
-*.o
-*.ko
-*.obj
-*.elf
-
-# Linker output
-*.ilk
-*.map
-*.exp
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
-
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
-
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
-
-# Debug files
-*.dSYM/
-*.su
-*.cyclo
-*.idb
-*.pdb
-
-# Kernel Module Compile Results
-*.mod*
-*.cmd
-.tmp_versions/
-modules.order
-Module.symvers
-Mkfile.old
-dkms.conf
-
-# debug information files
-*.dwo
-
-# Ignore raw images (keep folder out of git, but allow the directory to exist)
-ml/data/raw/*
-!ml/data/raw/.gitkeep
-ml/data/captured_images/_debug/
-ml/data/captured_images/_live_rectified_probe/
-
-# Generated dataset outputs
-ml/data/captured_images/
-ml/data/captured_images_320/
-ml/data/preprocessed_crops/
-ml/data/labelled/*.zip
-ml/data/board_captures_labeled.csv
-ml/data/board_captures_labeled_v2.csv
-ml/data/merged_geometry_board_manifest.csv
-ml/data/center_training_crops/
-ml/data/center_training_board_mimic/
-ml/data/center_training_manual/
-ml/data/heatmap_training/
-ml/data/obb_board_crops/
-ml/data/heatmap_cd*/
-ml/data/yolo_obb_320/
-ml/data/*_annotated_centers.csv
-
-# Annotation tool image copies (generated from captured_images)
-ml/data/annotate_30/images/
-ml/data/annotate_30/annotated_previews/
-ml/data/annotate_30/images.txt
-ml/data/annotate_30/
-ml/data/annotate_batch2/images/
-ml/data/annotate_batch2/image_list.txt
-ml/data/annotate_batch2/
-
-# Generated reports and local logs
-docs/int8_drift_decision_report.md
-docs/phase-13a-tip-focus-firmware-integration-spike.md
-ml/tmp/train_log.txt
-ml/reports/geometry_heatmap_v4_112_*.md
-ml/ml/reports/geometry_heatmap_v4_112_*.md
-
-# STM32CubeIDE project metadata and local build outputs
-firmware/stm32/n657/Appli/.cproject
-firmware/stm32/n657/Appli/.settings/stm32cubeide.project.prefs
-firmware/stm32/n657/Appli/Debug/
-firmware/stm32/n657/Appli/makefile.targets
-firmware/stm32/n657/Appli/Makefile
-
-#ignore build files
-/build/*
-firmware/stm32/N657X0_bringup/build/*
-firmware/stm32/N657X0_bringup/AppliSecure/build/*
-firmware/stm32/N657X0_bringup/FSBL/build/*
-firmware/stm32/N657X0_bringup/AppliNonSecure/build/*
-
-#ignore ML artifacts etc.
-ml/artifacts/*
-!ml/artifacts/.gitkeep
-ml/*.pt
-ml/calibration_image_sample_data_*.npy
-ml/__pycache__/*
-ml/.pytest_cache/*
-__pycache__/*
-*.pyc
-st_ai_output/*
-firmware/stm32/n657/st_ai_output/*
-!firmware/stm32/n657/st_ai_output/.gitkeep
-ml/datasets/
-ml/runs/
-
-# Temporary directories and files
-tmp_*
-tmp/*
-!tmp/.gitkeep
-ml/tmp/*
-!ml/tmp/.gitkeep
-
-# OS files
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# IDE config
-.vscode/
-.opencode/
-opencode.jsonc
-
-# Python virtual environments
-.venv/
-venv/
-env/
-ENV/
-ml/.venv/
-
-# ML debug outputs
-ml/debug/
-
-# Generated CD training datasets (from OBB-centered pipeline)
-ml/data/center_training_board_mimic_obb_v2/
-ml/data/center_training_board_mimic_gt_v2/
-ml/data/center_training_full/
-
-# STM32CubeIDE metadata (never commit IDE-generated project metadata)
-firmware/stm32/n657/.metadata/
-firmware/stm32/n657/Appli/.metadata/
-
-# STM32CubeIDE build artifacts (not just Debug/)
-firmware/stm32/n657/n657_Appli/
-firmware/stm32/n657/FSBL/Debug/
-firmware/stm32/n657/Debug/
-
-# Local Windows placeholder artifact
-/nul
-
-# Dirty vendor reference checkout
-third_party_refs/x-cube-n6-camera-capture/
-
-third_party_refs/x-cube-n6-camera-capture
+# Generated firmware and host build outputs.
+/firmware/stm32/n657/Appli/.metadata/
+/firmware/stm32/n657/Appli/Debug/
+/firmware/stm32/n657/Appli/Lib/
+/firmware/stm32/n657/Appli/Makefile
+/firmware/stm32/n657/Appli/Src/*.d
+/firmware/stm32/n657/Appli/Src/*.o
+/firmware/stm32/n657/Appli/Src/*.su
+/firmware/stm32/n657/Appli/Src/*.cyclo
+/firmware/stm32/n657/FSBL/Debug/
+/firmware/stm32/n657/FSBL/ai_fsbl.hex
+/firmware/stm32/n657/host_tests/build/
+/firmware/stm32/n657/n657_Appli/
+/firmware/stm32/n657/st_ai_output/*.raw
+/firmware/stm32/n657/st_ai_output/*.json
+/firmware/stm32/n657/st_ai_output/README.md
+/firmware/stm32/n657/st_ai_output/packages/
+/tmp/
+/opencode.jsonc
+/docs/int8_drift_decision_report.md
+/docs/phase-13a-tip-focus-firmware-integration-spike.md
