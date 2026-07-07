@@ -5297,6 +5297,8 @@ bool AppAI_Xspi2EnsureMemoryMappedMode(void)
 	 * prior stage, re-init it first. */
 	if (!app_ai_xspi2_initialized)
 	{
+		(void)DebugConsole_WriteString(
+			"[AI] xSPI2 MM restore: peripheral not initialized; reconfiguring.\r\n");
 		if (!AppAI_ReconfigureXspi2ForRuntime())
 		{
 			(void)DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure failed.\r\n");

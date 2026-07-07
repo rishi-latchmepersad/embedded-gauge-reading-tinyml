@@ -3714,3 +3714,7 @@ sha256[:16] = f7065e4f6b3a98f6
   reference at raw `33.22deg` is treated as `-30C` so the profile can
   interpolate across the full sweep instead of only storing an affine
   correction.
+- The capture file-name builder should prefer the pre-opened rotating capture
+  slots when they are available. That lets `AppFileX_WriteCapturedImage()`
+  reuse the open FileX handles instead of creating a brand-new timestamped file
+  on every frame, which is much faster on the SD card.

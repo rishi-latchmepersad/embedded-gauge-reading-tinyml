@@ -174,6 +174,10 @@ bool AppAI_EnsureXspi2MemoryReady(void)
 		return false;
 	}
 
+	/* Mark the peripheral ready so the runtime hot path does not keep
+	 * re-running the full xSPI2 bring-up sequence on every later epoch. */
+	app_ai_xspi2_initialized = true;
+
 	(void)DebugConsole_WriteString("[AI] XSPI2 memory bring-up OK.\r\n");
 	return true;
 }
@@ -249,6 +253,11 @@ bool AppAI_ReconfigureXspi2ForRuntime(void)
 #if APP_AI_ENABLE_XSPI2_VERBOSE_LOGS
 	(void)DebugConsole_WriteString("[AI] xSPI2 runtime reconfigure: init OK.\r\n");
 #endif
+
+	/* Keep the runtime marked initialized after a successful reconfigure so
+	 * AppAI_Xspi2EnsureMemoryMappedMode() can limit itself to the cheap MM
+	 * enable check instead of repeating the deinit/clock setup on every epoch. */
+	app_ai_xspi2_initialized = true;
 
 	/* Leave the peripheral in indirect mode so callers that need to probe flash
 	 * via BSP_XSPI_NOR_Read can do so immediately.  Callers that need the

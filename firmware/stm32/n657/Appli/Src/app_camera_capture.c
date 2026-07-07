@@ -889,6 +889,7 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 
 	if (camera_capture_use_cmw_pipeline) {
 	if (storage_ready) {
+		const ULONG build_name_start_tick = tx_time_get();
 		(void) DebugConsole_WriteString(
 				"[CAMERA][CAPTURE] step: build-name\r\n");
 		if (!AppStorage_BuildCaptureFileName(capture_file_name,
@@ -899,6 +900,11 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 		}
 		(void) DebugConsole_WriteString(
 				"[CAMERA][CAPTURE] step: build-name-done\r\n");
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE][TIMING] build-name=%lu ms name=%s\r\n",
+				(unsigned long)(((tx_time_get() - build_name_start_tick) *
+					1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+				capture_file_name);
 
 		if (camera_capture_use_cmw_pipeline) {
 #if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
@@ -908,8 +914,20 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 #endif
 		}
 
-		filex_status = AppFileX_WriteCapturedImage(capture_file_name,
-				image_ptr, image_length);
+		{
+			const ULONG save_start_tick = tx_time_get();
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE][TIMING] write-image start name=%s len=%lu\r\n",
+					capture_file_name, (unsigned long) image_length);
+			filex_status = AppFileX_WriteCapturedImage(capture_file_name,
+					image_ptr, image_length);
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE][TIMING] write-image=%lu ms status=%lu name=%s\r\n",
+					(unsigned long)(((tx_time_get() - save_start_tick) *
+						1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+					(unsigned long) filex_status,
+					capture_file_name);
+		}
 		if (filex_status != FX_SUCCESS) {
 			DebugConsole_Printf(
 					"[CAMERA][CAPTURE] Failed to write image to SD card, status=%lu.\r\n",

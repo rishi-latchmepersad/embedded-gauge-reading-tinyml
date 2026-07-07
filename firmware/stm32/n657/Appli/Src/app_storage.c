@@ -87,10 +87,12 @@ void AppStorage_NotifyMediaReady(void) {
 }
 
 /**
- * @brief Build a capture filename from the RTC time if available.
+ * @brief Build a capture filename for the next SD write.
  *
- * The FileX helper keeps the timestamped naming logic in one place and falls
- * back to a numbered name only when the RTC is unavailable.
+ * The FileX helper prefers the pre-opened capture slots when they are ready,
+ * which keeps the camera path on the fast overwrite path. When the slots are
+ * unavailable, it falls back to the timestamped or numbered name logic used
+ * during bring-up.
  */
 bool AppStorage_BuildCaptureFileName(CHAR *file_name_ptr,
 		ULONG file_name_length, const CHAR *file_extension_ptr) {
