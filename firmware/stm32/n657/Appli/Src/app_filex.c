@@ -47,18 +47,18 @@
  * behind a local opt-in switch for bring-up sessions.
  */
 #ifndef APP_FILEX_ENABLE_VERBOSE_CONSOLE_LOGS
-#define APP_FILEX_ENABLE_VERBOSE_CONSOLE_LOGS 0
+#define APP_FILEX_ENABLE_VERBOSE_CONSOLE_LOGS 1
 #endif
 #ifndef APP_FILEX_ENABLE_STATE_BREADCRUMBS
 #define APP_FILEX_ENABLE_STATE_BREADCRUMBS 0
 #endif
 #ifndef APP_FILEX_ENABLE_CAPTURE_FILE_TIMESTAMP
 /*
- * Set this to 1 only if we want to apply the FAT timestamp immediately in the
- * capture thread. The default keeps the image write fast and lets the
- * background FileX service stamp the file later.
+ * Capture files are timestamped by name, so keep the FAT directory metadata
+ * aligned with the same DS3231 value in the capture transaction. The media
+ * flush remains on its normal two-minute cadence.
  */
-#define APP_FILEX_ENABLE_CAPTURE_FILE_TIMESTAMP 0
+#define APP_FILEX_ENABLE_CAPTURE_FILE_TIMESTAMP 1
 #endif
 #if !APP_FILEX_ENABLE_VERBOSE_CONSOLE_LOGS
 #undef DebugConsole_Printf
@@ -66,15 +66,14 @@
 #endif
 
 /**
- * Emit a FileX timing line even when the local print macro is disabled.
+ * Emit a FileX timing line only when verbose console logging is enabled.
  *
- * app_filex.c deliberately compiles most console chatter out, but the capture
- * timing probes need to stay visible so we can diagnose SD write stalls on the
- * board. This helper formats into a local stack buffer and writes the result
- * through the real console string API.
+ * The normal capture path stays quiet now that the SD timing issue has been
+ * understood, but the helper remains available for future bring-up sessions.
  */
 static void AppFileX_WriteTimingLine(const char *format_string_pointer, ...)
 {
+#if APP_FILEX_ENABLE_VERBOSE_CONSOLE_LOGS
 	char message_buffer[192];
 	va_list argument_list;
 	int written_length;
@@ -91,6 +90,35 @@ static void AppFileX_WriteTimingLine(const char *format_string_pointer, ...)
 	}
 
 	(void) DebugConsole_WriteString(message_buffer);
+#else
+	(void)format_string_pointer;
+#endif
+}
+
+/**
+ * @brief Emit the capture save result even when verbose FileX timing is off.
+ * @param format_string_pointer printf-style status format.
+ * @param ... Values consumed by the format string.
+ *
+ * The normal FileX printf macro is intentionally compiled out. Capture
+ * success/failure is operationally important, however, so keep this small
+ * status channel enabled and separate from the timing flood.
+ */
+static void AppFileX_WriteCaptureStatusLine(const char *format_string_pointer,
+		...) {
+	char message_buffer[192];
+	va_list argument_list;
+	int written_length;
+
+	va_start(argument_list, format_string_pointer);
+	written_length = vsnprintf(message_buffer, sizeof(message_buffer),
+			format_string_pointer, argument_list);
+	va_end(argument_list);
+
+	if ((written_length > 0)
+			&& ((size_t) written_length < sizeof(message_buffer))) {
+		(void) DebugConsole_WriteString(message_buffer);
+	}
 }
 /* USER CODE END Includes */
 
@@ -159,6 +187,9 @@ typedef struct {
 #define CAPTURED_IMAGE_READBACK_BYTES    32U
 #define APP_FILEX_CAPTURE_LOCK_TIMEOUT_MS    1000U
 #define APP_FILEX_CAPTURE_FLUSH_INTERVAL_MS  120000U
+/* Use timestamped files by default; rotating slots are an opt-in benchmark
+ * mode because they overwrite captures and hide the one-file-per-minute log. */
+#define APP_FILEX_PREPARE_CAPTURE_SLOTS      0U
 #define APP_FILEX_PREALLOCATE_CAPTURE_SLOTS   0U
 #define APP_FILEX_CAPTURE_FILE_FORMAT_COUNT   2U
 #define APP_FILEX_CAPTURE_RING_SLOT_COUNT     4U
@@ -809,6 +840,7 @@ static void AppFileX_StateMachine_Step(
 
 		if ((context_ptr->filex_status == FX_SUCCESS)
 				|| (context_ptr->filex_status == FX_ALREADY_CREATED)) {
+#if APP_FILEX_PREPARE_CAPTURE_SLOTS
 			const ULONG capture_slot_prep_tick = tx_time_get();
 			context_ptr->filex_status = AppFileX_PrepareCaptureSlotsLocked();
 			AppFileX_LogTimingStep("capture_slot_prep",
@@ -819,6 +851,12 @@ static void AppFileX_StateMachine_Step(
 						(unsigned long) context_ptr->filex_status);
 				context_ptr->filex_status = FX_SUCCESS;
 			}
+#else
+			/* Keep one timestamped file per capture; do not pre-create the
+			 * four rotating slot files used by the earlier bring-up path. */
+			g_capture_slots_ready = false;
+			g_capture_slot_next_index = 0U;
+#endif
 		}
 
 		if ((context_ptr->filex_status != FX_SUCCESS)
@@ -1078,8 +1116,27 @@ static bool AppFileX_StampCapturedImageTimestampLocked(
 				file_name_ptr, (unsigned long) fx_status);
 		return false;
 	}
+
+	/* Navigate to daily subfolder if filename contains a date prefix */
+	{
+		const char *slash = strchr(file_name_ptr, '/');
+		if (slash != NULL) {
+			char date_folder[16] = { 0 };
+			const size_t folder_len = (size_t)(slash - file_name_ptr);
+			if (folder_len < sizeof(date_folder)) {
+				memcpy(date_folder, file_name_ptr, folder_len);
+				date_folder[folder_len] = '\0';
+				fx_status = fx_directory_default_set(&g_sd_fx_media, date_folder);
+				if (fx_status != FX_SUCCESS) {
+					return false;
+				}
+				file_name_ptr = slash + 1;
+			}
+		}
+	}
+
 	AppFileX_WriteTimingLine(
-			"[FILEX][CAPTURE][TIMING] stamp-dir=%lu ms path=%s status=%lu\r\n",
+			"[FILEX][CAPTURE][TIMING] stamp-dir=%lu ms path=%s\r\n",
 			(unsigned long)(((tx_time_get() - dir_set_start_tick) *
 				1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
 			file_name_ptr, (unsigned long) fx_status);
@@ -1260,8 +1317,9 @@ UINT AppFileX_ServiceCaptureMediaFlush(void) {
 				"[FILEX][CAPTURE] Scheduled media flush completed.\r\n");
 		AppFileX_FlashCaptureBlue(3000U);
 	} else {
-		DebugConsole_Printf(
-				"[FILEX][CAPTURE] Scheduled media flush failed; will retry.\r\n");
+		AppFileX_WriteCaptureStatusLine(
+				"[FILEX][CAPTURE] media-flush-failed status=%lu; will retry.\r\n",
+				(unsigned long) flush_status);
 	}
 
 	return flush_status;
@@ -1446,8 +1504,22 @@ UINT AppFileX_GetNextCapturedImageName(CHAR *file_name_ptr,
 				"[CAMERA][CAPTURE] Using RTC timestamp %s for capture name.\r\n",
 				rtc_stamp);
 #endif
-		written = snprintf(file_name_ptr, (size_t) file_name_length,
-				"capture_%s.%s", rtc_stamp, file_extension_ptr);
+		/* Use hourly subfolders: captured_images/2026-07-11_15/capture_23-23.yuv422
+		 * Each folder has ~60 files, so FAT directory scans are fast. */
+		{
+			/* Extract date and hour: "2026-07-11_15" from "2026-07-11_15-23-23" */
+			char hour_folder[14] = { 0 };
+			if (strlen(rtc_stamp) >= 13U) {
+				memcpy(hour_folder, rtc_stamp, 13U);
+				hour_folder[13] = '\0';
+			} else {
+				strcpy(hour_folder, "unknown");
+			}
+			/* Time portion starts after the hour prefix */
+			const char *time_part = rtc_stamp + 14U;  /* skip "YYYY-MM-DD_HH-" */
+			written = snprintf(file_name_ptr, (size_t) file_name_length,
+					"%s/capture_%s.%s", hour_folder, time_part, file_extension_ptr);
+		}
 		AppFileX_UnlockMedia();
 		return ((written > 0)
 				&& ((ULONG) written < file_name_length)) ? FX_SUCCESS
@@ -1566,6 +1638,12 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 							(unsigned long) slot_index, path,
 							(unsigned long) fx_status);
 					if (fx_status == FX_SUCCESS) {
+						/* Reusing a slot must not leave bytes from a longer prior
+						 * capture at the end of the new file. */
+						fx_status = fx_file_truncate(&slot_ptr->file,
+								data_length);
+					}
+					if (fx_status == FX_SUCCESS) {
 #if APP_FILEX_ENABLE_CAPTURE_FILE_TIMESTAMP
 						(void) AppFileX_StampCapturedImageTimestampLocked(
 								file_name_ptr, NULL);
@@ -1600,8 +1678,8 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		}
 
 		if (fx_status == FX_SUCCESS) {
-			DebugConsole_Printf(
-					"[FILEX][CAPTURE] Wrote %lu bytes to rotating slot %lu (%s).\r\n",
+			AppFileX_WriteCaptureStatusLine(
+					"[FILEX][CAPTURE] write-ok bytes=%lu slot=%lu path=%s flush-pending=1\r\n",
 					(unsigned long) data_length, (unsigned long) slot_index,
 					path);
 			AppFileX_WriteTimingLine(
@@ -1644,8 +1722,49 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		AppFileX_UnlockMedia();
 		return fx_status;
 	}
+
+	/* Create daily subfolder if the filename contains a date prefix.
+	 * Filename format: "2026-07-11/capture_15-23-23.yuv422" */
+	{
+		const char *slash = strchr(file_name_ptr, '/');
+		if (slash != NULL) {
+			char date_folder[16] = { 0 };
+			const size_t folder_len = (size_t)(slash - file_name_ptr);
+			if (folder_len < sizeof(date_folder)) {
+				memcpy(date_folder, file_name_ptr, folder_len);
+				date_folder[folder_len] = '\0';
+
+				/* Try to create the daily folder (ignore if already exists) */
+				const ULONG create_dir_tick = tx_time_get();
+				UINT dir_status = fx_directory_create(&g_sd_fx_media, date_folder);
+				AppFileX_WriteTimingLine(
+						"[FILEX][CAPTURE][TIMING] create-day-dir=%lu ms dir=%s status=%lu\r\n",
+						(unsigned long)(((tx_time_get() - create_dir_tick) *
+							1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+						date_folder, (unsigned long) dir_status);
+
+				/* Navigate into the daily folder */
+				const ULONG day_dir_tick = tx_time_get();
+				dir_status = fx_directory_default_set(&g_sd_fx_media, date_folder);
+				AppFileX_WriteTimingLine(
+						"[FILEX][CAPTURE][TIMING] day-dir=%lu ms dir=%s status=%lu\r\n",
+						(unsigned long)(((tx_time_get() - day_dir_tick) *
+							1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
+						date_folder, (unsigned long) dir_status);
+
+				if (dir_status != FX_SUCCESS) {
+					AppFileX_UnlockMedia();
+					return dir_status;
+				}
+
+				/* Use just the filename part (after the slash) for the file operations */
+				file_name_ptr = slash + 1;
+			}
+		}
+	}
+
 	AppFileX_WriteTimingLine(
-			"[FILEX][CAPTURE][TIMING] fallback-dir=%lu ms path=%s status=%lu\r\n",
+			"[FILEX][CAPTURE][TIMING] fallback-dir=%lu ms path=%s\r\n",
 			(unsigned long)(((tx_time_get() - fallback_dir_start_tick) *
 				1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
 			path, (unsigned long) fx_status);
@@ -1714,6 +1833,10 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 					1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
 				path, (unsigned long) file_status);
 		if (file_status == FX_SUCCESS) {
+			/* Keep timestamped fallback files just as tightly sized as slots. */
+			file_status = fx_file_truncate(&capture_fx_file, data_length);
+		}
+		if (file_status == FX_SUCCESS) {
 #if APP_FILEX_ENABLE_CAPTURE_FILE_TIMESTAMP
 			(void) AppFileX_StampCapturedImageTimestampLocked(file_name_ptr,
 					NULL);
@@ -1755,9 +1878,9 @@ capture_save_finish:
 	}
 
 	if (fx_status == FX_SUCCESS) {
-		DebugConsole_Printf(
-				"[FILEX][CAPTURE] Saved captured image to /%s (%lu bytes).\r\n",
-				path, (unsigned long) data_length);
+		AppFileX_WriteCaptureStatusLine(
+				"[FILEX][CAPTURE] save-ok path=/%s bytes=%lu flush-pending=1\r\n",
+			path, (unsigned long) data_length);
 		AppFileX_WriteTimingLine(
 				"[FILEX][CAPTURE][TIMING] save-total=%lu ms path=%s fast=0\r\n",
 				(unsigned long)(((tx_time_get() - save_start_tick) *
@@ -1889,6 +2012,7 @@ static void AppFileX_FlashCaptureBlue(uint32_t hold_ms) {
 
 /*==============================================================================*/
 static void AppFileX_LogTimingStep(const CHAR *label, ULONG start_tick) {
+#if APP_FILEX_ENABLE_VERBOSE_CONSOLE_LOGS
 	char line[128];
 	const ULONG end_tick = tx_time_get();
 	const ULONG elapsed_ticks = (ULONG) (end_tick - start_tick);
@@ -1906,5 +2030,9 @@ static void AppFileX_LogTimingStep(const CHAR *label, ULONG start_tick) {
 	if (written > 0) {
 		(void) DebugConsole_WriteString(line);
 	}
+#else
+	(void)label;
+	(void)start_tick;
+#endif
 }
 /* USER CODE END 1 */
