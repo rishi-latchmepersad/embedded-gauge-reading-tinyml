@@ -1,0 +1,15 @@
+{
+  "input_rows": 420,
+  "saved_entries": 420,
+  "skipped_blank_frames": 0,
+  "accepted_obb": 420,
+  "fixed_crop_fallbacks": 0,
+  "rejected_for_label_bounds": 0,
+  "quality_filter": {
+    "blank_frame_mean_threshold": 18.5,
+    "blank_frame_std_threshold": 2.0,
+    "blank_frame_dark_fraction_threshold": 0.99,
+    "blank_luma_level": 16
+  },
+  "rejected_entries": []
+}

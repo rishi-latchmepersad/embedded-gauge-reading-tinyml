@@ -1,0 +1,1874 @@
+<?xml version="1.0" encoding="utf-8"?>
+<annotations>
+  <version>1.1</version>
+  <meta>
+    <job>
+      <id>9</id>
+      <size>404</size>
+      <mode>annotation</mode>
+      <overlap>0</overlap>
+      <bugtracker></bugtracker>
+      <created>2026-06-26 00:18:34.929151+00:00</created>
+      <updated>2026-06-27 23:46:02.504162+00:00</updated>
+      <subset>default</subset>
+      <start_frame>0</start_frame>
+      <stop_frame>403</stop_frame>
+      <frame_filter></frame_filter>
+      <segments>
+        <segment>
+          <id>9</id>
+          <start>0</start>
+          <stop>403</stop>
+          <url>http://localhost:8080/api/jobs/9</url>
+        </segment>
+      </segments>
+      <owner>
+        <username>django</username>
+        <email>latchmepersad@gmail.com</email>
+      </owner>
+      <assignee></assignee>
+      <labels>
+        <label>
+          <name>temp_dial</name>
+          <color>#7b0278</color>
+          <type>ellipse</type>
+          <attributes>
+            <attribute>
+              <name>temp_c</name>
+              <mutable>True</mutable>
+              <input_type>number</input_type>
+              <default_value>30</default_value>
+              <values>-30
+50
+0.5</values>
+            </attribute>
+          </attributes>
+        </label>
+        <label>
+          <name>temp_center</name>
+          <color>#39a687</color>
+          <type>points</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>temp_tip</name>
+          <color>#397169</color>
+          <type>points</type>
+          <attributes>
+          </attributes>
+        </label>
+      </labels>
+    </job>
+    <dumped>2026-06-27 23:46:14.495890+00:00</dumped>
+  </meta>
+  <image id="0" name="capture_0006_preview.png" width="256" height="256">
+    <points label="temp_tip" source="manual" occluded="0" points="139.46,129.73" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="107.10" cy="155.72" rx="51.52" ry="67.19" z_order="0">
+      <attribute name="temp_c">30</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="108.40,152.08" z_order="0">
+    </points>
+  </image>
+  <image id="1" name="capture_0007_yuy2.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="118.90,102.80" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="97.00,127.70" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="98.13" cy="129.32" rx="44.78" ry="58.93" z_order="0">
+      <attribute name="temp_c">27</attribute>
+    </ellipse>
+  </image>
+  <image id="2" name="capture_0008.gray.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="164.90,105.60" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="130.87" cy="126.42" rx="57.48" ry="58.67" z_order="0">
+      <attribute name="temp_c">31</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="125.70,125.40" z_order="0">
+    </points>
+  </image>
+  <image id="3" name="capture_0008.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="131.08" cy="126.37" rx="58.77" ry="58.92" z_order="0">
+      <attribute name="temp_c">31</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="165.10,105.90" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="125.70,124.70" z_order="0">
+    </points>
+  </image>
+  <image id="4" name="capture_0008_preview.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="125.90,124.90" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="165.40,106.10" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="130.09" cy="124.51" rx="57.74" ry="60.46" z_order="0">
+      <attribute name="temp_c">31</attribute>
+    </ellipse>
+  </image>
+  <image id="5" name="capture_0073.gray.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="94.90,137.10" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="93.30" cy="149.71" rx="71.11" ry="69.57" rotation="18.80" z_order="0">
+      <attribute name="temp_c">47</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="141.50,162.00" z_order="0">
+    </points>
+  </image>
+  <image id="6" name="capture_0073.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="139.70,159.40" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="94.22" cy="150.42" rx="70.43" ry="68.68" rotation="27.00" z_order="0">
+      <attribute name="temp_c">47</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="94.90,136.30" z_order="0">
+    </points>
+  </image>
+  <image id="7" name="capture_0074.gray.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="81.00,50.20" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="96.05" cy="110.50" rx="93.40" ry="95.64" rotation="25.40" z_order="0">
+      <attribute name="temp_c">5</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="92.10,98.00" z_order="0">
+    </points>
+  </image>
+  <image id="8" name="capture_0075.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="85.20" cy="104.15" rx="110.01" ry="110.92" rotation="17.90" z_order="0">
+      <attribute name="temp_c">19</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="81.50,87.60" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="117.40,33.00" z_order="0">
+    </points>
+  </image>
+  <image id="9" name="capture_0c.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="102.60,99.30" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="117.30,119.60" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="116.85" cy="120.08" rx="38.85" ry="37.61" z_order="0">
+      <attribute name="temp_c">0</attribute>
+    </ellipse>
+  </image>
+  <image id="10" name="capture_0c_preview.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="116.15" cy="118.97" rx="37.91" ry="39.66" z_order="0">
+      <attribute name="temp_c">0</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="102.60,99.50" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="116.80,119.80" z_order="0">
+    </points>
+  </image>
+  <image id="11" name="capture_2026-04-03_08-15-32.gray.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="103.30,76.40" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="110.41" cy="86.37" rx="103.85" ry="93.88" z_order="0">
+      <attribute name="temp_c">30</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="168.70,50.20" z_order="0">
+    </points>
+  </image>
+  <image id="12" name="capture_2026-04-03_08-15-32.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="108.57" cy="88.78" rx="102.98" ry="95.65" z_order="0">
+      <attribute name="temp_c">30</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="104.10,76.10" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="169.20,48.70" z_order="0">
+    </points>
+  </image>
+  <image id="13" name="capture_2026-04-03_08-19-26.gray.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="117.19" cy="98.69" rx="94.98" ry="85.86" z_order="0">
+      <attribute name="temp_c">-18</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="112.20,86.60" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="51.10,89.40" z_order="0">
+    </points>
+  </image>
+  <image id="14" name="capture_2026-04-03_08-19-26.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="52.10,89.40" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="116.88" cy="98.35" rx="92.66" ry="87.60" z_order="0">
+      <attribute name="temp_c">-18</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="111.70,87.30" z_order="0">
+    </points>
+  </image>
+  <image id="15" name="capture_2026-04-03_08-20-49.gray.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="178.60,106.10" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="116.30,82.70" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="118.24" cy="93.37" rx="91.51" ry="82.03" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+  </image>
+  <image id="16" name="capture_2026-04-03_08-20-49.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="117.77" cy="93.75" rx="90.88" ry="83.70" z_order="0">
+      <attribute name="temp_c">44</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="116.80,84.00" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="176.50,105.60" z_order="0">
+    </points>
+  </image>
+  <image id="17" name="capture_2026-04-03_11-43-02.gray.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="117.03" cy="115.26" rx="75.41" ry="69.74" rotation="12.50" z_order="0">
+      <attribute name="temp_c">-18</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="64.50,102.10" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="114.70,105.60" z_order="0">
+    </points>
+  </image>
+  <image id="18" name="capture_2026-04-03_11-43-02.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="114.00,105.90" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="118.58" cy="115.52" rx="76.32" ry="70.88" rotation="10.00" z_order="0">
+      <attribute name="temp_c">-18</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="64.80,102.30" z_order="0">
+    </points>
+  </image>
+  <image id="19" name="capture_2026-04-03_11-44-35.gray.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="113.57" cy="104.89" rx="72.98" ry="70.38" rotation="16.50" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="109.70,95.70" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="157.50,114.00" z_order="0">
+    </points>
+  </image>
+  <image id="20" name="capture_2026-04-03_11-44-35.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="109.70,96.70" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="156.20,113.70" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="112.71" cy="105.35" rx="73.54" ry="70.46" rotation="18.80" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+  </image>
+  <image id="21" name="capture_2026-04-03_13-48-34.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="153.70,84.00" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="96.08" cy="127.94" rx="98.73" ry="91.79" rotation="11.30" z_order="0">
+      <attribute name="temp_c">30</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="96.70,108.40" z_order="0">
+    </points>
+  </image>
+  <image id="22" name="capture_2026-04-03_15-28-33.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="38.72" cy="99.50" rx="98.78" ry="86.60" z_order="0">
+      <attribute name="temp_c">19</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="41.90,88.10" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="73.20,42.60" z_order="0">
+    </points>
+  </image>
+  <image id="23" name="capture_2026-04-03_15-29-02.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="126.90,146.00" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="127.86" cy="146.47" rx="29.27" ry="30.99" z_order="0">
+      <attribute name="temp_c">20</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="136.40,129.00" z_order="0">
+    </points>
+  </image>
+  <image id="24" name="capture_2026-04-03_15-46-04.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="145.20,75.60" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="172.00,26.90" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="148.67" cy="86.59" rx="98.10" ry="91.57" z_order="0">
+      <attribute name="temp_c">19</attribute>
+    </ellipse>
+  </image>
+  <image id="25" name="capture_2026-04-03_15-46-31.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="116.41" cy="135.57" rx="39.63" ry="40.27" z_order="0">
+      <attribute name="temp_c">19</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="128.90,111.80" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="116.00,132.40" z_order="0">
+    </points>
+  </image>
+  <image id="26" name="capture_2026-04-15_11-28-02.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="114.00,82.10" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="147.10,76.30" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="116.80" cy="85.17" rx="51.95" ry="46.92" z_order="0">
+      <attribute name="temp_c">34</attribute>
+    </ellipse>
+  </image>
+  <image id="27" name="capture_2026-04-15_11-32-55.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="115.62" cy="86.70" rx="51.52" ry="48.35" z_order="0">
+      <attribute name="temp_c">34</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="146.80,76.50" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="114.30,83.60" z_order="0">
+    </points>
+  </image>
+  <image id="28" name="capture_2026-04-15_11-34-07.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="148.30,76.80" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="115.92" cy="85.49" rx="51.52" ry="46.06" z_order="0">
+      <attribute name="temp_c">34</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="114.00,83.00" z_order="0">
+    </points>
+  </image>
+  <image id="29" name="capture_2026-04-15_11-54-49.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="111.60,91.30" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="112.98" cy="91.67" rx="51.52" ry="46.48" z_order="0">
+      <attribute name="temp_c">34</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="143.90,84.50" z_order="0">
+    </points>
+  </image>
+  <image id="30" name="capture_2026-04-15_11-56-26.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="104.75" cy="112.99" rx="51.52" ry="43.96" z_order="0">
+      <attribute name="temp_c">44</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="138.30,120.30" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="105.80,108.90" z_order="0">
+    </points>
+  </image>
+  <image id="31" name="capture_2026-04-15_13-08-57.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="132.70,118.90" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="96.23" cy="111.04" rx="51.52" ry="45.32" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="98.10,108.60" z_order="0">
+    </points>
+  </image>
+  <image id="32" name="capture_2026-04-15_13-10-35.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="130.60,119.20" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="97.53" cy="111.96" rx="49.48" ry="45.59" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="98.70,108.90" z_order="0">
+    </points>
+  </image>
+  <image id="33" name="capture_2026-04-15_13-12-13.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="97.40" cy="111.37" rx="51.52" ry="44.40" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="129.20,118.30" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="99.30,108.60" z_order="0">
+    </points>
+  </image>
+  <image id="34" name="capture_2026-04-15_13-13-50.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="131.20,118.30" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="96.52" cy="111.63" rx="51.52" ry="45.17" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="99.00,108.90" z_order="0">
+    </points>
+  </image>
+  <image id="35" name="capture_2026-04-15_13-18-44.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="131.50,118.90" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="96.23" cy="111.65" rx="51.52" ry="46.30" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="99.30,107.70" z_order="0">
+    </points>
+  </image>
+  <image id="36" name="capture_2026-04-15_13-22-10.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="98.70,108.60" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="129.80,118.00" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="96.23" cy="111.93" rx="51.52" ry="44.43" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+  </image>
+  <image id="37" name="capture_2026-04-15_13-25-27.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="131.50,118.90" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="99.30,108.60" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="97.40" cy="112.95" rx="51.52" ry="45.29" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+  </image>
+  <image id="38" name="capture_2026-04-15_13-27-05.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="95.80" cy="112.81" rx="50.65" ry="45.14" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="98.40,109.20" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="130.10,118.90" z_order="0">
+    </points>
+  </image>
+  <image id="39" name="capture_2026-04-15_13-36-53.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="98.70,108.30" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="98.86" cy="110.34" rx="50.51" ry="43.96" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="126.50,117.70" z_order="0">
+    </points>
+  </image>
+  <image id="40" name="capture_2026-04-15_13-38-31.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="131.20,118.60" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="100.05" cy="112.96" rx="51.52" ry="46.04" rotation="9.80" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="97.80,108.30" z_order="0">
+    </points>
+  </image>
+  <image id="41" name="capture_2026-04-15_13-40-07.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="99.00,108.90" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="98.45" cy="111.49" rx="51.52" ry="45.18" rotation="7.60" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="130.60,118.30" z_order="0">
+    </points>
+  </image>
+  <image id="42" name="capture_2026-04-15_13-41-46.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="131.20,118.00" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="99.30,108.00" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="97.30" cy="113.52" rx="51.52" ry="47.29" rotation="5.80" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+  </image>
+  <image id="43" name="capture_2026-04-15_13-43-24.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="98.10,107.70" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="97.64" cy="112.52" rx="51.52" ry="46.38" rotation="3.70" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="131.20,118.30" z_order="0">
+    </points>
+  </image>
+  <image id="44" name="capture_2026-04-15_13-45-03.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="131.50,119.40" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="99.00,108.30" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="97.75" cy="111.71" rx="51.52" ry="45.97" rotation="5.70" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+  </image>
+  <image id="45" name="capture_2026-04-15_13-46-41.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="128.90,117.10" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="98.44" cy="111.61" rx="51.52" ry="44.76" rotation="6.30" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="97.80,107.70" z_order="0">
+    </points>
+  </image>
+  <image id="46" name="capture_2026-04-15_13-48-19.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="132.10,118.60" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="98.40,109.50" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="99.18" cy="110.77" rx="51.52" ry="43.58" rotation="8.70" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+  </image>
+  <image id="47" name="capture_2026-04-15_13-49-57.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="97.61" cy="112.14" rx="51.52" ry="45.02" rotation="9.50" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="98.10,107.70" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="130.60,117.70" z_order="0">
+    </points>
+  </image>
+  <image id="48" name="capture_2026-04-15_13-51-36.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="132.10,118.60" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="99.30,108.30" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="98.48" cy="112.48" rx="51.52" ry="45.97" rotation="9.10" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+  </image>
+  <image id="49" name="capture_2026-04-15_13-53-14.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="97.70" cy="111.03" rx="51.52" ry="47.07" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="98.40,108.00" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="130.10,118.00" z_order="0">
+    </points>
+  </image>
+  <image id="50" name="capture_2026-04-15_13-54-53.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="97.70" cy="112.12" rx="51.52" ry="45.43" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="99.90,108.30" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="131.80,118.90" z_order="0">
+    </points>
+  </image>
+  <image id="51" name="capture_2026-04-15_14-10-06.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="98.86" cy="112.06" rx="50.11" ry="45.44" z_order="0">
+      <attribute name="temp_c">45</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="132.10,118.60" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="98.50,108.10" z_order="0">
+    </points>
+  </image>
+  <image id="52" name="capture_2026-04-18_13-18-53.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.08" cy="114.45" rx="56.12" ry="61.90" rotation="297.80" z_order="0">
+      <attribute name="temp_c">15</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="122.40,108.40" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="122.70,77.20" z_order="0">
+    </points>
+  </image>
+  <image id="53" name="capture_2026-04-18_13-26-34.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.29" cy="114.85" rx="53.86" ry="62.82" rotation="304.40" z_order="0">
+      <attribute name="temp_c">15</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="122.20,76.40" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="122.10,107.90" z_order="0">
+    </points>
+  </image>
+  <image id="54" name="capture_2026-04-18_13-28-35.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.03" cy="113.36" rx="54.25" ry="59.73" rotation="320.50" z_order="0">
+      <attribute name="temp_c">15</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="121.90,108.60" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="121.20,77.40" z_order="0">
+    </points>
+  </image>
+  <image id="55" name="capture_2026-04-18_13-31-09.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="121.80,76.80" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="118.74" cy="115.37" rx="62.69" ry="55.16" rotation="19.60" z_order="0">
+      <attribute name="temp_c">15</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="122.20,108.60" z_order="0">
+    </points>
+  </image>
+  <image id="56" name="capture_2026-04-18_13-33-01.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.75" cy="113.88" rx="62.87" ry="54.33" rotation="13.40" z_order="0">
+      <attribute name="temp_c">15</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="122.20,108.00" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="122.10,76.00" z_order="0">
+    </points>
+  </image>
+  <image id="57" name="capture_2026-04-18_13-35-17.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="121.50,78.00" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.32" cy="115.13" rx="62.40" ry="54.30" rotation="34.20" z_order="0">
+      <attribute name="temp_c">15</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="121.90,108.90" z_order="0">
+    </points>
+  </image>
+  <image id="58" name="capture_2026-04-18_13-37-09.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.36" cy="114.86" rx="61.66" ry="53.44" rotation="21.40" z_order="0">
+      <attribute name="temp_c">15</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="122.20,108.90" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="122.10,75.40" z_order="0">
+    </points>
+  </image>
+  <image id="59" name="capture_2026-04-18_13-39-01.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="122.80,108.90" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.20" cy="114.83" rx="62.31" ry="55.33" rotation="28.00" z_order="0">
+      <attribute name="temp_c">15</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="121.80,77.40" z_order="0">
+    </points>
+  </image>
+  <image id="60" name="capture_2026-04-18_13-40-52.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="118.88" cy="115.42" rx="62.09" ry="54.76" rotation="23.20" z_order="0">
+      <attribute name="temp_c">15</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="121.90,108.90" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="120.70,75.70" z_order="0">
+    </points>
+  </image>
+  <image id="61" name="capture_2026-04-18_13-42-44.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.07" cy="114.27" rx="60.90" ry="52.80" rotation="14.60" z_order="0">
+      <attribute name="temp_c">15</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="121.60,108.90" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="121.20,78.90" z_order="0">
+    </points>
+  </image>
+  <image id="62" name="capture_2026-04-18_13-44-35.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.11" cy="133.32" rx="58.27" ry="52.93" rotation="3.40" z_order="0">
+      <attribute name="temp_c">14</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="121.00,125.90" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="123.00,96.80" z_order="0">
+    </points>
+  </image>
+  <image id="63" name="capture_2026-04-18_14-51-12.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.30,109.80" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.33" cy="119.02" rx="71.98" ry="65.23" z_order="0">
+      <attribute name="temp_c">35</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="162.70,97.70" z_order="0">
+    </points>
+  </image>
+  <image id="64" name="capture_2026-04-18_17-22-32.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.29" cy="137.20" rx="66.38" ry="60.59" z_order="0">
+      <attribute name="temp_c">33</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="119.30,126.80" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="158.30,114.50" z_order="0">
+    </points>
+  </image>
+  <image id="65" name="capture_2026-04-18_17-25-20.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.90,126.80" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="159.70,114.20" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.59" cy="136.64" rx="65.92" ry="60.71" rotation="359.10" z_order="0">
+      <attribute name="temp_c">33</attribute>
+    </ellipse>
+  </image>
+  <image id="66" name="capture_2026-04-18_17-26-51.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.37" cy="137.37" rx="65.77" ry="60.73" z_order="0">
+      <attribute name="temp_c">33</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="119.90,126.50" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="159.10,114.70" z_order="0">
+    </points>
+  </image>
+  <image id="67" name="capture_2026-04-18_17-28-23.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="159.10,113.90" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="119.90,127.40" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.07" cy="135.60" rx="66.08" ry="61.60" z_order="0">
+      <attribute name="temp_c">33</attribute>
+    </ellipse>
+  </image>
+  <image id="68" name="capture_2026-04-18_17-29-54.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.07" cy="137.36" rx="65.78" ry="61.01" z_order="0">
+      <attribute name="temp_c">33</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="120.40,126.80" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="160.30,114.50" z_order="0">
+    </points>
+  </image>
+  <image id="69" name="capture_2026-04-18_17-31-25.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.90,126.80" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.08" cy="136.04" rx="65.48" ry="61.75" z_order="0">
+      <attribute name="temp_c">33</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="159.40,114.50" z_order="0">
+    </points>
+  </image>
+  <image id="70" name="capture_2026-04-18_17-32-57.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.60,127.10" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.16" cy="136.62" rx="65.93" ry="61.17" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="160.90,114.20" z_order="0">
+    </points>
+  </image>
+  <image id="71" name="capture_2026-04-18_17-34-29.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="159.70,114.50" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="119.60,127.10" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.77" cy="137.36" rx="66.38" ry="61.31" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+  </image>
+  <image id="72" name="capture_2026-04-18_17-36-00.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.52" cy="137.06" rx="65.93" ry="61.31" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="120.40,127.10" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="159.70,113.60" z_order="0">
+    </points>
+  </image>
+  <image id="73" name="capture_2026-04-18_17-37-31.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.78" cy="135.59" rx="66.22" ry="60.44" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="120.20,127.70" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="161.50,113.30" z_order="0">
+    </points>
+  </image>
+  <image id="74" name="capture_2026-04-18_17-39-03.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.83" cy="137.51" rx="66.18" ry="61.16" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="160.90,113.30" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="120.40,126.80" z_order="0">
+    </points>
+  </image>
+  <image id="75" name="capture_2026-04-18_17-40-34.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.60,126.50" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="161.80,113.60" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.77" cy="137.06" rx="66.08" ry="61.61" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+  </image>
+  <image id="76" name="capture_2026-04-18_17-42-06.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="160.30,113.30" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.38" cy="136.33" rx="65.33" ry="60.58" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="119.60,127.70" z_order="0">
+    </points>
+  </image>
+  <image id="77" name="capture_2026-04-18_17-43-37.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="120.20,126.80" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.77" cy="135.90" rx="66.38" ry="61.00" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="161.20,112.70" z_order="0">
+    </points>
+  </image>
+  <image id="78" name="capture_2026-04-18_17-45-09.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.08" cy="137.36" rx="65.03" ry="61.45" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="119.60,127.10" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="160.90,113.60" z_order="0">
+    </points>
+  </image>
+  <image id="79" name="capture_2026-04-18_17-46-40.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="122.12" cy="137.95" rx="65.33" ry="61.60" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="121.00,127.10" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="160.60,113.90" z_order="0">
+    </points>
+  </image>
+  <image id="80" name="capture_2026-04-19_12-56-02.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.05" cy="141.62" rx="65.60" ry="60.87" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="119.00,130.60" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="160.60,117.10" z_order="0">
+    </points>
+  </image>
+  <image id="81" name="capture_2026-04-19_12-57-14.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="160.60,117.40" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.43" cy="141.31" rx="65.62" ry="62.06" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="120.20,132.10" z_order="0">
+    </points>
+  </image>
+  <image id="82" name="capture_2026-04-19_12-58-27.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.62" cy="141.76" rx="65.48" ry="61.61" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="160.90,118.00" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="119.60,130.90" z_order="0">
+    </points>
+  </image>
+  <image id="83" name="capture_2026-04-19_12-59-39.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="160.90,117.40" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="119.60,130.30" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.72" cy="141.76" rx="66.53" ry="61.61" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+  </image>
+  <image id="84" name="capture_2026-04-19_13-00-52.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.20" cy="141.47" rx="65.30" ry="60.72" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="160.60,117.70" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="119.90,130.90" z_order="0">
+    </points>
+  </image>
+  <image id="85" name="capture_2026-04-19_13-00-52_preview.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.17" cy="141.91" rx="65.78" ry="61.46" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="160.60,118.00" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="120.40,131.20" z_order="0">
+    </points>
+  </image>
+  <image id="86" name="capture_2026-04-19_13-03-17.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.30,130.90" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="161.20,117.40" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="117.98" cy="140.01" rx="66.52" ry="59.84" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+  </image>
+  <image id="87" name="capture_2026-04-19_13-04-29.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="120.20,130.00" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="160.90,117.40" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.57" cy="141.03" rx="65.90" ry="60.87" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+  </image>
+  <image id="88" name="capture_2026-04-19_13-05-42.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.90,130.00" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="160.60,117.70" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.61" cy="140.14" rx="65.62" ry="61.76" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+  </image>
+  <image id="89" name="capture_2026-04-19_13-12-59.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.60,131.80" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.30" cy="141.02" rx="65.75" ry="61.47" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="160.00,118.90" z_order="0">
+    </points>
+  </image>
+  <image id="90" name="capture_2026-04-19_13-14-12.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.30,130.90" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.20" cy="141.62" rx="65.90" ry="61.46" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="161.50,117.70" z_order="0">
+    </points>
+  </image>
+  <image id="91" name="capture_2026-04-19_13-15-24.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.30,132.10" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.33" cy="140.59" rx="65.32" ry="60.14" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="161.20,117.40" z_order="0">
+    </points>
+  </image>
+  <image id="92" name="capture_2026-04-19_13-16-37.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.90,130.90" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="161.20,118.30" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.52" cy="142.49" rx="65.03" ry="61.47" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+  </image>
+  <image id="93" name="capture_2026-04-19_13-17-49.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="118.70,132.10" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.27" cy="141.77" rx="64.88" ry="61.78" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="160.90,117.70" z_order="0">
+    </points>
+  </image>
+  <image id="94" name="capture_2026-04-19_13-27-33.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.87" cy="142.36" rx="65.33" ry="61.61" z_order="0">
+      <attribute name="temp_c">30</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="160.90,118.90" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="119.60,131.80" z_order="0">
+    </points>
+  </image>
+  <image id="95" name="capture_2026-04-19_13-28-45.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.76" cy="141.92" rx="64.27" ry="60.86" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="119.90,131.20" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="161.20,118.60" z_order="0">
+    </points>
+  </image>
+  <image id="96" name="capture_2026-04-19_13-29-59.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="120.20,131.50" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="161.20,119.40" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.33" cy="142.50" rx="67.73" ry="62.35" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+  </image>
+  <image id="97" name="capture_2026-04-19_13-31-12.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="120.40,132.10" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.48" cy="141.47" rx="66.38" ry="61.32" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="161.20,118.90" z_order="0">
+    </points>
+  </image>
+  <image id="98" name="capture_2026-04-19_13-32-25.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.88" cy="140.44" rx="65.77" ry="60.59" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="119.00,132.10" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="161.50,118.30" z_order="0">
+    </points>
+  </image>
+  <image id="99" name="capture_2026-04-19_13-33-38.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.60,131.80" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.78" cy="141.33" rx="65.47" ry="60.58" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="160.30,118.90" z_order="0">
+    </points>
+  </image>
+  <image id="100" name="capture_2026-04-19_13-34-50.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="161.20,118.30" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="119.90,131.50" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.17" cy="142.21" rx="64.88" ry="61.46" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+  </image>
+  <image id="101" name="capture_2026-04-19_13-36-03.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.32" cy="141.91" rx="65.48" ry="61.46" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="119.00,131.50" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="160.00,118.90" z_order="0">
+    </points>
+  </image>
+  <image id="102" name="capture_2026-04-19_13-43-20.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.88" cy="142.51" rx="65.48" ry="61.46" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="160.90,119.40" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="120.40,132.70" z_order="0">
+    </points>
+  </image>
+  <image id="103" name="capture_2026-04-19_13-44-32.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.90,130.90" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="161.20,118.90" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.70" cy="141.92" rx="66.65" ry="60.87" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+  </image>
+  <image id="104" name="capture_2026-04-19_13-45-45.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.00,130.90" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="161.20,118.60" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.07" cy="142.06" rx="65.78" ry="61.31" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+  </image>
+  <image id="105" name="capture_2026-04-19_13-45-59.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.60,133.20" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.10" cy="142.86" rx="66.00" ry="60.81" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="162.30,120.70" z_order="0">
+    </points>
+  </image>
+  <image id="106" name="capture_2026-04-19_16-40-52.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="160.50,121.00" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.02" cy="143.64" rx="66.03" ry="61.09" z_order="0">
+      <attribute name="temp_c">32</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="119.60,131.60" z_order="0">
+    </points>
+  </image>
+  <image id="107" name="capture_2026-04-22_07-28-25.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="112.06" cy="113.91" rx="49.11" ry="46.06" z_order="0">
+      <attribute name="temp_c">27</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="111.10,108.80" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="136.80,92.00" z_order="0">
+    </points>
+  </image>
+  <image id="108" name="capture_2026-04-22_07-29-38.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="136.80,93.60" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="111.62" cy="114.72" rx="51.52" ry="48.03" z_order="0">
+      <attribute name="temp_c">27</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="111.60,108.20" z_order="0">
+    </points>
+  </image>
+  <image id="109" name="capture_2026-04-22_07-30-52.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="111.30,109.00" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="110.02" cy="113.72" rx="51.52" ry="46.73" z_order="0">
+      <attribute name="temp_c">27</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="137.10,92.80" z_order="0">
+    </points>
+  </image>
+  <image id="110" name="capture_2026-04-22_07-32-06.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="136.50,92.50" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="111.35" cy="112.70" rx="51.52" ry="45.78" z_order="0">
+      <attribute name="temp_c">28</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="111.10,109.30" z_order="0">
+    </points>
+  </image>
+  <image id="111" name="capture_2026-04-22_07-33-19.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="135.50,93.90" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="112.68" cy="111.95" rx="51.52" ry="45.15" z_order="0">
+      <attribute name="temp_c">28</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="110.80,109.60" z_order="0">
+    </points>
+  </image>
+  <image id="112" name="capture_2026-04-30_05-52-17.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="115.12" cy="88.70" rx="63.98" ry="58.04" z_order="0">
+      <attribute name="temp_c">5</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="114.20,85.40" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="99.90,50.30" z_order="0">
+    </points>
+  </image>
+  <image id="113" name="capture_2026-04-30_05-53-29.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="115.53" cy="89.65" rx="63.42" ry="59.96" z_order="0">
+      <attribute name="temp_c">5</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="113.50,84.30" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="99.80,50.70" z_order="0">
+    </points>
+  </image>
+  <image id="114" name="capture_2026-04-30_07-00-09.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="116.12" cy="88.34" rx="63.48" ry="58.54" z_order="0">
+      <attribute name="temp_c">5</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="115.50,85.00" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="100.30,51.80" z_order="0">
+    </points>
+  </image>
+  <image id="115" name="capture_2026-04-30_07-01-21.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.55" cy="92.88" rx="66.75" ry="62.22" z_order="0">
+      <attribute name="temp_c">5</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="120.60,88.60" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="104.40,52.50" z_order="0">
+    </points>
+  </image>
+  <image id="116" name="capture_2026-04-30_10-01-59.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="94.50,38.30" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="100.72" cy="77.97" rx="64.48" ry="59.97" z_order="0">
+      <attribute name="temp_c">8</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="100.30,76.10" z_order="0">
+    </points>
+  </image>
+  <image id="117" name="capture_2026-04-30_10-03-09.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="99.55" cy="81.21" rx="62.70" ry="58.55" z_order="0">
+      <attribute name="temp_c">8</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="100.30,76.70" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="94.00,39.10" z_order="0">
+    </points>
+  </image>
+  <image id="118" name="capture_2026-04-30_10-04-21.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="103.60,31.70" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="112.00,73.40" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="111.58" cy="78.99" rx="72.23" ry="65.29" z_order="0">
+      <attribute name="temp_c">8</attribute>
+    </ellipse>
+  </image>
+  <image id="119" name="capture_2026-04-30_11-48-43.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="117.95" cy="78.59" rx="74.50" ry="69.25" z_order="0">
+      <attribute name="temp_c">8</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="113.60,30.40" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="119.30,73.10" z_order="0">
+    </points>
+  </image>
+  <image id="120" name="capture_2026-04-30_13-09-38.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="119.10,65.20" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="127.30" cy="106.21" rx="62.45" ry="57.01" z_order="0">
+      <attribute name="temp_c">9</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="124.40,100.80" z_order="0">
+    </points>
+  </image>
+  <image id="121" name="capture_2026-04-30_13-10-49.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="124.10,100.80" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="119.10,65.00" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="126.70" cy="106.04" rx="62.70" ry="57.29" z_order="0">
+      <attribute name="temp_c">9</attribute>
+    </ellipse>
+  </image>
+  <image id="122" name="capture_2026-04-30_13-12-00.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="119.60,64.70" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="124.10,100.80" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="125.40" cy="106.42" rx="62.95" ry="57.42" z_order="0">
+      <attribute name="temp_c">9</attribute>
+    </ellipse>
+  </image>
+  <image id="123" name="capture_2026-04-30_14-02-46.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="108.40" cy="109.67" rx="62.95" ry="57.52" z_order="0">
+      <attribute name="temp_c">9</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="102.60,66.50" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="106.10,102.80" z_order="0">
+    </points>
+  </image>
+  <image id="124" name="capture_2026-04-30_14-03-57.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="106.40,102.30" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="102.60,67.80" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="107.15" cy="110.75" rx="62.65" ry="57.30" z_order="0">
+      <attribute name="temp_c">9</attribute>
+    </ellipse>
+  </image>
+  <image id="125" name="capture_2026-04-30_14-05-09.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="107.40" cy="109.20" rx="62.40" ry="58.20" z_order="0">
+      <attribute name="temp_c">9</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="106.60,102.30" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="102.40,65.50" z_order="0">
+    </points>
+  </image>
+  <image id="126" name="capture_2026-04-30_14-05-49.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="107.10,103.30" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="102.10,66.70" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="107.62" cy="110.08" rx="62.58" ry="58.58" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+  </image>
+  <image id="127" name="capture_2026-04-30_18-59-08.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="125.90" cy="118.79" rx="51.52" ry="49.52" z_order="0">
+      <attribute name="temp_c">-29</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="91.20,130.70" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="124.10,114.70" z_order="0">
+    </points>
+  </image>
+  <image id="128" name="capture_2026-04-30_19-00-20.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="123.90,114.20" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="124.62" cy="119.30" rx="51.52" ry="51.30" z_order="0">
+      <attribute name="temp_c">-28</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="87.90,132.00" z_order="0">
+    </points>
+  </image>
+  <image id="129" name="capture_2026-04-30_19-01-33.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="90.40,130.70" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="125.49" cy="121.25" rx="53.56" ry="50.80" z_order="0">
+      <attribute name="temp_c">-28</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="123.90,113.50" z_order="0">
+    </points>
+  </image>
+  <image id="130" name="capture_2026-04-30_19-02-45.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="124.62" cy="118.51" rx="51.52" ry="52.08" z_order="0">
+      <attribute name="temp_c">-28</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="92.50,130.50" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="123.60,114.50" z_order="0">
+    </points>
+  </image>
+  <image id="131" name="capture_2026-04-30_20-08-32.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="56.40,139.10" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="101.59" cy="113.96" rx="81.12" ry="76.84" z_order="0">
+      <attribute name="temp_c">-30</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="101.80,102.30" z_order="0">
+    </points>
+  </image>
+  <image id="132" name="capture_2026-04-30_20-09-44.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="56.90,137.60" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="102.10,103.30" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="103.45" cy="116.57" rx="80.95" ry="76.22" z_order="0">
+      <attribute name="temp_c">-30</attribute>
+    </ellipse>
+  </image>
+  <image id="133" name="capture_2026-04-30_20-10-56.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="56.70,138.40" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="104.02" cy="115.36" rx="81.48" ry="76.31" z_order="0">
+      <attribute name="temp_c">-30</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="103.10,103.10" z_order="0">
+    </points>
+  </image>
+  <image id="134" name="capture_2026-05-23_08-49-52.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="111.70,110.20" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="112.02" cy="118.21" rx="67.93" ry="63.91" z_order="0">
+      <attribute name="temp_c">7</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="102.60,72.80" z_order="0">
+    </points>
+  </image>
+  <image id="135" name="capture_2026-05-23_08-51-50.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="102.40,72.80" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="110.40,111.20" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="112.57" cy="118.79" rx="66.88" ry="63.64" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+  </image>
+  <image id="136" name="capture_2026-05-23_08-53-45.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="102.40,73.10" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="113.43" cy="118.41" rx="67.02" ry="63.36" z_order="0">
+      <attribute name="temp_c">7</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="110.70,109.70" z_order="0">
+    </points>
+  </image>
+  <image id="137" name="capture_2026-05-23_08-55-39.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="110.90,110.40" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="113.02" cy="118.88" rx="67.52" ry="62.63" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="103.40,74.90" z_order="0">
+    </points>
+  </image>
+  <image id="138" name="capture_2026-05-23_08-57-35.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="110.90,109.90" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="113.00" cy="119.49" rx="67.00" ry="63.39" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="102.90,73.60" z_order="0">
+    </points>
+  </image>
+  <image id="139" name="capture_2026-05-23_08-59-29.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="110.90,109.90" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="102.60,72.30" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="112.77" cy="119.18" rx="67.27" ry="62.48" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+  </image>
+  <image id="140" name="capture_2026-05-23_09-01-23.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="102.90,72.60" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="112.20,110.20" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="113.00" cy="117.20" rx="66.00" ry="62.90" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+  </image>
+  <image id="141" name="capture_2026-05-23_09-03-19.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="103.90,71.80" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="113.35" cy="117.24" rx="68.25" ry="62.24" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="110.40,108.70" z_order="0">
+    </points>
+  </image>
+  <image id="142" name="capture_2026-05-23_09-48-11.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="112.20,106.40" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="113.82" cy="115.56" rx="66.38" ry="62.76" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="104.40,70.80" z_order="0">
+    </points>
+  </image>
+  <image id="143" name="capture_2026-05-23_09-55-36.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="112.00,106.90" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="113.35" cy="116.26" rx="66.90" ry="62.61" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="104.70,70.10" z_order="0">
+    </points>
+  </image>
+  <image id="144" name="capture_2026-05-26_08-29-14.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="114.40" cy="116.40" rx="68.30" ry="63.75" z_order="0">
+      <attribute name="temp_c">7</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="112.20,107.60" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="105.40,70.60" z_order="0">
+    </points>
+  </image>
+  <image id="145" name="capture_2026-05-26_08-39-23.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="114.60" cy="116.40" rx="68.15" ry="63.50" z_order="0">
+      <attribute name="temp_c">8</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="112.70,107.60" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="105.40,71.80" z_order="0">
+    </points>
+  </image>
+  <image id="146" name="capture_2026-05-26_08-49-32.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="112.50,108.90" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="115.23" cy="116.26" rx="67.92" ry="63.11" z_order="0">
+      <attribute name="temp_c">8</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="105.70,70.80" z_order="0">
+    </points>
+  </image>
+  <image id="147" name="capture_2026-05-26_12-48-17.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="105.25" cy="122.02" rx="55.10" ry="50.71" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="104.40,83.80" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="106.10,116.00" z_order="0">
+    </points>
+  </image>
+  <image id="148" name="capture_2026-05-26_12-51-42.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="104.40,85.00" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="105.42" cy="121.69" rx="55.48" ry="51.44" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="105.10,115.80" z_order="0">
+    </points>
+  </image>
+  <image id="149" name="capture_2026-05-26_16-47-24.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="105.67" cy="121.09" rx="54.98" ry="52.44" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="105.20,84.00" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="105.10,115.50" z_order="0">
+    </points>
+  </image>
+  <image id="150" name="capture_2026-05-26_16-55-55.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="104.70,84.30" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="105.60,114.70" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="106.17" cy="120.89" rx="55.98" ry="51.59" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+  </image>
+  <image id="151" name="capture_2026-05-26_17-58-54.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="105.70" cy="119.99" rx="54.40" ry="51.64" rotation="3.60" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="105.20,83.50" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="105.60,115.50" z_order="0">
+    </points>
+  </image>
+  <image id="152" name="capture_2026-05-27_06-18-26.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="114.75" cy="154.10" rx="65.50" ry="61.85" z_order="0">
+      <attribute name="temp_c">5</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="107.70,107.90" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="115.00,141.40" z_order="0">
+    </points>
+  </image>
+  <image id="153" name="capture_2026-05-27_06-20-11.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.17" cy="122.02" rx="64.73" ry="61.12" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="118.30,113.20" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="110.00,79.20" z_order="0">
+    </points>
+  </image>
+  <image id="154" name="capture_2026-05-27_06-22-02.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="118.37" cy="121.91" rx="64.88" ry="59.96" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="109.20,79.20" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="117.50,113.50" z_order="0">
+    </points>
+  </image>
+  <image id="155" name="capture_2026-05-27_06-25-24.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="122.65" cy="135.95" rx="67.10" ry="63.50" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="122.10,124.40" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="112.50,90.10" z_order="0">
+    </points>
+  </image>
+  <image id="156" name="capture_2026-05-27_06-27-10.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.92" cy="135.19" rx="67.43" ry="63.74" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="122.10,126.20" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="112.80,90.60" z_order="0">
+    </points>
+  </image>
+  <image id="157" name="capture_2026-05-27_07-03-51.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="104.40,85.00" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="112.28" cy="120.13" rx="55.47" ry="51.33" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="111.40,115.30" z_order="0">
+    </points>
+  </image>
+  <image id="158" name="capture_2026-05-27_07-05-35.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="111.70,115.00" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="111.92" cy="120.45" rx="54.93" ry="50.30" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="103.90,84.50" z_order="0">
+    </points>
+  </image>
+  <image id="159" name="capture_2026-05-27_07-07-22.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="111.20,114.50" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="111.70" cy="120.40" rx="55.05" ry="51.20" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="104.70,83.50" z_order="0">
+    </points>
+  </image>
+  <image id="160" name="capture_2026-05-27_10-29-59.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="112.20,115.00" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="112.50" cy="119.37" rx="55.05" ry="51.32" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="106.90,83.50" z_order="0">
+    </points>
+  </image>
+  <image id="161" name="capture_2026-05-27_10-36-18.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="112.20,114.00" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="112.32" cy="120.33" rx="55.33" ry="51.68" z_order="0">
+      <attribute name="temp_c">8</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="108.20,82.20" z_order="0">
+    </points>
+  </image>
+  <image id="162" name="capture_2026-05-27_10-49-40.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="112.35" cy="119.69" rx="55.45" ry="50.54" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="111.40,115.30" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="108.20,84.30" z_order="0">
+    </points>
+  </image>
+  <image id="163" name="capture_2026-05-27_10-59-00.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="112.03" cy="119.70" rx="54.32" ry="50.80" z_order="0">
+      <attribute name="temp_c">8</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="108.50,83.00" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="111.70,114.70" z_order="0">
+    </points>
+  </image>
+  <image id="164" name="capture_2026-05-27_11-08-48.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="108.00,82.70" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="113.25" cy="119.42" rx="56.30" ry="51.57" z_order="0">
+      <attribute name="temp_c">8</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="111.40,114.20" z_order="0">
+    </points>
+  </image>
+  <image id="165" name="capture_2026-06-02_16-42-10.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="106.40,65.50" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="106.87" cy="107.59" rx="63.08" ry="58.94" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="105.60,101.50" z_order="0">
+    </points>
+  </image>
+  <image id="166" name="capture_2026-06-02_16-48-16.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="105.90,102.10" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="106.35" cy="107.18" rx="62.80" ry="58.18" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="106.90,64.20" z_order="0">
+    </points>
+  </image>
+  <image id="167" name="capture_2026-06-02_16-52-20.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="106.70,64.50" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="107.83" cy="106.98" rx="62.83" ry="58.43" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="105.90,101.50" z_order="0">
+    </points>
+  </image>
+  <image id="168" name="capture_2026-06-02_16-54-22.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="106.22" cy="107.62" rx="63.33" ry="58.30" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="107.50,66.00" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="105.60,101.80" z_order="0">
+    </points>
+  </image>
+  <image id="169" name="capture_2026-06-02_18-05-54.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="105.60,101.80" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="106.37" cy="108.78" rx="63.14" ry="58.83" rotation="5.90" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="108.00,65.00" z_order="0">
+    </points>
+  </image>
+  <image id="170" name="capture_2026-06-02_18-07-57.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="106.03" cy="107.28" rx="63.47" ry="58.28" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="106.40,101.50" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="107.70,66.70" z_order="0">
+    </points>
+  </image>
+  <image id="171" name="capture_2026-06-02_18-09-59.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="107.50,65.20" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="105.10,102.10" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="106.65" cy="107.25" rx="61.90" ry="57.65" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+  </image>
+  <image id="172" name="capture_2026-06-02_18-12-01.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="106.43" cy="107.06" rx="61.83" ry="58.81" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="105.90,100.30" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="108.00,65.20" z_order="0">
+    </points>
+  </image>
+  <image id="173" name="capture_2026-06-02_18-14-03.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="106.10,101.00" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="107.50,65.00" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="106.75" cy="106.98" rx="61.80" ry="58.43" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+  </image>
+  <image id="174" name="capture_2026-06-02_18-16-05.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="106.10,101.50" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="106.93" cy="107.24" rx="62.83" ry="59.19" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="108.00,65.50" z_order="0">
+    </points>
+  </image>
+  <image id="175" name="capture_2026-06-02_18-18-22.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="106.03" cy="108.02" rx="62.72" ry="59.17" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="107.20,65.00" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="106.10,100.80" z_order="0">
+    </points>
+  </image>
+  <image id="176" name="capture_2026-06-02_18-20-24.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="106.33" cy="108.13" rx="61.68" ry="57.03" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="106.90,64.50" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="105.40,101.30" z_order="0">
+    </points>
+  </image>
+  <image id="177" name="capture_2026-06-02_18-46-49.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="107.70,65.00" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="106.60,101.00" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="106.03" cy="106.53" rx="62.72" ry="58.33" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+  </image>
+  <image id="178" name="capture_2026-06-02_18-48-51.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="108.00,65.00" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="106.10,100.80" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="105.18" cy="106.40" rx="62.82" ry="58.70" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+  </image>
+  <image id="179" name="capture_2026-06-02_18-50-53.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="108.15" cy="106.76" rx="62.70" ry="58.01" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="105.90,101.80" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="107.50,64.70" z_order="0">
+    </points>
+  </image>
+  <image id="180" name="capture_2026-06-02_18-52-55.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="106.10,100.50" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="105.95" cy="108.00" rx="62.70" ry="58.43" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="107.50,65.20" z_order="0">
+    </points>
+  </image>
+  <image id="181" name="capture_2026-06-02_18-54-57.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="107.13" cy="106.99" rx="61.27" ry="57.15" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="106.10,101.30" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="107.20,65.00" z_order="0">
+    </points>
+  </image>
+  <image id="182" name="capture_2026-06-02_18-59-01.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="106.40,101.00" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="107.70,65.70" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="106.15" cy="107.70" rx="63.10" ry="57.82" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+  </image>
+  <image id="183" name="capture_2026-06-02_19-01-18.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="107.20,65.20" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="105.90,101.50" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="104.91" cy="106.99" rx="62.45" ry="58.93" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+  </image>
+  <image id="184" name="capture_2026-06-02_19-17-34.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="106.90,65.50" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="106.80" cy="106.96" rx="61.95" ry="58.31" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="105.90,101.80" z_order="0">
+    </points>
+  </image>
+  <image id="185" name="capture_2026-06-02_19-19-36.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="106.90,64.50" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="105.68" cy="107.39" rx="62.45" ry="58.03" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="106.10,100.00" z_order="0">
+    </points>
+  </image>
+  <image id="186" name="capture_2026-06-02_19-21-38.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="107.70,66.20" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="105.87" cy="107.00" rx="62.93" ry="57.90" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="105.60,101.00" z_order="0">
+    </points>
+  </image>
+  <image id="187" name="capture_2026-06-02_19-23-40.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="107.20,65.20" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="106.60,99.80" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="107.40" cy="106.34" rx="61.90" ry="57.41" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+  </image>
+  <image id="188" name="capture_2026-06-02_19-25-41.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="106.10,101.50" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="107.50,64.70" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="107.08" cy="105.97" rx="61.93" ry="58.42" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+  </image>
+  <image id="189" name="capture_2026-06-02_19-27-43.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="107.50,64.50" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="106.60,100.50" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="106.86" cy="107.26" rx="63.83" ry="57.40" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+  </image>
+  <image id="190" name="capture_2026-06-02_19-38-02.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="116.80" cy="121.97" rx="61.15" ry="58.42" z_order="0">
+      <attribute name="temp_c">10</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="117.80,113.70" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="116.30,78.90" z_order="0">
+    </points>
+  </image>
+  <image id="191" name="capture_2026-06-02_20-03-37.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="123.90,122.40" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="116.30,93.20" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="123.26" cy="130.07" rx="54.06" ry="53.72" z_order="0">
+      <attribute name="temp_c">8</attribute>
+    </ellipse>
+  </image>
+  <image id="192" name="capture_2026-06-02_20-08-25.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="123.40,119.10" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="124.12" cy="125.39" rx="55.58" ry="51.96" z_order="0">
+      <attribute name="temp_c">8</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="115.30,87.30" z_order="0">
+    </points>
+  </image>
+  <image id="193" name="capture_2026-06-02_20-10-27.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.13" cy="124.58" rx="55.33" ry="53.23" z_order="0">
+      <attribute name="temp_c">8</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="119.80,119.80" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="112.40,87.80" z_order="0">
+    </points>
+  </image>
+  <image id="194" name="capture_2026-06-02_20-12-29.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.30,119.30" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.65" cy="125.28" rx="57.50" ry="52.83" z_order="0">
+      <attribute name="temp_c">8</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="113.00,88.80" z_order="0">
+    </points>
+  </image>
+  <image id="195" name="capture_2026-06-02_20-15-12.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.80,119.30" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="121.10" cy="125.79" rx="56.85" ry="53.34" z_order="0">
+      <attribute name="temp_c">7</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="111.50,88.30" z_order="0">
+    </points>
+  </image>
+  <image id="196" name="capture_2026-06-02_20-17-14.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="120.30,119.10" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="118.69" cy="124.53" rx="56.09" ry="53.08" z_order="0">
+      <attribute name="temp_c">7</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="112.30,89.60" z_order="0">
+    </points>
+  </image>
+  <image id="197" name="capture_2026-06-02_20-19-16.png" width="224" height="224">
+    <points label="temp_center" source="manual" occluded="0" points="119.10,118.60" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="119.08" cy="125.92" rx="56.60" ry="53.72" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="111.80,86.60" z_order="0">
+    </points>
+  </image>
+  <image id="198" name="capture_2026-06-03_06-38-30.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="110.30,87.80" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="120.15" cy="125.67" rx="55.23" ry="52.44" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="121.10,118.10" z_order="0">
+    </points>
+  </image>
+  <image id="199" name="capture_2026-06-03_06-40-23.png" width="224" height="224">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="122.33" cy="125.62" rx="55.22" ry="52.07" z_order="0">
+      <attribute name="temp_c">6</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="120.60,117.30" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="110.30,87.30" z_order="0">
+    </points>
+  </image>
+  <image id="200" name="capture_2026-06-03_06-42-14.png" width="224" height="224">
+    <points label="temp_tip" source="manual" occluded="0" points="100.90,83.80" z_order="0">
+    </points>
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="112.10" cy="123.38" rx="59.00" ry="54.73" z_order="0">
+      <attribute name="temp_c">5</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="111.40,116.50" z_order="0">
+    </points>
+  </image>
+</annotations>

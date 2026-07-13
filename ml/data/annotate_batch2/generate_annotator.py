@@ -1,0 +1,365 @@
+#!/usr/bin/env python3
+"""Generate annotator HTML for batch 2 with the correct image list."""
+
+import os
+
+# Read the image list
+with open("/mnt/d/Projects/embedded-gauge-reading-tinyml/tmp/annotate_batch2/image_list.txt", "r") as f:
+    images = [line.strip() for line in f if line.strip()]
+
+# Generate JavaScript array
+images_js = ", ".join(f'"{img}"' for img in images)
+
+html = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Center Annotator - Batch 2</title>
+<style>
+body {{
+  font-family: system-ui, -apple-system, sans-serif;
+  margin: 20px;
+  background: #1a1a1a;
+  color: #eee;
+}}
+#container {{
+  display: flex;
+  gap: 20px;
+}}
+#image-panel {{
+  flex: 1;
+}}
+#controls {{
+  width: 300px;
+}}
+#img-display {{
+  border: 2px solid #444;
+  cursor: crosshair;
+  display: block;
+  max-width: 100%;
+  background: #000;
+}}
+#crosshair {{
+  position: absolute;
+  pointer-events: none;
+  display: none;
+}}
+.coord-box {{
+  background: #333;
+  padding: 10px;
+  border-radius: 4px;
+  margin: 10px 0;
+}}
+button {{
+  background: #4CAF50;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  margin: 5px;
+}}
+button:hover {{ background: #45a049; }}
+button:disabled {{ background: #666; cursor: not-allowed; }}
+#file-list {{
+  max-height: 400px;
+  overflow-y: auto;
+  background: #222;
+  padding: 10px;
+  border-radius: 4px;
+}}
+.file-item {{
+  padding: 5px;
+  cursor: pointer;
+  border-radius: 3px;
+}}
+.file-item:hover {{ background: #333; }}
+.file-item.active {{ background: #444; color: #4CAF50; }}
+.file-item.done {{ color: #4CAF50; }}
+.file-item.done::after {{ content: " ✓"; }}
+#export-area {{
+  width: 100%;
+  height: 200px;
+  background: #222;
+  color: #eee;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 10px;
+  font-family: monospace;
+  margin-top: 10px;
+}}
+h1 {{ margin-top: 0; }}
+#progress {{ color: #4CAF50; font-size: 18px; margin: 10px 0; }}
+.instruction {{
+  background: #2a2a40;
+  padding: 10px;
+  border-radius: 4px;
+  margin-bottom: 15px;
+  border-left: 3px solid #4CAF50;
+}}
+</style>
+</head>
+<body>
+<h1>🎯 Needle Pivot Annotator - Batch 2</h1>
+<div class="instruction">
+  <strong>Instructions:</strong> Click the <strong>center of the needle pivot</strong> (where the needle rotates from).<br>
+  The crosshair will follow your mouse. Click to place it. Use arrow keys to nudge.<br>
+  Press <strong>Space</strong> or click <strong>Save</strong> to confirm. Press <strong>N</strong> for next image.
+</div>
+
+<div id="progress">0 / {len(images)} annotated</div>
+
+<div id="container">
+  <div id="image-panel">
+    <div style="position: relative; display: inline-block;">
+      <img id="img-display" src="" alt="Loading...">
+      <svg id="crosshair" width="40" height="40" viewBox="0 0 40 40">
+        <line x1="20" y1="0" x2="20" y2="40" stroke="red" stroke-width="2"/>
+        <line x1="0" y1="20" x2="40" y2="20" stroke="red" stroke-width="2"/>
+        <circle cx="20" cy="20" r="8" stroke="red" stroke-width="2" fill="none"/>
+      </svg>
+    </div>
+    <div style="margin-top: 10px;">
+      <button onclick="saveAnnotation()">💾 Save (Space)</button>
+      <button onclick="nextImage()">➡️ Next (N)</button>
+      <button onclick="prevImage()">⬅️ Prev (P)</button>
+      <button onclick="exportAnnotations()">📥 Export CSV</button>
+    </div>
+    <div class="coord-box">
+      Current: <span id="coords">Not placed</span> | 
+      Nudged: <span id="nudged">No</span>
+    </div>
+  </div>
+  
+  <div id="controls">
+    <h3>Images</h3>
+    <div id="file-list"></div>
+    <h3>Export</h3>
+    <textarea id="export-area" placeholder="Annotations will appear here..."></textarea>
+  </div>
+</div>
+
+<script>
+const images = [{images_js}];
+
+const imageDir = "images/";
+let currentIdx = 0;
+let currentX = null;
+let currentY = null;
+let annotations = {{}};
+let naturalWidth = 0;
+let naturalHeight = 0;
+
+const imgDisplay = document.getElementById('img-display');
+const crosshair = document.getElementById('crosshair');
+const coordsSpan = document.getElementById('coords');
+const nudgedSpan = document.getElementById('nudged');
+const fileList = document.getElementById('file-list');
+const exportArea = document.getElementById('export-area');
+const progressDiv = document.getElementById('progress');
+
+function buildFileList() {{
+  fileList.innerHTML = '';
+  images.forEach((img, idx) => {{
+    const div = document.createElement('div');
+    div.className = 'file-item';
+    div.textContent = img;
+    div.onclick = () => loadImage(idx);
+    if (idx === currentIdx) div.classList.add('active');
+    if (annotations[img]) div.classList.add('done');
+    fileList.appendChild(div);
+  }});
+}}
+
+function loadImage(idx) {{
+  currentIdx = idx;
+  currentX = null;
+  currentY = null;
+  
+  const filename = images[idx];
+  imgDisplay.src = imageDir + filename;
+  
+  imgDisplay.onload = function() {{
+    naturalWidth = imgDisplay.naturalWidth;
+    naturalHeight = imgDisplay.naturalHeight;
+    
+    if (annotations[filename]) {{
+      currentX = annotations[filename].x;
+      currentY = annotations[filename].y;
+      showCrosshair(currentX, currentY);
+      updateCoords();
+    }} else {{
+      hideCrosshair();
+      coordsSpan.textContent = "Not placed";
+      nudgedSpan.textContent = "No";
+    }}
+  }};
+  
+  buildFileList();
+}}
+
+function showCrosshair(x, y) {{
+  const rect = imgDisplay.getBoundingClientRect();
+  const scaleX = rect.width / naturalWidth;
+  const scaleY = rect.height / naturalHeight;
+  
+  crosshair.style.display = 'block';
+  crosshair.style.left = (x * scaleX - 20) + 'px';
+  crosshair.style.top = (y * scaleY - 20) + 'px';
+}}
+
+function hideCrosshair() {{
+  crosshair.style.display = 'none';
+}}
+
+function updateCoords() {{
+  if (currentX !== null) {{
+    coordsSpan.textContent = `x=${{currentX.toFixed(1)}}, y=${{currentY.toFixed(1)}}`;
+    nudgedSpan.textContent = "Yes";
+  }}
+}}
+
+imgDisplay.addEventListener('mousemove', function(e) {{
+  if (!naturalWidth) return;
+  
+  const rect = imgDisplay.getBoundingClientRect();
+  const scaleX = rect.width / naturalWidth;
+  const scaleY = rect.height / naturalHeight;
+  
+  crosshair.style.display = 'block';
+  crosshair.style.left = (e.clientX - rect.left - 20) + 'px';
+  crosshair.style.top = (e.clientY - rect.top - 20) + 'px';
+}});
+
+imgDisplay.addEventListener('click', function(e) {{
+  if (!naturalWidth) return;
+  
+  const rect = imgDisplay.getBoundingClientRect();
+  const scaleX = rect.width / naturalWidth;
+  const scaleY = rect.height / naturalHeight;
+  
+  currentX = (e.clientX - rect.left) / scaleX;
+  currentY = (e.clientY - rect.top) / scaleY;
+  
+  showCrosshair(currentX, currentY);
+  updateCoords();
+}});
+
+document.addEventListener('keydown', function(e) {{
+  if (currentX === null) return;
+  
+  const step = e.shiftKey ? 5 : 1;
+  
+  switch(e.key) {{
+    case 'ArrowUp':
+      currentY -= step;
+      e.preventDefault();
+      break;
+    case 'ArrowDown':
+      currentY += step;
+      e.preventDefault();
+      break;
+    case 'ArrowLeft':
+      currentX -= step;
+      e.preventDefault();
+      break;
+    case 'ArrowRight':
+      currentX += step;
+      e.preventDefault();
+      break;
+    case ' ':
+      e.preventDefault();
+      saveAnnotation();
+      return;
+    case 'n':
+    case 'N':
+      nextImage();
+      return;
+    case 'p':
+    case 'P':
+      prevImage();
+      return;
+  }}
+  
+  currentX = Math.max(0, Math.min(naturalWidth, currentX));
+  currentY = Math.max(0, Math.min(naturalHeight, currentY));
+  
+  showCrosshair(currentX, currentY);
+  updateCoords();
+}});
+
+function saveAnnotation() {{
+  if (currentX === null) {{
+    alert("Click on the image first to place the center!");
+    return;
+  }}
+  
+  const filename = images[currentIdx];
+  annotations[filename] = {{
+    x: currentX,
+    y: currentY,
+    cx_norm: (currentX / naturalWidth).toFixed(4),
+    cy_norm: (currentY / naturalHeight).toFixed(4)
+  }};
+  
+  updateProgress();
+  buildFileList();
+  
+  if (currentIdx < images.length - 1) {{
+    nextImage();
+  }}
+}}
+
+function nextImage() {{
+  if (currentIdx < images.length - 1) {{
+    loadImage(currentIdx + 1);
+  }}
+}}
+
+function prevImage() {{
+  if (currentIdx > 0) {{
+    loadImage(currentIdx - 1);
+  }}
+}}
+
+function updateProgress() {{
+  const done = Object.keys(annotations).length;
+  progressDiv.textContent = `${{done}} / ${{images.length}} annotated`;
+}}
+
+function exportAnnotations() {{
+  let csv = "filename,cx,cy,cx_norm,cy_norm\\n";
+  images.forEach(img => {{
+    if (annotations[img]) {{
+      const a = annotations[img];
+      csv += `${{img}},${{a.x.toFixed(1)}},${{a.y.toFixed(1)}},${{a.cx_norm}},${{a.cy_norm}}\\n`;
+    }}
+  }});
+  
+  exportArea.value = csv;
+  
+  const blob = new Blob([csv], {{ type: 'text/csv' }});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'annotations_batch2.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+}}
+
+buildFileList();
+loadImage(0);
+</script>
+</body>
+</html>
+'''
+
+output_path = "/mnt/d/Projects/embedded-gauge-reading-tinyml/tmp/annotate_batch2/annotator.html"
+with open(output_path, "w") as f:
+    f.write(html)
+
+print(f"Generated {output_path}")
+print(f"  Images: {len(images)}")
+print(f"  Open in browser: file://{output_path}")

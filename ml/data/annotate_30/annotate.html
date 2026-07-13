@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Annotate Needle Pivot</title>
+<style>
+  body { font-family: sans-serif; margin: 20px; background: #222; color: #eee; }
+  #container { max-width: 900px; margin: 0 auto; text-align: center; }
+  #img-wrap { position: relative; display: inline-block; cursor: crosshair; }
+  #img-wrap img { display: block; image-rendering: pixelated; border: 2px solid #555; }
+  #crosshair { position: absolute; pointer-events: none; }
+  #crosshair line { stroke: #ff0; stroke-width: 1; }
+  #crosshair circle { stroke: #f00; stroke-width: 2; fill: none; }
+  #info { margin: 10px 0; font-size: 14px; }
+  #status { margin: 10px 0; font-size: 16px; font-weight: bold; }
+  #buttons { margin: 10px 0; }
+  #buttons button { font-size: 16px; padding: 8px 20px; margin: 0 5px; cursor: pointer; }
+  #coords { font-size: 14px; margin: 5px 0; }
+  #progress { font-size: 14px; margin: 5px 0; color: #aaa; }
+  .done { color: #0f0; }
+  .skip { color: #fa0; }
+  #download-btn { margin-top: 15px; padding: 10px 30px; font-size: 18px; cursor: pointer; display: none; background: #0a0; color: #fff; border: none; border-radius: 5px; }
+</style>
+</head>
+<body>
+<div id="container">
+  <h2>Click on the needle pivot (centre of the needle)</h2>
+  <p style="color:#aaa;font-size:13px">Click where the needle attaches to the gauge. Yellow cross = your click. Red circle = confirmed. Use Undo if you mis-click.</p>
+  <div id="status">Loading...</div>
+  <div id="progress"></div>
+  <div id="img-wrap">
+    <img id="image" src="" alt="capture">
+    <svg id="crosshair" xmlns="http://www.w3.org/2000/svg">
+      <line id="h-line" x1="0" y1="0" x2="0" y2="0" />
+      <line id="v-line" x1="0" y1="0" x2="0" y2="0" />
+      <circle id="dot" cx="0" cy="0" r="6" />
+    </svg>
+  </div>
+  <div id="coords"></div>
+  <div id="info">Image <span id="idx">0</span> of <span id="total">0</span></div>
+  <div id="buttons">
+    <button id="undo-btn" disabled>Undo</button>
+    <button id="next-btn" disabled>Next →</button>
+    <button id="skip-btn">Skip</button>
+  </div>
+  <button id="download-btn">Download CSV</button>
+</div>
+
+<script>
+const IMG_PATH = 'images/';
+const IMG_LIST_PATH = 'images.txt';
+
+let images = [];
+let annotations = {};
+let currentIdx = 0;
+
+const img = document.getElementById('image');
+const hLine = document.getElementById('h-line');
+const vLine = document.getElementById('v-line');
+const dot = document.getElementById('dot');
+const imgWrap = document.getElementById('img-wrap');
+const status = document.getElementById('status');
+const coords = document.getElementById('coords');
+const idxSpan = document.getElementById('idx');
+const totalSpan = document.getElementById('total');
+const progress = document.getElementById('progress');
+const undoBtn = document.getElementById('undo-btn');
+const nextBtn = document.getElementById('next-btn');
+const skipBtn = document.getElementById('skip-btn');
+const downloadBtn = document.getElementById('download-btn');
+
+function updateCrosshair(cx, cy, r) {
+  const svg = document.getElementById('crosshair');
+  svg.setAttribute('viewBox', `0 0 ${r*2} ${r*2}`);
+  svg.style.width = img.clientWidth + 'px';
+  svg.style.height = img.clientHeight + 'px';
+  svg.style.left = '0px';
+  svg.style.top = '0px';
+  hLine.setAttribute('x1', cx - 8); hLine.setAttribute('y1', cy);
+  hLine.setAttribute('x2', cx + 8); hLine.setAttribute('y2', cy);
+  vLine.setAttribute('x1', cx); vLine.setAttribute('y1', cy - 8);
+  vLine.setAttribute('x2', cx); vLine.setAttribute('y2', cy + 8);
+  dot.setAttribute('cx', cx); dot.setAttribute('cy', cy);
+}
+
+function showCurrent() {
+  if (images.length === 0) return;
+  const name = images[currentIdx];
+  img.src = IMG_PATH + name;
+  status.textContent = `#${currentIdx + 1}: ${name}`;
+  idxSpan.textContent = currentIdx + 1;
+  totalSpan.textContent = images.length;
+
+  const done = Object.keys(annotations).length;
+  const skipped = annotations[images[currentIdx]] === 'SKIP' ? 1 : 0;
+  progress.innerHTML = `Annotated: <span class="done">${done}</span> | Skipped: <span class="skip">${skipped}</span> | Remaining: ${images.length - done}`;
+
+  updateCrosshair(0, 0, 224);
+  coords.textContent = '';
+  undoBtn.disabled = true;
+
+  if (name in annotations && annotations[name] !== 'SKIP') {
+    const [cx, cy] = annotations[name];
+    updateCrosshair(cx, cy, 224);
+    coords.textContent = `(${cx}, ${cy})`;
+    status.textContent += ' ✓';
+  }
+}
+
+img.addEventListener('click', function(e) {
+  const rect = img.getBoundingClientRect();
+  const scaleX = 224 / img.clientWidth;
+  const scaleY = 224 / img.clientHeight;
+  const cx = Math.round((e.clientX - rect.left) * scaleX);
+  const cy = Math.round((e.clientY - rect.top) * scaleY);
+  const clampedX = Math.max(0, Math.min(223, cx));
+  const clampedY = Math.max(0, Math.min(223, cy));
+
+  annotations[images[currentIdx]] = [clampedX, clampedY];
+  updateCrosshair(clampedX, clampedY, 224);
+  coords.textContent = `(${clampedX}, ${clampedY})`;
+  status.textContent += ' ✓';
+  undoBtn.disabled = false;
+
+  const done = Object.keys(annotations).length - Object.values(annotations).filter(v => v === 'SKIP').length;
+  progress.innerHTML = `Annotated: <span class="done">${done}</span> | Skipped: <span class="skip">${Object.values(annotations).filter(v => v === 'SKIP').length}</span> | Remaining: ${images.length - done}`;
+});
+
+img.addEventListener('touchstart', function(e) {
+  e.preventDefault();
+  const touch = e.touches[0];
+  const rect = img.getBoundingClientRect();
+  const scaleX = 224 / img.clientWidth;
+  const scaleY = 224 / img.clientHeight;
+  const cx = Math.round((touch.clientX - rect.left) * scaleX);
+  const cy = Math.round((touch.clientY - rect.top) * scaleY);
+  const clampedX = Math.max(0, Math.min(223, cx));
+  const clampedY = Math.max(0, Math.min(223, cy));
+
+  annotations[images[currentIdx]] = [clampedX, clampedY];
+  updateCrosshair(clampedX, clampedY, 224);
+  coords.textContent = `(${clampedX}, ${clampedY})`;
+  status.textContent += ' ✓';
+  undoBtn.disabled = false;
+});
+
+undoBtn.addEventListener('click', function() {
+  if (images[currentIdx] in annotations) {
+    delete annotations[images[currentIdx]];
+    updateCrosshair(0, 0, 224);
+    coords.textContent = '';
+    status.textContent = status.textContent.replace(' ✓', '');
+    undoBtn.disabled = true;
+    const done = Object.keys(annotations).length - Object.values(annotations).filter(v => v === 'SKIP').length;
+    progress.innerHTML = `Annotated: <span class="done">${done}</span> | Skipped: <span class="skip">${Object.values(annotations).filter(v => v === 'SKIP').length}</span> | Remaining: ${images.length - done}`;
+  }
+});
+
+nextBtn.addEventListener('click', function() {
+  for (let i = currentIdx + 1; i < images.length; i++) {
+    if (!(images[i] in annotations)) {
+      currentIdx = i;
+      showCurrent();
+      return;
+    }
+  }
+  status.textContent = 'All done!';
+  nextBtn.disabled = true;
+});
+
+skipBtn.addEventListener('click', function() {
+  if (images[currentIdx] in annotations && annotations[images[currentIdx]] !== 'SKIP') {
+    // Already has real annotation - skip without marking
+  } else {
+    annotations[images[currentIdx]] = 'SKIP';
+  }
+  nextBtn.click();
+});
+
+downloadBtn.addEventListener('click', function() {
+  let csv = 'image_path,center_x,center_y\n';
+  for (const name of images) {
+    if (name in annotations && annotations[name] !== 'SKIP') {
+      csv += `captured_images/${name},${annotations[name][0]},${annotations[name][1]}\n`;
+    }
+  }
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'annotated_centers_30.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+  status.textContent = 'CSV downloaded! Refresh to continue annotating.';
+});
+
+// Load images
+fetch(IMG_LIST_PATH)
+  .then(r => r.text())
+  .then(text => {
+    images = text.trim().split('\n').filter(s => s.length > 0);
+    totalSpan.textContent = images.length;
+    showCurrent();
+    if (images.length > 0) nextBtn.disabled = false;
+    // Check for existing annotations
+    const done = Object.keys(annotations).length;
+    progress.innerHTML = `Annotated: <span class="done">${done}</span> | Skipped: <span class="skip">0</span> | Remaining: ${images.length - done}`;
+  });
+
+// Keyboard shortcuts
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'n' || e.key === ' ') { e.preventDefault(); nextBtn.click(); }
+  if (e.key === 'z' || e.key === 'u') { e.preventDefault(); undoBtn.click(); }
+  if (e.key === 's') { e.preventDefault(); skipBtn.click(); }
+  if (e.key === 'd') { e.preventDefault(); downloadBtn.click(); }
+});
+</script>
+</body>
+</html>

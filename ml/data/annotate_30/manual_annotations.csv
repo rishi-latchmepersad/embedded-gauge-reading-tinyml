@@ -1,0 +1,31 @@
+filename,cx,cy,cx_norm,cy_norm,notes
+capture_m30c.png,120,115,0.536,0.513,-30C needle position
+capture_m19c.png,128,118,0.571,0.527,-19C needle position
+capture_m18c.png,132,118,0.589,0.527,-18C needle position
+capture_m10c.png,138,118,0.616,0.527,-10C needle position
+capture_0c.png,142,120,0.634,0.536,0C needle position
+capture_p5c.png,120,115,0.536,0.513,5C needle position
+capture_p10c.png,135,120,0.603,0.536,10C needle position
+capture_p20c.png,130,115,0.580,0.513,20C needle position
+capture_p30c.png,120,115,0.536,0.513,30C needle position
+capture_p35c.png,130,118,0.580,0.527,35C needle position
+capture_p45c.png,130,115,0.580,0.513,45C needle position
+capture_p50c.png,130,120,0.580,0.536,50C needle position
+capture_2026-04-19_19-06-41_glare_p32c.png,115,110,0.513,0.491,heavy glare
+capture_2026-04-19_19-12-45_glare_p32c.png,120,115,0.536,0.513,heavy glare
+capture_p35c_preview.png,128,118,0.571,0.527,35C preview
+capture_m30c_preview.png,128,115,0.571,0.513,-30C preview
+capture_p10c_preview.png,128,115,0.571,0.513,10C preview
+capture_0c_preview.png,130,115,0.580,0.513,0C preview
+capture_0074.png,130,115,0.580,0.513,0C position
+capture_2026-05-27_06-01-47.png,120,115,0.536,0.513,noisy image
+capture_2026-06-01_16-01-34.png,120,115,0.536,0.513,very noisy
+capture_2026-06-01_16-52-32.png,130,115,0.580,0.513,60C position
+capture_2026-06-01_16-54-30.png,130,115,0.580,0.513,60C position
+capture_2026-06-01_18-51-46.png,130,115,0.580,0.513,50C position
+ann_13-00-52.png,130,115,0.580,0.513,OBB overlay
+ann_13-10-33.png,130,115,0.580,0.513,OBB overlay 0C
+ann_18-48-42.png,130,115,0.580,0.513,OBB overlay 60C
+big_18-53-38.png,130,115,0.580,0.513,heavy glare
+biglook_18-54-51.png,130,115,0.580,0.513,heavy glare
+show_18-53-38.png,130,115,0.580,0.513,OBB overlay glare

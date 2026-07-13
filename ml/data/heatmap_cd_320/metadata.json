@@ -1,0 +1,7797 @@
+{
+  "input_size": 320,
+  "heatmap_size": 80,
+  "sigma_pixels": 3.0,
+  "crop_margin": 0.1,
+  "num_samples": 702,
+  "samples": {
+    "train": [
+      {
+        "stem": "PXL_20260125_120204151",
+        "center_xy_rectified": [
+          156.86,
+          157.71
+        ],
+        "center_xy_norm": [
+          0.49172,
+          0.494396
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114926493",
+        "center_xy_rectified": [
+          170.17,
+          156.7
+        ],
+        "center_xy_norm": [
+          0.533458,
+          0.491236
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115149366",
+        "center_xy_rectified": [
+          152.68,
+          163.75
+        ],
+        "center_xy_norm": [
+          0.478625,
+          0.513338
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115538083",
+        "center_xy_rectified": [
+          163.83,
+          140.9
+        ],
+        "center_xy_norm": [
+          0.513575,
+          0.441697
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115346411",
+        "center_xy_rectified": [
+          163.32,
+          166.1
+        ],
+        "center_xy_norm": [
+          0.511971,
+          0.520679
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114540819",
+        "center_xy_rectified": [
+          161.79,
+          141.61
+        ],
+        "center_xy_norm": [
+          0.50719,
+          0.443929
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115408380",
+        "center_xy_rectified": [
+          169.99,
+          163.56
+        ],
+        "center_xy_norm": [
+          0.532892,
+          0.512738
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115807658",
+        "center_xy_rectified": [
+          151.21,
+          165.54
+        ],
+        "center_xy_norm": [
+          0.474004,
+          0.518921
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120043546",
+        "center_xy_rectified": [
+          164.18,
+          165.72
+        ],
+        "center_xy_norm": [
+          0.514664,
+          0.519488
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115143850",
+        "center_xy_rectified": [
+          160.22,
+          157.59
+        ],
+        "center_xy_norm": [
+          0.502271,
+          0.494022
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115011316",
+        "center_xy_rectified": [
+          162.73,
+          138.44
+        ],
+        "center_xy_norm": [
+          0.510123,
+          0.433974
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115334678",
+        "center_xy_rectified": [
+          180.93,
+          157.83
+        ],
+        "center_xy_norm": [
+          0.567189,
+          0.494757
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114536986",
+        "center_xy_rectified": [
+          161.82,
+          177.65
+        ],
+        "center_xy_norm": [
+          0.50728,
+          0.55689
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115129858",
+        "center_xy_rectified": [
+          163.42,
+          158.76
+        ],
+        "center_xy_norm": [
+          0.512278,
+          0.497679
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115148744",
+        "center_xy_rectified": [
+          157.87,
+          167.8
+        ],
+        "center_xy_norm": [
+          0.494888,
+          0.526022
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115822580",
+        "center_xy_rectified": [
+          160.28,
+          164.9
+        ],
+        "center_xy_norm": [
+          0.502449,
+          0.516914
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115806305",
+        "center_xy_rectified": [
+          157.8,
+          152.57
+        ],
+        "center_xy_norm": [
+          0.494677,
+          0.478278
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120215842",
+        "center_xy_rectified": [
+          160.34,
+          157.05
+        ],
+        "center_xy_norm": [
+          0.502648,
+          0.492329
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115329709",
+        "center_xy_rectified": [
+          166.96,
+          153.11
+        ],
+        "center_xy_norm": [
+          0.523393,
+          0.479984
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115539262",
+        "center_xy_rectified": [
+          139.44,
+          156.75
+        ],
+        "center_xy_norm": [
+          0.437122,
+          0.491374
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115735138",
+        "center_xy_rectified": [
+          164.89,
+          159.17
+        ],
+        "center_xy_norm": [
+          0.516888,
+          0.498968
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115611830",
+        "center_xy_rectified": [
+          159.55,
+          163.93
+        ],
+        "center_xy_norm": [
+          0.500171,
+          0.513884
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115204481",
+        "center_xy_rectified": [
+          178.4,
+          162.88
+        ],
+        "center_xy_norm": [
+          0.55925,
+          0.5106
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115222662",
+        "center_xy_rectified": [
+          163.45,
+          157.01
+        ],
+        "center_xy_norm": [
+          0.512397,
+          0.492204
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120218758",
+        "center_xy_rectified": [
+          152.47,
+          149.07
+        ],
+        "center_xy_norm": [
+          0.477978,
+          0.467302
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114854789",
+        "center_xy_rectified": [
+          154.34,
+          157.42
+        ],
+        "center_xy_norm": [
+          0.483835,
+          0.49348
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115148055",
+        "center_xy_rectified": [
+          159.98,
+          167.51
+        ],
+        "center_xy_norm": [
+          0.501497,
+          0.525114
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115357253",
+        "center_xy_rectified": [
+          161.26,
+          162.56
+        ],
+        "center_xy_norm": [
+          0.505522,
+          0.509606
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114532964",
+        "center_xy_rectified": [
+          159.13,
+          171.67
+        ],
+        "center_xy_norm": [
+          0.498837,
+          0.538145
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115952623",
+        "center_xy_rectified": [
+          152.48,
+          160.03
+        ],
+        "center_xy_norm": [
+          0.478,
+          0.501656
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115545411",
+        "center_xy_rectified": [
+          161.92,
+          136.95
+        ],
+        "center_xy_norm": [
+          0.507589,
+          0.429312
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120022037",
+        "center_xy_rectified": [
+          162.94,
+          158.05
+        ],
+        "center_xy_norm": [
+          0.510769,
+          0.495442
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115945531",
+        "center_xy_rectified": [
+          164.73,
+          141.6
+        ],
+        "center_xy_norm": [
+          0.516402,
+          0.443877
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114531276",
+        "center_xy_rectified": [
+          173.58,
+          160.51
+        ],
+        "center_xy_norm": [
+          0.54413,
+          0.503175
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115127962",
+        "center_xy_rectified": [
+          156.39,
+          160.13
+        ],
+        "center_xy_norm": [
+          0.490241,
+          0.501988
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114924323",
+        "center_xy_rectified": [
+          163.79,
+          166.78
+        ],
+        "center_xy_norm": [
+          0.513461,
+          0.522817
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120243838",
+        "center_xy_rectified": [
+          159.15,
+          161.31
+        ],
+        "center_xy_norm": [
+          0.498901,
+          0.505675
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115325407",
+        "center_xy_rectified": [
+          164.53,
+          148.47
+        ],
+        "center_xy_norm": [
+          0.515765,
+          0.465412
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115659911",
+        "center_xy_rectified": [
+          153.72,
+          161.31
+        ],
+        "center_xy_norm": [
+          0.481872,
+          0.505663
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114914961",
+        "center_xy_rectified": [
+          169.33,
+          143.87
+        ],
+        "center_xy_norm": [
+          0.530801,
+          0.451011
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115829399",
+        "center_xy_rectified": [
+          164.57,
+          166.4
+        ],
+        "center_xy_norm": [
+          0.515887,
+          0.521636
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115242004",
+        "center_xy_rectified": [
+          162.0,
+          160.01
+        ],
+        "center_xy_norm": [
+          0.507848,
+          0.501588
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120021544",
+        "center_xy_rectified": [
+          157.77,
+          165.9
+        ],
+        "center_xy_norm": [
+          0.494584,
+          0.520051
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114606035",
+        "center_xy_rectified": [
+          157.09,
+          156.77
+        ],
+        "center_xy_norm": [
+          0.492439,
+          0.491427
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120203460",
+        "center_xy_rectified": [
+          169.93,
+          145.78
+        ],
+        "center_xy_norm": [
+          0.532706,
+          0.456997
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115147221",
+        "center_xy_rectified": [
+          167.77,
+          169.31
+        ],
+        "center_xy_norm": [
+          0.525932,
+          0.530747
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115243334",
+        "center_xy_rectified": [
+          165.96,
+          161.49
+        ],
+        "center_xy_norm": [
+          0.520257,
+          0.506239
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115144597",
+        "center_xy_rectified": [
+          163.08,
+          163.7
+        ],
+        "center_xy_norm": [
+          0.511231,
+          0.513153
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114841596",
+        "center_xy_rectified": [
+          156.28,
+          159.08
+        ],
+        "center_xy_norm": [
+          0.489891,
+          0.498695
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115811049",
+        "center_xy_rectified": [
+          159.99,
+          160.95
+        ],
+        "center_xy_norm": [
+          0.501526,
+          0.504554
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115944074",
+        "center_xy_rectified": [
+          165.85,
+          161.17
+        ],
+        "center_xy_norm": [
+          0.519906,
+          0.505225
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115947579",
+        "center_xy_rectified": [
+          160.11,
+          173.2
+        ],
+        "center_xy_norm": [
+          0.501918,
+          0.542946
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120115570",
+        "center_xy_rectified": [
+          157.94,
+          159.4
+        ],
+        "center_xy_norm": [
+          0.495095,
+          0.499675
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115742126",
+        "center_xy_rectified": [
+          162.59,
+          174.91
+        ],
+        "center_xy_norm": [
+          0.509679,
+          0.548307
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120201091",
+        "center_xy_rectified": [
+          160.09,
+          144.08
+        ],
+        "center_xy_norm": [
+          0.501853,
+          0.451653
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115344301",
+        "center_xy_rectified": [
+          165.88,
+          163.68
+        ],
+        "center_xy_norm": [
+          0.520014,
+          0.513093
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115007049",
+        "center_xy_rectified": [
+          181.27,
+          149.17
+        ],
+        "center_xy_norm": [
+          0.568251,
+          0.467612
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115404470",
+        "center_xy_rectified": [
+          160.23,
+          159.08
+        ],
+        "center_xy_norm": [
+          0.502301,
+          0.498668
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115537581",
+        "center_xy_rectified": [
+          163.87,
+          149.36
+        ],
+        "center_xy_norm": [
+          0.513708,
+          0.468225
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115948836",
+        "center_xy_rectified": [
+          164.92,
+          154.85
+        ],
+        "center_xy_norm": [
+          0.516984,
+          0.485412
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114925061",
+        "center_xy_rectified": [
+          150.61,
+          165.55
+        ],
+        "center_xy_norm": [
+          0.472125,
+          0.518977
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115736457",
+        "center_xy_rectified": [
+          164.44,
+          151.5
+        ],
+        "center_xy_norm": [
+          0.515489,
+          0.474936
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115121320",
+        "center_xy_rectified": [
+          149.52,
+          142.44
+        ],
+        "center_xy_norm": [
+          0.468708,
+          0.44651
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114534732",
+        "center_xy_rectified": [
+          161.29,
+          182.71
+        ],
+        "center_xy_norm": [
+          0.505604,
+          0.572767
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115537100",
+        "center_xy_rectified": [
+          163.36,
+          155.22
+        ],
+        "center_xy_norm": [
+          0.512105,
+          0.486577
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115421648",
+        "center_xy_rectified": [
+          143.68,
+          168.02
+        ],
+        "center_xy_norm": [
+          0.450396,
+          0.526712
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120227059",
+        "center_xy_rectified": [
+          165.51,
+          161.5
+        ],
+        "center_xy_norm": [
+          0.518827,
+          0.506264
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114550243",
+        "center_xy_rectified": [
+          166.29,
+          179.56
+        ],
+        "center_xy_norm": [
+          0.521271,
+          0.562875
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114520969",
+        "center_xy_rectified": [
+          158.03,
+          173.36
+        ],
+        "center_xy_norm": [
+          0.495383,
+          0.543446
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115823372",
+        "center_xy_rectified": [
+          161.55,
+          167.29
+        ],
+        "center_xy_norm": [
+          0.506416,
+          0.524424
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114923491",
+        "center_xy_rectified": [
+          152.18,
+          162.32
+        ],
+        "center_xy_norm": [
+          0.477055,
+          0.508855
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115740064",
+        "center_xy_rectified": [
+          185.49,
+          160.82
+        ],
+        "center_xy_norm": [
+          0.58148,
+          0.504125
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114529783",
+        "center_xy_rectified": [
+          170.46,
+          153.78
+        ],
+        "center_xy_norm": [
+          0.534365,
+          0.482082
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115122663",
+        "center_xy_rectified": [
+          171.21,
+          147.29
+        ],
+        "center_xy_norm": [
+          0.536709,
+          0.461729
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115751745",
+        "center_xy_rectified": [
+          152.33,
+          157.75
+        ],
+        "center_xy_norm": [
+          0.477532,
+          0.494499
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120302481",
+        "center_xy_rectified": [
+          158.53,
+          153.45
+        ],
+        "center_xy_norm": [
+          0.496953,
+          0.481023
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115946532",
+        "center_xy_rectified": [
+          172.07,
+          172.53
+        ],
+        "center_xy_norm": [
+          0.539404,
+          0.540834
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114751509",
+        "center_xy_rectified": [
+          161.67,
+          162.6
+        ],
+        "center_xy_norm": [
+          0.506798,
+          0.509715
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115208285",
+        "center_xy_rectified": [
+          183.94,
+          161.77
+        ],
+        "center_xy_norm": [
+          0.576622,
+          0.507113
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115328247",
+        "center_xy_rectified": [
+          162.22,
+          163.63
+        ],
+        "center_xy_norm": [
+          0.50853,
+          0.512933
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120001250",
+        "center_xy_rectified": [
+          155.35,
+          162.33
+        ],
+        "center_xy_norm": [
+          0.487002,
+          0.50888
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120028768",
+        "center_xy_rectified": [
+          158.84,
+          148.32
+        ],
+        "center_xy_norm": [
+          0.497931,
+          0.464964
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115825419",
+        "center_xy_rectified": [
+          150.36,
+          161.79
+        ],
+        "center_xy_norm": [
+          0.471351,
+          0.507194
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120205746",
+        "center_xy_rectified": [
+          174.33,
+          155.03
+        ],
+        "center_xy_norm": [
+          0.546483,
+          0.485972
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120040116",
+        "center_xy_rectified": [
+          158.45,
+          155.94
+        ],
+        "center_xy_norm": [
+          0.496716,
+          0.488836
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115615761",
+        "center_xy_rectified": [
+          158.22,
+          166.59
+        ],
+        "center_xy_norm": [
+          0.495994,
+          0.522211
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114913726",
+        "center_xy_rectified": [
+          170.38,
+          175.44
+        ],
+        "center_xy_norm": [
+          0.534098,
+          0.549963
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115758313",
+        "center_xy_rectified": [
+          161.84,
+          163.82
+        ],
+        "center_xy_norm": [
+          0.507334,
+          0.513539
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120026856",
+        "center_xy_rectified": [
+          162.35,
+          147.71
+        ],
+        "center_xy_norm": [
+          0.508919,
+          0.463037
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120201512",
+        "center_xy_rectified": [
+          139.23,
+          163.33
+        ],
+        "center_xy_norm": [
+          0.436444,
+          0.511995
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115612552",
+        "center_xy_rectified": [
+          161.27,
+          163.41
+        ],
+        "center_xy_norm": [
+          0.505549,
+          0.512269
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114851923",
+        "center_xy_rectified": [
+          155.74,
+          126.52
+        ],
+        "center_xy_norm": [
+          0.488216,
+          0.396614
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120252819",
+        "center_xy_rectified": [
+          165.11,
+          158.15
+        ],
+        "center_xy_norm": [
+          0.517573,
+          0.495781
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115240763",
+        "center_xy_rectified": [
+          158.05,
+          160.51
+        ],
+        "center_xy_norm": [
+          0.495455,
+          0.503177
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115535839",
+        "center_xy_rectified": [
+          164.26,
+          165.72
+        ],
+        "center_xy_norm": [
+          0.514926,
+          0.519499
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114842502",
+        "center_xy_rectified": [
+          159.59,
+          166.38
+        ],
+        "center_xy_norm": [
+          0.500283,
+          0.521555
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120024549",
+        "center_xy_rectified": [
+          179.1,
+          154.5
+        ],
+        "center_xy_norm": [
+          0.561429,
+          0.484324
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114549307",
+        "center_xy_rectified": [
+          129.67,
+          152.67
+        ],
+        "center_xy_norm": [
+          0.406504,
+          0.478586
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115323183",
+        "center_xy_rectified": [
+          166.82,
+          160.01
+        ],
+        "center_xy_norm": [
+          0.522954,
+          0.501599
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114554365",
+        "center_xy_rectified": [
+          179.59,
+          154.98
+        ],
+        "center_xy_norm": [
+          0.562973,
+          0.485821
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114553434",
+        "center_xy_rectified": [
+          181.83,
+          155.06
+        ],
+        "center_xy_norm": [
+          0.570007,
+          0.486087
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115344951",
+        "center_xy_rectified": [
+          165.74,
+          166.13
+        ],
+        "center_xy_norm": [
+          0.519556,
+          0.520779
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120217241",
+        "center_xy_rectified": [
+          174.1,
+          170.1
+        ],
+        "center_xy_norm": [
+          0.545761,
+          0.533233
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114544203",
+        "center_xy_rectified": [
+          159.43,
+          169.21
+        ],
+        "center_xy_norm": [
+          0.499766,
+          0.530446
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114925728",
+        "center_xy_rectified": [
+          173.64,
+          157.56
+        ],
+        "center_xy_norm": [
+          0.54433,
+          0.49391
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115117933",
+        "center_xy_rectified": [
+          163.38,
+          144.75
+        ],
+        "center_xy_norm": [
+          0.512167,
+          0.453768
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115824436",
+        "center_xy_rectified": [
+          158.03,
+          166.72
+        ],
+        "center_xy_norm": [
+          0.495377,
+          0.522624
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115638675",
+        "center_xy_rectified": [
+          145.03,
+          160.01
+        ],
+        "center_xy_norm": [
+          0.45464,
+          0.501588
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114527337",
+        "center_xy_rectified": [
+          137.37,
+          159.71
+        ],
+        "center_xy_norm": [
+          0.430621,
+          0.500662
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120022309",
+        "center_xy_rectified": [
+          162.28,
+          152.67
+        ],
+        "center_xy_norm": [
+          0.508718,
+          0.478603
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115120449",
+        "center_xy_rectified": [
+          151.35,
+          175.64
+        ],
+        "center_xy_norm": [
+          0.474441,
+          0.550598
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115356240",
+        "center_xy_rectified": [
+          162.94,
+          165.99
+        ],
+        "center_xy_norm": [
+          0.510798,
+          0.52033
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115800564",
+        "center_xy_rectified": [
+          157.9,
+          159.17
+        ],
+        "center_xy_norm": [
+          0.494996,
+          0.498976
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115741590",
+        "center_xy_rectified": [
+          162.33,
+          171.32
+        ],
+        "center_xy_norm": [
+          0.508886,
+          0.537062
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120022901",
+        "center_xy_rectified": [
+          162.01,
+          148.02
+        ],
+        "center_xy_norm": [
+          0.507876,
+          0.464026
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114850916",
+        "center_xy_rectified": [
+          164.73,
+          185.4
+        ],
+        "center_xy_norm": [
+          0.516379,
+          0.581193
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115129083",
+        "center_xy_rectified": [
+          164.78,
+          154.13
+        ],
+        "center_xy_norm": [
+          0.51655,
+          0.483165
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115801802",
+        "center_xy_rectified": [
+          161.11,
+          166.88
+        ],
+        "center_xy_norm": [
+          0.505037,
+          0.523139
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114909671",
+        "center_xy_rectified": [
+          145.63,
+          145.88
+        ],
+        "center_xy_norm": [
+          0.45652,
+          0.457297
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115357834",
+        "center_xy_rectified": [
+          164.0,
+          166.14
+        ],
+        "center_xy_norm": [
+          0.514122,
+          0.520804
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115610974",
+        "center_xy_rectified": [
+          161.65,
+          165.56
+        ],
+        "center_xy_norm": [
+          0.506743,
+          0.519006
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115429504",
+        "center_xy_rectified": [
+          164.34,
+          155.06
+        ],
+        "center_xy_norm": [
+          0.515179,
+          0.486085
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115116424",
+        "center_xy_rectified": [
+          166.81,
+          168.66
+        ],
+        "center_xy_norm": [
+          0.522927,
+          0.528718
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120218515",
+        "center_xy_rectified": [
+          151.9,
+          166.98
+        ],
+        "center_xy_norm": [
+          0.476179,
+          0.523458
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114637155",
+        "center_xy_rectified": [
+          156.49,
+          162.19
+        ],
+        "center_xy_norm": [
+          0.49057,
+          0.50844
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115326457",
+        "center_xy_rectified": [
+          150.54,
+          155.01
+        ],
+        "center_xy_norm": [
+          0.471909,
+          0.485933
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114859876",
+        "center_xy_rectified": [
+          159.7,
+          155.39
+        ],
+        "center_xy_norm": [
+          0.500626,
+          0.487102
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115609819",
+        "center_xy_rectified": [
+          162.1,
+          160.86
+        ],
+        "center_xy_norm": [
+          0.508155,
+          0.504274
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115325972",
+        "center_xy_rectified": [
+          160.49,
+          152.69
+        ],
+        "center_xy_norm": [
+          0.503102,
+          0.478646
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115944522",
+        "center_xy_rectified": [
+          167.5,
+          153.49
+        ],
+        "center_xy_norm": [
+          0.525071,
+          0.481169
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115617076",
+        "center_xy_rectified": [
+          155.28,
+          170.32
+        ],
+        "center_xy_norm": [
+          0.486783,
+          0.533931
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120207449",
+        "center_xy_rectified": [
+          153.02,
+          164.7
+        ],
+        "center_xy_norm": [
+          0.479688,
+          0.516305
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114517176",
+        "center_xy_rectified": [
+          163.95,
+          166.9
+        ],
+        "center_xy_norm": [
+          0.513937,
+          0.523184
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120045775",
+        "center_xy_rectified": [
+          159.48,
+          166.49
+        ],
+        "center_xy_norm": [
+          0.499939,
+          0.521914
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115801045",
+        "center_xy_rectified": [
+          162.42,
+          158.75
+        ],
+        "center_xy_norm": [
+          0.50914,
+          0.497659
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120225344",
+        "center_xy_rectified": [
+          152.26,
+          166.61
+        ],
+        "center_xy_norm": [
+          0.477305,
+          0.522288
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115115395",
+        "center_xy_rectified": [
+          164.23,
+          167.81
+        ],
+        "center_xy_norm": [
+          0.514825,
+          0.526036
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120220417",
+        "center_xy_rectified": [
+          162.93,
+          175.89
+        ],
+        "center_xy_norm": [
+          0.510764,
+          0.551366
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120217738",
+        "center_xy_rectified": [
+          162.13,
+          157.83
+        ],
+        "center_xy_norm": [
+          0.50824,
+          0.494771
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115433668",
+        "center_xy_rectified": [
+          164.14,
+          158.38
+        ],
+        "center_xy_norm": [
+          0.514533,
+          0.496481
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115610360",
+        "center_xy_rectified": [
+          159.99,
+          161.26
+        ],
+        "center_xy_norm": [
+          0.501541,
+          0.505509
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114959197",
+        "center_xy_rectified": [
+          142.85,
+          171.06
+        ],
+        "center_xy_norm": [
+          0.447796,
+          0.536225
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115607703",
+        "center_xy_rectified": [
+          158.2,
+          159.13
+        ],
+        "center_xy_norm": [
+          0.495934,
+          0.498835
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115944999",
+        "center_xy_rectified": [
+          165.66,
+          146.28
+        ],
+        "center_xy_norm": [
+          0.519314,
+          0.45856
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115738811",
+        "center_xy_rectified": [
+          168.69,
+          172.8
+        ],
+        "center_xy_norm": [
+          0.528803,
+          0.541702
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114653836",
+        "center_xy_rectified": [
+          155.61,
+          151.99
+        ],
+        "center_xy_norm": [
+          0.487811,
+          0.476447
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115551028",
+        "center_xy_rectified": [
+          162.18,
+          156.27
+        ],
+        "center_xy_norm": [
+          0.508411,
+          0.489869
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115835956",
+        "center_xy_rectified": [
+          159.4,
+          157.63
+        ],
+        "center_xy_norm": [
+          0.499673,
+          0.494123
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114524235",
+        "center_xy_rectified": [
+          139.36,
+          170.08
+        ],
+        "center_xy_norm": [
+          0.436859,
+          0.53316
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115336256",
+        "center_xy_rectified": [
+          144.14,
+          159.1
+        ],
+        "center_xy_norm": [
+          0.451842,
+          0.498731
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114941106",
+        "center_xy_rectified": [
+          155.04,
+          152.21
+        ],
+        "center_xy_norm": [
+          0.486011,
+          0.477154
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115947232",
+        "center_xy_rectified": [
+          147.64,
+          153.24
+        ],
+        "center_xy_norm": [
+          0.462815,
+          0.480368
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120041517",
+        "center_xy_rectified": [
+          160.01,
+          153.32
+        ],
+        "center_xy_norm": [
+          0.501587,
+          0.480631
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115757788",
+        "center_xy_rectified": [
+          161.42,
+          161.47
+        ],
+        "center_xy_norm": [
+          0.506013,
+          0.506169
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115130654",
+        "center_xy_rectified": [
+          160.9,
+          158.41
+        ],
+        "center_xy_norm": [
+          0.504374,
+          0.496571
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120059198",
+        "center_xy_rectified": [
+          161.39,
+          154.41
+        ],
+        "center_xy_norm": [
+          0.50591,
+          0.484028
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115955039",
+        "center_xy_rectified": [
+          156.74,
+          160.5
+        ],
+        "center_xy_norm": [
+          0.491354,
+          0.503125
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115355557",
+        "center_xy_rectified": [
+          165.39,
+          162.92
+        ],
+        "center_xy_norm": [
+          0.518463,
+          0.51072
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115949188",
+        "center_xy_rectified": [
+          174.27,
+          158.63
+        ],
+        "center_xy_norm": [
+          0.546288,
+          0.497274
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120206822",
+        "center_xy_rectified": [
+          162.31,
+          159.56
+        ],
+        "center_xy_norm": [
+          0.508813,
+          0.50018
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115948601",
+        "center_xy_rectified": [
+          148.06,
+          157.81
+        ],
+        "center_xy_norm": [
+          0.464123,
+          0.494713
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120042299",
+        "center_xy_rectified": [
+          158.94,
+          153.33
+        ],
+        "center_xy_norm": [
+          0.498237,
+          0.480658
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115413920",
+        "center_xy_rectified": [
+          160.34,
+          144.93
+        ],
+        "center_xy_norm": [
+          0.502636,
+          0.45432
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114848857",
+        "center_xy_rectified": [
+          166.25,
+          143.83
+        ],
+        "center_xy_norm": [
+          0.52117,
+          0.450862
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115958760",
+        "center_xy_rectified": [
+          157.21,
+          161.44
+        ],
+        "center_xy_norm": [
+          0.492808,
+          0.506072
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115740763",
+        "center_xy_rectified": [
+          159.14,
+          172.58
+        ],
+        "center_xy_norm": [
+          0.498887,
+          0.540997
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120256738",
+        "center_xy_rectified": [
+          166.29,
+          160.13
+        ],
+        "center_xy_norm": [
+          0.52127,
+          0.501965
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120156218",
+        "center_xy_rectified": [
+          158.3,
+          165.75
+        ],
+        "center_xy_norm": [
+          0.496251,
+          0.519581
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120101988",
+        "center_xy_rectified": [
+          159.89,
+          131.89
+        ],
+        "center_xy_norm": [
+          0.501214,
+          0.41344
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115324736",
+        "center_xy_rectified": [
+          167.34,
+          155.24
+        ],
+        "center_xy_norm": [
+          0.524564,
+          0.486634
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115326987",
+        "center_xy_rectified": [
+          146.93,
+          154.61
+        ],
+        "center_xy_norm": [
+          0.460599,
+          0.484667
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120052049",
+        "center_xy_rectified": [
+          157.44,
+          158.99
+        ],
+        "center_xy_norm": [
+          0.493537,
+          0.498405
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114915707",
+        "center_xy_rectified": [
+          163.79,
+          133.08
+        ],
+        "center_xy_norm": [
+          0.513436,
+          0.417168
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115127422",
+        "center_xy_rectified": [
+          167.26,
+          153.22
+        ],
+        "center_xy_norm": [
+          0.524324,
+          0.480313
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115146294",
+        "center_xy_rectified": [
+          165.69,
+          166.68
+        ],
+        "center_xy_norm": [
+          0.519393,
+          0.522496
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115943552",
+        "center_xy_rectified": [
+          162.8,
+          161.3
+        ],
+        "center_xy_norm": [
+          0.510342,
+          0.505636
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120216417",
+        "center_xy_rectified": [
+          144.69,
+          157.56
+        ],
+        "center_xy_norm": [
+          0.453576,
+          0.493914
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115159520",
+        "center_xy_rectified": [
+          166.99,
+          168.54
+        ],
+        "center_xy_norm": [
+          0.523469,
+          0.528326
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115350771",
+        "center_xy_rectified": [
+          161.39,
+          163.26
+        ],
+        "center_xy_norm": [
+          0.505919,
+          0.511772
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115605315",
+        "center_xy_rectified": [
+          161.45,
+          166.8
+        ],
+        "center_xy_norm": [
+          0.50612,
+          0.522876
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114954780",
+        "center_xy_rectified": [
+          144.99,
+          147.75
+        ],
+        "center_xy_norm": [
+          0.454516,
+          0.463161
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115950996",
+        "center_xy_rectified": [
+          170.59,
+          150.91
+        ],
+        "center_xy_norm": [
+          0.534765,
+          0.473067
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115343746",
+        "center_xy_rectified": [
+          160.79,
+          165.37
+        ],
+        "center_xy_norm": [
+          0.504053,
+          0.518388
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115603764",
+        "center_xy_rectified": [
+          162.62,
+          169.68
+        ],
+        "center_xy_norm": [
+          0.509785,
+          0.531912
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120157736",
+        "center_xy_rectified": [
+          157.63,
+          165.97
+        ],
+        "center_xy_norm": [
+          0.494138,
+          0.520281
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120241619",
+        "center_xy_rectified": [
+          160.61,
+          161.52
+        ],
+        "center_xy_norm": [
+          0.503479,
+          0.506339
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120219516",
+        "center_xy_rectified": [
+          174.91,
+          168.31
+        ],
+        "center_xy_norm": [
+          0.548294,
+          0.527612
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115038687",
+        "center_xy_rectified": [
+          161.88,
+          153.56
+        ],
+        "center_xy_norm": [
+          0.507461,
+          0.481394
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115802215",
+        "center_xy_rectified": [
+          161.38,
+          163.52
+        ],
+        "center_xy_norm": [
+          0.505887,
+          0.5126
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115618539",
+        "center_xy_rectified": [
+          159.56,
+          161.32
+        ],
+        "center_xy_norm": [
+          0.500181,
+          0.505705
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115946935",
+        "center_xy_rectified": [
+          166.31,
+          174.0
+        ],
+        "center_xy_norm": [
+          0.521354,
+          0.545453
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115949960",
+        "center_xy_rectified": [
+          181.12,
+          155.46
+        ],
+        "center_xy_norm": [
+          0.567773,
+          0.487329
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115953604",
+        "center_xy_rectified": [
+          154.06,
+          158.78
+        ],
+        "center_xy_norm": [
+          0.482937,
+          0.497756
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115150984",
+        "center_xy_rectified": [
+          168.06,
+          165.97
+        ],
+        "center_xy_norm": [
+          0.526847,
+          0.520295
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114843309",
+        "center_xy_rectified": [
+          162.24,
+          174.28
+        ],
+        "center_xy_norm": [
+          0.508604,
+          0.546345
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115332945",
+        "center_xy_rectified": [
+          180.86,
+          155.39
+        ],
+        "center_xy_norm": [
+          0.566957,
+          0.487104
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115632590",
+        "center_xy_rectified": [
+          147.94,
+          172.33
+        ],
+        "center_xy_norm": [
+          0.463752,
+          0.540217
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115417966",
+        "center_xy_rectified": [
+          162.21,
+          182.69
+        ],
+        "center_xy_norm": [
+          0.508501,
+          0.572703
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120227628",
+        "center_xy_rectified": [
+          167.79,
+          158.83
+        ],
+        "center_xy_norm": [
+          0.525992,
+          0.497895
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115218666",
+        "center_xy_rectified": [
+          167.1,
+          154.21
+        ],
+        "center_xy_norm": [
+          0.523834,
+          0.483427
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114642671",
+        "center_xy_rectified": [
+          163.56,
+          178.78
+        ],
+        "center_xy_norm": [
+          0.512717,
+          0.560446
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115536463",
+        "center_xy_rectified": [
+          166.68,
+          163.85
+        ],
+        "center_xy_norm": [
+          0.522494,
+          0.513621
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120305774",
+        "center_xy_rectified": [
+          164.71,
+          157.89
+        ],
+        "center_xy_norm": [
+          0.516331,
+          0.494946
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115334057",
+        "center_xy_rectified": [
+          167.08,
+          147.84
+        ],
+        "center_xy_norm": [
+          0.523774,
+          0.463451
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120037559",
+        "center_xy_rectified": [
+          160.96,
+          156.2
+        ],
+        "center_xy_norm": [
+          0.504574,
+          0.489652
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115803605",
+        "center_xy_rectified": [
+          151.56,
+          166.41
+        ],
+        "center_xy_norm": [
+          0.475101,
+          0.521656
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120027821",
+        "center_xy_rectified": [
+          165.75,
+          151.03
+        ],
+        "center_xy_norm": [
+          0.519602,
+          0.473462
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120246531",
+        "center_xy_rectified": [
+          184.15,
+          152.68
+        ],
+        "center_xy_norm": [
+          0.577266,
+          0.478634
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120020529",
+        "center_xy_rectified": [
+          154.17,
+          154.84
+        ],
+        "center_xy_norm": [
+          0.483299,
+          0.48539
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115123844",
+        "center_xy_rectified": [
+          159.68,
+          153.78
+        ],
+        "center_xy_norm": [
+          0.500568,
+          0.482059
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114845992",
+        "center_xy_rectified": [
+          141.72,
+          173.17
+        ],
+        "center_xy_norm": [
+          0.444266,
+          0.542841
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115331993",
+        "center_xy_rectified": [
+          165.15,
+          184.76
+        ],
+        "center_xy_norm": [
+          0.517712,
+          0.579179
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115150021",
+        "center_xy_rectified": [
+          153.02,
+          168.99
+        ],
+        "center_xy_norm": [
+          0.479682,
+          0.529744
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115546076",
+        "center_xy_rectified": [
+          164.66,
+          162.89
+        ],
+        "center_xy_norm": [
+          0.516167,
+          0.51063
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115554764",
+        "center_xy_rectified": [
+          164.51,
+          162.29
+        ],
+        "center_xy_norm": [
+          0.515719,
+          0.50874
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115120953",
+        "center_xy_rectified": [
+          163.82,
+          180.24
+        ],
+        "center_xy_norm": [
+          0.513547,
+          0.565028
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115552259",
+        "center_xy_rectified": [
+          164.56,
+          159.64
+        ],
+        "center_xy_norm": [
+          0.51585,
+          0.500436
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115801313",
+        "center_xy_rectified": [
+          159.6,
+          160.39
+        ],
+        "center_xy_norm": [
+          0.500309,
+          0.502795
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120206223",
+        "center_xy_rectified": [
+          164.5,
+          173.94
+        ],
+        "center_xy_norm": [
+          0.515683,
+          0.545276
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120202892",
+        "center_xy_rectified": [
+          159.9,
+          170.92
+        ],
+        "center_xy_norm": [
+          0.501245,
+          0.535794
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114911288",
+        "center_xy_rectified": [
+          137.07,
+          163.66
+        ],
+        "center_xy_norm": [
+          0.429698,
+          0.513034
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120220792",
+        "center_xy_rectified": [
+          169.0,
+          178.52
+        ],
+        "center_xy_norm": [
+          0.529782,
+          0.559632
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120228422",
+        "center_xy_rectified": [
+          160.82,
+          149.17
+        ],
+        "center_xy_norm": [
+          0.504134,
+          0.467632
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115349576",
+        "center_xy_rectified": [
+          162.55,
+          165.18
+        ],
+        "center_xy_norm": [
+          0.509561,
+          0.517811
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115209157",
+        "center_xy_rectified": [
+          179.64,
+          160.82
+        ],
+        "center_xy_norm": [
+          0.563127,
+          0.504147
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114556873",
+        "center_xy_rectified": [
+          138.14,
+          172.45
+        ],
+        "center_xy_norm": [
+          0.433039,
+          0.540608
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114845174",
+        "center_xy_rectified": [
+          174.41,
+          150.76
+        ],
+        "center_xy_norm": [
+          0.546748,
+          0.472599
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115143033",
+        "center_xy_rectified": [
+          162.67,
+          155.62
+        ],
+        "center_xy_norm": [
+          0.50993,
+          0.487837
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120050121",
+        "center_xy_rectified": [
+          156.5,
+          158.53
+        ],
+        "center_xy_norm": [
+          0.490581,
+          0.496951
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115551677",
+        "center_xy_rectified": [
+          163.65,
+          160.75
+        ],
+        "center_xy_norm": [
+          0.513012,
+          0.50392
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115354208",
+        "center_xy_rectified": [
+          158.21,
+          161.79
+        ],
+        "center_xy_norm": [
+          0.49597,
+          0.507165
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120025564",
+        "center_xy_rectified": [
+          147.45,
+          151.91
+        ],
+        "center_xy_norm": [
+          0.462225,
+          0.476214
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114850084",
+        "center_xy_rectified": [
+          179.86,
+          150.0
+        ],
+        "center_xy_norm": [
+          0.563838,
+          0.470233
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115608397",
+        "center_xy_rectified": [
+          157.69,
+          156.21
+        ],
+        "center_xy_norm": [
+          0.494312,
+          0.48968
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114936296",
+        "center_xy_rectified": [
+          159.32,
+          156.08
+        ],
+        "center_xy_norm": [
+          0.499448,
+          0.489276
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120021074",
+        "center_xy_rectified": [
+          155.9,
+          166.55
+        ],
+        "center_xy_norm": [
+          0.48873,
+          0.522107
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115803016",
+        "center_xy_rectified": [
+          153.44,
+          164.18
+        ],
+        "center_xy_norm": [
+          0.481013,
+          0.514671
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114555470",
+        "center_xy_rectified": [
+          177.84,
+          166.93
+        ],
+        "center_xy_norm": [
+          0.557499,
+          0.523305
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115330301",
+        "center_xy_rectified": [
+          164.79,
+          145.1
+        ],
+        "center_xy_norm": [
+          0.516592,
+          0.454872
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120200715",
+        "center_xy_rectified": [
+          167.24,
+          147.38
+        ],
+        "center_xy_norm": [
+          0.524262,
+          0.461997
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115542831",
+        "center_xy_rectified": [
+          144.54,
+          152.78
+        ],
+        "center_xy_norm": [
+          0.453115,
+          0.478939
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115547414",
+        "center_xy_rectified": [
+          164.45,
+          166.18
+        ],
+        "center_xy_norm": [
+          0.515507,
+          0.520929
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114908980",
+        "center_xy_rectified": [
+          144.66,
+          156.82
+        ],
+        "center_xy_norm": [
+          0.453488,
+          0.491594
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115609083",
+        "center_xy_rectified": [
+          159.1,
+          160.46
+        ],
+        "center_xy_norm": [
+          0.498731,
+          0.503007
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120226207",
+        "center_xy_rectified": [
+          156.16,
+          169.48
+        ],
+        "center_xy_norm": [
+          0.489535,
+          0.531297
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120239110",
+        "center_xy_rectified": [
+          160.26,
+          160.32
+        ],
+        "center_xy_norm": [
+          0.502393,
+          0.502557
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115539763",
+        "center_xy_rectified": [
+          131.63,
+          155.56
+        ],
+        "center_xy_norm": [
+          0.412639,
+          0.487636
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115200210",
+        "center_xy_rectified": [
+          169.22,
+          166.82
+        ],
+        "center_xy_norm": [
+          0.530468,
+          0.522942
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115118563",
+        "center_xy_rectified": [
+          154.89,
+          145.37
+        ],
+        "center_xy_norm": [
+          0.485559,
+          0.45572
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120215279",
+        "center_xy_rectified": [
+          158.46,
+          153.68
+        ],
+        "center_xy_norm": [
+          0.49674,
+          0.481752
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115541259",
+        "center_xy_rectified": [
+          184.21,
+          163.31
+        ],
+        "center_xy_norm": [
+          0.577474,
+          0.511952
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120228002",
+        "center_xy_rectified": [
+          171.01,
+          157.0
+        ],
+        "center_xy_norm": [
+          0.536094,
+          0.492155
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115119880",
+        "center_xy_rectified": [
+          146.33,
+          148.48
+        ],
+        "center_xy_norm": [
+          0.458709,
+          0.465442
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114524322",
+        "center_xy_rectified": [
+          136.1,
+          160.72
+        ],
+        "center_xy_norm": [
+          0.426647,
+          0.503815
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115343103",
+        "center_xy_rectified": [
+          159.97,
+          170.25
+        ],
+        "center_xy_norm": [
+          0.501484,
+          0.533685
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120119590",
+        "center_xy_rectified": [
+          159.02,
+          164.58
+        ],
+        "center_xy_norm": [
+          0.498494,
+          0.515934
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115759913",
+        "center_xy_rectified": [
+          159.19,
+          158.03
+        ],
+        "center_xy_norm": [
+          0.499043,
+          0.495392
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115201566",
+        "center_xy_rectified": [
+          169.86,
+          136.55
+        ],
+        "center_xy_norm": [
+          0.532474,
+          0.428056
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115737064",
+        "center_xy_rectified": [
+          162.84,
+          144.69
+        ],
+        "center_xy_norm": [
+          0.510472,
+          0.453582
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120230221",
+        "center_xy_rectified": [
+          158.6,
+          168.34
+        ],
+        "center_xy_norm": [
+          0.497177,
+          0.527698
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115145405",
+        "center_xy_rectified": [
+          167.91,
+          170.52
+        ],
+        "center_xy_norm": [
+          0.526364,
+          0.534541
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120030971",
+        "center_xy_rectified": [
+          160.93,
+          160.49
+        ],
+        "center_xy_norm": [
+          0.504469,
+          0.503091
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114543193",
+        "center_xy_rectified": [
+          155.75,
+          170.23
+        ],
+        "center_xy_norm": [
+          0.488254,
+          0.53363
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120200165",
+        "center_xy_rectified": [
+          170.66,
+          167.28
+        ],
+        "center_xy_norm": [
+          0.534971,
+          0.524387
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115948135",
+        "center_xy_rectified": [
+          139.21,
+          158.46
+        ],
+        "center_xy_norm": [
+          0.436401,
+          0.496755
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115237147",
+        "center_xy_rectified": [
+          162.38,
+          165.69
+        ],
+        "center_xy_norm": [
+          0.509036,
+          0.519395
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115200940",
+        "center_xy_rectified": [
+          169.23,
+          176.57
+        ],
+        "center_xy_norm": [
+          0.530511,
+          0.553508
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114901695",
+        "center_xy_rectified": [
+          144.34,
+          145.26
+        ],
+        "center_xy_norm": [
+          0.452484,
+          0.45537
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114546762",
+        "center_xy_rectified": [
+          140.02,
+          178.63
+        ],
+        "center_xy_norm": [
+          0.438928,
+          0.559973
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114548536",
+        "center_xy_rectified": [
+          145.57,
+          176.42
+        ],
+        "center_xy_norm": [
+          0.45633,
+          0.553051
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115738263",
+        "center_xy_rectified": [
+          174.06,
+          167.16
+        ],
+        "center_xy_norm": [
+          0.545645,
+          0.524017
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120122658",
+        "center_xy_rectified": [
+          158.34,
+          162.4
+        ],
+        "center_xy_norm": [
+          0.496372,
+          0.509081
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114857049",
+        "center_xy_rectified": [
+          156.5,
+          156.27
+        ],
+        "center_xy_norm": [
+          0.490604,
+          0.489889
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120023531",
+        "center_xy_rectified": [
+          148.13,
+          165.13
+        ],
+        "center_xy_norm": [
+          0.464356,
+          0.517646
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114912074",
+        "center_xy_rectified": [
+          169.11,
+          145.65
+        ],
+        "center_xy_norm": [
+          0.53013,
+          0.456581
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115025538",
+        "center_xy_rectified": [
+          160.03,
+          155.88
+        ],
+        "center_xy_norm": [
+          0.501658,
+          0.488647
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115207208",
+        "center_xy_rectified": [
+          177.87,
+          156.46
+        ],
+        "center_xy_norm": [
+          0.557574,
+          0.490463
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115323990",
+        "center_xy_rectified": [
+          166.66,
+          158.64
+        ],
+        "center_xy_norm": [
+          0.522455,
+          0.497294
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115335432",
+        "center_xy_rectified": [
+          175.25,
+          171.19
+        ],
+        "center_xy_norm": [
+          0.549383,
+          0.536649
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114541776",
+        "center_xy_rectified": [
+          140.56,
+          157.17
+        ],
+        "center_xy_norm": [
+          0.44062,
+          0.492688
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114922671",
+        "center_xy_rectified": [
+          158.33,
+          162.69
+        ],
+        "center_xy_norm": [
+          0.496321,
+          0.510002
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120216879",
+        "center_xy_rectified": [
+          161.04,
+          142.51
+        ],
+        "center_xy_norm": [
+          0.504832,
+          0.446749
+        ]
+      },
+      {
+        "stem": "aug_ann_13-00-52",
+        "center_xy_rectified": [
+          174.58,
+          166.2
+        ],
+        "center_xy_norm": [
+          0.547257,
+          0.521018
+        ]
+      },
+      {
+        "stem": "aug_ann_13-10-33",
+        "center_xy_rectified": [
+          176.78,
+          166.35
+        ],
+        "center_xy_norm": [
+          0.554184,
+          0.521465
+        ]
+      },
+      {
+        "stem": "aug_ann_18-48-42",
+        "center_xy_rectified": [
+          174.14,
+          166.43
+        ],
+        "center_xy_norm": [
+          0.54588,
+          0.521726
+        ]
+      },
+      {
+        "stem": "aug_ann_18-53-38",
+        "center_xy_rectified": [
+          144.08,
+          158.01
+        ],
+        "center_xy_norm": [
+          0.451649,
+          0.495323
+        ]
+      },
+      {
+        "stem": "aug_ann_18-54-51",
+        "center_xy_rectified": [
+          193.6,
+          163.44
+        ],
+        "center_xy_norm": [
+          0.606885,
+          0.512354
+        ]
+      },
+      {
+        "stem": "aug_ann_18-56-43",
+        "center_xy_rectified": [
+          158.87,
+          167.83
+        ],
+        "center_xy_norm": [
+          0.498024,
+          0.526108
+        ]
+      },
+      {
+        "stem": "aug_capture_0007",
+        "center_xy_rectified": [
+          237.91,
+          150.31
+        ],
+        "center_xy_norm": [
+          0.745804,
+          0.471194
+        ]
+      },
+      {
+        "stem": "aug_capture_0008",
+        "center_xy_rectified": [
+          164.15,
+          156.07
+        ],
+        "center_xy_norm": [
+          0.514592,
+          0.489245
+        ]
+      },
+      {
+        "stem": "aug_capture_0073",
+        "center_xy_rectified": [
+          160.8,
+          187.69
+        ],
+        "center_xy_norm": [
+          0.504066,
+          0.588384
+        ]
+      },
+      {
+        "stem": "aug_capture_0074",
+        "center_xy_rectified": [
+          181.98,
+          153.0
+        ],
+        "center_xy_norm": [
+          0.570475,
+          0.479613
+        ]
+      },
+      {
+        "stem": "aug_capture_0075",
+        "center_xy_rectified": [
+          163.02,
+          150.43
+        ],
+        "center_xy_norm": [
+          0.511044,
+          0.471572
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-03_08-11-24",
+        "center_xy_rectified": [
+          319.0,
+          319.0
+        ],
+        "center_xy_norm": [
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-03_08-15-32",
+        "center_xy_rectified": [
+          156.18,
+          162.82
+        ],
+        "center_xy_norm": [
+          0.489597,
+          0.510412
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-03_08-19-26",
+        "center_xy_rectified": [
+          157.74,
+          173.29
+        ],
+        "center_xy_norm": [
+          0.494483,
+          0.543241
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-03_08-20-49",
+        "center_xy_rectified": [
+          154.3,
+          173.49
+        ],
+        "center_xy_norm": [
+          0.483713,
+          0.543856
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-03_11-43-02",
+        "center_xy_rectified": [
+          164.57,
+          147.93
+        ],
+        "center_xy_norm": [
+          0.515898,
+          0.463734
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-03_11-44-35",
+        "center_xy_rectified": [
+          144.65,
+          172.78
+        ],
+        "center_xy_norm": [
+          0.453441,
+          0.541641
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-03_13-48-34",
+        "center_xy_rectified": [
+          157.81,
+          184.61
+        ],
+        "center_xy_norm": [
+          0.494709,
+          0.57872
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-03_15-28-33",
+        "center_xy_rectified": [
+          151.92,
+          168.45
+        ],
+        "center_xy_norm": [
+          0.476247,
+          0.528057
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-03_15-46-04",
+        "center_xy_rectified": [
+          147.37,
+          159.74
+        ],
+        "center_xy_norm": [
+          0.461972,
+          0.500739
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_11-29-40",
+        "center_xy_rectified": [
+          163.14,
+          176.23
+        ],
+        "center_xy_norm": [
+          0.511412,
+          0.552439
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_11-32-55",
+        "center_xy_rectified": [
+          163.06,
+          173.04
+        ],
+        "center_xy_norm": [
+          0.51115,
+          0.542439
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-08-57",
+        "center_xy_rectified": [
+          154.45,
+          182.57
+        ],
+        "center_xy_norm": [
+          0.484155,
+          0.572307
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-10-35",
+        "center_xy_rectified": [
+          155.25,
+          182.01
+        ],
+        "center_xy_norm": [
+          0.486673,
+          0.570567
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-12-13",
+        "center_xy_rectified": [
+          155.31,
+          181.66
+        ],
+        "center_xy_norm": [
+          0.486863,
+          0.569459
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-13-50",
+        "center_xy_rectified": [
+          156.02,
+          181.95
+        ],
+        "center_xy_norm": [
+          0.4891,
+          0.570377
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-15-28",
+        "center_xy_rectified": [
+          156.01,
+          181.64
+        ],
+        "center_xy_norm": [
+          0.489049,
+          0.569391
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-17-07",
+        "center_xy_rectified": [
+          155.11,
+          181.52
+        ],
+        "center_xy_norm": [
+          0.486233,
+          0.569027
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-18-44",
+        "center_xy_rectified": [
+          155.58,
+          181.31
+        ],
+        "center_xy_norm": [
+          0.487716,
+          0.568374
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-22-10",
+        "center_xy_rectified": [
+          155.07,
+          181.79
+        ],
+        "center_xy_norm": [
+          0.486108,
+          0.569865
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-25-27",
+        "center_xy_rectified": [
+          155.4,
+          129.75
+        ],
+        "center_xy_norm": [
+          0.487133,
+          0.406728
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-27-05",
+        "center_xy_rectified": [
+          160.21,
+          136.99
+        ],
+        "center_xy_norm": [
+          0.502219,
+          0.429438
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-28-42",
+        "center_xy_rectified": [
+          158.3,
+          130.5
+        ],
+        "center_xy_norm": [
+          0.49624,
+          0.409084
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-30-20",
+        "center_xy_rectified": [
+          153.0,
+          169.17
+        ],
+        "center_xy_norm": [
+          0.479624,
+          0.530314
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-31-58",
+        "center_xy_rectified": [
+          155.62,
+          122.59
+        ],
+        "center_xy_norm": [
+          0.487825,
+          0.384303
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-33-37",
+        "center_xy_rectified": [
+          154.0,
+          166.1
+        ],
+        "center_xy_norm": [
+          0.482766,
+          0.520683
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-35-15",
+        "center_xy_rectified": [
+          153.88,
+          166.15
+        ],
+        "center_xy_norm": [
+          0.482377,
+          0.520844
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-36-53",
+        "center_xy_rectified": [
+          155.21,
+          181.41
+        ],
+        "center_xy_norm": [
+          0.486558,
+          0.568682
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-38-31",
+        "center_xy_rectified": [
+          156.3,
+          184.55
+        ],
+        "center_xy_norm": [
+          0.489962,
+          0.578542
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-40-07",
+        "center_xy_rectified": [
+          154.37,
+          185.19
+        ],
+        "center_xy_norm": [
+          0.483925,
+          0.580544
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-41-46",
+        "center_xy_rectified": [
+          155.1,
+          181.57
+        ],
+        "center_xy_norm": [
+          0.486199,
+          0.569174
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-43-24",
+        "center_xy_rectified": [
+          158.63,
+          138.49
+        ],
+        "center_xy_norm": [
+          0.497275,
+          0.434138
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-45-03",
+        "center_xy_rectified": [
+          155.31,
+          181.25
+        ],
+        "center_xy_norm": [
+          0.486866,
+          0.568183
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-46-41",
+        "center_xy_rectified": [
+          156.62,
+          131.14
+        ],
+        "center_xy_norm": [
+          0.490982,
+          0.411107
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-48-19",
+        "center_xy_rectified": [
+          156.77,
+          130.14
+        ],
+        "center_xy_norm": [
+          0.491438,
+          0.407954
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-49-57",
+        "center_xy_rectified": [
+          156.66,
+          130.07
+        ],
+        "center_xy_norm": [
+          0.491103,
+          0.40773
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-51-36",
+        "center_xy_rectified": [
+          155.31,
+          181.35
+        ],
+        "center_xy_norm": [
+          0.48686,
+          0.568503
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-53-14",
+        "center_xy_rectified": [
+          155.37,
+          181.58
+        ],
+        "center_xy_norm": [
+          0.487064,
+          0.569225
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_13-54-53",
+        "center_xy_rectified": [
+          155.12,
+          182.13
+        ],
+        "center_xy_norm": [
+          0.486281,
+          0.570939
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-15_14-10-06",
+        "center_xy_rectified": [
+          159.11,
+          180.56
+        ],
+        "center_xy_norm": [
+          0.498779,
+          0.566032
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_13-18-53",
+        "center_xy_rectified": [
+          156.34,
+          167.26
+        ],
+        "center_xy_norm": [
+          0.490102,
+          0.524316
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_13-21-46",
+        "center_xy_rectified": [
+          173.83,
+          116.33
+        ],
+        "center_xy_norm": [
+          0.544929,
+          0.364666
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_13-23-37",
+        "center_xy_rectified": [
+          139.35,
+          190.21
+        ],
+        "center_xy_norm": [
+          0.436838,
+          0.596265
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_13-26-34",
+        "center_xy_rectified": [
+          180.56,
+          169.76
+        ],
+        "center_xy_norm": [
+          0.566023,
+          0.532157
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_13-28-35",
+        "center_xy_rectified": [
+          173.59,
+          116.31
+        ],
+        "center_xy_norm": [
+          0.544168,
+          0.364611
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_13-31-09",
+        "center_xy_rectified": [
+          140.08,
+          190.46
+        ],
+        "center_xy_norm": [
+          0.439131,
+          0.597052
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_13-33-01",
+        "center_xy_rectified": [
+          178.93,
+          172.21
+        ],
+        "center_xy_norm": [
+          0.560898,
+          0.539829
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_13-35-17",
+        "center_xy_rectified": [
+          169.96,
+          125.75
+        ],
+        "center_xy_norm": [
+          0.532793,
+          0.394212
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_13-37-09",
+        "center_xy_rectified": [
+          156.31,
+          168.64
+        ],
+        "center_xy_norm": [
+          0.490002,
+          0.528661
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_13-39-01",
+        "center_xy_rectified": [
+          167.42,
+          175.16
+        ],
+        "center_xy_norm": [
+          0.524836,
+          0.549082
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_13-40-52",
+        "center_xy_rectified": [
+          141.67,
+          188.54
+        ],
+        "center_xy_norm": [
+          0.444103,
+          0.591032
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_13-42-44",
+        "center_xy_rectified": [
+          141.95,
+          138.77
+        ],
+        "center_xy_norm": [
+          0.44498,
+          0.43502
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_13-44-35",
+        "center_xy_rectified": [
+          148.1,
+          155.21
+        ],
+        "center_xy_norm": [
+          0.464251,
+          0.486545
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_14-51-12",
+        "center_xy_rectified": [
+          158.48,
+          132.1
+        ],
+        "center_xy_norm": [
+          0.496811,
+          0.414098
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_17-22-32",
+        "center_xy_rectified": [
+          160.0,
+          134.91
+        ],
+        "center_xy_norm": [
+          0.501575,
+          0.422911
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_17-25-20",
+        "center_xy_rectified": [
+          154.37,
+          169.23
+        ],
+        "center_xy_norm": [
+          0.483919,
+          0.530509
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_17-26-51",
+        "center_xy_rectified": [
+          166.16,
+          168.23
+        ],
+        "center_xy_norm": [
+          0.520871,
+          0.52737
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_17-28-23",
+        "center_xy_rectified": [
+          160.17,
+          134.52
+        ],
+        "center_xy_norm": [
+          0.502092,
+          0.421699
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_17-29-54",
+        "center_xy_rectified": [
+          139.17,
+          156.79
+        ],
+        "center_xy_norm": [
+          0.436268,
+          0.491506
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_17-31-25",
+        "center_xy_rectified": [
+          139.42,
+          157.4
+        ],
+        "center_xy_norm": [
+          0.437062,
+          0.493419
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_17-32-57",
+        "center_xy_rectified": [
+          138.97,
+          157.23
+        ],
+        "center_xy_norm": [
+          0.435645,
+          0.492892
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_17-34-29",
+        "center_xy_rectified": [
+          137.1,
+          157.3
+        ],
+        "center_xy_norm": [
+          0.429782,
+          0.493116
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_17-36-00",
+        "center_xy_rectified": [
+          146.75,
+          152.49
+        ],
+        "center_xy_norm": [
+          0.460044,
+          0.478019
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_17-37-31",
+        "center_xy_rectified": [
+          153.8,
+          165.01
+        ],
+        "center_xy_norm": [
+          0.482128,
+          0.517269
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_17-39-03",
+        "center_xy_rectified": [
+          175.27,
+          161.1
+        ],
+        "center_xy_norm": [
+          0.549445,
+          0.505002
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_17-40-34",
+        "center_xy_rectified": [
+          160.27,
+          142.74
+        ],
+        "center_xy_norm": [
+          0.502419,
+          0.447474
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_17-42-06",
+        "center_xy_rectified": [
+          154.02,
+          173.32
+        ],
+        "center_xy_norm": [
+          0.482828,
+          0.543311
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_17-43-37",
+        "center_xy_rectified": [
+          130.61,
+          157.22
+        ],
+        "center_xy_norm": [
+          0.40942,
+          0.492852
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_17-45-09",
+        "center_xy_rectified": [
+          131.01,
+          157.33
+        ],
+        "center_xy_norm": [
+          0.41068,
+          0.493183
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-18_17-46-40",
+        "center_xy_rectified": [
+          175.36,
+          160.61
+        ],
+        "center_xy_norm": [
+          0.549728,
+          0.503478
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_12-56-02",
+        "center_xy_rectified": [
+          139.98,
+          158.65
+        ],
+        "center_xy_norm": [
+          0.438809,
+          0.49734
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_12-57-14",
+        "center_xy_rectified": [
+          140.57,
+          158.55
+        ],
+        "center_xy_norm": [
+          0.440651,
+          0.497023
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_12-58-27",
+        "center_xy_rectified": [
+          138.3,
+          158.71
+        ],
+        "center_xy_norm": [
+          0.433557,
+          0.497534
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_12-59-39",
+        "center_xy_rectified": [
+          139.87,
+          158.61
+        ],
+        "center_xy_norm": [
+          0.438473,
+          0.497209
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-00-52",
+        "center_xy_rectified": [
+          140.71,
+          159.09
+        ],
+        "center_xy_norm": [
+          0.441095,
+          0.498706
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-02-04",
+        "center_xy_rectified": [
+          176.56,
+          165.62
+        ],
+        "center_xy_norm": [
+          0.553483,
+          0.519193
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-03-17",
+        "center_xy_rectified": [
+          174.2,
+          163.43
+        ],
+        "center_xy_norm": [
+          0.546091,
+          0.512328
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-04-29",
+        "center_xy_rectified": [
+          140.51,
+          159.18
+        ],
+        "center_xy_norm": [
+          0.440481,
+          0.498993
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-05-42",
+        "center_xy_rectified": [
+          155.23,
+          187.54
+        ],
+        "center_xy_norm": [
+          0.486602,
+          0.587914
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-06-55",
+        "center_xy_rectified": [
+          166.89,
+          174.08
+        ],
+        "center_xy_norm": [
+          0.523166,
+          0.545698
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-08-08",
+        "center_xy_rectified": [
+          176.68,
+          164.9
+        ],
+        "center_xy_norm": [
+          0.553849,
+          0.516936
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-09-21",
+        "center_xy_rectified": [
+          154.93,
+          168.42
+        ],
+        "center_xy_norm": [
+          0.485665,
+          0.527959
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-10-33",
+        "center_xy_rectified": [
+          155.08,
+          181.08
+        ],
+        "center_xy_norm": [
+          0.486139,
+          0.567661
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-11-46",
+        "center_xy_rectified": [
+          154.54,
+          170.4
+        ],
+        "center_xy_norm": [
+          0.484445,
+          0.534167
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-12-59",
+        "center_xy_rectified": [
+          176.41,
+          165.13
+        ],
+        "center_xy_norm": [
+          0.553006,
+          0.51766
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-14-12",
+        "center_xy_rectified": [
+          141.98,
+          158.23
+        ],
+        "center_xy_norm": [
+          0.445091,
+          0.496033
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-15-24",
+        "center_xy_rectified": [
+          140.28,
+          158.36
+        ],
+        "center_xy_norm": [
+          0.439741,
+          0.496436
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-16-37",
+        "center_xy_rectified": [
+          176.51,
+          165.02
+        ],
+        "center_xy_norm": [
+          0.553323,
+          0.517291
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-17-49",
+        "center_xy_rectified": [
+          176.56,
+          164.97
+        ],
+        "center_xy_norm": [
+          0.553474,
+          0.517154
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-19-02",
+        "center_xy_rectified": [
+          176.82,
+          164.67
+        ],
+        "center_xy_norm": [
+          0.554286,
+          0.516199
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-20-14",
+        "center_xy_rectified": [
+          137.98,
+          158.43
+        ],
+        "center_xy_norm": [
+          0.432543,
+          0.496637
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-21-27",
+        "center_xy_rectified": [
+          155.46,
+          180.93
+        ],
+        "center_xy_norm": [
+          0.487327,
+          0.567183
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-22-41",
+        "center_xy_rectified": [
+          138.26,
+          158.46
+        ],
+        "center_xy_norm": [
+          0.433417,
+          0.496739
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-23-53",
+        "center_xy_rectified": [
+          142.35,
+          162.41
+        ],
+        "center_xy_norm": [
+          0.446243,
+          0.509107
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-25-07",
+        "center_xy_rectified": [
+          155.24,
+          170.32
+        ],
+        "center_xy_norm": [
+          0.48666,
+          0.533908
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-26-19",
+        "center_xy_rectified": [
+          155.32,
+          170.07
+        ],
+        "center_xy_norm": [
+          0.486882,
+          0.533145
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-27-33",
+        "center_xy_rectified": [
+          177.06,
+          164.34
+        ],
+        "center_xy_norm": [
+          0.555032,
+          0.515174
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-28-45",
+        "center_xy_rectified": [
+          142.61,
+          157.5
+        ],
+        "center_xy_norm": [
+          0.447058,
+          0.493745
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-29-59",
+        "center_xy_rectified": [
+          155.07,
+          176.51
+        ],
+        "center_xy_norm": [
+          0.486121,
+          0.553326
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-31-12",
+        "center_xy_rectified": [
+          155.08,
+          174.14
+        ],
+        "center_xy_norm": [
+          0.486144,
+          0.545899
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-32-25",
+        "center_xy_rectified": [
+          163.96,
+          148.55
+        ],
+        "center_xy_norm": [
+          0.513987,
+          0.465667
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-33-38",
+        "center_xy_rectified": [
+          138.12,
+          158.43
+        ],
+        "center_xy_norm": [
+          0.43298,
+          0.49665
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-34-50",
+        "center_xy_rectified": [
+          174.39,
+          164.74
+        ],
+        "center_xy_norm": [
+          0.546692,
+          0.516431
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-36-03",
+        "center_xy_rectified": [
+          174.08,
+          164.81
+        ],
+        "center_xy_norm": [
+          0.545698,
+          0.51665
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-37-16",
+        "center_xy_rectified": [
+          176.24,
+          164.71
+        ],
+        "center_xy_norm": [
+          0.552467,
+          0.51633
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-38-29",
+        "center_xy_rectified": [
+          155.19,
+          182.26
+        ],
+        "center_xy_norm": [
+          0.486495,
+          0.571353
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-39-41",
+        "center_xy_rectified": [
+          175.09,
+          164.6
+        ],
+        "center_xy_norm": [
+          0.548858,
+          0.515981
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-40-54",
+        "center_xy_rectified": [
+          177.39,
+          164.66
+        ],
+        "center_xy_norm": [
+          0.556066,
+          0.516161
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-42-07",
+        "center_xy_rectified": [
+          177.17,
+          164.56
+        ],
+        "center_xy_norm": [
+          0.555407,
+          0.515876
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-43-20",
+        "center_xy_rectified": [
+          177.45,
+          164.32
+        ],
+        "center_xy_norm": [
+          0.55628,
+          0.515099
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-44-32",
+        "center_xy_rectified": [
+          175.47,
+          166.93
+        ],
+        "center_xy_norm": [
+          0.550055,
+          0.523281
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-45-45",
+        "center_xy_rectified": [
+          155.97,
+          182.44
+        ],
+        "center_xy_norm": [
+          0.488927,
+          0.571928
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_13-45-59",
+        "center_xy_rectified": [
+          139.71,
+          160.85
+        ],
+        "center_xy_norm": [
+          0.437966,
+          0.504241
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_16-40-52",
+        "center_xy_rectified": [
+          145.51,
+          166.54
+        ],
+        "center_xy_norm": [
+          0.456153,
+          0.522082
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_16-42-05",
+        "center_xy_rectified": [
+          177.45,
+          164.97
+        ],
+        "center_xy_norm": [
+          0.556263,
+          0.517136
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_16-43-18",
+        "center_xy_rectified": [
+          156.42,
+          184.83
+        ],
+        "center_xy_norm": [
+          0.490354,
+          0.579398
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_16-44-31",
+        "center_xy_rectified": [
+          167.98,
+          171.57
+        ],
+        "center_xy_norm": [
+          0.52658,
+          0.53783
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_16-45-44",
+        "center_xy_rectified": [
+          156.11,
+          180.91
+        ],
+        "center_xy_norm": [
+          0.489387,
+          0.567107
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_16-46-57",
+        "center_xy_rectified": [
+          155.99,
+          174.51
+        ],
+        "center_xy_norm": [
+          0.48901,
+          0.547066
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_16-48-10",
+        "center_xy_rectified": [
+          141.44,
+          160.59
+        ],
+        "center_xy_norm": [
+          0.443397,
+          0.50343
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_16-49-23",
+        "center_xy_rectified": [
+          175.46,
+          164.68
+        ],
+        "center_xy_norm": [
+          0.550023,
+          0.516231
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_16-50-36",
+        "center_xy_rectified": [
+          145.71,
+          166.57
+        ],
+        "center_xy_norm": [
+          0.456761,
+          0.522151
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_16-51-49",
+        "center_xy_rectified": [
+          139.25,
+          160.81
+        ],
+        "center_xy_norm": [
+          0.436523,
+          0.504112
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_16-53-02",
+        "center_xy_rectified": [
+          139.28,
+          160.34
+        ],
+        "center_xy_norm": [
+          0.436623,
+          0.50263
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_16-54-15",
+        "center_xy_rectified": [
+          160.48,
+          142.31
+        ],
+        "center_xy_norm": [
+          0.503068,
+          0.446118
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_16-55-28",
+        "center_xy_rectified": [
+          144.83,
+          154.01
+        ],
+        "center_xy_norm": [
+          0.454014,
+          0.482788
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_16-56-41",
+        "center_xy_rectified": [
+          143.27,
+          160.64
+        ],
+        "center_xy_norm": [
+          0.449107,
+          0.503574
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_16-57-54",
+        "center_xy_rectified": [
+          175.56,
+          164.82
+        ],
+        "center_xy_norm": [
+          0.550331,
+          0.516669
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_16-59-07",
+        "center_xy_rectified": [
+          160.51,
+          142.67
+        ],
+        "center_xy_norm": [
+          0.503161,
+          0.447232
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_17-00-20",
+        "center_xy_rectified": [
+          179.21,
+          166.83
+        ],
+        "center_xy_norm": [
+          0.561779,
+          0.522991
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_17-01-33",
+        "center_xy_rectified": [
+          139.71,
+          160.6
+        ],
+        "center_xy_norm": [
+          0.437974,
+          0.503463
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_17-02-46",
+        "center_xy_rectified": [
+          155.86,
+          172.1
+        ],
+        "center_xy_norm": [
+          0.488604,
+          0.539499
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_17-03-59",
+        "center_xy_rectified": [
+          156.41,
+          184.87
+        ],
+        "center_xy_norm": [
+          0.490299,
+          0.57954
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_17-05-12",
+        "center_xy_rectified": [
+          155.92,
+          172.03
+        ],
+        "center_xy_norm": [
+          0.488787,
+          0.539281
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_17-06-25",
+        "center_xy_rectified": [
+          179.53,
+          164.46
+        ],
+        "center_xy_norm": [
+          0.562783,
+          0.515545
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_17-07-38",
+        "center_xy_rectified": [
+          143.15,
+          160.45
+        ],
+        "center_xy_norm": [
+          0.448731,
+          0.502975
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_17-08-51",
+        "center_xy_rectified": [
+          156.25,
+          176.75
+        ],
+        "center_xy_norm": [
+          0.48982,
+          0.554074
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_17-10-04",
+        "center_xy_rectified": [
+          156.37,
+          185.0
+        ],
+        "center_xy_norm": [
+          0.490191,
+          0.579924
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_17-11-17",
+        "center_xy_rectified": [
+          167.63,
+          171.56
+        ],
+        "center_xy_norm": [
+          0.525476,
+          0.537805
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_17-12-30",
+        "center_xy_rectified": [
+          145.57,
+          162.26
+        ],
+        "center_xy_norm": [
+          0.456329,
+          0.508659
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-23-05",
+        "center_xy_rectified": [
+          167.59,
+          163.4
+        ],
+        "center_xy_norm": [
+          0.525349,
+          0.512228
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-25-28",
+        "center_xy_rectified": [
+          139.09,
+          158.84
+        ],
+        "center_xy_norm": [
+          0.436022,
+          0.497937
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-26-41",
+        "center_xy_rectified": [
+          165.92,
+          170.03
+        ],
+        "center_xy_norm": [
+          0.520126,
+          0.532994
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-27-53",
+        "center_xy_rectified": [
+          175.86,
+          162.83
+        ],
+        "center_xy_norm": [
+          0.551293,
+          0.51045
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-29-06",
+        "center_xy_rectified": [
+          154.28,
+          180.17
+        ],
+        "center_xy_norm": [
+          0.483632,
+          0.564797
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-30-19",
+        "center_xy_rectified": [
+          165.74,
+          166.5
+        ],
+        "center_xy_norm": [
+          0.519556,
+          0.521944
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-31-31",
+        "center_xy_rectified": [
+          173.36,
+          163.54
+        ],
+        "center_xy_norm": [
+          0.543444,
+          0.512677
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-32-44",
+        "center_xy_rectified": [
+          165.49,
+          166.13
+        ],
+        "center_xy_norm": [
+          0.518765,
+          0.52077
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-33-56",
+        "center_xy_rectified": [
+          165.53,
+          166.67
+        ],
+        "center_xy_norm": [
+          0.5189,
+          0.522485
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-35-09",
+        "center_xy_rectified": [
+          175.74,
+          164.99
+        ],
+        "center_xy_norm": [
+          0.55092,
+          0.5172
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-36-22",
+        "center_xy_rectified": [
+          173.9,
+          162.53
+        ],
+        "center_xy_norm": [
+          0.545146,
+          0.509499
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-37-34",
+        "center_xy_rectified": [
+          177.59,
+          163.73
+        ],
+        "center_xy_norm": [
+          0.556697,
+          0.51327
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-38-47",
+        "center_xy_rectified": [
+          153.76,
+          165.99
+        ],
+        "center_xy_norm": [
+          0.482008,
+          0.520342
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-39-59",
+        "center_xy_rectified": [
+          166.28,
+          166.23
+        ],
+        "center_xy_norm": [
+          0.521253,
+          0.521098
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-41-12",
+        "center_xy_rectified": [
+          139.23,
+          159.94
+        ],
+        "center_xy_norm": [
+          0.436444,
+          0.501378
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-42-25",
+        "center_xy_rectified": [
+          173.93,
+          162.87
+        ],
+        "center_xy_norm": [
+          0.545245,
+          0.510556
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-43-21",
+        "center_xy_rectified": [
+          154.52,
+          177.83
+        ],
+        "center_xy_norm": [
+          0.484373,
+          0.557454
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-44-34",
+        "center_xy_rectified": [
+          153.65,
+          167.7
+        ],
+        "center_xy_norm": [
+          0.481651,
+          0.5257
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-45-46",
+        "center_xy_rectified": [
+          175.84,
+          164.42
+        ],
+        "center_xy_norm": [
+          0.551222,
+          0.515417
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-46-59",
+        "center_xy_rectified": [
+          173.53,
+          162.23
+        ],
+        "center_xy_norm": [
+          0.543987,
+          0.508557
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-48-12",
+        "center_xy_rectified": [
+          165.93,
+          166.48
+        ],
+        "center_xy_norm": [
+          0.520155,
+          0.521881
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-48-42",
+        "center_xy_rectified": [
+          153.6,
+          165.85
+        ],
+        "center_xy_norm": [
+          0.481518,
+          0.519898
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-49-54",
+        "center_xy_rectified": [
+          155.64,
+          168.27
+        ],
+        "center_xy_norm": [
+          0.487894,
+          0.527505
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-51-07",
+        "center_xy_rectified": [
+          173.59,
+          164.74
+        ],
+        "center_xy_norm": [
+          0.544157,
+          0.516435
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-52-19",
+        "center_xy_rectified": [
+          154.05,
+          178.18
+        ],
+        "center_xy_norm": [
+          0.482916,
+          0.558568
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-53-38",
+        "center_xy_rectified": [
+          184.22,
+          161.33
+        ],
+        "center_xy_norm": [
+          0.577505,
+          0.505746
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-54-51",
+        "center_xy_rectified": [
+          191.13,
+          160.57
+        ],
+        "center_xy_norm": [
+          0.599156,
+          0.50334
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-56-04",
+        "center_xy_rectified": [
+          165.68,
+          179.91
+        ],
+        "center_xy_norm": [
+          0.519365,
+          0.563975
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-56-43",
+        "center_xy_rectified": [
+          166.54,
+          166.0
+        ],
+        "center_xy_norm": [
+          0.522057,
+          0.520375
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_18-57-56",
+        "center_xy_rectified": [
+          158.18,
+          170.07
+        ],
+        "center_xy_norm": [
+          0.495853,
+          0.533144
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_19-06-41",
+        "center_xy_rectified": [
+          139.58,
+          157.46
+        ],
+        "center_xy_norm": [
+          0.437563,
+          0.493602
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_19-07-54",
+        "center_xy_rectified": [
+          179.51,
+          162.84
+        ],
+        "center_xy_norm": [
+          0.562739,
+          0.510475
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_19-09-07",
+        "center_xy_rectified": [
+          171.4,
+          163.7
+        ],
+        "center_xy_norm": [
+          0.537304,
+          0.513166
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_19-10-20",
+        "center_xy_rectified": [
+          179.26,
+          162.18
+        ],
+        "center_xy_norm": [
+          0.561941,
+          0.508397
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_19-11-33",
+        "center_xy_rectified": [
+          155.8,
+          182.24
+        ],
+        "center_xy_norm": [
+          0.488405,
+          0.571289
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-19_19-12-45",
+        "center_xy_rectified": [
+          140.98,
+          156.04
+        ],
+        "center_xy_norm": [
+          0.441931,
+          0.489156
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-20_16-14-48",
+        "center_xy_rectified": [
+          164.57,
+          139.37
+        ],
+        "center_xy_norm": [
+          0.515885,
+          0.436894
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-20_16-16-02",
+        "center_xy_rectified": [
+          163.03,
+          192.62
+        ],
+        "center_xy_norm": [
+          0.511058,
+          0.603829
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-20_16-17-15",
+        "center_xy_rectified": [
+          165.28,
+          186.66
+        ],
+        "center_xy_norm": [
+          0.518108,
+          0.585144
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-20_16-18-28",
+        "center_xy_rectified": [
+          169.18,
+          128.33
+        ],
+        "center_xy_norm": [
+          0.530344,
+          0.402293
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-20_16-19-42",
+        "center_xy_rectified": [
+          162.32,
+          187.15
+        ],
+        "center_xy_norm": [
+          0.508853,
+          0.586686
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-20_16-20-58",
+        "center_xy_rectified": [
+          162.16,
+          142.09
+        ],
+        "center_xy_norm": [
+          0.508329,
+          0.445416
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-20_16-22-12",
+        "center_xy_rectified": [
+          164.69,
+          137.88
+        ],
+        "center_xy_norm": [
+          0.516276,
+          0.432219
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-20_19-28-56",
+        "center_xy_rectified": [
+          182.47,
+          158.72
+        ],
+        "center_xy_norm": [
+          0.572018,
+          0.497542
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-20_19-30-10",
+        "center_xy_rectified": [
+          170.88,
+          166.05
+        ],
+        "center_xy_norm": [
+          0.535679,
+          0.520521
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-20_19-30-41",
+        "center_xy_rectified": [
+          170.53,
+          167.15
+        ],
+        "center_xy_norm": [
+          0.534567,
+          0.523967
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-20_19-31-55",
+        "center_xy_rectified": [
+          157.27,
+          179.25
+        ],
+        "center_xy_norm": [
+          0.49301,
+          0.561911
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-20_19-32-51",
+        "center_xy_rectified": [
+          191.68,
+          168.59
+        ],
+        "center_xy_norm": [
+          0.600873,
+          0.528496
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-20_19-34-05",
+        "center_xy_rectified": [
+          168.87,
+          190.66
+        ],
+        "center_xy_norm": [
+          0.52936,
+          0.597686
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-20_19-35-19",
+        "center_xy_rectified": [
+          192.89,
+          166.17
+        ],
+        "center_xy_norm": [
+          0.604685,
+          0.520896
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-15-36",
+        "center_xy_rectified": [
+          164.79,
+          181.67
+        ],
+        "center_xy_norm": [
+          0.516586,
+          0.5695
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-16-50",
+        "center_xy_rectified": [
+          166.68,
+          175.41
+        ],
+        "center_xy_norm": [
+          0.522523,
+          0.549875
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-18-03",
+        "center_xy_rectified": [
+          165.47,
+          185.35
+        ],
+        "center_xy_norm": [
+          0.518729,
+          0.581039
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-19-17",
+        "center_xy_rectified": [
+          164.64,
+          181.8
+        ],
+        "center_xy_norm": [
+          0.516114,
+          0.5699
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-20-31",
+        "center_xy_rectified": [
+          164.87,
+          182.07
+        ],
+        "center_xy_norm": [
+          0.516825,
+          0.570755
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-21-44",
+        "center_xy_rectified": [
+          161.65,
+          174.72
+        ],
+        "center_xy_norm": [
+          0.506735,
+          0.547723
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-22-58",
+        "center_xy_rectified": [
+          165.14,
+          184.2
+        ],
+        "center_xy_norm": [
+          0.51768,
+          0.577442
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-24-43",
+        "center_xy_rectified": [
+          164.53,
+          179.69
+        ],
+        "center_xy_norm": [
+          0.515771,
+          0.563278
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-25-57",
+        "center_xy_rectified": [
+          161.87,
+          132.81
+        ],
+        "center_xy_norm": [
+          0.507416,
+          0.416317
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-27-11",
+        "center_xy_rectified": [
+          161.69,
+          132.9
+        ],
+        "center_xy_norm": [
+          0.506853,
+          0.416618
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-28-25",
+        "center_xy_rectified": [
+          164.52,
+          177.12
+        ],
+        "center_xy_norm": [
+          0.51575,
+          0.555223
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-29-38",
+        "center_xy_rectified": [
+          162.93,
+          130.86
+        ],
+        "center_xy_norm": [
+          0.510743,
+          0.410207
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-30-52",
+        "center_xy_rectified": [
+          164.36,
+          177.57
+        ],
+        "center_xy_norm": [
+          0.515225,
+          0.55665
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-32-06",
+        "center_xy_rectified": [
+          164.48,
+          181.57
+        ],
+        "center_xy_norm": [
+          0.515616,
+          0.569173
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-33-19",
+        "center_xy_rectified": [
+          161.45,
+          136.29
+        ],
+        "center_xy_norm": [
+          0.506098,
+          0.427253
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-33-52",
+        "center_xy_rectified": [
+          165.46,
+          179.52
+        ],
+        "center_xy_norm": [
+          0.518694,
+          0.56276
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-35-06",
+        "center_xy_rectified": [
+          164.14,
+          182.57
+        ],
+        "center_xy_norm": [
+          0.514554,
+          0.572306
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-36-19",
+        "center_xy_rectified": [
+          81.29,
+          0.0
+        ],
+        "center_xy_norm": [
+          0.254823,
+          0.0
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-37-33",
+        "center_xy_rectified": [
+          160.55,
+          122.14
+        ],
+        "center_xy_norm": [
+          0.503277,
+          0.382886
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-38-47",
+        "center_xy_rectified": [
+          163.18,
+          171.9
+        ],
+        "center_xy_norm": [
+          0.511542,
+          0.53887
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-40-01",
+        "center_xy_rectified": [
+          163.38,
+          169.34
+        ],
+        "center_xy_norm": [
+          0.512166,
+          0.530856
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-41-14",
+        "center_xy_rectified": [
+          164.16,
+          182.89
+        ],
+        "center_xy_norm": [
+          0.514624,
+          0.573325
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-42-17",
+        "center_xy_rectified": [
+          164.04,
+          183.69
+        ],
+        "center_xy_norm": [
+          0.514228,
+          0.575838
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-43-30",
+        "center_xy_rectified": [
+          163.95,
+          130.4
+        ],
+        "center_xy_norm": [
+          0.513935,
+          0.40878
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-44-43",
+        "center_xy_rectified": [
+          164.95,
+          171.78
+        ],
+        "center_xy_norm": [
+          0.517095,
+          0.538494
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-22_07-45-57",
+        "center_xy_rectified": [
+          165.16,
+          171.89
+        ],
+        "center_xy_norm": [
+          0.517729,
+          0.538852
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-24_22-24-04",
+        "center_xy_rectified": [
+          176.23,
+          161.06
+        ],
+        "center_xy_norm": [
+          0.55246,
+          0.504902
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-24_22-25-14",
+        "center_xy_rectified": [
+          157.62,
+          162.22
+        ],
+        "center_xy_norm": [
+          0.494113,
+          0.508529
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-24_22-26-24",
+        "center_xy_rectified": [
+          176.35,
+          161.07
+        ],
+        "center_xy_norm": [
+          0.552829,
+          0.50491
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-24_22-28-00",
+        "center_xy_rectified": [
+          164.29,
+          148.48
+        ],
+        "center_xy_norm": [
+          0.515014,
+          0.465457
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-24_22-29-11",
+        "center_xy_rectified": [
+          174.51,
+          160.85
+        ],
+        "center_xy_norm": [
+          0.547039,
+          0.504245
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-24_22-30-21",
+        "center_xy_rectified": [
+          164.14,
+          148.13
+        ],
+        "center_xy_norm": [
+          0.514542,
+          0.464354
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-29_09-35-33",
+        "center_xy_rectified": [
+          157.85,
+          168.97
+        ],
+        "center_xy_norm": [
+          0.494814,
+          0.529692
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-29_09-40-14",
+        "center_xy_rectified": [
+          128.67,
+          124.31
+        ],
+        "center_xy_norm": [
+          0.403365,
+          0.38969
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-29_09-41-25",
+        "center_xy_rectified": [
+          155.08,
+          207.16
+        ],
+        "center_xy_norm": [
+          0.48615,
+          0.649405
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-29_09-42-36",
+        "center_xy_rectified": [
+          161.56,
+          174.6
+        ],
+        "center_xy_norm": [
+          0.506465,
+          0.547326
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_05-51-06",
+        "center_xy_rectified": [
+          167.15,
+          180.27
+        ],
+        "center_xy_norm": [
+          0.523988,
+          0.565113
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_05-52-17",
+        "center_xy_rectified": [
+          167.96,
+          186.04
+        ],
+        "center_xy_norm": [
+          0.526536,
+          0.583195
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_05-53-29",
+        "center_xy_rectified": [
+          169.16,
+          173.84
+        ],
+        "center_xy_norm": [
+          0.530274,
+          0.544942
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_07-00-09",
+        "center_xy_rectified": [
+          166.76,
+          166.71
+        ],
+        "center_xy_norm": [
+          0.522767,
+          0.522607
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_07-01-21",
+        "center_xy_rectified": [
+          178.18,
+          150.15
+        ],
+        "center_xy_norm": [
+          0.558559,
+          0.470689
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_10-01-59",
+        "center_xy_rectified": [
+          174.64,
+          154.24
+        ],
+        "center_xy_norm": [
+          0.547473,
+          0.48351
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_10-03-09",
+        "center_xy_rectified": [
+          157.22,
+          171.3
+        ],
+        "center_xy_norm": [
+          0.492855,
+          0.536994
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_10-04-21",
+        "center_xy_rectified": [
+          168.63,
+          161.92
+        ],
+        "center_xy_norm": [
+          0.528621,
+          0.507598
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_11-48-43",
+        "center_xy_rectified": [
+          126.47,
+          152.5
+        ],
+        "center_xy_norm": [
+          0.396452,
+          0.478068
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_11-49-54",
+        "center_xy_rectified": [
+          152.82,
+          163.51
+        ],
+        "center_xy_norm": [
+          0.479074,
+          0.512583
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_12-19-11",
+        "center_xy_rectified": [
+          147.04,
+          159.11
+        ],
+        "center_xy_norm": [
+          0.460951,
+          0.498768
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_12-20-22",
+        "center_xy_rectified": [
+          138.44,
+          159.49
+        ],
+        "center_xy_norm": [
+          0.433978,
+          0.499954
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_12-21-34",
+        "center_xy_rectified": [
+          138.99,
+          142.12
+        ],
+        "center_xy_norm": [
+          0.435711,
+          0.445509
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_12-45-08",
+        "center_xy_rectified": [
+          158.8,
+          170.5
+        ],
+        "center_xy_norm": [
+          0.497814,
+          0.53447
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_13-08-26",
+        "center_xy_rectified": [
+          181.01,
+          156.35
+        ],
+        "center_xy_norm": [
+          0.567441,
+          0.490137
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_13-09-38",
+        "center_xy_rectified": [
+          143.92,
+          153.14
+        ],
+        "center_xy_norm": [
+          0.451151,
+          0.480058
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_13-10-49",
+        "center_xy_rectified": [
+          164.91,
+          172.22
+        ],
+        "center_xy_norm": [
+          0.516956,
+          0.539889
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_13-12-00",
+        "center_xy_rectified": [
+          145.51,
+          156.72
+        ],
+        "center_xy_norm": [
+          0.456143,
+          0.491281
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_13-13-11",
+        "center_xy_rectified": [
+          164.88,
+          168.74
+        ],
+        "center_xy_norm": [
+          0.516876,
+          0.528976
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_14-02-46",
+        "center_xy_rectified": [
+          149.9,
+          164.62
+        ],
+        "center_xy_norm": [
+          0.469913,
+          0.516051
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_14-03-57",
+        "center_xy_rectified": [
+          163.09,
+          168.49
+        ],
+        "center_xy_norm": [
+          0.511253,
+          0.528174
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_14-05-09",
+        "center_xy_rectified": [
+          192.43,
+          153.13
+        ],
+        "center_xy_norm": [
+          0.60323,
+          0.480033
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_14-05-49",
+        "center_xy_rectified": [
+          144.74,
+          160.38
+        ],
+        "center_xy_norm": [
+          0.453718,
+          0.502757
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_18-50-32",
+        "center_xy_rectified": [
+          165.3,
+          132.81
+        ],
+        "center_xy_norm": [
+          0.518197,
+          0.416337
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_18-51-54",
+        "center_xy_rectified": [
+          165.99,
+          141.75
+        ],
+        "center_xy_norm": [
+          0.520347,
+          0.444351
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_18-53-07",
+        "center_xy_rectified": [
+          165.54,
+          124.61
+        ],
+        "center_xy_norm": [
+          0.518934,
+          0.390637
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_18-54-19",
+        "center_xy_rectified": [
+          162.09,
+          176.23
+        ],
+        "center_xy_norm": [
+          0.508107,
+          0.552442
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_18-55-31",
+        "center_xy_rectified": [
+          167.16,
+          170.85
+        ],
+        "center_xy_norm": [
+          0.524004,
+          0.535578
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_18-56-44",
+        "center_xy_rectified": [
+          167.11,
+          132.2
+        ],
+        "center_xy_norm": [
+          0.523862,
+          0.414432
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_18-57-56",
+        "center_xy_rectified": [
+          163.73,
+          169.21
+        ],
+        "center_xy_norm": [
+          0.513261,
+          0.530441
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_18-59-08",
+        "center_xy_rectified": [
+          164.3,
+          177.01
+        ],
+        "center_xy_norm": [
+          0.515048,
+          0.554887
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_19-00-20",
+        "center_xy_rectified": [
+          164.41,
+          179.28
+        ],
+        "center_xy_norm": [
+          0.515381,
+          0.561998
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_19-01-33",
+        "center_xy_rectified": [
+          172.55,
+          163.69
+        ],
+        "center_xy_norm": [
+          0.540895,
+          0.513142
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_19-02-45",
+        "center_xy_rectified": [
+          168.25,
+          178.75
+        ],
+        "center_xy_norm": [
+          0.527437,
+          0.560353
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_20-07-20",
+        "center_xy_rectified": [
+          142.4,
+          164.0
+        ],
+        "center_xy_norm": [
+          0.446397,
+          0.5141
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_20-08-32",
+        "center_xy_rectified": [
+          134.39,
+          167.01
+        ],
+        "center_xy_norm": [
+          0.421289,
+          0.523538
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_20-09-44",
+        "center_xy_rectified": [
+          140.53,
+          163.34
+        ],
+        "center_xy_norm": [
+          0.440525,
+          0.512038
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_20-10-56",
+        "center_xy_rectified": [
+          179.4,
+          156.19
+        ],
+        "center_xy_norm": [
+          0.562384,
+          0.489634
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_20-12-09",
+        "center_xy_rectified": [
+          140.74,
+          163.12
+        ],
+        "center_xy_norm": [
+          0.441203,
+          0.511345
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-04-30_20-13-21",
+        "center_xy_rectified": [
+          137.17,
+          164.08
+        ],
+        "center_xy_norm": [
+          0.429989,
+          0.514363
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_06-00-14",
+        "center_xy_rectified": [
+          152.48,
+          155.26
+        ],
+        "center_xy_norm": [
+          0.478006,
+          0.486711
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_06-01-47",
+        "center_xy_rectified": [
+          168.08,
+          182.34
+        ],
+        "center_xy_norm": [
+          0.526892,
+          0.571606
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_06-20-11",
+        "center_xy_rectified": [
+          155.91,
+          171.59
+        ],
+        "center_xy_norm": [
+          0.488747,
+          0.537896
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_06-22-02",
+        "center_xy_rectified": [
+          133.2,
+          157.69
+        ],
+        "center_xy_norm": [
+          0.417554,
+          0.494323
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_06-25-24",
+        "center_xy_rectified": [
+          182.48,
+          162.01
+        ],
+        "center_xy_norm": [
+          0.572032,
+          0.507878
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_06-27-10",
+        "center_xy_rectified": [
+          176.53,
+          162.43
+        ],
+        "center_xy_norm": [
+          0.553394,
+          0.50919
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_06-28-56",
+        "center_xy_rectified": [
+          148.26,
+          155.52
+        ],
+        "center_xy_norm": [
+          0.464763,
+          0.487526
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_06-30-42",
+        "center_xy_rectified": [
+          138.49,
+          155.77
+        ],
+        "center_xy_norm": [
+          0.43415,
+          0.488296
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_07-03-51",
+        "center_xy_rectified": [
+          149.63,
+          158.76
+        ],
+        "center_xy_norm": [
+          0.469075,
+          0.497689
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_07-05-35",
+        "center_xy_rectified": [
+          152.22,
+          158.49
+        ],
+        "center_xy_norm": [
+          0.477186,
+          0.496844
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_07-07-22",
+        "center_xy_rectified": [
+          166.06,
+          183.06
+        ],
+        "center_xy_norm": [
+          0.520556,
+          0.57387
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-26-51",
+        "center_xy_rectified": [
+          173.28,
+          159.21
+        ],
+        "center_xy_norm": [
+          0.543207,
+          0.499093
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-28-47",
+        "center_xy_rectified": [
+          154.89,
+          167.72
+        ],
+        "center_xy_norm": [
+          0.485542,
+          0.525769
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-30-43",
+        "center_xy_rectified": [
+          164.7,
+          181.34
+        ],
+        "center_xy_norm": [
+          0.516303,
+          0.568456
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-32-39",
+        "center_xy_rectified": [
+          165.02,
+          181.04
+        ],
+        "center_xy_norm": [
+          0.517291,
+          0.567538
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-34-35",
+        "center_xy_rectified": [
+          173.17,
+          161.11
+        ],
+        "center_xy_norm": [
+          0.542856,
+          0.505049
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-36-33",
+        "center_xy_rectified": [
+          154.91,
+          167.16
+        ],
+        "center_xy_norm": [
+          0.485599,
+          0.524
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-38-29",
+        "center_xy_rectified": [
+          154.67,
+          159.89
+        ],
+        "center_xy_norm": [
+          0.484845,
+          0.501238
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-40-25",
+        "center_xy_rectified": [
+          175.8,
+          161.33
+        ],
+        "center_xy_norm": [
+          0.551086,
+          0.50573
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-42-22",
+        "center_xy_rectified": [
+          163.29,
+          131.57
+        ],
+        "center_xy_norm": [
+          0.511896,
+          0.412431
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-44-18",
+        "center_xy_rectified": [
+          173.55,
+          158.3
+        ],
+        "center_xy_norm": [
+          0.544042,
+          0.496237
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-46-14",
+        "center_xy_rectified": [
+          154.16,
+          160.73
+        ],
+        "center_xy_norm": [
+          0.48327,
+          0.503843
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-48-07",
+        "center_xy_rectified": [
+          164.51,
+          186.38
+        ],
+        "center_xy_norm": [
+          0.515693,
+          0.584277
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-50-03",
+        "center_xy_rectified": [
+          149.59,
+          162.64
+        ],
+        "center_xy_norm": [
+          0.46893,
+          0.509848
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-52-00",
+        "center_xy_rectified": [
+          154.15,
+          159.45
+        ],
+        "center_xy_norm": [
+          0.483244,
+          0.49984
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-53-57",
+        "center_xy_rectified": [
+          164.32,
+          186.41
+        ],
+        "center_xy_norm": [
+          0.515111,
+          0.584361
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-55-54",
+        "center_xy_rectified": [
+          154.31,
+          167.17
+        ],
+        "center_xy_norm": [
+          0.483737,
+          0.524028
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-57-51",
+        "center_xy_rectified": [
+          164.75,
+          186.23
+        ],
+        "center_xy_norm": [
+          0.516443,
+          0.583802
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_16-59-51",
+        "center_xy_rectified": [
+          174.31,
+          160.56
+        ],
+        "center_xy_norm": [
+          0.546415,
+          0.503311
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_17-01-46",
+        "center_xy_rectified": [
+          149.25,
+          168.53
+        ],
+        "center_xy_norm": [
+          0.467862,
+          0.528294
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_19-17-31",
+        "center_xy_rectified": [
+          145.7,
+          158.74
+        ],
+        "center_xy_norm": [
+          0.456753,
+          0.497614
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_19-20-20",
+        "center_xy_rectified": [
+          183.83,
+          153.34
+        ],
+        "center_xy_norm": [
+          0.576261,
+          0.480703
+        ]
+      },
+      {
+        "stem": "aug_capture_2026-05-27_19-22-15",
+        "center_xy_rectified": [
+          169.21,
+          169.32
+        ],
+        "center_xy_norm": [
+          0.530424,
+          0.530775
+        ]
+      },
+      {
+        "stem": "aug_capture_m10c",
+        "center_xy_rectified": [
+          179.0,
+          159.44
+        ],
+        "center_xy_norm": [
+          0.561134,
+          0.49981
+        ]
+      },
+      {
+        "stem": "aug_capture_m18c",
+        "center_xy_rectified": [
+          170.43,
+          175.13
+        ],
+        "center_xy_norm": [
+          0.534268,
+          0.548987
+        ]
+      },
+      {
+        "stem": "aug_capture_m19c",
+        "center_xy_rectified": [
+          137.5,
+          167.35
+        ],
+        "center_xy_norm": [
+          0.431021,
+          0.524603
+        ]
+      },
+      {
+        "stem": "aug_capture_m30c",
+        "center_xy_rectified": [
+          167.8,
+          156.77
+        ],
+        "center_xy_norm": [
+          0.526011,
+          0.491428
+        ]
+      },
+      {
+        "stem": "aug_capture_p10c",
+        "center_xy_rectified": [
+          168.92,
+          157.72
+        ],
+        "center_xy_norm": [
+          0.529541,
+          0.494414
+        ]
+      },
+      {
+        "stem": "aug_capture_p20c",
+        "center_xy_rectified": [
+          162.27,
+          135.95
+        ],
+        "center_xy_norm": [
+          0.508672,
+          0.42618
+        ]
+      },
+      {
+        "stem": "aug_capture_p30c",
+        "center_xy_rectified": [
+          167.03,
+          168.0
+        ],
+        "center_xy_norm": [
+          0.523609,
+          0.526632
+        ]
+      },
+      {
+        "stem": "aug_capture_p35c",
+        "center_xy_rectified": [
+          152.9,
+          158.55
+        ],
+        "center_xy_norm": [
+          0.479318,
+          0.497031
+        ]
+      },
+      {
+        "stem": "aug_capture_p45c",
+        "center_xy_rectified": [
+          157.53,
+          138.57
+        ],
+        "center_xy_norm": [
+          0.493838,
+          0.434393
+        ]
+      },
+      {
+        "stem": "aug_capture_p50c",
+        "center_xy_rectified": [
+          165.01,
+          153.61
+        ],
+        "center_xy_norm": [
+          0.517287,
+          0.481535
+        ]
+      },
+      {
+        "stem": "aug_capture_p5c",
+        "center_xy_rectified": [
+          188.1,
+          151.08
+        ],
+        "center_xy_norm": [
+          0.589656,
+          0.473597
+        ]
+      },
+      {
+        "stem": "pseudo_big_18-53-38",
+        "center_xy_rectified": [
+          38.98,
+          39.33
+        ],
+        "center_xy_norm": [
+          0.493436,
+          0.497889
+        ],
+        "pseudo_label": true,
+        "confidence": 0.6016
+      },
+      {
+        "stem": "pseudo_big_18-54-51",
+        "center_xy_rectified": [
+          39.19,
+          41.21
+        ],
+        "center_xy_norm": [
+          0.496048,
+          0.521708
+        ],
+        "pseudo_label": true,
+        "confidence": 0.6406
+      },
+      {
+        "stem": "pseudo_big_18-56-04",
+        "center_xy_rectified": [
+          40.08,
+          39.83
+        ],
+        "center_xy_norm": [
+          0.507319,
+          0.50421
+        ],
+        "pseudo_label": true,
+        "confidence": 0.6487
+      },
+      {
+        "stem": "pseudo_big_18-56-43",
+        "center_xy_rectified": [
+          39.87,
+          38.43
+        ],
+        "center_xy_norm": [
+          0.504743,
+          0.486411
+        ],
+        "pseudo_label": true,
+        "confidence": 0.4026
+      },
+      {
+        "stem": "pseudo_biglook_18-54-51",
+        "center_xy_rectified": [
+          39.19,
+          41.21
+        ],
+        "center_xy_norm": [
+          0.496048,
+          0.521708
+        ],
+        "pseudo_label": true,
+        "confidence": 0.6406
+      },
+      {
+        "stem": "pseudo_capture_0006_preview",
+        "center_xy_rectified": [
+          36.81,
+          41.44
+        ],
+        "center_xy_norm": [
+          0.465888,
+          0.524617
+        ],
+        "pseudo_label": true,
+        "confidence": 0.5019
+      },
+      {
+        "stem": "pseudo_capture_0c",
+        "center_xy_rectified": [
+          39.84,
+          39.51
+        ],
+        "center_xy_norm": [
+          0.504321,
+          0.500125
+        ],
+        "pseudo_label": true,
+        "confidence": 0.4143
+      },
+      {
+        "stem": "pseudo_capture_0c_preview",
+        "center_xy_rectified": [
+          35.68,
+          39.83
+        ],
+        "center_xy_norm": [
+          0.451705,
+          0.504216
+        ],
+        "pseudo_label": true,
+        "confidence": 0.7885
+      },
+      {
+        "stem": "pseudo_capture_2026-04-15_11-37-23",
+        "center_xy_rectified": [
+          39.67,
+          40.25
+        ],
+        "center_xy_norm": [
+          0.502163,
+          0.509434
+        ],
+        "pseudo_label": true,
+        "confidence": 0.4061
+      },
+      {
+        "stem": "pseudo_crop_13-00-52",
+        "center_xy_rectified": [
+          43.68,
+          40.9
+        ],
+        "center_xy_norm": [
+          0.552924,
+          0.517694
+        ],
+        "pseudo_label": true,
+        "confidence": 0.5193
+      },
+      {
+        "stem": "pseudo_show_13-00-52",
+        "center_xy_rectified": [
+          40.67,
+          39.69
+        ],
+        "center_xy_norm": [
+          0.514866,
+          0.502381
+        ],
+        "pseudo_label": true,
+        "confidence": 0.4881
+      },
+      {
+        "stem": "pseudo_show_13-10-33",
+        "center_xy_rectified": [
+          40.4,
+          40.24
+        ],
+        "center_xy_norm": [
+          0.511367,
+          0.509388
+        ],
+        "pseudo_label": true,
+        "confidence": 0.4561
+      },
+      {
+        "stem": "pseudo_show_18-56-43",
+        "center_xy_rectified": [
+          39.17,
+          38.05
+        ],
+        "center_xy_norm": [
+          0.495784,
+          0.481661
+        ],
+        "pseudo_label": true,
+        "confidence": 0.4611
+      },
+      {
+        "stem": "pseudo_show_9-06-41",
+        "center_xy_rectified": [
+          37.88,
+          37.25
+        ],
+        "center_xy_norm": [
+          0.479498,
+          0.471543
+        ],
+        "pseudo_label": true,
+        "confidence": 0.4282
+      },
+      {
+        "stem": "pseudo_show_9-07-54",
+        "center_xy_rectified": [
+          38.7,
+          37.69
+        ],
+        "center_xy_norm": [
+          0.489883,
+          0.47714
+        ],
+        "pseudo_label": true,
+        "confidence": 0.4339
+      },
+      {
+        "stem": "pseudo_show_9-10-20",
+        "center_xy_rectified": [
+          38.68,
+          38.54
+        ],
+        "center_xy_norm": [
+          0.489598,
+          0.487911
+        ],
+        "pseudo_label": true,
+        "confidence": 0.4657
+      },
+      {
+        "stem": "pseudo_show_9-11-33",
+        "center_xy_rectified": [
+          38.98,
+          38.58
+        ],
+        "center_xy_norm": [
+          0.493393,
+          0.488375
+        ],
+        "pseudo_label": true,
+        "confidence": 0.4129
+      },
+      {
+        "stem": "pseudo_board_capture_2026-04-18_13-21-46",
+        "center_xy_rectified": [
+          38.52,
+          47.7
+        ],
+        "center_xy_norm": [
+          0.487611,
+          0.603801
+        ],
+        "pseudo_label": true,
+        "confidence": 0.5496
+      },
+      {
+        "stem": "pseudo_board_capture_2026-04-18_13-28-35",
+        "center_xy_rectified": [
+          40.84,
+          48.41
+        ],
+        "center_xy_norm": [
+          0.516987,
+          0.612788
+        ],
+        "pseudo_label": true,
+        "confidence": 0.6143
+      },
+      {
+        "stem": "pseudo_board_capture_2026-04-18_13-31-09",
+        "center_xy_rectified": [
+          41.99,
+          42.74
+        ],
+        "center_xy_norm": [
+          0.53155,
+          0.540978
+        ],
+        "pseudo_label": true,
+        "confidence": 0.5065
+      },
+      {
+        "stem": "pseudo_board_capture_2026-04-18_13-35-17",
+        "center_xy_rectified": [
+          40.5,
+          46.54
+        ],
+        "center_xy_norm": [
+          0.512653,
+          0.589061
+        ],
+        "pseudo_label": true,
+        "confidence": 0.4934
+      },
+      {
+        "stem": "pseudo_board_capture_2026-04-18_13-37-09",
+        "center_xy_rectified": [
+          39.29,
+          48.16
+        ],
+        "center_xy_norm": [
+          0.497351,
+          0.609564
+        ],
+        "pseudo_label": true,
+        "confidence": 0.4999
+      },
+      {
+        "stem": "pseudo_board_capture_2026-04-18_13-39-01",
+        "center_xy_rectified": [
+          39.95,
+          46.81
+        ],
+        "center_xy_norm": [
+          0.505737,
+          0.592484
+        ],
+        "pseudo_label": true,
+        "confidence": 0.5556
+      },
+      {
+        "stem": "pseudo_board_capture_2026-04-18_13-42-44",
+        "center_xy_rectified": [
+          39.08,
+          49.06
+        ],
+        "center_xy_norm": [
+          0.494636,
+          0.62095
+        ],
+        "pseudo_label": true,
+        "confidence": 0.419
+      },
+      {
+        "stem": "pseudo_board_capture_2026-04-22_07-18-03",
+        "center_xy_rectified": [
+          41.56,
+          42.0
+        ],
+        "center_xy_norm": [
+          0.526138,
+          0.531657
+        ],
+        "pseudo_label": true,
+        "confidence": 0.4122
+      },
+      {
+        "stem": "pseudo_board_capture_2026-04-22_07-19-17",
+        "center_xy_rectified": [
+          43.06,
+          43.5
+        ],
+        "center_xy_norm": [
+          0.545097,
+          0.55062
+        ],
+        "pseudo_label": true,
+        "confidence": 0.4622
+      },
+      {
+        "stem": "pseudo_board_capture_2026-04-22_07-20-31",
+        "center_xy_rectified": [
+          42.18,
+          41.61
+        ],
+        "center_xy_norm": [
+          0.533982,
+          0.526646
+        ],
+        "pseudo_label": true,
+        "confidence": 0.4959
+      },
+      {
+        "stem": "pseudo_board_capture_2026-04-22_07-32-06",
+        "center_xy_rectified": [
+          45.45,
+          44.78
+        ],
+        "center_xy_norm": [
+          0.575293,
+          0.566783
+        ],
+        "pseudo_label": true,
+        "confidence": 0.7953
+      },
+      {
+        "stem": "pseudo_board_capture_2026-04-22_07-33-19",
+        "center_xy_rectified": [
+          46.06,
+          44.73
+        ],
+        "center_xy_norm": [
+          0.583023,
+          0.566145
+        ],
+        "pseudo_label": true,
+        "confidence": 0.8336
+      },
+      {
+        "stem": "pseudo_board_capture_2026-04-22_07-42-17",
+        "center_xy_rectified": [
+          42.72,
+          45.12
+        ],
+        "center_xy_norm": [
+          0.540807,
+          0.571196
+        ],
+        "pseudo_label": true,
+        "confidence": 0.4716
+      }
+    ],
+    "val": [
+      {
+        "stem": "PXL_20260125_115328820",
+        "center_xy_rectified": [
+          164.46,
+          163.69
+        ],
+        "center_xy_norm": [
+          0.515538,
+          0.513148
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120159244",
+        "center_xy_rectified": [
+          162.69,
+          172.53
+        ],
+        "center_xy_norm": [
+          0.510001,
+          0.540834
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115629884",
+        "center_xy_rectified": [
+          161.48,
+          160.61
+        ],
+        "center_xy_norm": [
+          0.506194,
+          0.503476
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114944228",
+        "center_xy_rectified": [
+          156.91,
+          164.52
+        ],
+        "center_xy_norm": [
+          0.491866,
+          0.51575
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115124744",
+        "center_xy_rectified": [
+          158.35,
+          149.17
+        ],
+        "center_xy_norm": [
+          0.496405,
+          0.467616
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115635063",
+        "center_xy_rectified": [
+          148.36,
+          159.2
+        ],
+        "center_xy_norm": [
+          0.465065,
+          0.499044
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120024047",
+        "center_xy_rectified": [
+          175.4,
+          158.54
+        ],
+        "center_xy_norm": [
+          0.549831,
+          0.49699
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115541834",
+        "center_xy_rectified": [
+          183.17,
+          160.04
+        ],
+        "center_xy_norm": [
+          0.57419,
+          0.501703
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115946015",
+        "center_xy_rectified": [
+          164.76,
+          143.38
+        ],
+        "center_xy_norm": [
+          0.516484,
+          0.449463
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115742712",
+        "center_xy_rectified": [
+          162.91,
+          177.13
+        ],
+        "center_xy_norm": [
+          0.510692,
+          0.555264
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115410910",
+        "center_xy_rectified": [
+          160.24,
+          175.06
+        ],
+        "center_xy_norm": [
+          0.502334,
+          0.548784
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115959728",
+        "center_xy_rectified": [
+          158.63,
+          166.43
+        ],
+        "center_xy_norm": [
+          0.497262,
+          0.521723
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120159765",
+        "center_xy_rectified": [
+          164.06,
+          174.11
+        ],
+        "center_xy_norm": [
+          0.514291,
+          0.545803
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115544186",
+        "center_xy_rectified": [
+          164.29,
+          144.43
+        ],
+        "center_xy_norm": [
+          0.515001,
+          0.452774
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115540293",
+        "center_xy_rectified": [
+          132.64,
+          157.26
+        ],
+        "center_xy_norm": [
+          0.415793,
+          0.492989
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115126158",
+        "center_xy_rectified": [
+          154.37,
+          151.96
+        ],
+        "center_xy_norm": [
+          0.483926,
+          0.476373
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114912923",
+        "center_xy_rectified": [
+          179.92,
+          161.62
+        ],
+        "center_xy_norm": [
+          0.564017,
+          0.506641
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114631441",
+        "center_xy_rectified": [
+          154.13,
+          157.05
+        ],
+        "center_xy_norm": [
+          0.483178,
+          0.492309
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115735852",
+        "center_xy_rectified": [
+          166.24,
+          159.55
+        ],
+        "center_xy_norm": [
+          0.521122,
+          0.500162
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114611913",
+        "center_xy_rectified": [
+          154.45,
+          166.75
+        ],
+        "center_xy_norm": [
+          0.484171,
+          0.52272
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115126899",
+        "center_xy_rectified": [
+          173.16,
+          162.32
+        ],
+        "center_xy_norm": [
+          0.542815,
+          0.508845
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115647174",
+        "center_xy_rectified": [
+          157.25,
+          162.83
+        ],
+        "center_xy_norm": [
+          0.492946,
+          0.510438
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115028857",
+        "center_xy_rectified": [
+          167.09,
+          161.1
+        ],
+        "center_xy_norm": [
+          0.523805,
+          0.505006
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120203195",
+        "center_xy_rectified": [
+          172.47,
+          165.82
+        ],
+        "center_xy_norm": [
+          0.540674,
+          0.519809
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115804606",
+        "center_xy_rectified": [
+          154.47,
+          162.31
+        ],
+        "center_xy_norm": [
+          0.484223,
+          0.508812
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114949989",
+        "center_xy_rectified": [
+          159.01,
+          155.53
+        ],
+        "center_xy_norm": [
+          0.498467,
+          0.487564
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115543576",
+        "center_xy_rectified": [
+          177.69,
+          161.72
+        ],
+        "center_xy_norm": [
+          0.55701,
+          0.50695
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114552322",
+        "center_xy_rectified": [
+          166.05,
+          144.65
+        ],
+        "center_xy_norm": [
+          0.520521,
+          0.453437
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115739440",
+        "center_xy_rectified": [
+          139.73,
+          157.33
+        ],
+        "center_xy_norm": [
+          0.438016,
+          0.493195
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115345639",
+        "center_xy_rectified": [
+          164.39,
+          166.14
+        ],
+        "center_xy_norm": [
+          0.515334,
+          0.520825
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120213545",
+        "center_xy_rectified": [
+          160.85,
+          159.06
+        ],
+        "center_xy_norm": [
+          0.504244,
+          0.49863
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120034080",
+        "center_xy_rectified": [
+          155.22,
+          151.93
+        ],
+        "center_xy_norm": [
+          0.486591,
+          0.476255
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114848028",
+        "center_xy_rectified": [
+          172.03,
+          144.44
+        ],
+        "center_xy_norm": [
+          0.539285,
+          0.452802
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114538442",
+        "center_xy_rectified": [
+          182.02,
+          147.57
+        ],
+        "center_xy_norm": [
+          0.570604,
+          0.46259
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115950638",
+        "center_xy_rectified": [
+          168.8,
+          165.75
+        ],
+        "center_xy_norm": [
+          0.52914,
+          0.519599
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115652848",
+        "center_xy_rectified": [
+          159.23,
+          160.01
+        ],
+        "center_xy_norm": [
+          0.499149,
+          0.501594
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115113912",
+        "center_xy_rectified": [
+          155.46,
+          157.92
+        ],
+        "center_xy_norm": [
+          0.48735,
+          0.495063
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115354940",
+        "center_xy_rectified": [
+          163.34,
+          162.97
+        ],
+        "center_xy_norm": [
+          0.512033,
+          0.510885
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115552985",
+        "center_xy_rectified": [
+          167.9,
+          158.85
+        ],
+        "center_xy_norm": [
+          0.526345,
+          0.497973
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120105434",
+        "center_xy_rectified": [
+          130.91,
+          157.49
+        ],
+        "center_xy_norm": [
+          0.410388,
+          0.493711
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115538761",
+        "center_xy_rectified": [
+          175.0,
+          144.85
+        ],
+        "center_xy_norm": [
+          0.548604,
+          0.454077
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115840403",
+        "center_xy_rectified": [
+          148.82,
+          154.89
+        ],
+        "center_xy_norm": [
+          0.466521,
+          0.485545
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114844155",
+        "center_xy_rectified": [
+          177.6,
+          153.48
+        ],
+        "center_xy_norm": [
+          0.556728,
+          0.481121
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114847037",
+        "center_xy_rectified": [
+          149.39,
+          170.88
+        ],
+        "center_xy_norm": [
+          0.468313,
+          0.535668
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120214176",
+        "center_xy_rectified": [
+          167.04,
+          161.37
+        ],
+        "center_xy_norm": [
+          0.523644,
+          0.505859
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115128514",
+        "center_xy_rectified": [
+          162.04,
+          160.85
+        ],
+        "center_xy_norm": [
+          0.507947,
+          0.504222
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115125409",
+        "center_xy_rectified": [
+          151.25,
+          164.99
+        ],
+        "center_xy_norm": [
+          0.474145,
+          0.517213
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120026205",
+        "center_xy_rectified": [
+          151.51,
+          172.68
+        ],
+        "center_xy_norm": [
+          0.47496,
+          0.541332
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115957052",
+        "center_xy_rectified": [
+          156.3,
+          159.56
+        ],
+        "center_xy_norm": [
+          0.489957,
+          0.500192
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120218153",
+        "center_xy_rectified": [
+          166.71,
+          165.91
+        ],
+        "center_xy_norm": [
+          0.52261,
+          0.520106
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115406833",
+        "center_xy_rectified": [
+          162.3,
+          162.53
+        ],
+        "center_xy_norm": [
+          0.508777,
+          0.50949
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115949522",
+        "center_xy_rectified": [
+          175.18,
+          156.76
+        ],
+        "center_xy_norm": [
+          0.549143,
+          0.4914
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115122110",
+        "center_xy_rectified": [
+          141.27,
+          157.75
+        ],
+        "center_xy_norm": [
+          0.442849,
+          0.494516
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115119325",
+        "center_xy_rectified": [
+          142.95,
+          146.04
+        ],
+        "center_xy_norm": [
+          0.448124,
+          0.457799
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114901412",
+        "center_xy_rectified": [
+          169.16,
+          180.49
+        ],
+        "center_xy_norm": [
+          0.530281,
+          0.565808
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120228748",
+        "center_xy_rectified": [
+          160.73,
+          164.47
+        ],
+        "center_xy_norm": [
+          0.503862,
+          0.515565
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115117057",
+        "center_xy_rectified": [
+          169.16,
+          170.53
+        ],
+        "center_xy_norm": [
+          0.530288,
+          0.53458
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115327587",
+        "center_xy_rectified": [
+          141.39,
+          162.24
+        ],
+        "center_xy_norm": [
+          0.443214,
+          0.508581
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115737682",
+        "center_xy_rectified": [
+          155.27,
+          149.5
+        ],
+        "center_xy_norm": [
+          0.486741,
+          0.468641
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115626909",
+        "center_xy_rectified": [
+          161.9,
+          163.88
+        ],
+        "center_xy_norm": [
+          0.507523,
+          0.513732
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115554156",
+        "center_xy_rectified": [
+          164.05,
+          158.87
+        ],
+        "center_xy_norm": [
+          0.514256,
+          0.49804
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120205038",
+        "center_xy_rectified": [
+          174.76,
+          173.45
+        ],
+        "center_xy_norm": [
+          0.547828,
+          0.543729
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115544803",
+        "center_xy_rectified": [
+          162.61,
+          142.45
+        ],
+        "center_xy_norm": [
+          0.509763,
+          0.446555
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120202164",
+        "center_xy_rectified": [
+          147.29,
+          157.28
+        ],
+        "center_xy_norm": [
+          0.461736,
+          0.493031
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115546842",
+        "center_xy_rectified": [
+          165.31,
+          166.96
+        ],
+        "center_xy_norm": [
+          0.518215,
+          0.523399
+        ]
+      },
+      {
+        "stem": "PXL_20260125_114908265",
+        "center_xy_rectified": [
+          154.53,
+          172.9
+        ],
+        "center_xy_norm": [
+          0.484435,
+          0.542015
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115239306",
+        "center_xy_rectified": [
+          165.97,
+          167.11
+        ],
+        "center_xy_norm": [
+          0.520284,
+          0.523842
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115748216",
+        "center_xy_rectified": [
+          157.31,
+          159.38
+        ],
+        "center_xy_norm": [
+          0.493137,
+          0.49963
+        ]
+      },
+      {
+        "stem": "PXL_20260125_115743603",
+        "center_xy_rectified": [
+          164.94,
+          177.21
+        ],
+        "center_xy_norm": [
+          0.51704,
+          0.555505
+        ]
+      },
+      {
+        "stem": "PXL_20260125_120158598",
+        "center_xy_rectified": [
+          155.23,
+          170.3
+        ],
+        "center_xy_norm": [
+          0.48661,
+          0.533859
+        ]
+      }
+    ]
+  },
+  "train_count": 632,
+  "val_count": 70
+}

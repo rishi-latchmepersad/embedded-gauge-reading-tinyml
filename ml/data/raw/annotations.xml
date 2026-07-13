@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<annotations>
+  <version>1.1</version>
+  <meta>
+    <job>
+      <id>8</id>
+      <size>2</size>
+      <mode>annotation</mode>
+      <overlap>0</overlap>
+      <bugtracker></bugtracker>
+      <created>2026-01-26 23:21:07.725791+00:00</created>
+      <updated>2026-02-03 23:38:19.547111+00:00</updated>
+      <subset>default</subset>
+      <start_frame>350</start_frame>
+      <stop_frame>351</stop_frame>
+      <frame_filter></frame_filter>
+      <segments>
+        <segment>
+          <id>8</id>
+          <start>350</start>
+          <stop>351</stop>
+          <url>http://localhost:8080/api/jobs/8</url>
+        </segment>
+      </segments>
+      <owner>
+        <username>django</username>
+        <email>latchmepersad@gmail.com</email>
+      </owner>
+      <assignee></assignee>
+      <labels>
+        <label>
+          <name>temp_dial</name>
+          <color>#7b0278</color>
+          <type>ellipse</type>
+          <attributes>
+            <attribute>
+              <name>temp_c</name>
+              <mutable>True</mutable>
+              <input_type>number</input_type>
+              <default_value>30</default_value>
+              <values>-30
+50
+0.5</values>
+            </attribute>
+          </attributes>
+        </label>
+        <label>
+          <name>temp_center</name>
+          <color>#39a687</color>
+          <type>points</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>temp_tip</name>
+          <color>#397169</color>
+          <type>points</type>
+          <attributes>
+          </attributes>
+        </label>
+      </labels>
+    </job>
+    <dumped>2026-02-03 23:38:45.057639+00:00</dumped>
+  </meta>
+  <image id="350" name="PXL_20260125_120302481.jpg" width="3472" height="4624">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="1618.15" cy="2726.80" rx="1286.10" ry="1291.00" z_order="0">
+      <attribute name="temp_c">49</attribute>
+    </ellipse>
+    <points label="temp_center" source="manual" occluded="0" points="1603.36,2660.70" z_order="0">
+    </points>
+    <points label="temp_tip" source="manual" occluded="0" points="2369.12,3136.84" z_order="0">
+    </points>
+  </image>
+  <image id="351" name="PXL_20260125_120305774.jpg" width="3472" height="4624">
+    <ellipse label="temp_dial" source="manual" occluded="0" cx="1608.38" cy="2680.26" rx="1197.73" ry="1185.41" z_order="0">
+      <attribute name="temp_c">49</attribute>
+    </ellipse>
+    <points label="temp_tip" source="manual" occluded="0" points="2378.94,3102.48" z_order="0">
+    </points>
+    <points label="temp_center" source="manual" occluded="0" points="1652.45,2660.70" z_order="0">
+    </points>
+  </image>
+</annotations>

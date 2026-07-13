@@ -1,0 +1,6 @@
+path: /mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/yolo_obb_320
+train: images/train
+val: images/val
+
+names:
+  0: gauge

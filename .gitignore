@@ -24,3 +24,21 @@
 /opencode.jsonc
 /docs/int8_drift_decision_report.md
 /docs/phase-13a-tip-focus-firmware-integration-spike.md
+
+# Local ML training artifacts, caches, and downloaded binaries.
+/ml/artifacts/
+/ml/debug/
+/ml/runs/
+/ml/tmp/
+/ml/c/*.so
+/ml/*.pt
+/ml/*.npy
+**/__pycache__/
+*.py[cod]
+
+# Local firmware/export artifacts and vendor checkout.
+/n657_Appli.map
+/nul
+/tmp_repack_err.log
+/st_ai_output/
+/third_party_refs/

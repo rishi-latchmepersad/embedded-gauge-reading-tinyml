@@ -1,0 +1,8 @@
+
+path: /mnt/d/Projects/embedded-gauge-reading-tinyml/ml/data/heatmap_cd_320/yolo_pose
+train: images/train
+val: images/val
+
+nc: 1
+names: ['gauge_face']
+kpt_shape: [1, 3]
