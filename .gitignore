@@ -42,3 +42,8 @@
 /tmp_repack_err.log
 /st_ai_output/
 /third_party_refs/
+
+# Local-only third-party dataset; retain the source archive locally but do not
+# commit or redistribute the downloaded images and annotations.
+/ml/data/Gauge-Meter-Detection-v2.v7i.yolov8-obb.zip*
+/ml/data/external/gauge_meter_detection_v2_yolov8_obb/
