@@ -24,7 +24,7 @@ from sklearn.model_selection import train_test_split
 import tensorflow as tf
 import tensorflow_model_optimization as tfmot
 
-_GPU_MEMORY_LIMIT_MB = 3900
+_GPU_MEMORY_LIMIT_MB = 15000
 gpus = tf.config.list_physical_devices("GPU")
 if gpus:
     try:

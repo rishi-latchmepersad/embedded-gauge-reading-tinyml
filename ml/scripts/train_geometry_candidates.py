@@ -61,7 +61,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 # GPU memory cap must happen before TF is imported.
 # ---------------------------------------------------------------------------
-_GPU_MEMORY_LIMIT_MB = int(os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "3900"))
+_GPU_MEMORY_LIMIT_MB = int(os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "15000"))
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 

@@ -47,3 +47,22 @@
 # commit or redistribute the downloaded images and annotations.
 /ml/data/Gauge-Meter-Detection-v2.v7i.yolov8-obb.zip*
 /ml/data/external/gauge_meter_detection_v2_yolov8_obb/
+
+# Locally materialized training datasets. Keep source labels, raw captures,
+# manifests, and input archives visible; these copies are reproducible from
+# the preparation scripts and otherwise add tens of thousands of Git scans.
+/ml/data/gauge_center_tip_v1_160_gray/
+/ml/data/gauge_center_tip_v1_224_gray/
+/ml/data/gauge_face_ellipse_v1/
+/ml/data/gauge_face_ellipse_v1_640_gray/
+/ml/data/initial_temp_gauge_v1/
+
+# Large local train/validation/test archives are generated dataset bundles;
+# keep the preparation scripts and labelled source archives under version
+# control without making Git scan or upload hundreds of megabytes of samples.
+/ml/data/labelled/train_*.zip
+/ml/data/labelled/test_*.zip
+/ml/data/labelled/val_*.zip
+
+# Windows download metadata should not become separate repository files.
+**/*:Zone.Identifier

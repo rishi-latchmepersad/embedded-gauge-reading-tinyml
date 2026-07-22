@@ -1,16 +1,339 @@
-[littlegood_home_temp_gauge_c]
-min_deg = 135.0   # Min tick at ~ 7:30
-sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+[gauge_1]
+gauge_id = 1
+general_description = "white gauge made by littlegood with temperature and humidity needle"
+gauge_parameter = "temperature"
+# Firmware board_celsius_v1 endpoints expressed north-zero: -47.06° -> -30°C and +67.93° -> +50°C.
+# These absorb the former +9.72° angle offset and 1.0769231 temperature gain.
+min_deg = -47.06
+sweep_deg = 114.99
 min_value = -30.0 # actual min value in degC
 max_value = 50.0  # actual max value in degC
-units = "C"
+units = "degree celcius" # outer numbers are farenheit, but we want celcius from the inner numbers
 direction = "clockwise"
-needle_colour = "dark"
-# Celsius needle pivot offset from the OBB bounding-box geometric centre.
-# Expressed as fraction of the frame width / height so it scales with
-# resolution changes.  Positive offsets move right / down from the
-# OBB centre.  Calibrated from the rim-geometry detector on the live
-# board (OBB centre + offset → correct polar-vote pivot).
-obb_pivot_x_offset_ratio = -0.0089   # ≈ −2 px on a 224×224 frame
-obb_pivot_y_offset_ratio =  0.0625   # ≈ +14 px on a 224×224 frame
-inner_dial_radius_frame_ratio = 0.3076  # 68.9 px on 224×224
+reference = "north"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_2]
+gauge_id = 2
+general_description = "white and silver pressure gauge made in spain"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value in psi
+max_value = 400.0  # actual max value in psi
+units = "psi" # outer numbers are psi, inner numbers are bar
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_3]
+gauge_id = 3
+general_description = "white and silver pressure gauge abs case, bronze tube, brass socket"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = -30 # actual min value
+max_value = 0  # actual max value
+units = "kPa" # outer number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_4]
+gauge_id = 4
+general_description = "white and black pressure gauge akron brass company"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 200  # actual max value
+units = "psi" # outer number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_5]
+gauge_id = 5
+general_description = "white and black temperature gauge viessmann"
+gauge_parameter = "temperature"
+min_deg = 150.0   # Min tick at ~ 8:00
+sweep_deg = 240.0 # Needle sweeps to ~ 4:00
+min_value = 0 # actual min value
+max_value = 120  # actual max value
+units = "degree celcius" # outer number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_6]
+gauge_id = 6
+general_description = "silver and white temperature gauge schulz"
+gauge_parameter = "temperature"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 120  # actual max value
+units = "degree celcius" # outer number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_7]
+gauge_id = 7
+general_description = "silver and white pressure gauge blowers"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = -30 # actual min value
+max_value = 0  # actual max value
+units = "100 kPa" # outer number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_8]
+gauge_id = 8
+general_description = "silver and black pressure gauge two black dots at bottom two needles"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 10  # actual max value
+units = "bar" # outer number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_9]
+gauge_id = 9
+general_description = "white and black pressure gauge SBourdon"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 2000  # actual max value
+units = "psi" # inner number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_10]
+gauge_id = 10
+general_description = "white and black pressure gauge SBourdon"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 60  # actual max value
+units = "psi" # inner number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_11]
+gauge_id = 11
+general_description = "white and black pressure gauge rothenberoen 315 bar max"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 315  # actual max value
+units = "bar" # inner number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_12]
+gauge_id = 12
+general_description = "white and black pressure gauge rothenberoen 16 bar max"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 16  # actual max value
+units = "bar" # inner number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_13]
+gauge_id = 13
+general_description = "silver, white and black pressure gauge 100 psi max two silver screws no brand"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 100  # actual max value
+units = "psi" # inner number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_14]
+gauge_id = 14
+general_description = "white and black rough tire pressure gauge 12 bar max no brand blurry"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 12  # actual max value
+units = "bar" # inner number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_15]
+gauge_id = 15
+general_description = "white and black rough tire pressure gauge 16 bar max no brand "
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 16  # actual max value
+units = "bar" # inner number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_16]
+gauge_id = 16
+general_description = "white and black smooth tire pressure gauge 60 psi max kobalt"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 60  # actual max value
+units = "psi" # inner number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_17]
+gauge_id = 17
+general_description = "black and white metal gauge 60 psi max moon"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 60  # actual max value
+units = "psi" # inner number
+direction = "clockwise"
+gauge_background_colour = "black"
+needle_colour = "white"
+[gauge_18]
+gauge_id = 18
+general_description = " white and black metal gauge pressure 2.5 MPa max chinese"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 2.5  # actual max value
+units = "psi" # inner number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_19]
+gauge_id = 19
+general_description = "black and white speedometer? no markings at all 240 max"
+gauge_parameter = "speed"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 240  # actual max value
+units = "km/h" # inner number
+direction = "clockwise"
+gauge_background_colour = "black"
+needle_colour = "white"
+[gauge_20]
+gauge_id = 20
+general_description = "black and white bowler? gauge trans degrees farenheit"
+gauge_parameter = "temperature"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 280  # actual max value
+units = "degrees farenheit" # inner number
+direction = "clockwise"
+gauge_background_colour = "black"
+needle_colour = "white"
+[gauge_21]
+gauge_id = 21
+general_description = "white and black SKF pressure gauge MPa"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 100  # actual max value
+units = "MPa" # inner number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_22]
+gauge_id = 22
+general_description = "white and black zamsti pressure gauge MPa"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 1.0  # actual max value
+units = "MPa" # inner number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_23]
+gauge_id = 23
+general_description = "white and black summit oil psi?"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 100  # actual max value
+units = "psi" # inner number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_24]
+gauge_id = 24
+general_description = "black and silver auto motor oil psi?"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 100  # actual max value
+units = "psi" # inner number
+direction = "clockwise"
+gauge_background_colour = "black"
+needle_colour = "silver"
+[gauge_25]
+gauge_id = 25
+general_description = "black and white hongqi kPa pressure?"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 160  # actual max value
+units = "kPa" # inner number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_26]
+gauge_id = 26
+general_description = "black and white blurry 240 something? two silver dots at bottom"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 240  # actual max value
+units = "psi" # inner number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_27]
+gauge_id = 27
+general_description = "black and white b3307 caution do not operate psi"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 20  # actual max value
+units = "psi" # outer number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"
+[gauge_28]
+gauge_id = 28
+general_description = "black and white 1000 psi no brand"
+gauge_parameter = "pressure"
+min_deg = 135.0   # Min tick at ~ 7:30
+sweep_deg = 270.0 # Needle sweeps to ~ 4:30 (270 degree total sweep)
+min_value = 0 # actual min value
+max_value = 1000  # actual max value
+units = "psi" # outer number
+direction = "clockwise"
+gauge_background_colour = "white"
+needle_colour = "black"

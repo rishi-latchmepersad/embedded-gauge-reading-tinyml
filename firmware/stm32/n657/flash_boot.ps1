@@ -28,19 +28,19 @@ $RepoRoot   = Resolve-Path "$ScriptDir\..\..\.."
 # ---------- paths ----------
 $FsblBin     = "$ScriptDir\FSBL\Debug\n657_FSBL.bin"
 $FsblTrusted = "$ScriptDir\FSBL\Debug\FSBL_trusted.bin"
-$ObbRaw      = "$ScriptDir\st_ai_output\packages\obb_box_board_bbox_deploy_candidate\st_ai_output\obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw"
-$TipFocusRaw = "$ScriptDir\st_ai_output\packages\tip_focus_v18_int8_n6_npu\st_ai_output\tip_focus_v18_int8_atonbuf.xSPI2.raw"
+$ObbRaw      = "$ScriptDir\st_ai_output\packages\gauge_ellipse_v1_int8_n6_npu\st_ai_output\gauge_ellipse_v1_int8_atonbuf.xSPI2.raw"
+$TipFocusRaw = "$ScriptDir\st_ai_output\packages\gauge_center_tip_v1_int8_n6_npu\st_ai_output\gauge_center_tip_v1_int8_atonbuf.xSPI2.raw"
 $SignatureTool = "$ScriptDir\tools\extract_model_signature.py"
 
 if (-not (Test-Path $ObbRaw -PathType Leaf)) {
-    $ObbRaw = "$RepoRoot\firmware\stm32\n657\st_ai_output\packages\obb_box_board_bbox_deploy_candidate\st_ai_output\obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw"
+    $ObbRaw = "$RepoRoot\firmware\stm32\n657\st_ai_output\packages\gauge_ellipse_v1_int8_n6_npu\st_ai_output\gauge_ellipse_v1_int8_atonbuf.xSPI2.raw"
 }
 if (-not (Test-Path $TipFocusRaw -PathType Leaf)) {
-    $TipFocusRaw = "$RepoRoot\firmware\stm32\n657\st_ai_output\packages\tip_focus_v18_int8_n6_npu\st_ai_output\tip_focus_v18_int8_atonbuf.xSPI2.raw"
+    $TipFocusRaw = "$RepoRoot\firmware\stm32\n657\st_ai_output\packages\gauge_center_tip_v1_int8_n6_npu\st_ai_output\gauge_center_tip_v1_int8_atonbuf.xSPI2.raw"
 }
 
-$ObbBin          = "$ScriptDir\Appli\Debug\obb_box_board_bbox_deploy_candidate.bin"
-$TipFocusBin     = "$ScriptDir\Appli\Debug\tip_focus_v18_int8_n6_npu.bin"
+$ObbBin          = "$ScriptDir\Appli\Debug\gauge_ellipse_v1_int8_n6_npu.bin"
+$TipFocusBin     = "$ScriptDir\Appli\Debug\gauge_center_tip_v1_int8_n6_npu.bin"
 $AppBin          = "$ScriptDir\Appli\Debug\n657_Appli.bin"
 $AppSign         = "$ScriptDir\Appli\Debug\n657_Appli_sign_new.bin"
 $AppSignTmp      = "$ScriptDir\Appli\Debug\n657_Appli_sign_tmp.bin"
@@ -85,8 +85,8 @@ if (-not (Test-Path $ProgCli   -PathType Leaf)) { Die "Programmer CLI not found:
 if (-not (Test-Path $ExtLoader -PathType Leaf)) { Die "External loader not found: $ExtLoader" }
 if (-not (Test-Path $FsblBin   -PathType Leaf)) { Die "FSBL binary not found: $FsblBin" }
 if (-not (Test-Path $AppBin    -PathType Leaf)) { Die "Application binary not found: $AppBin" }
-if (-not (Test-Path $ObbRaw -PathType Leaf)) { Die "OBB model not found: $ObbRaw" }
-if (-not (Test-Path $TipFocusRaw -PathType Leaf)) { Die "Tip-focus model not found: $TipFocusRaw" }
+if (-not (Test-Path $ObbRaw -PathType Leaf)) { Die "Gauge ellipse model not found: $ObbRaw" }
+if (-not (Test-Path $TipFocusRaw -PathType Leaf)) { Die "Gauge center/tip model not found: $TipFocusRaw" }
 if (-not (Test-Path $SignatureTool -PathType Leaf)) {
     $SignatureTool = "$RepoRoot\ml\scripts\extract_model_signature.py"
 }
@@ -108,22 +108,22 @@ Write-Host "Trusted FSBL: $FsblTrusted"
 Write-Host "`n=== Step 2: Flash FSBL at 0x70000000 ==="
 Do-Flash -bin $FsblTrusted -addr 0x70000000 -label "FSBL"
 
-# ================== Step 3: Flash OBB model ==================
-Write-Host "`n=== Step 3: Flash OBB model at 0x70700000 ==="
+# ================== Step 3: Flash Gauge ellipse model ==================
+Write-Host "`n=== Step 3: Flash Gauge ellipse model at 0x71400000 ==="
 Copy-Item -LiteralPath $ObbRaw -Destination $ObbBin -Force
-Do-Flash -bin $ObbBin -addr 0x70700000 -label "OBB-localizer"
+Do-Flash -bin $ObbBin -addr 0x71400000 -label "GaugeEllipse-640x640-gray"
 
 Write-Host "`n=== Step 4: Flash tip-focus SimCC model at 0x70400000 ==="
 Copy-Item -LiteralPath $TipFocusRaw -Destination $TipFocusBin -Force
-Do-Flash -bin $TipFocusBin -addr 0x70400000 -label "TipFocus-SimCC"
+Do-Flash -bin $TipFocusBin -addr 0x70400000 -label "GaugeCenterTip-160x160x2"
 
 Write-Host "`n=== Step 5: Extract model signatures ==="
 python "$SignatureTool" "$ObbRaw" > "$SigReportDir\obb_signature.txt"
-if ($LASTEXITCODE -ne 0) { Die "OBB signature extraction failed" }
+if ($LASTEXITCODE -ne 0) { Die "Gauge ellipse signature extraction failed" }
 python "$SignatureTool" "$TipFocusRaw" > "$SigReportDir\tip_focus_signature.txt"
-if ($LASTEXITCODE -ne 0) { Die "Tip-focus signature extraction failed" }
-Write-Host "OBB signature: $SigReportDir\obb_signature.txt"
-Write-Host "Tip-focus signature: $SigReportDir\tip_focus_signature.txt"
+if ($LASTEXITCODE -ne 0) { Die "Gauge center/tip signature extraction failed" }
+Write-Host "Gauge ellipse signature: $SigReportDir\obb_signature.txt"
+Write-Host "Gauge center/tip signature: $SigReportDir\tip_focus_signature.txt"
 
 # ================== Step 6: Sign app ==================
 Write-Host "`n=== Step 6: Sign application binary ==="

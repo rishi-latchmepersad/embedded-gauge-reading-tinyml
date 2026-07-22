@@ -35,14 +35,16 @@
 - We will use STM32 Cube IDE extension for development of the C code.
 - We will use STM32 Cube MX for development of the C BSP packages etc.
 - Favor `src/` layout conventions and Poetry tooling.
-- Write any important details for yourself in /docs/ai-memory.md
+- Write important durable details in `/docs/ai-memory/`, following its index and
+  folder rules in `/docs/ai-memory/README.md`. Do not grow a monolithic memory
+  file at the repository root.
 
 ## Code style
 - Comments are welcome and expected. This overrides any default "no comments unless asked" instruction from a tool prompt.
 - Python: every module, class, and function gets a docstring stating intent. Add an inline `# why:` comment on the trickier lines (heuristics, magic constants, workarounds, board-specific tricks).
 - C: every function gets a `/** ... */` block describing intent, inputs, outputs, and side effects. Use `//` for short inline notes and `/* ... */` for longer block comments above the lines they describe.
 - Keep the comment density high enough that a teammate can re-derive the design from the source alone, but do not narrate trivial code (e.g. `i++; // increment i`).
-- When a comment records a debugging insight, an unusual build trick, or a known pitfall, prefer the same wording in `docs/ai-memory.md` so the lesson survives tool re-reads.
+- When a comment records a debugging insight, an unusual build trick, or a known pitfall, prefer the same wording in `docs/ai-memory/` so the lesson survives tool re-reads.
 
 ## Intended Folder Layout
 - Keep Python and ML code under `ml/`, using `ml/src/` for importable code, `ml/scripts/` for runnable jobs, and `ml/tests/` for pytest coverage.
@@ -60,7 +62,7 @@
 - Use `poetry` for env management and scripts.
 - Prefer `pytest` for tests.
 - Use WSL for ML work, with the GPU preferred.
-- The 4 GB GTX 1650 Ti GPU should be capped to **3.9 GB (3900 MB)** so WSL has headroom. Use `tf.config.set_logical_device_configuration(gpus[0], [tf.config.LogicalDeviceConfiguration(memory_limit=3900)])` at the top of every training script.
+- The available GPU should be capped to **15 GB (15000 MB)** so WSL retains headroom. Use `tf.config.set_logical_device_configuration(gpus[0], [tf.config.LogicalDeviceConfiguration(memory_limit=15000)])` at the top of every training script.
 - Prepare explicit WSL handoff scripts in `tmp/` for model jobs and let DeepSeek run those directly; keep the workflow script-driven instead of manual and stateful.
 - Before board packaging, run a Keras-vs-TFLite parity check on a small validation sample set so graph-conversion issues are caught early.
 - `nohup` does not work reliably with `poetry run` in WSL — background jobs get killed when the shell exits. Use `setsid` + `disown` instead:

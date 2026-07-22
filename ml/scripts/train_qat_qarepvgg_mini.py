@@ -18,7 +18,7 @@ Usage:
 from __future__ import annotations
 
 import os as _os
-_GPU_MEMORY_LIMIT_MB = int(_os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "3900"))
+_GPU_MEMORY_LIMIT_MB = int(_os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "15000"))
 
 import json
 import sys

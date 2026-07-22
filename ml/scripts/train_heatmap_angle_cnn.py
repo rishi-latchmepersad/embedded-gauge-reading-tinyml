@@ -39,7 +39,7 @@ import os as _os
 import tensorflow as tf
 
 # Cap GPU allocation before TensorFlow initializes the runtime.
-_GPU_MEMORY_LIMIT_MB = int(_os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "3900"))
+_GPU_MEMORY_LIMIT_MB = int(_os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "15000"))
 gpus = tf.config.list_physical_devices("GPU")
 if gpus:
     tf.config.set_logical_device_configuration(

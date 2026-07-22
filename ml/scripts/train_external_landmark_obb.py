@@ -15,13 +15,13 @@ DEFAULT_PROJECT = REPO_ROOT / "ml/artifacts/external_landmark_obb"
 def configure_gpu() -> None:
     """Cap TensorFlow and PyTorch GPU usage before model initialization."""
 
-    # why: the WSL workstation has a 4 GB GPU and needs headroom for the desktop.
+    # why: the WSL workstation has a 15 GB GPU and needs headroom for the desktop.
     import tensorflow as tf
 
     gpus = tf.config.list_physical_devices("GPU")
     if gpus:
         tf.config.set_logical_device_configuration(
-            gpus[0], [tf.config.LogicalDeviceConfiguration(memory_limit=3900)]
+            gpus[0], [tf.config.LogicalDeviceConfiguration(memory_limit=15000)]
         )
 
     # why: Ultralytics uses PyTorch, so apply a matching fraction cap to its allocator.
@@ -29,7 +29,7 @@ def configure_gpu() -> None:
 
     if torch.cuda.is_available():
         total_memory = torch.cuda.get_device_properties(0).total_memory
-        torch.cuda.set_per_process_memory_fraction(3900 * 1024**2 / total_memory)
+        torch.cuda.set_per_process_memory_fraction(15000 * 1024**2 / total_memory)
 
 
 def main() -> None:

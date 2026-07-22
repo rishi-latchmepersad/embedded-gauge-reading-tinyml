@@ -19,11 +19,11 @@ import tensorflow as tf
 import tensorflow_model_optimization as tfmot
 import tf_keras as keras
 
-os.environ["TF_GPU_MEMORY_LIMIT_MB"] = "3900"
+os.environ["TF_GPU_MEMORY_LIMIT_MB"] = "15000"
 gpus = tf.config.list_physical_devices("GPU")
 if gpus:
     tf.config.set_logical_device_configuration(
-        gpus[0], [tf.config.LogicalDeviceConfiguration(memory_limit=3900)],
+        gpus[0], [tf.config.LogicalDeviceConfiguration(memory_limit=15000)],
     )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

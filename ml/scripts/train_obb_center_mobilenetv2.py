@@ -22,7 +22,7 @@ from __future__ import annotations
 # GPU memory limit — MUST be set BEFORE any other TF/Keras imports so the
 # logical device is configured before TF allocates GPU memory.
 import os as _os
-_GPU_MEMORY_LIMIT_MB = int(_os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "3900"))
+_GPU_MEMORY_LIMIT_MB = int(_os.environ.get("TF_GPU_MEMORY_LIMIT_MB", "15000"))
 # ═════════════════════════════════════════════════════════════════════════════
 
 import csv

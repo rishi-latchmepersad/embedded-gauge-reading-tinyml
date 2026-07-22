@@ -8,7 +8,7 @@ import csv, os, sys
 from pathlib import Path
 
 import numpy as np
-os.environ["TF_GPU_MEMORY_LIMIT_MB"] = "3900"
+os.environ["TF_GPU_MEMORY_LIMIT_MB"] = "15000"
 import tensorflow as tf
 import tensorflow_model_optimization as tfmot
 import tf_keras as keras
