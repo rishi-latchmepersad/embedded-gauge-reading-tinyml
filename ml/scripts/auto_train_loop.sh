@@ -1,4 +1,7 @@
 #!/bin/bash
+if [[ "${WSL_GUARDED:-0}" != "1" ]]; then
+    exec "$(dirname "${BASH_SOURCE[0]}")/run_wsl_guarded.sh" env WSL_GUARDED=1 bash "${BASH_SOURCE[0]}" "$@"
+fi
 # Auto-train loop: trains, evaluates, and restarts with adjusted params until MAE < 5C on hard cases
 # Usage: bash scripts/auto_train_loop.sh
 # This runs indefinitely until a good model is found or manually stopped

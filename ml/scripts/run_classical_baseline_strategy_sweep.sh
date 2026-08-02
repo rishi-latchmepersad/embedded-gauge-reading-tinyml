@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+if [[ "${WSL_GUARDED:-0}" != "1" ]]; then
+  exec "$(dirname "${BASH_SOURCE[0]}")/run_wsl_guarded.sh" env WSL_GUARDED=1 bash "${BASH_SOURCE[0]}" "$@"
+fi
 # Sweep classical CV geometry strategies across the hard-case manifests.
 # Run from WSL Ubuntu-24.04:
 #   wsl -d Ubuntu-24.04 -e bash /mnt/d/Projects/embedded-gauge-reading-tinyml/ml/scripts/run_classical_baseline_strategy_sweep.sh

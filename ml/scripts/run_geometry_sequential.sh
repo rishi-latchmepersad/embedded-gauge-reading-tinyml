@@ -1,4 +1,7 @@
 #!/bin/bash
+if [[ "${WSL_GUARDED:-0}" != "1" ]]; then
+    exec "$(dirname "${BASH_SOURCE[0]}")/run_wsl_guarded.sh" env WSL_GUARDED=1 bash "${BASH_SOURCE[0]}" "$@"
+fi
 # Run geometric model experiments sequentially
 
 set -e
