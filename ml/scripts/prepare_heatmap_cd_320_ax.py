@@ -20,6 +20,8 @@ import csv
 import json
 import os
 import random
+import hashlib
+import re
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
@@ -150,6 +152,7 @@ def parse_cvat_zips(
     """
     records: dict[str, dict] = {}
     for zip_path in sorted(labelled_dir.glob("*.zip")):
+        source_zip = zip_path.name
         with zipfile.ZipFile(zip_path) as zf:
             tree = ET.parse(zf.open("annotations.xml"))
             root = tree.getroot()
@@ -170,7 +173,15 @@ def parse_cvat_zips(
                             cy = float(parts[1])
                 if cx is None:
                     continue
-                records[stem] = {"cx": cx, "cy": cy, "src_w": w, "src_h": h}
+                records[stem] = {
+                    "cx": cx,
+                    "cy": cy,
+                    "src_w": w,
+                    "src_h": h,
+                    "source_zip": source_zip,
+                    "source_zip_path": str(zip_path),
+                    "image_name": name,
+                }
     return records
 
 
@@ -187,19 +198,49 @@ def load_csv_centers(csv_path: Path) -> dict[str, tuple[float, float]]:
     return records
 
 
+def _fallback_split_from_source(source_zip: str, stem: str) -> str:
+    """Assign a deterministic split from the original zip family."""
+
+    batch_match = re.search(r"gauge_1_batch_(\d+)\.zip$", source_zip)
+    if batch_match is not None:
+        batch_index = int(batch_match.group(1))
+        # why: keep a stable family-aware split when legacy metadata is absent.
+        return "val" if batch_index >= 7 else "train"
+
+    board_match = re.search(r"board_captures_(\d+)\.zip$", source_zip)
+    if board_match is not None:
+        board_index = int(board_match.group(1))
+        return "val" if board_index == 4 else "train"
+
+    digest = hashlib.sha1(stem.encode("utf-8")).hexdigest()
+    return "val" if int(digest[:8], 16) % 5 == 0 else "train"
+
+
 def process_pxl_samples(
     cvat_records: dict[str, dict],
     old_split: dict[str, str],
 ) -> list[dict]:
     samples: list[dict] = []
     for stem, ann in cvat_records.items():
-        src_path = RAW_DIR / f"{stem}.jpg"
-        if not src_path.exists():
-            print(f"  [SKIP] PXL image not found: {src_path}")
+        zip_path = Path(str(ann.get("source_zip_path", "")))
+        image_name = str(ann.get("image_name", ""))
+        if not zip_path.exists() or not image_name:
+            print(f"  [SKIP] PXL source missing for stem: {stem}")
             continue
-        img = cv2.imread(str(src_path))
+        with zipfile.ZipFile(zip_path) as zf:
+            if image_name in zf.namelist():
+                archive_name = image_name
+            else:
+                matches = [name for name in zf.namelist() if Path(name).name == Path(image_name).name]
+                if not matches:
+                    print(f"  [SKIP] PXL archive image not found: {zip_path.name}::{image_name}")
+                    continue
+                archive_name = matches[0]
+            image_bytes = zf.read(archive_name)
+        img_array = np.frombuffer(image_bytes, dtype=np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
         if img is None:
-            print(f"  [SKIP] Cannot read: {src_path}")
+            print(f"  [SKIP] Cannot decode: {zip_path}::{image_name}")
             continue
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         img_320 = dcmipp_crop_resize(img_rgb)
@@ -211,7 +252,7 @@ def process_pxl_samples(
         letterbox, cx_norm, cy_norm = axis_aligned_letterbox_crop(img_320, cx_320, cy_320)
         letterbox_bgr = cv2.cvtColor(letterbox, cv2.COLOR_RGB2BGR)
 
-        split = old_split.get(stem, "train")
+        split = old_split.get(stem) or _fallback_split_from_source(str(ann.get("source_zip", "")), stem)
         samples.append({
             "stem": stem,
             "image": letterbox_bgr,
@@ -266,6 +307,16 @@ def process_board_samples(
 
 
 def load_old_split(meta_path: Path) -> dict[str, str]:
+    """Load legacy split assignments when they exist.
+
+    The older heatmap dataset is not always present in a fresh workspace, so
+    this helper returns an empty mapping instead of failing when the metadata
+    file is missing.
+    """
+
+    if not meta_path.exists():
+        print(f"  [INFO] Legacy metadata missing: {meta_path} — using fallback splits")
+        return {}
     with open(meta_path) as f:
         meta = json.load(f)
     split_map: dict[str, str] = {}
@@ -301,16 +352,24 @@ def main():
     print(f"  Found {len(cvat_records)} PXL annotations")
 
     print("\nLoading CSV centers for board captures...")
-    csv_centers = load_csv_centers(ANNOT_CSV)
-    print(f"  Found {len(csv_centers)} CSV entries")
+    if ANNOT_CSV.exists():
+        csv_centers = load_csv_centers(ANNOT_CSV)
+        print(f"  Found {len(csv_centers)} CSV entries")
+    else:
+        csv_centers = {}
+        print(f"  [INFO] Missing board CSV: {ANNOT_CSV} — skipping board captures")
 
     print("\n--- Processing PXL samples ---")
     pxl_samples = process_pxl_samples(cvat_records, old_split)
     print(f"  Processed {len(pxl_samples)} PXL samples")
 
     print("\n--- Processing board capture samples ---")
-    board_samples = process_board_samples(csv_centers, old_split)
-    print(f"  Processed {len(board_samples)} board capture samples")
+    if csv_centers:
+        board_samples = process_board_samples(csv_centers, old_split)
+        print(f"  Processed {len(board_samples)} board capture samples")
+    else:
+        board_samples = []
+        print("  Skipped board capture processing")
 
     all_samples = pxl_samples + board_samples
     print(f"\nTotal: {len(all_samples)} samples")

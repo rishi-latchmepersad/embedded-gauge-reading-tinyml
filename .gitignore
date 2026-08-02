@@ -57,6 +57,32 @@
 /ml/data/gauge_face_ellipse_v1_640_gray/
 /ml/data/initial_temp_gauge_v1/
 
+# Additional reproducible ML dataset materializations. Keep the preparation
+# scripts and manifests tracked; regenerate these image/label trees locally.
+/ml/data/center_tip_adaptive_all_v1/
+/ml/data/center_tip_adaptive_v1/
+/ml/data/center_tip_adaptive_v2/
+/ml/data/center_tip_full_pipeline_v1/
+/ml/data/gauge_keypoint_224/
+/ml/data/gauge_keypoint_224_80/
+/ml/data/gauge_keypoint_224_s15/
+/ml/data/heatmap_cd_320_ax/
+/ml/data/needle_pipeline/
+/ml/data/needle_pipeline_predicted_crop/
+/ml/data/repvgg_ellipse/
+/ml/data/yolo_aabb_labelled_640/
+/ml/data/yolo_obb_labelled_640/
+/ml/data/yolo_obb_labelled_640b/
+/ml/data/yolo_obb_labelled_640c/
+/ml/data/yolo_pose_labelled_640/
+/ml/data/labelled/test_3_pipeline_results.csv
+
+# Raw diagnostic frame dumps are local capture-session intermediates.
+/ml/data/captured_images/2026-07-21_23/
+/ml/data/captured_images/2026-07-22_00/
+/ml/data/captured_images/2026-07-22_05/
+/ml/data/captured_images/2026-07-22_06/
+
 # Large local train/validation/test archives are generated dataset bundles;
 # keep the preparation scripts and labelled source archives under version
 # control without making Git scan or upload hundreds of megabytes of samples.

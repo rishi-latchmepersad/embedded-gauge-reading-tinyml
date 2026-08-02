@@ -20,13 +20,15 @@ import tensorflow as tf
 import tensorflow_model_optimization as tfmot
 import tf_keras as keras
 
+from train_gauge_center_tip_fullframe_v1 import decode
 from train_gauge_center_tip_v1 import load_arrays
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data" / "gauge_center_tip_v1_160_gray"
 TEMP_DATA = ROOT / "data" / "initial_temp_gauge_v1" / "center_tip"
-ARTIFACTS = ROOT / "artifacts" / "gauge_center_tip_vector_littlegood_v7"
+STUDENT_DATA = ROOT / "data" / "initial_temp_gauge_v1" / "student_conditioned"
+ARTIFACTS = ROOT / "artifacts" / "gauge_center_tip_vector_littlegood_v16"
 INPUT_SIZE = 160
 BATCH_SIZE = 32
 SEED = 42
@@ -44,23 +46,23 @@ def build_model() -> keras.Model:
     layers = keras.layers
     inputs = keras.Input((INPUT_SIZE, INPUT_SIZE, 2), name="ellipse_conditioned_input")
     x = inputs
-    for index, (filters, repeats) in enumerate(((16, 2), (24, 2), (40, 2), (64, 2))):
+    for index, (filters, repeats) in enumerate(((24, 2), (32, 2), (48, 2), (64, 2))):
         for repeat in range(repeats):
             x = layers.Conv2D(filters, 3, strides=2 if repeat == 0 else 1, padding="same", use_bias=False, name=f"stage{index}_conv{repeat}")(x)
             x = layers.BatchNormalization(name=f"stage{index}_bn{repeat}")(x)
             x = layers.ReLU(6.0, name=f"stage{index}_relu{repeat}")(x)
     # why: a learned spatial collapse avoids the quantized GlobalAveragePool issue.
-    # Four stride-2 stages reduce 160x160 to 10x10, so this kernel collapses
+    # Four stride-2 stages reduce 224x224 to 14x14, so this kernel collapses
     # the remaining spatial grid exactly to 1x1 for the TFLite graph.
-    x = layers.Conv2D(64, 10, padding="valid", use_bias=True, name="spatial_collapse")(x)
+    x = layers.Conv2D(96, INPUT_SIZE // 16, padding="valid", use_bias=True, name="spatial_collapse")(x)
     x = layers.ReLU(6.0, name="spatial_collapse_relu")(x)
     x = layers.Flatten(name="spatial_flatten")(x)
-    x = layers.Dense(64, activation="relu", name="head_relu")(x)
+    x = layers.Dense(96, activation="relu", name="head_relu")(x)
     outputs = layers.Dense(4, activation="sigmoid", name="center_tip_xy")(x)
     return keras.Model(inputs, outputs, name="gauge_center_tip_vector_v1")
 
 
-def make_dataset(inputs: np.ndarray, targets: np.ndarray, training: bool) -> tf.data.Dataset:
+def make_dataset(inputs: np.ndarray, targets: np.ndarray, training: bool, jitter: int = 32) -> tf.data.Dataset:
     """Create a dataset with photometric-only augmentation on grayscale."""
     ds = tf.data.Dataset.from_tensor_slices((inputs, targets))
     if training:
@@ -76,14 +78,25 @@ def make_dataset(inputs: np.ndarray, targets: np.ndarray, training: bool) -> tf.
         # teacher crop, while using each source image only once per epoch.
         # why: padding must cover the full jitter range or crop extraction can
         # address outside the padded tensor on the largest translations.
-        pad = 32
+        pad = max(jitter, 1)
         # why: the detector teacher can leave the gauge noticeably off-center;
         # this models that crop error without duplicating any source image.
-        dx = tf.random.uniform((), -32, 33, dtype=tf.int32, seed=SEED)
-        dy = tf.random.uniform((), -32, 33, dtype=tf.int32, seed=SEED + 1)
+        dx = tf.random.uniform((), -jitter, jitter + 1, dtype=tf.int32, seed=SEED)
+        dy = tf.random.uniform((), -jitter, jitter + 1, dtype=tf.int32, seed=SEED + 1)
         image = tf.pad(image, [[pad, pad], [pad, pad], [0, 0]], constant_values=-1.0)
         image = tf.image.crop_to_bounding_box(image, pad - dy, pad - dx, INPUT_SIZE, INPUT_SIZE)
         points = tf.reshape(target, (2, 2)) + tf.cast(tf.stack([dx, dy]), tf.float32)[None, :] / float(INPUT_SIZE)
+        # why: the held-out LittleGood split contains needle angles absent from
+        # the source ordering; rotating one source once per epoch teaches shape
+        # geometry without duplicating or oversampling any frame.
+        quarter_turn = tf.random.uniform((), 0, 4, dtype=tf.int32, seed=SEED + 2)
+        image = tf.image.rot90(image, k=quarter_turn)
+        points = tf.switch_case(quarter_turn, branch_fns=(
+            lambda: points,
+            lambda: tf.stack((points[:, 1], 1.0 - points[:, 0]), axis=1),
+            lambda: 1.0 - points,
+            lambda: tf.stack((1.0 - points[:, 1], points[:, 0]), axis=1),
+        ))
         return image, tf.reshape(tf.clip_by_value(points, 0.0, 1.0), (4,))
 
     if training:
@@ -110,7 +123,11 @@ def export_int8(model: keras.Model, calibration: np.ndarray, path: Path) -> dict
     """Export a full-integer TFLite model and report its contract."""
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
-    converter.representative_dataset = lambda: ([sample[None].astype(np.float32)] for sample in calibration[:256])
+    # why: the conditioned LittleGood domain is appended after the generic
+    # corpus; taking only calibration[:256] would omit it and can collapse the
+    # full-int8 graph on the deployment crop distribution.
+    indices = np.linspace(0, len(calibration) - 1, min(256, len(calibration)), dtype=int)
+    converter.representative_dataset = lambda: ([calibration[index][None].astype(np.float32)] for index in indices)
     converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
     converter.inference_input_type = tf.int8
     converter.inference_output_type = tf.int8
@@ -146,33 +163,31 @@ def main() -> None:
     random.seed(SEED)
     np.random.seed(SEED)
     tf.random.set_seed(SEED)
-    x_train, y_train = load_arrays(DATA, "train")
-    x_val, y_val = load_arrays(DATA, "val")
-    x_test, y_test = load_arrays(DATA, "test")
-    tx, ty = load_arrays(TEMP_DATA, "train")
-    vx, vy = load_arrays(TEMP_DATA, "val")
-    sx, sy = load_arrays(TEMP_DATA, "test")
-    # The prepared heatmaps are converted back to point targets from metadata.
-    def points(data_dir: Path, split: str) -> np.ndarray:
-        """Load normalized center/tip coordinates from the split metadata."""
-        rows = json.loads((data_dir / "metadata.json").read_text())["splits"][split]
-        return np.asarray([row["center_xy_norm"] + row["tip_xy_norm"] for row in rows], dtype=np.float32)
-
-    x_train = np.concatenate((x_train, tx))
-    y_train = np.concatenate((points(DATA, "train"), points(TEMP_DATA, "train")))
-    x_val = np.concatenate((x_val, vx))
-    y_val = np.concatenate((points(DATA, "val"), points(TEMP_DATA, "val")))
-    x_test = np.concatenate((x_test, sx))
-    y_test = np.concatenate((points(DATA, "test"), points(TEMP_DATA, "test")))
+    generic_train_x, generic_train_heatmaps = load_arrays(DATA, "train")
+    generic_val_x, generic_val_heatmaps = load_arrays(DATA, "val")
+    student = {split: np.load(STUDENT_DATA / f"{split}.npz") for split in ("train", "val", "test")}
+    # why: stored heatmaps are already in the crop-local coordinate system;
+    # decoding them avoids accidentally training a crop model on full-frame labels.
+    student_test_x = student["test"]["inputs"]
+    # why: the corrected student transform and generic crop now share one
+    # local frame, so both domains can be merged without oversampling files.
+    train_x = np.concatenate((generic_train_x, student["train"]["inputs"]))
+    train_y = np.concatenate((decode(generic_train_heatmaps), student["train"]["points"])).reshape(-1, 4)
+    val_x = np.concatenate((generic_val_x, student["val"]["inputs"]))
+    val_y = np.concatenate((decode(generic_val_heatmaps), student["val"]["points"])).reshape(-1, 4)
+    x_test = student_test_x
+    y_test = student["test"]["points"].reshape(-1, 4)
+    train_ds = make_dataset(train_x, train_y, True, 0)
+    val_ds = make_dataset(val_x, val_y, False, 0)
     model = build_model()
     model.compile(optimizer=keras.optimizers.Adam(1e-3), loss=coordinate_loss)
-    model.fit(make_dataset(x_train, y_train, True), validation_data=make_dataset(x_val, y_val, False), epochs=15, verbose=2)
+    model.fit(train_ds, validation_data=val_ds, epochs=15, verbose=2)
     qat = tfmot.quantization.keras.quantize_model(model)
     qat.compile(optimizer=keras.optimizers.Adam(2e-4), loss=coordinate_loss)
-    qat.fit(make_dataset(x_train, y_train, True), validation_data=make_dataset(x_val, y_val, False), epochs=6, verbose=2)
+    qat.fit(train_ds, validation_data=val_ds, epochs=6, verbose=2)
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
     qat.save_weights(ARTIFACTS / "gauge_center_tip_vector_v1_qat.weights.h5")
-    contract = export_int8(qat, x_train, ARTIFACTS / "gauge_center_tip_vector_v1_int8.tflite")
+    contract = export_int8(qat, train_x, ARTIFACTS / "gauge_center_tip_vector_v1_int8.tflite")
     prediction = predict_int8(ARTIFACTS / "gauge_center_tip_vector_v1_int8.tflite", x_test)
     errors = np.linalg.norm((prediction.reshape(-1, 2, 2) - y_test.reshape(-1, 2, 2)) * INPUT_SIZE, axis=2)
     report = {"samples": len(x_test), "center_within_8px": float(np.mean(errors[:, 0] <= 8.0)), "tip_within_8px": float(np.mean(errors[:, 1] <= 8.0)), "center_error_px_mean": float(errors[:, 0].mean()), "tip_error_px_mean": float(errors[:, 1].mean()), "contract": contract}

@@ -41,6 +41,16 @@ tf.random.set_seed(SEED)
 np.random.seed(SEED)
 
 
+def configure_gpu() -> None:
+    """Cap TensorFlow to the repo-approved 15 GB GPU budget."""
+
+    gpus = tf.config.list_physical_devices("GPU")
+    if gpus:
+        tf.config.set_logical_device_configuration(
+            gpus[0], [tf.config.LogicalDeviceConfiguration(memory_limit=15000)]
+        )
+
+
 def add_coordconv(x: tf.Tensor) -> tf.Tensor:
     _, h, w, _ = x.shape
     x_range = tf.linspace(-1.0, 1.0, w)
@@ -138,6 +148,9 @@ def center_pixel_error(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[float, f
 
 
 def main() -> None:
+    """Train and export the DS-CNN detector on the axis-aligned dataset."""
+
+    configure_gpu()
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 
     with open(METADATA_PATH) as f:

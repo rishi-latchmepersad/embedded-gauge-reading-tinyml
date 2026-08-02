@@ -26,8 +26,10 @@ layers = keras.layers
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data" / "gauge_center_tip_v1_160_gray"
 TEMP_DATA = ROOT / "data" / "initial_temp_gauge_v1" / "center_tip"
-ARTIFACTS = ROOT / "artifacts" / "gauge_center_tip_littlegood_v6"
+STUDENT_DATA = ROOT / "data" / "initial_temp_gauge_v1" / "student_conditioned"
+ARTIFACTS = ROOT / "artifacts" / "gauge_center_tip_littlegood_v7"
 INPUT_SIZE = 160
+CROP_SCALE = 1.35
 HEATMAP_SIZE = 80
 BATCH_SIZE = 16
 EPOCHS = 8
@@ -78,9 +80,14 @@ def make_input(image_path: Path, row: dict[str, object]) -> np.ndarray:
     """Load grayscale crop and rasterize the upstream ellipse as channel two."""
     image = np.asarray(Image.open(image_path).convert("L"), dtype=np.float32) / 255.0
     ellipse = np.asarray(row["ellipse"], dtype=np.float32)
-    # The crop is centered on the ellipse and scaled by max(rx, ry)*1.18.
+    # Generic metadata retains source-frame (usually 640px) ellipse units,
+    # while the stored training image is 160px. LittleGood crop metadata has
+    # no source dimensions and is already expressed in the 160px crop frame.
+    if row.get("source_width"):
+        ellipse *= float(INPUT_SIZE) / float(row["source_width"])
+    # The wider crop preserves tips when the ellipse teacher is slightly off.
     cx, cy, rx, ry = ellipse
-    side = max(2.0 * rx, 2.0 * ry) * 1.18
+    side = max(2.0 * rx, 2.0 * ry) * CROP_SCALE
     x = (np.arange(INPUT_SIZE, dtype=np.float32) + 0.5) / INPUT_SIZE * side + cx - side / 2.0
     y = (np.arange(INPUT_SIZE, dtype=np.float32) + 0.5) / INPUT_SIZE * side + cy - side / 2.0
     xx, yy = np.meshgrid(x, y)
@@ -112,7 +119,8 @@ def export_int8(model: keras.Model, calibration: np.ndarray, path: Path) -> None
     """Export a fully integer TFLite graph using representative crop inputs."""
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
-    converter.representative_dataset = lambda: ([sample[None].astype(np.float32)] for sample in calibration[:256])
+    indices = np.linspace(0, len(calibration) - 1, min(256, len(calibration)), dtype=int)
+    converter.representative_dataset = lambda: ([calibration[index][None].astype(np.float32)] for index in indices)
     converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
     converter.inference_input_type = tf.int8
     converter.inference_output_type = tf.int8
@@ -128,6 +136,7 @@ def main() -> None:
     x_val_base, y_val_base = load_arrays(DATA, "val")
     x_train_temp, y_train_temp = load_arrays(TEMP_DATA, "train")
     x_val_temp, y_val_temp = load_arrays(TEMP_DATA, "val")
+    student = {split: np.load(STUDENT_DATA / f"{split}.npz") for split in ("train", "val", "test")}
     # Keep the LittleGood domain at its natural frequency in the merged set;
     # this protects generalization while still exposing the model to the new
     # camera and gauge appearance.
@@ -136,10 +145,10 @@ def main() -> None:
     # contaminating the held-out validation/test splits.
     # Merge each source sample once so this baseline measures generalization,
     # rather than gaining accuracy from duplicated LittleGood frames.
-    x_train = np.concatenate((x_train_base, x_train_temp))
-    y_train = np.concatenate((y_train_base, y_train_temp))
-    x_val = np.concatenate((x_val_base, x_val_temp))
-    y_val = np.concatenate((y_val_base, y_val_temp))
+    x_train = np.concatenate((x_train_base, x_train_temp, student["train"]["inputs"]))
+    y_train = np.concatenate((y_train_base, y_train_temp, student["train"]["heatmaps"]))
+    x_val = np.concatenate((x_val_base, x_val_temp, student["val"]["inputs"]))
+    y_val = np.concatenate((y_val_base, y_val_temp, student["val"]["heatmaps"]))
     base = build_model()
     base.compile(optimizer=keras.optimizers.Adam(1e-3), loss=heatmap_loss)
     base.fit(x_train, y_train, validation_data=(x_val, y_val), batch_size=BATCH_SIZE, epochs=EPOCHS, callbacks=[keras.callbacks.EarlyStopping(patience=4, restore_best_weights=True)], verbose=2)
@@ -147,7 +156,28 @@ def main() -> None:
     qat.compile(optimizer=keras.optimizers.Adam(2e-4), loss=heatmap_loss)
     qat.fit(x_train, y_train, validation_data=(x_val, y_val), batch_size=BATCH_SIZE, epochs=3, callbacks=[keras.callbacks.EarlyStopping(patience=2, restore_best_weights=True)], verbose=2)
     qat.save_weights(ARTIFACTS / "gauge_center_tip_v1_qat.weights.h5")
-    export_int8(qat, x_train, ARTIFACTS / "gauge_center_tip_v1_int8.tflite")
+    path = ARTIFACTS / "gauge_center_tip_v1_int8.tflite"
+    export_int8(qat, x_train, path)
+    interpreter = tf.lite.Interpreter(model_path=str(path)); interpreter.allocate_tensors()
+    details = interpreter.get_input_details()[0]; output = interpreter.get_output_details()[0]
+    predictions = []
+    for sample in student["test"]["inputs"]:
+        scale, zero = details["quantization"]
+        interpreter.set_tensor(details["index"], np.clip(np.round(sample / scale + zero), -128, 127).astype(np.int8)[None]); interpreter.invoke()
+        raw = interpreter.get_tensor(output["index"]).astype(np.float32); scale, zero = output["quantization"]
+        predictions.append((raw - zero) * scale)
+    predictions = np.concatenate(predictions)
+    def decode(channel: int) -> np.ndarray:
+        """Decode each heatmap with weighted local centroid refinement."""
+        points = []
+        for heatmap in predictions[..., channel]:
+            y, x = np.unravel_index(np.argmax(heatmap), heatmap.shape); y0, y1 = max(0, y-4), min(80, y+5); x0, x1 = max(0, x-4), min(80, x+5)
+            yy, xx = np.mgrid[y0:y1, x0:x1]; w = np.maximum(heatmap[y0:y1, x0:x1] - .03, 0) ** 2; total = w.sum()
+            points.append(((xx*w).sum()/total/80+.5/80, (yy*w).sum()/total/80+.5/80) if total else ((x+.5)/80,(y+.5)/80))
+        return np.asarray(points)
+    decoded = np.stack((decode(0), decode(1)), axis=1)
+    errors = np.linalg.norm((decoded - student["test"]["points"]) * 160.0, axis=2)
+    (ARTIFACTS / "report.json").write_text(json.dumps({"samples": len(errors), "center_within_8px": float(np.mean(errors[:,0] <= 8)), "tip_within_8px": float(np.mean(errors[:,1] <= 8)), "center_error_px_mean": float(errors[:,0].mean()), "tip_error_px_mean": float(errors[:,1].mean()), "output_std": predictions.std((0,1)).tolist(), "bytes": path.stat().st_size}, indent=2))
     (ARTIFACTS / "training.json").write_text(json.dumps({"input_shape": [1, 160, 160, 2], "output_shape": [1, 80, 80, 2], "qat": True, "activation_budget_bytes": 1500000}, indent=2))
     print(f"Wrote {ARTIFACTS / 'gauge_center_tip_v1_int8.tflite'}")
 

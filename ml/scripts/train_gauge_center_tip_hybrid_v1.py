@@ -23,7 +23,8 @@ from train_gauge_center_tip_v1 import load_arrays
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data" / "gauge_center_tip_v1_160_gray"
 TEMP_DATA = ROOT / "data" / "initial_temp_gauge_v1" / "center_tip"
-ARTIFACTS = ROOT / "artifacts" / "gauge_center_tip_hybrid_littlegood_v5"
+STUDENT_DATA = ROOT / "data" / "initial_temp_gauge_v1" / "student_conditioned"
+ARTIFACTS = ROOT / "artifacts" / "gauge_center_tip_hybrid_littlegood_v13"
 INPUT_SIZE = 160
 HEATMAP_SIZE = 80
 BATCH_SIZE = 16
@@ -96,7 +97,10 @@ def export_int8(model: keras.Model, calibration: np.ndarray, path: Path) -> dict
     """Export and describe the full-integer multi-output TFLite graph."""
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
-    converter.representative_dataset = lambda: ([sample[None].astype(np.float32)] for sample in calibration[:256])
+    # why: deployment-conditioned crops are appended after generic samples;
+    # evenly cover the merged calibration set to prevent int8 output collapse.
+    indices = np.linspace(0, len(calibration) - 1, min(256, len(calibration)), dtype=int)
+    converter.representative_dataset = lambda: ([calibration[index][None].astype(np.float32)] for index in indices)
     converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
     converter.inference_input_type = tf.int8
     converter.inference_output_type = tf.int8
@@ -112,7 +116,7 @@ def export_int8(model: keras.Model, calibration: np.ndarray, path: Path) -> dict
     }
 
 
-def make_dataset(inputs: np.ndarray, centers: np.ndarray, heatmaps: np.ndarray, training: bool) -> tf.data.Dataset:
+def make_dataset(inputs: np.ndarray, centers: np.ndarray, heatmaps: np.ndarray, training: bool, jitter: int = 32) -> tf.data.Dataset:
     """Build a dataset with geometry-aware crop jitter and updated centers."""
     ds = tf.data.Dataset.from_tensor_slices((inputs, centers, heatmaps))
     if training:
@@ -122,11 +126,11 @@ def make_dataset(inputs: np.ndarray, centers: np.ndarray, heatmaps: np.ndarray, 
         """Translate the crop and center label together to mimic teacher error."""
         # why: padding must cover the full jitter range or crop extraction can
         # address outside the padded tensor on the largest translations.
-        pad = 32
+        pad = max(jitter, 1)
         # why: the detector teacher can leave the gauge noticeably off-center;
         # this models that crop error without duplicating any source image.
-        dx = tf.random.uniform((), -32, 33, dtype=tf.int32, seed=SEED)
-        dy = tf.random.uniform((), -32, 33, dtype=tf.int32, seed=SEED + 1)
+        dx = tf.random.uniform((), -jitter, jitter + 1, dtype=tf.int32, seed=SEED)
+        dy = tf.random.uniform((), -jitter, jitter + 1, dtype=tf.int32, seed=SEED + 1)
         padded = tf.pad(image, [[pad, pad], [pad, pad], [0, 0]], constant_values=-1.0)
         image = tf.image.crop_to_bounding_box(padded, pad - dy, pad - dx, INPUT_SIZE, INPUT_SIZE)
         points = tf.clip_by_value(center + tf.cast(tf.stack([dx, dy]), tf.float32) / float(INPUT_SIZE), 0.0, 1.0)
@@ -182,21 +186,35 @@ def main() -> None:
     configure_gpu()
     tf.keras.utils.set_random_seed(SEED)
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
-    xb, _ = load_arrays(DATA, "train"); xv, _ = load_arrays(DATA, "val"); xt, _ = load_arrays(DATA, "test")
-    tb, _ = load_arrays(TEMP_DATA, "train"); tv, _ = load_arrays(TEMP_DATA, "val"); tt, _ = load_arrays(TEMP_DATA, "test")
-    x_train, x_val, x_test = np.concatenate((xb, tb)), np.concatenate((xv, tv)), np.concatenate((xt, tt))
-    y_train = np.concatenate((points(DATA, "train"), points(TEMP_DATA, "train")))
-    y_val = np.concatenate((points(DATA, "val"), points(TEMP_DATA, "val")))
-    y_test = np.concatenate((points(DATA, "test"), points(TEMP_DATA, "test")))
-    hm_train = np.concatenate((load_arrays(DATA, "train")[1][:, :, :, 1:], load_arrays(TEMP_DATA, "train")[1][:, :, :, 1:]))
-    hm_val = np.concatenate((load_arrays(DATA, "val")[1][:, :, :, 1:], load_arrays(TEMP_DATA, "val")[1][:, :, :, 1:]))
+    xb, yb = load_arrays(DATA, "train"); xv, yv = load_arrays(DATA, "val"); xt, yt = load_arrays(DATA, "test")
+    tb, tb_maps = load_arrays(TEMP_DATA, "train"); tv, tv_maps = load_arrays(TEMP_DATA, "val"); tt, tt_maps = load_arrays(TEMP_DATA, "test")
+    student = {split: np.load(STUDENT_DATA / f"{split}.npz") for split in ("train", "val", "test")}
+    x_train = np.concatenate((xb, tb, student["train"]["inputs"]))
+    x_val = np.concatenate((xv, tv, student["val"]["inputs"]))
+    x_test = student["test"]["inputs"]
+    student_train_points = student["train"]["points"].reshape(-1, 4)
+    student_val_points = student["val"]["points"].reshape(-1, 4)
+    y_train = np.concatenate((points(DATA, "train"), points(TEMP_DATA, "train"), student_train_points))
+    y_val = np.concatenate((points(DATA, "val"), points(TEMP_DATA, "val"), student_val_points))
+    y_test = student["test"]["points"]
+    hm_train = np.concatenate((yb[:, :, :, 1:], tb_maps[:, :, :, 1:], student["train"]["heatmaps"][..., :1]))
+    hm_val = np.concatenate((yv[:, :, :, 1:], tv_maps[:, :, :, 1:], student["val"]["heatmaps"][..., :1]))
     model = build_model()
     losses = {"center_xy": coordinate_loss, "tip_heatmap": tip_loss}
     model.compile(optimizer=keras.optimizers.Adam(1e-3), loss=losses, loss_weights={"center_xy": 2.0, "tip_heatmap": 3.0})
-    model.fit(make_dataset(x_train, y_train[:, :2], hm_train, True), validation_data=make_dataset(x_val, y_val[:, :2], hm_val, False), epochs=12, verbose=2)
+    # Generic and legacy crops retain broad robustness jitter; student crops
+    # are already sampled from the deployed ellipse, so they must stay aligned.
+    train_generic = make_dataset(np.concatenate((xb, tb)), np.concatenate((points(DATA, "train"), points(TEMP_DATA, "train")))[:, :2], np.concatenate((yb[:, :, :, 1:], tb_maps[:, :, :, 1:])), True, 24)
+    train_student = make_dataset(student["train"]["inputs"], student["train"]["points"][:, 0, :], student["train"]["heatmaps"][..., 1:], True, 0)
+    val_generic = make_dataset(np.concatenate((xv, tv)), np.concatenate((points(DATA, "val"), points(TEMP_DATA, "val")))[:, :2], np.concatenate((yv[:, :, :, 1:], tv_maps[:, :, :, 1:])), False, 0)
+    val_student = make_dataset(student["val"]["inputs"], student["val"]["points"][:, 0, :], student["val"]["heatmaps"][..., 1:], False, 0)
+    # First learn gauge-agnostic visual features, then adapt once to the
+    # deployment-conditioned LittleGood geometry. This changes frequency,
+    # not sample count: each image still appears once in each phase.
+    model.fit(train_student, validation_data=val_student, epochs=20, verbose=2)
     qat = tfmot.quantization.keras.quantize_model(model)
     qat.compile(optimizer=keras.optimizers.Adam(2e-4), loss=losses, loss_weights={"center_xy": 2.0, "tip_heatmap": 3.0})
-    qat.fit(make_dataset(x_train, y_train[:, :2], hm_train, True), validation_data=make_dataset(x_val, y_val[:, :2], hm_val, False), epochs=4, verbose=2)
+    qat.fit(train_student, validation_data=val_student, epochs=6, verbose=2)
     path = ARTIFACTS / "gauge_center_tip_hybrid_v1_int8.tflite"
     contract = export_int8(qat, x_train, path)
     center, tip_map = predict_int8(path, x_test)

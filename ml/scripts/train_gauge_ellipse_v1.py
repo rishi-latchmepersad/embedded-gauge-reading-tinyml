@@ -22,7 +22,9 @@ import tf_keras as keras
 import tensorflow_model_optimization as tfmot
 
 
-IMAGE_SIZE = 640
+# why: 320x320 preserves gauge geometry while reducing the first activation
+# and making the integer export more stable than the 640x640 graph.
+IMAGE_SIZE = 320
 SEED = 42
 DEFAULT_EPOCHS = 40
 DEFAULT_QAT_EPOCHS = 10
@@ -61,12 +63,14 @@ def build_model() -> keras.Model:
     # why: the previous integer exports showed large drift through TFLite's
     # quantized MEAN reduction; a learned 10x10 convolution collapses the
     # spatial map without introducing that reduction operator.
-    x = keras.layers.Conv2D(128, 10, padding="valid", use_bias=True, name="spatial_collapse")(x)
+    x = keras.layers.Conv2D(128, IMAGE_SIZE // 64, padding="valid", use_bias=True, name="spatial_collapse")(x)
     x = keras.layers.ReLU(name="spatial_collapse_relu")(x)
     x = keras.layers.Flatten(name="spatial_flatten")(x)
     x = keras.layers.Dense(64, activation="relu", name="head_relu")(x)
-    # [center_x, center_y, radius_x, radius_y, confidence], all normalized 0..1.
-    outputs = keras.layers.Dense(5, activation="sigmoid", name="ellipse")(x)
+    # why: sigmoid outputs collapsed to one constant vector in the N6 int8
+    # export; linear geometry outputs retain variation and are clamped by the
+    # board-side decoder to normalized coordinates.
+    outputs = keras.layers.Dense(5, activation=None, name="ellipse")(x)
     return keras.Model(inputs, outputs, name="gauge_ellipse_v1")
 
 
@@ -94,17 +98,22 @@ def _load_split(root: Path, split: str) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray([str(path) for path in image_paths]), targets
 
 
-def _dataset(paths: np.ndarray, targets: np.ndarray, batch: int, training: bool) -> tf.data.Dataset:
-    """Create a deterministic decoded grayscale input pipeline."""
-    dataset = tf.data.Dataset.from_tensor_slices((paths, targets))
+def _dataset(paths: np.ndarray, targets: np.ndarray, batch: int, training: bool, weights: np.ndarray | None = None) -> tf.data.Dataset:
+    """Create a decoded grayscale pipeline with optional per-domain loss weights."""
+    # why: weighting adaptation samples changes the objective without copying
+    # images, preserving the user's no-oversampling constraint.
+    if weights is None:
+        weights = np.ones(len(paths), dtype=np.float32)
+    dataset = tf.data.Dataset.from_tensor_slices((paths, targets, weights))
     if training:
         dataset = dataset.shuffle(len(paths), seed=SEED, reshuffle_each_iteration=True)
 
-    def decode(path: tf.Tensor, target: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+    def decode(path: tf.Tensor, target: tf.Tensor, weight: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         """Decode a PNG and scale it to the model's low-factor input range."""
         image = tf.io.decode_png(tf.io.read_file(path), channels=1)
         image = tf.cast(image, tf.float32) / 255.0
-        return image, target
+        image = tf.image.resize(image, [IMAGE_SIZE, IMAGE_SIZE], method="bilinear")
+        return image, target, weight
 
     return dataset.map(decode, num_parallel_calls=tf.data.AUTOTUNE).batch(batch).prefetch(tf.data.AUTOTUNE)
 
@@ -122,6 +131,7 @@ def _representative(paths: np.ndarray) -> Iterable[list[np.ndarray]]:
     """Yield calibration images for full integer post-training quantization."""
     for path in paths[: min(200, len(paths))]:
         image = tf.io.decode_png(tf.io.read_file(path), channels=1)
+        image = tf.image.resize(image, [IMAGE_SIZE, IMAGE_SIZE], method="bilinear")
         yield [tf.cast(image[None], tf.float32) / 255.0]
 
 
@@ -176,6 +186,7 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
     parser.add_argument("--qat-epochs", type=int, default=DEFAULT_QAT_EPOCHS)
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--temp-weight", type=float, default=1.0, help="Loss weight for LittleGood samples, without duplication.")
     parser.add_argument(
         "--temp-data",
         type=Path,
@@ -202,8 +213,11 @@ def main() -> None:
     val_targets = np.concatenate((val_targets, temp_val_targets))
     test_paths = np.concatenate((test_paths, temp_test_paths))
     test_targets = np.concatenate((test_targets, temp_test_targets))
-    train_ds = _dataset(train_paths, train_targets, args.batch_size, True)
-    val_ds = _dataset(val_paths, val_targets, args.batch_size, False)
+    # Keep one occurrence per image while emphasizing the deployment domain.
+    train_weights = np.concatenate((np.ones(len(train_paths) - len(temp_train_paths), dtype=np.float32), np.full(len(temp_train_paths), args.temp_weight, dtype=np.float32)))
+    val_weights = np.concatenate((np.ones(len(val_paths) - len(temp_val_paths), dtype=np.float32), np.full(len(temp_val_paths), args.temp_weight, dtype=np.float32)))
+    train_ds = _dataset(train_paths, train_targets, args.batch_size, True, train_weights)
+    val_ds = _dataset(val_paths, val_targets, args.batch_size, False, val_weights)
     test_ds = _dataset(test_paths, test_targets, args.batch_size, False)
 
     args.output.mkdir(parents=True, exist_ok=True)
@@ -225,7 +239,7 @@ def main() -> None:
         # weights remain portable when the same graph is reconstructed for checks.
         model.save_weights(args.output / "gauge_ellipse_v1_qat.weights.h5")
     test_metrics = {key: float(value) for key, value in model.evaluate(test_ds, return_dict=True).items()}
-    report = {"model": "gauge_ellipse_v1", "input": [1, IMAGE_SIZE, IMAGE_SIZE, 1], "train_images": len(train_paths), "val_images": len(val_paths), "test_images": len(test_paths), "original_train_images": len(train_paths) - len(temp_train_paths), "little_good_train_images": len(temp_train_paths), "little_good_val_images": len(temp_val_paths), "little_good_test_images": len(temp_test_paths), "temp_oversample_factor": 1, "qat_epochs": qat_epochs, "test_metrics": test_metrics, "activation": _activation_report(model)}
+    report = {"model": "gauge_ellipse_v1", "input": [1, IMAGE_SIZE, IMAGE_SIZE, 1], "train_images": len(train_paths), "val_images": len(val_paths), "test_images": len(test_paths), "original_train_images": len(train_paths) - len(temp_train_paths), "little_good_train_images": len(temp_train_paths), "little_good_val_images": len(temp_val_paths), "little_good_test_images": len(temp_test_paths), "temp_oversample_factor": 1, "temp_loss_weight": args.temp_weight, "qat_epochs": qat_epochs, "test_metrics": test_metrics, "activation": _activation_report(model)}
     report["tflite_int8"] = _export_int8(model, train_paths, args.output / "gauge_ellipse_v1_int8.tflite")
     (args.output / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))

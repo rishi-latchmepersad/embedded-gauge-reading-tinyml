@@ -51,7 +51,9 @@ DATA = ROOT / "data" / "initial_temp_gauge_v1" / "center_tip"
 FULL_DATA = ROOT / "data" / "initial_temp_gauge_v1" / "ellipse"
 TEACHER = Path(os.environ.get("GAUGE_TEACHER", "/mnt/d/Projects/cvat/serverless/custom/gaugeface-yolo11m/nuclio/gaugeface_best.pt"))
 VECTOR = ROOT / "artifacts" / "gauge_center_tip_vector_littlegood_v7" / "gauge_center_tip_vector_v1_int8.tflite"
-HYBRID = ROOT / "artifacts" / "gauge_center_tip_hybrid_littlegood_v5" / "gauge_center_tip_hybrid_v1_int8.tflite"
+HYBRID = ROOT / "artifacts" / "gauge_center_tip_hybrid_littlegood_v11" / "gauge_center_tip_hybrid_v1_int8.tflite"
+ELLIPSE = ROOT / "artifacts" / "gauge_ellipse_vector_littlegood_v1" / "gauge_ellipse_vector_v1_int8.tflite"
+CROP_SCALE = 1.18
 OUTPUT = ROOT / "artifacts" / "cvat_teacher_keypoint_pipeline_v1"
 
 
@@ -92,7 +94,7 @@ def ellipse_from_result(result: object, image: np.ndarray) -> np.ndarray:
 def center_input(image: np.ndarray, ellipse: np.ndarray) -> np.ndarray:
     """Build the compact heads' ellipse-conditioned 160x160 input."""
     cx, cy, rx, ry = ellipse
-    side = max(2 * rx, 2 * ry) * 1.18
+    side = max(2 * rx, 2 * ry) * CROP_SCALE
     left, top = cx - side / 2, cy - side / 2
     right, bottom = cx + side / 2, cy + side / 2
     # Crop the full frame before resizing; resizing the whole frame would
@@ -105,11 +107,33 @@ def center_input(image: np.ndarray, ellipse: np.ndarray) -> np.ndarray:
     return np.stack([gray * 2 - 1, mask * 2 - 1], axis=-1)
 
 
+def predict_compact_ellipse(interpreter: tf.lite.Interpreter, image: np.ndarray) -> np.ndarray:
+    """Run the compact full-int8 ellipse stage on a 640x640 full frame."""
+    detail = interpreter.get_input_details()[0]
+    output = interpreter.get_output_details()[0]
+    gray = np.asarray(Image.fromarray(image).convert("L").resize((160, 160)), dtype=np.float32) / 255.0
+    scale, zero = detail["quantization"]
+    quantized = np.clip(np.round(gray[None, ..., None] / scale + zero), -128, 127).astype(np.int8)
+    interpreter.set_tensor(detail["index"], quantized)
+    interpreter.invoke()
+    raw = interpreter.get_tensor(output["index"]).astype(np.float32)
+    values = (raw - output["quantization"][1]) * output["quantization"][0]
+    cx, cy, rx, ry = np.clip(values[0], 0.02, 0.98)
+    return np.asarray([cx * 640.0, cy * 640.0, rx * 640.0, ry * 640.0], dtype=np.float32)
+
+
+def target_points_full_frame(row: dict[str, object], split: str) -> np.ndarray:
+    """Return LittleGood point labels in the original 640px frame."""
+    return np.asarray((row["center_xy_norm"], row["tip_xy_norm"]), dtype=np.float32) * 640.0
+
+
 def main() -> None:
     """Render six random teacher-to-keypoint LittleGood overlays."""
     rows = json.loads((DATA / "metadata.json").read_text())["splits"]["test"]
     selected = np.random.default_rng(42).choice(rows, size=6, replace=False).tolist()
     teacher = YOLO(str(TEACHER))
+    compact_ellipse = tf.lite.Interpreter(model_path=str(ELLIPSE))
+    compact_ellipse.allocate_tensors()
     # why: the validation harness must remain runnable in CPU-only Poetry
     # environments; training/export still use the configured GPU when present.
     teacher_device = 0 if torch.cuda.is_available() else "cpu"
@@ -118,15 +142,23 @@ def main() -> None:
     for row in selected:
         image_path = FULL_DATA / "images" / "test" / f"{row['stem']}.png"
         image = np.asarray(Image.open(image_path).convert("RGB"))
-        ellipse = ellipse_from_result(teacher.predict(image, conf=.25, device=teacher_device, verbose=False)[0], image)
+        # why: the compact int8 stage is the deployment candidate; the YOLO
+        # teacher remains loaded for comparison and can be restored with
+        # USE_CVAT_TEACHER=1 when diagnosing teacher-specific crop errors.
+        if os.environ.get("USE_CVAT_TEACHER") == "1":
+            ellipse = ellipse_from_result(teacher.predict(image, conf=.25, device=teacher_device, verbose=False)[0], image)
+        else:
+            ellipse = predict_compact_ellipse(compact_ellipse, image)
         conditioned = center_input(image, ellipse)
-        vector = predict_vector(VECTOR, conditioned[None])[0][:2]
-        _, heatmap = predict_hybrid(HYBRID, conditioned[None])
+        # The student-conditioned hybrid now owns both outputs; the older
+        # vector center head was trained in a different crop frame.
+        vector, heatmap = predict_hybrid(HYBRID, conditioned[None])
+        vector = vector[0]
         local_tip = decode_tip(heatmap)[0]
         cx, cy, rx, ry = ellipse
-        side = max(2 * rx, 2 * ry) * 1.18
+        side = max(2 * rx, 2 * ry) * CROP_SCALE
         predicted = np.asarray([[vector[0] * side + cx - side / 2, vector[1] * side + cy - side / 2], [local_tip[0] * side + cx - side / 2, local_tip[1] * side + cy - side / 2]])
-        target = np.asarray([row["center_xy_norm"], row["tip_xy_norm"]], dtype=np.float32) * 640
+        target = target_points_full_frame(row, "test")
         view = Image.fromarray(image).convert("RGB")
         draw = ImageDraw.Draw(view)
         draw.rectangle((cx - rx, cy - ry, cx + rx, cy + ry), outline="red", width=4)

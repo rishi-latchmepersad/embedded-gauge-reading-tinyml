@@ -365,3 +365,119 @@ def tip_priority_heatmap_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor
     """Heatmap objective tuned to keep the tip branch stable without overpowering it."""
 
     return _coordinate_weighted_heatmap_loss(y_true, y_pred, coordinate_weight=0.5)
+
+
+# ---------------------------------------------------------------------------
+# Wing Loss for keypoint heatmap regression
+# Feng et al., CVPR 2018 -- designed for sub-pixel keypoint localization
+# ---------------------------------------------------------------------------
+
+@keras.utils.register_keras_serializable(package="embedded_gauge_reading_tinyml")
+def wing_heatmap_loss(
+    y_true: tf.Tensor,
+    y_pred: tf.Tensor,
+    *,
+    omega: float = 10.0,
+    epsilon: float = 2.0,
+    positive_weight: float = 10.0,
+    background_weight: float = 0.2,
+    positive_threshold: float = 0.1,
+) -> tf.Tensor:
+    """Wing loss for heatmap regression (Feng et al., CVPR 2018).
+
+    Has a linear region near zero that gives constant gradients for small
+    errors, and a log region beyond that which gives stronger gradients
+    for medium errors.  Ideal for keypoint localization where the model
+    needs to learn precise sub-pixel positions.
+
+    Handles multi-channel heatmaps (batch, H, W, C) by averaging the
+    per-channel Wing loss.
+
+    Args:
+        omega: Width of the linear region (in heatmap pixel units).
+        epsilon: Controls curvature of the log region.  Larger = more linear.
+        positive_weight: Loss multiplier for heatmap peak pixels.
+        background_weight: Loss multiplier for background pixels.
+        positive_threshold: Heatmap value above which a pixel is "positive".
+    """
+    y_true_f = tf.cast(tf.convert_to_tensor(y_true), tf.float32)
+    y_pred_f = tf.cast(tf.convert_to_tensor(y_pred), tf.float32)
+
+    # C = omega * (1 - log(1 + omega/epsilon))
+    c = omega * (1.0 - tf.math.log(1.0 + omega / epsilon))
+
+    def _per_channel_loss(true_ch, pred_ch):
+        """Wing loss on a single (batch, H, W) channel."""
+        diff = tf.abs(pred_ch - true_ch)
+        per_pixel = tf.where(
+            diff < omega,
+            omega * tf.math.log(1.0 + diff / epsilon),
+            diff - c,
+        )
+        weights = tf.where(
+            true_ch > positive_threshold,
+            tf.cast(positive_weight, tf.float32),
+            tf.cast(background_weight, tf.float32),
+        )
+        weighted = tf.reduce_sum(weights * per_pixel, axis=[1, 2])
+        w_sum = tf.maximum(tf.reduce_sum(weights, axis=[1, 2]), 1.0)
+        return tf.reduce_mean(weighted / w_sum)
+
+    # Handle multi-channel (batch, H, W, C) by averaging per-channel loss
+    if y_true_f.shape.rank == 4 and y_true_f.shape[-1] > 1:
+        num_ch = y_true_f.shape[-1]
+        losses = [_per_channel_loss(y_true_f[..., i], y_pred_f[..., i]) for i in range(num_ch)]
+        # Weight tip channel more (channel 1)
+        channel_weights = [1.0, 1.5] if num_ch == 2 else [1.0] * num_ch
+        total = sum(w * l for w, l in zip(channel_weights, losses)) / sum(channel_weights)
+        return total
+    else:
+        return _per_channel_loss(
+            tf.squeeze(y_true_f, axis=-1) if y_true_f.shape.rank == 4 else y_true_f,
+            tf.squeeze(y_pred_f, axis=-1) if y_pred_f.shape.rank == 4 else y_pred_f,
+        )
+
+
+@keras.utils.register_keras_serializable(package="embedded_gauge_reading_tinyml")
+def adaptive_wing_heatmap_loss(
+    y_true: tf.Tensor,
+    y_pred: tf.Tensor,
+    *,
+    omega: float = 14.0,
+    theta: float = 0.5,
+    epsilon: float = 1.0,
+    alpha: float = 2.1,
+) -> tf.Tensor:
+    """Adaptive Wing Loss (Wang et al., ICCV 2019).
+
+    Adapts its shape based on ground truth value: near peaks the loss is
+    tighter (smaller omega, larger gradient), away from peaks it relaxes.
+    Handles multi-channel heatmaps by averaging per-channel loss.
+    """
+    y_true_f = tf.cast(tf.convert_to_tensor(y_true), tf.float32)
+    y_pred_f = tf.cast(tf.convert_to_tensor(y_pred), tf.float32)
+
+    def _per_channel(true_ch, pred_ch):
+        diff = tf.abs(pred_ch - true_ch)
+        w = tf.where(
+            true_ch < theta,
+            1.0,
+            alpha * tf.pow(true_ch + 1e-7, 1.0 / alpha),
+        )
+        c = omega * (1.0 / (1.0 + tf.pow(theta / epsilon, alpha - true_ch)))
+        awing = tf.where(
+            diff < omega,
+            w * omega * tf.math.log(1.0 + diff / epsilon),
+            w * (diff - c),
+        )
+        return tf.reduce_mean(awing)
+
+    if y_true_f.shape.rank == 4 and y_true_f.shape[-1] > 1:
+        num_ch = y_true_f.shape[-1]
+        losses = [_per_channel(y_true_f[..., i], y_pred_f[..., i]) for i in range(num_ch)]
+        return tf.add_n(losses) / float(num_ch)
+    else:
+        return _per_channel(
+            tf.squeeze(y_true_f, axis=-1) if y_true_f.shape.rank == 4 else y_true_f,
+            tf.squeeze(y_pred_f, axis=-1) if y_pred_f.shape.rank == 4 else y_pred_f,
+        )
