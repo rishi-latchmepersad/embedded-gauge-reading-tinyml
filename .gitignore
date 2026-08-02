@@ -77,12 +77,6 @@
 /ml/data/yolo_pose_labelled_640/
 /ml/data/labelled/test_3_pipeline_results.csv
 
-# Raw diagnostic frame dumps are local capture-session intermediates.
-/ml/data/captured_images/2026-07-21_23/
-/ml/data/captured_images/2026-07-22_00/
-/ml/data/captured_images/2026-07-22_05/
-/ml/data/captured_images/2026-07-22_06/
-
 # Large local train/validation/test archives are generated dataset bundles;
 # keep the preparation scripts and labelled source archives under version
 # control without making Git scan or upload hundreds of megabytes of samples.
