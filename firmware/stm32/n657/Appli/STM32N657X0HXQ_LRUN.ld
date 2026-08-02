@@ -45,10 +45,11 @@ _Min_Stack_Size = 0x8000; /* required amount of stack (32KB -- main() init path 
 MEMORY
 {
   ROM    (rx)     : ORIGIN = 0x34000400,   LENGTH = 600K
-  /* Shrink RAM to 443K (AXISRAM1 only) so BSS cannot grow into AXISRAM2
-     where the OBB model input buffer lives at 0x34110000.
-     ROM grew to 600K to accommodate DS-CNN v4 heatmap CD .rodata.  */
-  RAM    (xrw)    : ORIGIN = 0x34099400,   LENGTH = 423K
+  /* Keep the main MSP entirely below the OBB activation vpool at 0x34100000.
+     The previous 423K span placed _estack at 0x34103000, overlapping the top
+     12 KiB of the CPU stack with OBB activations and causing late-epoch return
+     address corruption.  ROM grew to 600K for the DS-CNN v4 heatmap .rodata. */
+  RAM    (xrw)    : ORIGIN = 0x34099400,   LENGTH = 410K
   /* Scalar model blob at 0x70200000 (matches FLASH_SCALAR in flash_boot.bat). */
   EXTRAM (rw)           : ORIGIN = 0x70200000,   LENGTH = 3200K
   /* Rectifier model blob at 0x70600000 (matches FLASH_RECTIFIER in flash_boot.bat).
@@ -79,10 +80,15 @@ MEMORY
     * at 0x70400000 (matches model's c_info.json offset_start).
     * Flash_boot.bat programs tip_focus_weights.raw here. */
    TIP_FOCUS_WEIGHTS (rw) : ORIGIN = 0x70400000,   LENGTH = 4096K
-  /* Tip-focus geometry model: activations ~632 KiB scratch buffer placed in
-   * unused AXISRAM3+4 (contiguous, 0x34200000, 896K).  AXISRAM3/4 are not
-   * used by any NPU model or application code. */
-  TIP_FOCUS_RAM (xrw) : ORIGIN = 0x34200000,   LENGTH = 896K
+   /* New model slots. The ellipse slot intentionally shares the old address
+    * so legacy symbols remain link-compatible while the live path migrates. */
+   GAUGE_ELLIPSE_WEIGHTS (rw) : ORIGIN = 0x70400000, LENGTH = 4096K
+   GAUGE_CENTER_TIP_WEIGHTS (rw) : ORIGIN = 0x70800000, LENGTH = 4096K
+  /* Legacy camera snapshot and compatibility scratch. The live generated
+   * models now occupy AXISRAM2..5 from 0x34100000 through 0x3434E000, so
+   * this section must not remain in the former 0x34200000 vpool window.
+   * AXISRAM1's lower alias is separate from the DMA window at 0x24160000. */
+  TIP_FOCUS_RAM (xrw) : ORIGIN = 0x24000000,   LENGTH = 1408K
 }
 
 PHDRS
@@ -187,15 +193,27 @@ SECTIONS
     . = ALIGN(32);
   } >EXTRAM_SOURCE_CROP_BOX
 
-  /* Tip-focus geometry model pool: placed at the tip-focus weights flash
-    * region (0x70400000).  Matches TIP_FOCUS_WEIGHTS in the MEMORY block and
-    * network_atonbuf.xSPI2.raw in flash_boot.bat. */
+  /* Legacy compatibility pool; the live ellipse model now owns 0x70400000. */
   .xspi2_tip_focus_pool (NOLOAD) :
   {
     . = ALIGN(32);
     KEEP(*(.xspi2_tip_focus_pool))
     . = ALIGN(32);
   } >TIP_FOCUS_WEIGHTS
+
+  .gauge_ellipse_params_0 (NOLOAD) :
+  {
+    . = ALIGN(32);
+    KEEP(*(.gauge_ellipse_params_0))
+    . = ALIGN(32);
+  } >GAUGE_ELLIPSE_WEIGHTS
+
+  .gauge_center_tip_params_0 (NOLOAD) :
+  {
+    . = ALIGN(32);
+    KEEP(*(.gauge_center_tip_params_0))
+    . = ALIGN(32);
+  } >GAUGE_CENTER_TIP_WEIGHTS
 
   .ARM.extab   : {
     . = ALIGN(4);
@@ -251,6 +269,21 @@ SECTIONS
     *(.data)           /* .data sections */
     *(.data*)          /* .data* sections */
 
+    /*
+     * The application startup copies only _sdata.._edata.  Keep the
+     * compiler-generated GOT and compile-in reloc metadata inside that range;
+     * otherwise these sections are allocated in RAM but remain zero after
+     * reset, and SW ops fault on indirect table/function-pointer loads.
+     *
+     * These sections naturally follow the existing .data payload, preserving
+     * the established GOT address used by the generated reloc wrappers.
+     */
+    *(.got)
+    *(.got.plt)
+    KEEP(*(.network_flags))
+    KEEP(*(.network_entries))
+    KEEP(*(.network_rt_ctx))
+
     . = ALIGN(4);
     _edata = .;        /* define a global symbol at data end */
 
@@ -291,18 +324,21 @@ SECTIONS
     __bss_end__ = _ebss;
   } >RAM :data
 
-  /* Tip-focus / camera scratch stays out of the OBB reloc runtime window.
-   * The OBB vpool starts at 0x34100000, so this section must not live in the
-   * old 0x34200000 AXISRAM3+4 placement. Keeping the shared camera snapshot and
-   * center-detector scratch in RAM_NC avoids colliding with the reloc image. */
+  /* Legacy CPU scratch is kept in the dedicated AXISRAM1 alias above, away
+   * from the generated ellipse/keypoint activation ranges. */
   .tip_focus_activations (NOLOAD) :
   {
     . = ALIGN(32);
     __stip_focus_activations = .;
     KEEP(*(.tip_focus_activations))
+    /* The snapshot is protected by a 512 KiB MPU region. Align its start to
+     * that region size so the MPU descriptor cannot expose adjacent runtime
+     * activations or create an invalid subregion boundary. */
+    . = ALIGN(0x80000);
+    KEEP(*(.tip_focus_activations_snapshot))
     KEEP(*(.tip_focus_activations*))
     . = ALIGN(32);
-  } >RAM_NC
+  } >TIP_FOCUS_RAM
 
   /* AXISRAM6 section — AI thread stack lives here, after polar_luma (below)
    * and the OBB activation region (which both share the same 304K below). */

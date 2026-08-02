@@ -215,6 +215,8 @@ bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 	float is_main_needle = 0.0f;
 	float angle_rad = 0.0f;
 	float angle_degrees = 0.0f;
+	float gauge_angle_rad = 0.0f;
+	float gauge_angle_degrees = 0.0f;
 	float angle_delta_degrees = 0.0f;
 	float temperature_c = 0.0f;
 	float published_temperature_c = 0.0f;
@@ -269,14 +271,17 @@ bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 		return false;
 	}
 
-	AppAI_TipFocus_LogHeatmapSummary(
-		"Heatmap center", center_heatmap,
-		APP_AI_TIP_FOCUS_HEATMAP_SIDE_PIXELS,
-		APP_AI_TIP_FOCUS_HEATMAP_SIDE_PIXELS);
-	AppAI_TipFocus_LogHeatmapSummary(
-		"Heatmap tip", tip_heatmap,
-		APP_AI_TIP_FOCUS_HEATMAP_SIDE_PIXELS,
-		APP_AI_TIP_FOCUS_HEATMAP_SIDE_PIXELS);
+	if (APP_AI_ENABLE_HEATMAP_DEBUG_LOGS != 0U)
+	{
+		AppAI_TipFocus_LogHeatmapSummary(
+			"Heatmap center", center_heatmap,
+			APP_AI_TIP_FOCUS_HEATMAP_SIDE_PIXELS,
+			APP_AI_TIP_FOCUS_HEATMAP_SIDE_PIXELS);
+		AppAI_TipFocus_LogHeatmapSummary(
+			"Heatmap tip", tip_heatmap,
+			APP_AI_TIP_FOCUS_HEATMAP_SIDE_PIXELS,
+			APP_AI_TIP_FOCUS_HEATMAP_SIDE_PIXELS);
+	}
 
 	heatmap_decode_ok =
 		AppAI_TipFocus_DecodeHeatmap2D(
@@ -338,24 +343,45 @@ bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 			angle_degrees += 360.0f;
 		}
 
+		/* The model vector already uses the gauge's clockwise angle convention.
+		 * Do not apply a fixed offset: it made the hot-end angle wrap outside
+		 * the calibrated sweep and turn a valid +50 C reading into -30 C. */
+		gauge_angle_rad = angle_rad;
+		gauge_angle_degrees = gauge_angle_rad *
+			(180.0f / 3.14159265358979f);
+		while (gauge_angle_degrees < 0.0f)
+		{
+			gauge_angle_degrees += 360.0f;
+		}
+		while (gauge_angle_degrees >= 360.0f)
+		{
+			gauge_angle_degrees -= 360.0f;
+		}
+
 		angle_delta_degrees =
-			fmodf(angle_degrees - APP_AI_TIP_FOCUS_COLD_ANGLE_DEG, 360.0f);
+			fmodf(gauge_angle_degrees - APP_AI_TIP_FOCUS_COLD_ANGLE_DEG, 360.0f);
 		if (angle_delta_degrees < 0.0f)
 		{
 			angle_delta_degrees += 360.0f;
 		}
 
-		temperature_c = AppBaselineRuntime_ConvertAngleToTemperature(angle_rad);
+		/* Use only the cold/hot endpoints so the AI curve stays linear across
+		 * the full physical range instead of inheriting the baseline's interior
+		 * zero anchor. */
+		temperature_c =
+			AppBaselineRuntime_ConvertAngleToTemperatureExtremes(gauge_angle_rad);
 		{
 			const long raw_angle_100 = lroundf(angle_degrees * 100.0f);
+			const long gauge_angle_100 = lroundf(gauge_angle_degrees * 100.0f);
 			const long cold_angle_100 = lroundf(APP_AI_TIP_FOCUS_COLD_ANGLE_DEG * 100.0f);
 			const long sweep_100 = lroundf(APP_AI_TIP_FOCUS_SWEEP_DEG * 100.0f);
 			const long delta_100 = lroundf(angle_delta_degrees * 100.0f);
 			const long temp_100 = lroundf(temperature_c * 100.0f);
 
 			DebugConsole_Printf(
-				"[AI][TIP_FOCUS][ANGLE] raw=%ld.%02lddeg cold=%ld.%02lddeg sweep=%ld.%02lddeg delta=%ld.%02lddeg temp=%ld.%02ldC\r\n",
+				"[AI][TIP_FOCUS][ANGLE] raw=%ld.%02lddeg gauge=%ld.%02lddeg cold=%ld.%02lddeg sweep=%ld.%02lddeg delta=%ld.%02lddeg temp=%ld.%02ldC\r\n",
 				labs(raw_angle_100) / 100L, labs(raw_angle_100) % 100L,
+				labs(gauge_angle_100) / 100L, labs(gauge_angle_100) % 100L,
 				labs(cold_angle_100) / 100L, labs(cold_angle_100) % 100L,
 				labs(sweep_100) / 100L, labs(sweep_100) % 100L,
 				labs(delta_100) / 100L, labs(delta_100) % 100L,
@@ -382,8 +408,9 @@ bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 			center_spread_ok && tip_spread_ok && edge_margin_ok && distance_ok &&
 			angle_ok && temperature_finite_ok && temperature_range_ok)
 		{
-			temperature_c = AppAI_TipFocus_MedianFilter(temperature_c);
 			app_ai_tip_focus_consecutive_invalid = 0U;
+			app_ai_tip_focus_last_published = temperature_c;
+			app_ai_tip_focus_last_published_valid = true;
 			app_ai_last_inference_value = temperature_c;
 			app_ai_last_inference_valid = true;
 			(void)INA219_LogReading("AI-DONE");
@@ -400,6 +427,25 @@ reject_and_hold:
 	if (app_ai_tip_focus_consecutive_invalid >= APP_AI_TIP_FOCUS_MAX_INVALID_FRAMES)
 	{
 		app_ai_tip_focus_consecutive_invalid = 0U;
+	}
+
+	if (temperature_finite_ok && temperature_range_ok)
+	{
+		/* The live model already decoded a finite in-range temperature, so
+		 * prefer the fresh reading over an older held value when only the
+		 * secondary geometry gates disagree. This keeps the published AI result
+		 * from sticking on a stale cold-side history entry after the baseline
+		 * crop or center estimate shifts. */
+		DebugConsole_WriteString(
+			"[AI] Tip-focus rejected; publishing current decoded temperature.\r\n");
+		app_ai_tip_focus_consecutive_invalid = 0U;
+		app_ai_tip_focus_last_published = temperature_c;
+		app_ai_tip_focus_last_published_valid = true;
+		app_ai_last_inference_value = temperature_c;
+		app_ai_last_inference_valid = true;
+		(void)INA219_LogReading("AI-DONE");
+		Metrics_EndInference("AI", temperature_c);
+		return true;
 	}
 
 	if (app_ai_tip_focus_last_published_valid)

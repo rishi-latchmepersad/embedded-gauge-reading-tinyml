@@ -117,6 +117,13 @@ extern uint8_t app_ai_scalar_row_scratch[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP
 extern uint8_t app_ai_scalar_output_row_scratch[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * 3U * sizeof(float)];
 extern volatile size_t app_ai_scalar_preprocess_last_row;
 
+/*
+ * The keypoint input is staged in non-cacheable RAM before it is copied into
+ * the shared NPU activation window.  Both the runtime-tail include and the
+ * owning app_ai.c translation unit need the same declaration.
+ */
+extern uint8_t app_ai_center_tip_input_shadow[GAUGE_CENTER_TIP_INPUT_SIZE_BYTES];
+
 /* ------------------------------------------------------------------ */
 /* xSPI2 flash signatures (const, compiled-in model ID bytes)         */
 /* ------------------------------------------------------------------ */

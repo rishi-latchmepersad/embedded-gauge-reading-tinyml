@@ -25,7 +25,7 @@ uint8_t camera_capture_buffers[CAMERA_CAPTURE_BUFFER_COUNT][CAMERA_CAPTURE_BUFFE
  * owns this copy, and the baseline worker reuses it only after the AI path
  * has finished with the frame. */
 uint8_t camera_inference_frame_snapshot[CAMERA_CAPTURE_BUFFER_SIZE_BYTES]
-		__attribute__((section(".tip_focus_activations"), aligned(__SCB_DCACHE_LINE_SIZE)));
+		__attribute__((section(".tip_focus_activations_snapshot"), aligned(__SCB_DCACHE_LINE_SIZE)));
 
 /* Keep the CPU write-probe scratch separate from the live DMA frame. */
 uint32_t camera_capture_write_probe_words[2U];
@@ -33,6 +33,22 @@ uint32_t camera_capture_write_probe_words[2U];
 /* Histogram bins for the RAW10 level summary. Keeping this out of the thread
  * file makes the camera storage block easier to scale independently. */
 uint32_t camera_capture_raw_level_histogram[1024U];
+
+/* The console uses this flag to drop unrelated output while the snapshot
+ * copy owns the CPU for a bounded transfer. A word-sized volatile is used so
+ * the flag is naturally observable by the other Cortex-M thread context. */
+volatile uint32_t camera_snapshot_copy_active = 0U;
+volatile uint32_t camera_snapshot_copy_progress_words = 0U;
+
+/**
+ * @brief Reports whether the camera snapshot transfer is in progress.
+ * @param None.
+ * @return Non-zero while the private snapshot copy is active.
+ * @sideeffect Reads a RAM-only diagnostic flag; no I/O is performed.
+ */
+bool AppCameraBuffers_IsSnapshotCopyActive(void) {
+	return camera_snapshot_copy_active != 0U;
+}
 
 void AppCameraBuffers_PrepareForDma(void) {
 	for (uint32_t buffer_index = 0U; buffer_index < CAMERA_CAPTURE_BUFFER_COUNT;
@@ -57,11 +73,13 @@ void AppCameraBuffers_InvalidateCaptureRegion(uint32_t captured_bytes) {
 	}
 
 	DebugConsole_Printf(
-			"[CAMERA][CAPTURE] Invalidate capture buffer cache: ptr=%p bytes=%lu\r\n",
+			"[CAMERA][CAPTURE] Capture buffer is non-cacheable: ptr=%p bytes=%lu; cache invalidate skipped.\r\n",
 			(void *) camera_capture_result_buffer, (unsigned long) invalidate_bytes);
-
-	SCB_InvalidateDCache_by_Addr((void*) camera_capture_result_buffer,
-			(int32_t) invalidate_bytes);
+	/* why: camera_capture_buffers lives in RAM_NC (0x24160000), so a D-cache
+	 * invalidate on this address is unnecessary and can fault on this MPU
+	 * configuration. The barrier still orders the completed DMA writes before
+	 * the CPU copies the frame into the private snapshot. */
+	__DSB();
 }
 
 uint32_t AppCameraBuffers_CountNonZeroBytes(const uint8_t *buffer_ptr,
@@ -79,4 +97,132 @@ uint32_t AppCameraBuffers_CountNonZeroBytes(const uint8_t *buffer_ptr,
 	}
 
 	return nonzero_count;
+}
+
+/**
+ * @brief Log a compact signature for a frame without emitting frame bytes.
+ * @param label Short point-in-time label for the signature.
+ * @param buffer_ptr Frame storage to inspect.
+ * @param length_bytes Number of valid frame bytes.
+ * @sideeffect Scans the frame and writes one diagnostic line to the console.
+ */
+void AppCameraBuffers_LogFrameSignature(const char *label,
+		const uint8_t *buffer_ptr, uint32_t length_bytes) {
+	uint32_t hash = 2166136261UL;
+	uint32_t sum = 0U;
+	uint8_t min_value = 255U;
+	uint8_t max_value = 0U;
+	uint8_t first_value = 0U;
+	uint8_t middle_value = 0U;
+	uint8_t last_value = 0U;
+
+	if ((buffer_ptr == NULL) || (length_bytes == 0U)) {
+		DebugConsole_Printf(
+			"[CAMERA][FRAME] signature skipped label=%s ptr=%p len=%lu\r\n",
+			(label != NULL) ? label : "none", (const void *)buffer_ptr,
+			(unsigned long)length_bytes);
+		return;
+	}
+
+	first_value = buffer_ptr[0U];
+	middle_value = buffer_ptr[length_bytes / 2U];
+	last_value = buffer_ptr[length_bytes - 1U];
+	for (uint32_t index = 0U; index < length_bytes; ++index) {
+		const uint8_t value = buffer_ptr[index];
+		hash ^= (uint32_t)value;
+		hash *= 16777619UL;
+		sum += (uint32_t)value;
+		if (value < min_value) {
+			min_value = value;
+		}
+		if (value > max_value) {
+			max_value = value;
+		}
+	}
+
+	DebugConsole_Printf(
+		"[CAMERA][FRAME] label=%s ptr=%p len=%lu first=%u mid=%u last=%u "
+		"min=%u max=%u mean_milli=%lu hash=0x%08lX\r\n",
+		(label != NULL) ? label : "none", (const void *)buffer_ptr,
+		(unsigned long)length_bytes, (unsigned int)first_value,
+		(unsigned int)middle_value, (unsigned int)last_value,
+		(unsigned int)min_value, (unsigned int)max_value,
+		(unsigned long)(((uint64_t)sum * 1000ULL) / (uint64_t)length_bytes),
+		(unsigned long)hash);
+}
+
+void AppCameraBuffers_CopyCaptureToSnapshot(const uint8_t *source_ptr,
+		uint32_t length_bytes) {
+	/* The AI worker must never read the live DMA buffer: the camera/ISP
+	 * pipeline keeps writing new (and occasionally half-written, top-black)
+	 * frames into it after the snapshot completes, so the two model stages
+	 * of one inference can see different frames (2026-08-02 incident).
+	 * Copy the fresh capture into the private snapshot before the worker
+	 * starts.
+	 *
+	 * why: use a plain 32-bit word loop instead of libc memcpy. The original
+	 * snapshot copy HardFaulted inside memcpy when it targeted a legacy alias
+	 * address; the word loop has no libc runtime or alias dependence. The
+	 * source is the noncacheable DMA window (coherent), the destination is
+	 * cacheable TIP_FOCUS_RAM and is read back by the same CPU. */
+	if ((source_ptr == NULL) || (length_bytes == 0U)
+			|| (length_bytes > CAMERA_CAPTURE_BUFFER_SIZE_BYTES)) {
+		DebugConsole_Printf(
+			"[CAMERA][FRAME] snapshot-copy rejected src=%p len=%lu\r\n",
+			(const void *)source_ptr, (unsigned long)length_bytes);
+		return;
+	}
+
+	DebugConsole_Printf(
+		"[CAMERA][FRAME] snapshot-copy begin src=%p dst=%p len=%lu\r\n",
+		(const void *)source_ptr, (void *)camera_inference_frame_snapshot,
+		(unsigned long)length_bytes);
+	/* Probe the first and last destination words before the bulk transfer. This
+	 * makes an AXISRAM1 clock/security problem observable instead of making the
+	 * first long store loop look like an unexplained freeze. */
+	volatile uint32_t *snapshot_probe =
+		(volatile uint32_t *)(void *)camera_inference_frame_snapshot;
+	const uint32_t probe_last_word =
+		(length_bytes / sizeof(uint32_t)) - 1U;
+	snapshot_probe[0U] = 0U;
+	snapshot_probe[probe_last_word] = 0U;
+	__DMB();
+	DebugConsole_Printf(
+		"[CAMERA][FRAME] snapshot-copy destination probe passed dst=%p last=%p\r\n",
+		(void *)camera_inference_frame_snapshot,
+		(void *)&snapshot_probe[probe_last_word]);
+	/* why: suppressing all other console traffic during the transfer prevents
+	 * a concurrent logger from interleaving a stale/binary payload with the
+	 * copy diagnostics. Progress remains available in RAM for a fault dump. */
+	camera_snapshot_copy_progress_words = 0U;
+	__DMB();
+	camera_snapshot_copy_active = 1U;
+	__DMB();
+	const uint32_t *source_words = (const uint32_t *)(const void *)source_ptr;
+	volatile uint32_t *dest_words =
+		(volatile uint32_t *)(void *)camera_inference_frame_snapshot;
+	const uint32_t word_count = length_bytes / sizeof(uint32_t);
+	const uint32_t tail_bytes = length_bytes % sizeof(uint32_t);
+
+	for (uint32_t word_index = 0U; word_index < word_count; word_index++) {
+		dest_words[word_index] = source_words[word_index];
+		/* why: update only a scalar so the copy path cannot recursively enter
+		 * the UART driver or race another formatted logger. */
+		camera_snapshot_copy_progress_words = word_index + 1U;
+	}
+	if (tail_bytes != 0U) {
+		const uint8_t *source_tail = source_ptr + (word_count * sizeof(uint32_t));
+		uint8_t *dest_tail = camera_inference_frame_snapshot +
+			(word_count * sizeof(uint32_t));
+		for (uint32_t tail_index = 0U; tail_index < tail_bytes; ++tail_index) {
+			dest_tail[tail_index] = source_tail[tail_index];
+		}
+	}
+	__DSB();
+	camera_snapshot_copy_active = 0U;
+	__DMB();
+	DebugConsole_Printf(
+		"[CAMERA][FRAME] snapshot-copy done src=%p dst=%p len=%lu\r\n",
+		(const void *)source_ptr, (void *)camera_inference_frame_snapshot,
+		(unsigned long)length_bytes);
 }

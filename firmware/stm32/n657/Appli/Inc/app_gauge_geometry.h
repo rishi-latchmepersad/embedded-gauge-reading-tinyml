@@ -49,6 +49,16 @@
 #define APP_GAUGE_OBB_PIVOT_X_OFFSET_RATIO (-0.0089f)  /* ≈ −2 px */
 #define APP_GAUGE_OBB_PIVOT_Y_OFFSET_RATIO  0.0625f    /* ≈ +14 px */
 
+/* Gauge 1 calibration mirrors gauge_calibration_parameters.toml:
+ * min_deg=135 and sweep_deg=270 in the physical clockwise dial convention.
+ * Re-expressing that sweep around a north-zero signed axis gives the cold
+ * endpoint at about -135 degrees (7:30) and the hot endpoint at +135 degrees
+ * (4:30). */
+#define APP_GAUGE_CALIBRATION_MIN_DEG       (-135.0f)
+#define APP_GAUGE_CALIBRATION_MAX_DEG       (135.0f)
+#define APP_GAUGE_CALIBRATION_MIN_VALUE     (-30.0f)
+#define APP_GAUGE_CALIBRATION_MAX_VALUE     (50.0f)
+
 /* Keep the legacy per-module names so the existing call sites stay readable. */
 #define APP_AI_TRAINING_CROP_X_MIN_RATIO \
 	APP_GAUGE_TRAINING_CROP_X_MIN_RATIO
@@ -115,6 +125,20 @@ static inline void AppGaugeGeometry_TrainingCropCenter(
 	{
 		*center_y_out = (size_t)((float)frame_height_pixels * APP_GAUGE_INNER_DIAL_CENTER_Y_RATIO);
 	}
+}
+
+/**
+ * @brief Map a north-zero gauge angle to the gauge-1 calibrated value.
+ *
+ * The endpoints are the TOML values, so this function deliberately contains
+ * no board-specific offset or gain stage.
+ */
+static inline float AppGaugeGeometry_AngleToGauge1Value(float angle_deg)
+{
+	const float fraction = (angle_deg - APP_GAUGE_CALIBRATION_MIN_DEG) /
+		(APP_GAUGE_CALIBRATION_MAX_DEG - APP_GAUGE_CALIBRATION_MIN_DEG);
+	return APP_GAUGE_CALIBRATION_MIN_VALUE + fraction *
+		(APP_GAUGE_CALIBRATION_MAX_VALUE - APP_GAUGE_CALIBRATION_MIN_VALUE);
 }
 
 #endif /* __APP_GAUGE_GEOMETRY_H */

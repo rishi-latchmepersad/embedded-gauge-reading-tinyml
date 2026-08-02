@@ -5,7 +5,7 @@
  * changing the CubeIDE project file list.
  */
 
-static bool AppAI_RunObbStageForTipFocusLive(
+static bool __attribute__((unused)) AppAI_RunObbStageForTipFocusLive(
 	const uint8_t *safe_frame_bytes,
 	size_t frame_size,
 	const AppAI_SourceCrop *full_frame_crop,

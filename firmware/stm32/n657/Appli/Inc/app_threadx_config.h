@@ -18,8 +18,10 @@ extern "C" {
 #define CAMERA_INIT_THREAD_PRIORITY          9U
 #define CAMERA_ISP_THREAD_PRIORITY          11U
 #define CAMERA_HEARTBEAT_THREAD_PRIORITY    10U
-#define CAMERA_AI_THREAD_PRIORITY           11U  /* Above BASELINE (12) so AI always gets CPU */
-#define BASELINE_RUNTIME_THREAD_PRIORITY    12U
+#define CAMERA_AI_THREAD_PRIORITY           11U
+/* Snapshot the classical frame early, but keep its CPU-heavy CV pass below
+ * the NPU worker so a baseline calculation cannot delay model progress. */
+#define BASELINE_RUNTIME_THREAD_PRIORITY    15U
 #define IMAGE_CLEANUP_THREAD_PRIORITY       16U
 
 /* Heartbeat timing --------------------------------------------------------- */

@@ -323,12 +323,13 @@ static UINT AppImageCleanup_RunSweep(void) {
 				} else {
 					record->timestamp_key = timestamp_key;
 					(void) snprintf(record->file_name,
-							sizeof(record->file_name), "%s", file_name);
+							sizeof(record->file_name), "%.*s",
+							(int)(sizeof(record->file_name) - 1U), file_name);
 				}
 			} else if (timestamp_key >= record->timestamp_key) {
 				record->timestamp_key = timestamp_key;
 				(void) snprintf(record->file_name, sizeof(record->file_name),
-						"%s", file_name);
+						"%.*s", (int)(sizeof(record->file_name) - 1U), file_name);
 			}
 		} else {
 			skipped_files++;

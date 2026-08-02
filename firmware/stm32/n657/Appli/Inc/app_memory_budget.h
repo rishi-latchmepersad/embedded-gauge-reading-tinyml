@@ -24,20 +24,35 @@ extern "C" {
 #define CAMERA_INIT_THREAD_STACK_SIZE_BYTES     16384U
 #define CAMERA_ISP_THREAD_STACK_SIZE_BYTES      4096U
 #define CAMERA_HEARTBEAT_THREAD_STACK_SIZE_BYTES 1024U
-/* Keep the AI worker stack large enough for the OBB->UNet cascade while
- * leaving room in RAM for the OBB reloc image and the rest of the app. */
+/* Keep the AI worker stack large enough for preprocessing and two sequential
+ * ATON calls while leaving the shared reloc runtime window untouched. */
 #define CAMERA_AI_THREAD_STACK_SIZE_BYTES      16384U
 #define BASELINE_RUNTIME_THREAD_STACK_SIZE_BYTES 16384U
 #define IMAGE_CLEANUP_THREAD_STACK_SIZE_BYTES    4096U
 
 /* Capture geometry --------------------------------------------------------- */
-/* Standardize the live capture budget on 224x224 so the AI and baseline
- * pipelines see the same square frame that the current student models use. */
-#define CAMERA_CAPTURE_WIDTH_PIXELS             224U
-#define CAMERA_CAPTURE_HEIGHT_PIXELS            224U
+/* DCMIPP resizes the complete IMX335 frame to the live ellipse contract.
+ * This is a packed one-byte MONO_Y8 image, not a cropped YUV422 frame. */
+#define CAMERA_CAPTURE_WIDTH_PIXELS             640U
+#define CAMERA_CAPTURE_HEIGHT_PIXELS            640U
 #define CAMERA_CAPTURE_BUFFER_COUNT             1U
-#define CAMERA_CAPTURE_BYTES_PER_PIXEL          2U
+#define CAMERA_CAPTURE_BYTES_PER_PIXEL          1U
 #define CAMERA_CAPTURE_BUFFER_SIZE_BYTES        (CAMERA_CAPTURE_WIDTH_PIXELS * CAMERA_CAPTURE_HEIGHT_PIXELS * CAMERA_CAPTURE_BYTES_PER_PIXEL)
+
+/* New sequential gauge-model contracts. DCMIPP supplies a complete 640x640
+ * grayscale frame; firmware resizes it to the 384x384 ellipse input, then
+ * the ellipse selects the center/tip crop.
+ * The NPU activation pools are reused per model. */
+#define GAUGE_ELLIPSE_INPUT_WIDTH_PIXELS        384U
+#define GAUGE_ELLIPSE_INPUT_HEIGHT_PIXELS       384U
+#define GAUGE_ELLIPSE_INPUT_CHANNELS            1U
+#define GAUGE_ELLIPSE_INPUT_SIZE_BYTES          (GAUGE_ELLIPSE_INPUT_WIDTH_PIXELS * GAUGE_ELLIPSE_INPUT_HEIGHT_PIXELS * GAUGE_ELLIPSE_INPUT_CHANNELS)
+#define GAUGE_CENTER_TIP_INPUT_WIDTH_PIXELS     224U
+#define GAUGE_CENTER_TIP_INPUT_HEIGHT_PIXELS    224U
+#define GAUGE_CENTER_TIP_INPUT_CHANNELS         1U
+#define GAUGE_CENTER_TIP_INPUT_SIZE_BYTES       (GAUGE_CENTER_TIP_INPUT_WIDTH_PIXELS * GAUGE_CENTER_TIP_INPUT_HEIGHT_PIXELS * GAUGE_CENTER_TIP_INPUT_CHANNELS)
+#define GAUGE_CENTER_TIP_OUTPUT_SIZE_BYTES      (56U * 56U * 2U)
+#define GAUGE_MODEL_NPU_POOL_USED_BYTES         (400U * 1024U)
 
 #ifdef __cplusplus
 }

@@ -17,6 +17,7 @@
 
 #include "app_ai.h"
 #include "app_camera_buffers.h"
+#include "app_camera_capture.h"
 #include "app_camera_platform.h"
 #include "app_filex.h"
 #include "app_inference_log_config.h"
@@ -181,6 +182,20 @@ UINT AppInferenceRuntime_Start(void) {
 }
 
 /**
+ * @brief Report whether the AI worker still owns the submitted camera frame.
+ * @retval true while the queued request or model execution is active.
+ */
+bool AppInferenceRuntime_IsInferenceInFlight(void) {
+	bool in_flight = false;
+
+	TX_INTERRUPT_SAVE_AREA
+	TX_DISABLE
+	in_flight = camera_ai_request_in_flight;
+	TX_RESTORE
+	return in_flight;
+}
+
+/**
  * @brief Queue a dry inference request for the AI worker thread.
  */
 bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
@@ -209,8 +224,8 @@ bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
 		return false;
 	}
 
-	/* Anchor AI timing before the snapshot copy so the latency includes the
-	 * full request-to-result path, not just worker execution. */
+	/* Anchor AI timing before queueing so the latency includes the full
+	 * request-to-result path, not just worker execution. */
 	TX_DISABLE
 	in_flight = camera_ai_request_in_flight;
 	TX_RESTORE
@@ -224,12 +239,14 @@ bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
 	TX_DISABLE
 	camera_ai_request_capture_time_us = Metrics_GetMicros();
 	Metrics_StartInference("AI");
-	(void) memcpy(camera_inference_frame_snapshot, frame_ptr, (size_t) frame_length);
-	(void) DebugConsole_WriteString("[AI] Shared snapshot copied.\r\n");
-	(void) DebugConsole_WriteString("[AI] Queueing dry-run request.\r\n");
+	/* The camera stops the sensor before handing this buffer to the worker, so
+	 * the worker owns a stable frame without paying for a second 400 KiB copy.
+	 * A later capture is not allowed until this request clears. */
+	(void) DebugConsole_WriteString(
+		"[AI] Queueing stable stopped-sensor frame.\r\n");
 
 	camera_ai_request_in_flight = true;
-	camera_ai_request_frame_ptr = camera_inference_frame_snapshot;
+	camera_ai_request_frame_ptr = frame_ptr;
 	camera_ai_request_frame_length = frame_length;
 	TX_RESTORE
 
@@ -281,6 +298,7 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 		if ((frame_ptr == NULL) || (frame_length == 0U)) {
 			DebugConsole_Printf(
 					"[AI] Worker woke without a queued frame; ignoring.\r\n");
+			AppCameraCapture_ReleaseInferenceFrame();
 			camera_ai_request_in_flight = false;
 			continue;
 		}
@@ -293,8 +311,10 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 		/* Mark the start of worker-side compute so queue wait is visible in the
 		 * metrics while the AI model time stays comparable to the baseline. */
 		Metrics_MarkComputeStart("AI");
+		AppCameraBuffers_LogFrameSignature("ai-worker-entry", frame_ptr,
+				(uint32_t)frame_length);
 
-		if (!App_AI_RunDryInferenceFromYuv422(frame_ptr,
+		if (!App_AI_RunDryInferenceFromGray640(frame_ptr,
 				(size_t) frame_length)) {
 			DebugConsole_Printf(
 					"[AI] One-shot dry-run inference failed; continuing.\r\n");
@@ -330,6 +350,7 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 
 		TX_INTERRUPT_SAVE_AREA
 		TX_DISABLE
+		AppCameraCapture_ReleaseInferenceFrame();
 		camera_ai_request_in_flight = false;
 		TX_RESTORE
 	}

@@ -370,8 +370,17 @@ bool CameraPlatform_AdjustImx335ExposureGain(bool brighten,
 				target_exposure_us = (int32_t) sensor_info.exposure_min;
 			}
 			apply_exposure = (target_exposure_us != current_exposure_us);
-		} else {
-			target_gain_mdb = current_gain_mdb - gain_step_mdb;
+		}
+
+		/* Exposure changes alone were too weak on the bright board captures:
+		 * the sensor stayed near half-range gain while the gate spent many
+		 * retries walking shutter time down. Trim a small gain amount in the
+		 * same retry so the image reaches the usable luma band sooner without
+		 * applying the full gain-range step and making dark scenes noisy. */
+		if (current_gain_mdb > (int32_t) sensor_info.gain_min) {
+			const int32_t dark_gain_step =
+				(gain_step_mdb > 8) ? (gain_step_mdb / 8) : 1;
+			target_gain_mdb = current_gain_mdb - dark_gain_step;
 			if (target_gain_mdb < sensor_info.gain_min) {
 				target_gain_mdb = sensor_info.gain_min;
 			}
@@ -684,8 +693,8 @@ void CameraPlatform_ReapplyImx335TestPattern(void) {
 }
 
 /**
- * @brief Configure the capture pipe using ST's camera middleware crop/downsize helpers.
- * @retval true when the output path is ready for a 224x224 YUV422 frame.
+ * @brief Configure DCMIPP to resize the complete sensor frame to MONO_Y8.
+ * @retval true when the output path is ready for a 640x640 grayscale frame.
  */
 bool CameraPlatform_PrepareDcmippSnapshot(void) {
 	DCMIPP_HandleTypeDef *capture_dcmipp =
@@ -698,29 +707,18 @@ bool CameraPlatform_PrepareDcmippSnapshot(void) {
 		pipe_request.output_width = CAMERA_CAPTURE_WIDTH_PIXELS;
 		pipe_request.output_height = CAMERA_CAPTURE_HEIGHT_PIXELS;
 		pipe_request.output_format =
-		DCMIPP_PIXEL_PACKER_FORMAT_YUV422_1;
+		DCMIPP_PIXEL_PACKER_FORMAT_MONO_Y8_G8_1;
 		pipe_request.output_bpp = CAMERA_CAPTURE_BYTES_PER_PIXEL;
 		pipe_request.enable_swap = 0;
 		pipe_request.enable_gamma_conversion = 0;
-		pipe_request.mode = CMW_Aspect_ratio_manual_roi;
-		{
-			const uint32_t sensor_square_side =
-					(IMX335_SENSOR_WIDTH_PIXELS < IMX335_SENSOR_HEIGHT_LINES) ?
-							IMX335_SENSOR_WIDTH_PIXELS :
-							IMX335_SENSOR_HEIGHT_LINES;
-
-			pipe_request.manual_conf.width = sensor_square_side;
-			pipe_request.manual_conf.height = sensor_square_side;
-			pipe_request.manual_conf.offset_x =
-					(IMX335_SENSOR_WIDTH_PIXELS - sensor_square_side) / 2U;
-			pipe_request.manual_conf.offset_y =
-					(IMX335_SENSOR_HEIGHT_LINES - sensor_square_side) / 2U;
-		}
+		/* FIT deliberately leaves crop_conf empty: DCMIPP decimates/downsizes
+		 * the full 2592x1944 sensor image into the square model tensor. */
+		pipe_request.mode = CMW_Aspect_ratio_fit;
 
 		if (CMW_CAMERA_SetPipeConfig(CAMERA_CAPTURE_PIPE, &pipe_request,
 				&pitch_bytes) != CMW_ERROR_NONE) {
 			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] CMW_CAMERA_SetPipeConfig() failed for PIPE1.\r\n");
+					"[CAMERA][CAPTURE] DCMIPP MONO_Y8 resize configuration failed.\r\n");
 			return false;
 		}
 

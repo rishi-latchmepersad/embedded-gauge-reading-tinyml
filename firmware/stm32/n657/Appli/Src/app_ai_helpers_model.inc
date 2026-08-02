@@ -1,5 +1,10 @@
 /* This file is included by app_ai_helpers.inc. */
 
+/* Optional fallback diagnostics are retained for replay builds but are
+ * intentionally disabled in the production model path. */
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+
 bool AppAI_LogXspi2ModelFilePrefix(FX_FILE *model_file_ptr)
 {
 	uint8_t source_bytes[APP_AI_XSPI2_PROBE_BYTES] = {0U};
@@ -648,10 +653,9 @@ bool AppAI_EnsureStageRuntimeReady(const AppAI_ModelStageSpec *stage)
 		return false;
 	}
 
-	/* The OBB stage now runs through the plain model wrapper path. Keep the
-	 * reloc handle cleared here so the runtime does not try to enter the
-	 * reloc inference-init hook, which was faulting at PC=0 before the first
-	 * epoch could start. */
+	/* The old OBB compatibility stage still needs its historical init ordering.
+	 * The deployed gauge wrappers install their own reloc context after the
+	 * network init call and never enter this branch. */
 	if (stage == &app_ai_obb_stage)
 	{
 		stage->nn_instance->exec_state.inst_reloc = 0U;

@@ -39,6 +39,16 @@ void DebugConsole_SetLockCallbacks(DebugConsole_LockCallback_t lock,
 
 bool DebugConsole_IsInitialized(void);
 
+/**
+ * @brief Return whether a pointer/length pair belongs to a camera frame.
+ *
+ * This is the final transport safety check used by both formatted and raw
+ * console writes.  Camera bytes must go to FileX or an explicitly requested
+ * offline dump, never to the human-readable UART stream.
+ */
+bool DebugConsole_IsCameraBufferRange(const uint8_t *byte_array_pointer,
+		size_t byte_array_length);
+
 bool DebugConsole_WriteBytes(const uint8_t *byte_array_pointer,
 		size_t byte_array_length);
 

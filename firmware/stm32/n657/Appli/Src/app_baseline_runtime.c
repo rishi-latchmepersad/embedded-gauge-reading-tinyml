@@ -7,6 +7,12 @@
  */
 /* USER CODE END Header */
 
+/* Optional baseline rescue stages retain intermediate scores for replay
+ * diagnostics, while production compiles their verbose reporting out. */
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#pragma GCC diagnostic ignored "-Wunused-function"
+
 #include "main.h"
 #include "app_baseline_runtime.h"
 
@@ -52,47 +58,30 @@
 #define APP_BASELINE_SWEEP_DEG 270.0f
 #define APP_BASELINE_MIN_VALUE_C -30.0f
 #define APP_BASELINE_MAX_VALUE_C 50.0f
-/* Temporary board-fit calibration shift (2026-07-05).
- * The live OBB -> UNet path is decoding a stable needle angle, but the
- * shared angle-to-temp mapping was still landing a few degrees too warm at
- * the cold end. Shift the anchor toward the cold side so a true -30 C needle
- * resolves closer to the expected temperature before we make any larger
- * calibration-table changes. */
-#define APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG (9.72f)
-/* Second-stage board-fit calibration gain.
- * The offset alone fixed the cold anchor, but the hot end still read low.
- * Preserve the -30 C anchor and stretch the scale so a 35 C readout maps
- * back to the expected 40 C point. */
-#define APP_BASELINE_TEMPERATURE_CALIBRATION_PIVOT_C (-30.0f)
-#define APP_BASELINE_TEMPERATURE_CALIBRATION_GAIN 1.0769231f
-/* Endpoint calibration anchors for the current board profile.
- * The logged hot-end capture at raw 148.21 deg corresponds to a calibrated
- * 157.93 deg point once the board offset is applied. The cold-end capture at
- * raw 33.22 deg closes the physical sweep. Keeping only the endpoints makes
- * every intermediate temperature interpolate linearly and consistently. */
-#define APP_BASELINE_PROFILE_BOARD_COLD_ANCHOR_RAW_DEG 33.22f
-#define APP_BASELINE_PROFILE_BOARD_COLD_ANCHOR_CALIBRATED_DEG \
-	(APP_BASELINE_PROFILE_BOARD_COLD_ANCHOR_RAW_DEG + \
-	 APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG)
-#define APP_BASELINE_PROFILE_BOARD_HOT_ANCHOR_RAW_DEG 148.21f
-#define APP_BASELINE_PROFILE_BOARD_HOT_ANCHOR_CALIBRATED_DEG \
-	(APP_BASELINE_PROFILE_BOARD_HOT_ANCHOR_RAW_DEG + \
-	 APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG)
-/* Default calibration profile for the current board-gauge pairing.
- * Other gauges can define their own profiles and install them at runtime. */
+/* The classical detector's internal angle is east-zero. Convert that
+ * coordinate to the shared north-zero TOML convention once, then use the
+ * TOML-equivalent endpoints directly. There is no board-fit offset or gain
+ * left in this profile. */
+#define APP_BASELINE_ANGLE_TO_NORTH_ZERO_DEG (-90.0f)
+#define APP_BASELINE_TEMPERATURE_CALIBRATION_PIVOT_C 0.0f
+#define APP_BASELINE_TEMPERATURE_CALIBRATION_GAIN 1.0f
+/* These are gauge_calibration_parameters.toml gauge 1 endpoints. */
+#define APP_BASELINE_PROFILE_GAUGE_MIN_ANGLE_DEG APP_GAUGE_CALIBRATION_MIN_DEG
+#define APP_BASELINE_PROFILE_GAUGE_MAX_ANGLE_DEG APP_GAUGE_CALIBRATION_MAX_DEG
+/* Default profile for the current board-gauge pairing. */
 const AppBaselineRuntime_CalibrationProfile_t AppBaselineRuntime_DefaultCalibrationProfile = {
 	.profile_name = "board_celsius_v1",
-	.angle_offset_deg = APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG,
+	.angle_offset_deg = APP_BASELINE_ANGLE_TO_NORTH_ZERO_DEG,
 	.temperature_pivot_c = APP_BASELINE_TEMPERATURE_CALIBRATION_PIVOT_C,
 	.temperature_gain = APP_BASELINE_TEMPERATURE_CALIBRATION_GAIN,
 	.calibration_point_count = 2U,
 	.calibration_points = {
 		{
-			.angle_deg = APP_BASELINE_PROFILE_BOARD_HOT_ANCHOR_CALIBRATED_DEG,
+			.angle_deg = APP_BASELINE_PROFILE_GAUGE_MAX_ANGLE_DEG,
 			.temperature_c = 50.0f,
 		},
 		{
-			.angle_deg = APP_BASELINE_PROFILE_BOARD_COLD_ANCHOR_CALIBRATED_DEG,
+			.angle_deg = APP_BASELINE_PROFILE_GAUGE_MIN_ANGLE_DEG,
 			.temperature_c = -30.0f,
 		},
 	},
@@ -281,6 +270,11 @@ static bool camera_baseline_thread_created = false;
 static TX_SEMAPHORE camera_baseline_request_semaphore;
 static bool camera_baseline_sync_created = false;
 static volatile const uint8_t *camera_baseline_request_frame_ptr = NULL;
+
+/* The baseline and AI workers share one immutable snapshot.  This flag keeps
+ * the camera from beginning a new DMA capture while the classical worker is
+ * still reading that snapshot after the AI worker has finished. */
+static volatile bool camera_baseline_request_in_flight = false;
 
 static volatile ULONG camera_baseline_request_frame_length = 0U;
 
@@ -632,13 +626,11 @@ UINT AppBaselineRuntime_Start(void)
 }
 
 /**
- * @brief Queue a YUV422 frame for the classical temperature estimate.
+ * @brief Queue the immutable MONO_Y8 snapshot for the classical estimate.
  */
 bool AppBaselineRuntime_RequestEstimate(const uint8_t *frame_ptr,
-										ULONG frame_length)
+																	ULONG frame_length)
 {
-	uint8_t first8[8] = {0};
-
 	if (!camera_baseline_sync_created)
 	{
 		DebugConsole_Printf(
@@ -663,27 +655,39 @@ bool AppBaselineRuntime_RequestEstimate(const uint8_t *frame_ptr,
 		return false;
 	}
 
-	/* Start timing before the snapshot copy so the latency includes the full
-	 * request-to-result path. */
+	/* The camera stage already copied the completed MONO_Y8 frame into the
+	 * private snapshot.  A second 400 KiB copy here was both wasteful and a
+	 * second ownership boundary.  Reject non-snapshot pointers instead of
+	 * silently reviving the old live-DMA handoff. */
+	if (frame_ptr != camera_inference_frame_snapshot)
+	{
+		DebugConsole_Printf(
+			"[BASELINE] Request dropped; only the immutable snapshot is accepted ptr=%p expected=%p.\r\n",
+			(const void *)frame_ptr, (void *)camera_inference_frame_snapshot);
+		return false;
+	}
+
+	if (camera_baseline_request_in_flight)
+	{
+		DebugConsole_WriteString(
+			"[BASELINE] Request dropped; baseline worker is still reading the previous snapshot.\r\n");
+		return false;
+	}
+
+	/* Start timing after the single camera-owned copy so the metric measures
+	 * classical processing rather than duplicating capture ownership work. */
 	camera_baseline_request_capture_time_us = Metrics_GetMicros();
 	Metrics_StartInference("BASELINE");
-	(void)memcpy((void *)camera_inference_frame_snapshot, frame_ptr,
-				 (size_t)frame_length);
-	(void)memcpy(first8, camera_inference_frame_snapshot,
-				 (size_t)((frame_length < 8U) ? frame_length : 8U));
-	DebugConsole_Printf(
-		"[BASELINE] Shared snapshot copied: src=%p dst=%p len=%lu first8=[%02X %02X %02X %02X %02X %02X %02X %02X]\r\n",
-		(const void *)frame_ptr, (void *)camera_inference_frame_snapshot,
-		(unsigned long)frame_length, first8[0], first8[1], first8[2],
-		first8[3], first8[4], first8[5], first8[6], first8[7]);
 
 	camera_baseline_request_frame_ptr = camera_inference_frame_snapshot;
 	camera_baseline_request_frame_length = frame_length;
 	camera_baseline_request_generation++;
+	camera_baseline_request_in_flight = true;
 
 	if (tx_semaphore_put(&camera_baseline_request_semaphore) != TX_SUCCESS)
 	{
 		Metrics_EndInference("BASELINE", NAN);
+		camera_baseline_request_in_flight = false;
 		DebugConsole_Printf(
 			"[BASELINE] Failed to signal baseline request semaphore.\r\n");
 		return false;
@@ -693,6 +697,15 @@ bool AppBaselineRuntime_RequestEstimate(const uint8_t *frame_ptr,
 		"accepted", camera_baseline_request_generation, frame_length);
 
 	return true;
+}
+
+/**
+ * @brief Report whether the baseline worker still owns the shared snapshot.
+ * @retval true while a baseline request is queued or being processed.
+ */
+bool AppBaselineRuntime_IsEstimateInFlight(void)
+{
+	return camera_baseline_request_in_flight;
 }
 
 /* USER CODE END 0 */
@@ -742,6 +755,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 		{
 			DebugConsole_Printf(
 				"[BASELINE] Worker woke without a queued frame; ignoring.\r\n");
+			camera_baseline_request_in_flight = false;
 			continue;
 		}
 
@@ -768,6 +782,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 			DebugConsole_Printf(
 				"[BASELINE] Classical baseline failed to estimate a temperature.\r\n");
 			Metrics_EndInference("BASELINE", NAN);
+			camera_baseline_request_in_flight = false;
 			continue;
 		}
 
@@ -820,6 +835,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 			DebugConsole_WriteString(
 				"[BASELINE] Current estimate was not stable; no history value published.\r\n");
 			Metrics_EndInference("BASELINE", NAN);
+			camera_baseline_request_in_flight = false;
 			continue;
 		}
 		if (!AppBaselineRuntime_SelectSmoothedEstimate(&estimate))
@@ -828,6 +844,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 				"selection-failed", request_generation, frame_length);
 			DebugConsole_Printf(
 				"[BASELINE] Classical baseline produced an invalid raw estimate.\r\n");
+			camera_baseline_request_in_flight = false;
 			continue;
 		}
 
@@ -835,6 +852,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 		{
 			AppBaselineRuntime_WriteDirectQueueStatus(
 				"estimate-invalid", request_generation, frame_length);
+			camera_baseline_request_in_flight = false;
 			continue;
 		}
 
@@ -873,11 +891,12 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 		AppBaselineRuntime_LogEstimate(&estimate);
 		AppBaselineRuntime_WriteDirectQueueStatus(
 			"published", request_generation, frame_length);
+		camera_baseline_request_in_flight = false;
 	}
 }
 
 /**
- * @brief Run the classical CV baseline over one captured YUV422 frame.
+ * @brief Run the classical CV baseline over one captured MONO_Y8 frame.
  */
 static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 																 size_t frame_size, AppBaselineRuntime_Estimate_t *estimate_out)
@@ -3036,7 +3055,7 @@ float AppBaselineRuntime_ConvertAngleToTemperature(float angle_rad)
 		AppBaselineRuntime_GetCalibrationProfile();
 	const float angle_offset_deg =
 		(profile != NULL) ? profile->angle_offset_deg :
-		APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG;
+		APP_BASELINE_ANGLE_TO_NORTH_ZERO_DEG;
 	const float temperature_pivot_c =
 		(profile != NULL) ? profile->temperature_pivot_c :
 		APP_BASELINE_TEMPERATURE_CALIBRATION_PIVOT_C;
@@ -3084,7 +3103,7 @@ float AppBaselineRuntime_ConvertAngleToTemperatureExtremes(float angle_rad)
 		(profile != NULL) ? profile->calibration_point_count : 0U;
 	const float angle_offset_deg =
 		(profile != NULL) ? profile->angle_offset_deg :
-		APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG;
+		APP_BASELINE_ANGLE_TO_NORTH_ZERO_DEG;
 	const float calibrated_angle_rad =
 		angle_rad + (angle_offset_deg * (APP_BASELINE_PI / 180.0f));
 	const float target_fraction =
@@ -3398,16 +3417,12 @@ static bool AppBaselineRuntime_IsAngleInSubdialBand(float angle_deg)
 }
 
 /**
- * @brief Read the Y component from one packed YUV422 pixel.
+ * @brief Read one luma byte from the live MONO_Y8 camera contract.
  */
 static float AppBaselineRuntime_ReadLuma(const uint8_t *frame_bytes,
 										 size_t frame_width_pixels, size_t x, size_t y)
 {
-	const size_t row_stride_bytes = frame_width_pixels * 2U;
-	const size_t pair_offset = (y * row_stride_bytes) + ((x & ~1U) * 2U);
-	const size_t y_offset = pair_offset + (((x & 1U) != 0U) ? 2U : 0U);
-
-	return (float)frame_bytes[y_offset];
+	return (float)frame_bytes[(y * frame_width_pixels) + x];
 }
 
 /**
@@ -3437,22 +3452,19 @@ static float AppBaselineRuntime_ReadLumaMin3x3(const uint8_t *frame_bytes,
 }
 
 /**
- * @brief Read the U and V components from one packed YUV422 pixel pair.
+ * @brief Return neutral chroma for the grayscale camera contract.
  */
 static void AppBaselineRuntime_ReadChroma(const uint8_t *frame_bytes,
 										  size_t frame_width_pixels, size_t x, size_t y,
 										  float *u_out, float *v_out)
 {
-	const size_t row_stride_bytes = frame_width_pixels * 2U;
-	const size_t pair_offset = (y * row_stride_bytes) + ((x & ~1U) * 2U);
-
 	if (u_out != NULL)
 	{
-		*u_out = (float)frame_bytes[pair_offset + 1U];
+		*u_out = 128.0f;
 	}
 	if (v_out != NULL)
 	{
-		*v_out = (float)frame_bytes[pair_offset + 3U];
+		*v_out = 128.0f;
 	}
 }
 
@@ -5452,7 +5464,7 @@ static void AppBaselineRuntime_LogEstimate(
 			AppBaselineRuntime_GetCalibrationProfile();
 		const float angle_offset_deg =
 			(active_profile != NULL) ? active_profile->angle_offset_deg :
-			APP_BASELINE_ANGLE_CALIBRATION_OFFSET_DEG;
+			APP_BASELINE_ANGLE_TO_NORTH_ZERO_DEG;
 		const float calibrated_angle_deg =
 			(estimate->angle_rad * 180.0f / APP_BASELINE_PI) + angle_offset_deg;
 		const float sweep_fraction =

@@ -1,5 +1,7 @@
 /* This file is included by the parent translation unit. */
 
+#include "ai_network_littlegood_models.h"
+
 /* ── Stack watermark helper ────────────────────────────────────────────── */
 
 void AppAI_StackWatermark_Log(const char *tag)
@@ -26,8 +28,9 @@ void AppAI_StackWatermark_Log(const char *tag)
 }
 
 #if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
-/* The live camera worker now runs the tip-focus geometry model directly, so
- * keep a small forward declaration here for the dedicated decode helper. */
+/* The live camera worker runs the ellipse -> center/tip gauge pipeline. Keep
+ * the legacy entry point declared because the generated compatibility unit
+ * still exposes it to replay-only callers. */
 bool AppAI_TipFocus_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	size_t frame_size);
 #endif
@@ -55,9 +58,9 @@ bool App_AI_Model_Init(void)
 	}
 
 #if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
-	if (!AppAI_TipFocus_Init())
+	if (!AppAI_GaugeEllipse_Init() || !AppAI_GaugeCenterTip_Init())
 	{
-		AppAI_LogInitFailure("tip-focus model");
+		AppAI_LogInitFailure("ellipse/keypoint models");
 		return false;
 	}
 #endif
@@ -67,7 +70,12 @@ bool App_AI_Model_Init(void)
 	AppAI_ResetInferenceBurstHistory();
 #endif
 	DebugConsole_Printf("[AI] Model runtime init OK.\r\n");
-	(void)DebugConsole_WriteString("[AI][PIPELINE] Tip-focus SimCC heads compiled.\r\n");
+	DebugConsole_Printf("[AI][INPUT] DCMIPP full-frame MONO_Y8 resize %lux%lu -> ellipse %lux%lu.\r\n",
+		(unsigned long)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
+		(unsigned long)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS,
+		(unsigned long)GAUGE_ELLIPSE_INPUT_WIDTH_PIXELS,
+		(unsigned long)GAUGE_ELLIPSE_INPUT_HEIGHT_PIXELS);
+	(void)DebugConsole_WriteString("[AI][PIPELINE] gauge ellipse -> center/tip heatmaps compiled.\r\n");
 	return true;
 }
 
@@ -76,6 +84,7 @@ bool App_AI_Model_Init(void)
  * that hands it a bad register value without disturbing the state. */
 void AppAI_LogR9(const char *label)
 {
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 	uintptr_t r9_before = 0U;
 
 	if (label == NULL)
@@ -86,6 +95,509 @@ void AppAI_LogR9(const char *label)
 	__asm volatile("mov %0, r9" : "=r"(r9_before));
 	DebugConsole_Printf("[AI][DRY_RUN][R9] %s=%p\r\n",
 						label, (const void *)r9_before);
+#else
+	(void)label;
+#endif
+}
+
+/**
+ * @brief Run the current ellipse and center/tip networks and publish gauge 1.
+ *
+ * The camera contract is a full-frame 640x640 MONO_Y8 image from DCMIPP. The
+ * ellipse network receives that complete resized image; its normalized ellipse selects the square crop used to
+ * build the center/tip network's 224x224 grayscale tensor. Channel 0 of the heatmap is
+ * center and channel 1 is tip.
+ */
+bool AppAI_IsPlausibleInferenceValue(float value);
+
+/**
+ * @brief Bilinearly sample the full-frame DCMIPP MONO_Y8 image.
+ * @param frame_bytes 640x640 one-byte grayscale frame.
+ * @param frame_size_bytes Number of valid bytes in the frame.
+ * @param frame_width_pixels Source width.
+ * @param frame_height_pixels Source height.
+ * @param source_x Floating-point source x coordinate.
+ * @param source_y Floating-point source y coordinate.
+ * @return Normalized grayscale value in [0, 1].
+ */
+static float AppAI_ReadNormalizedGrayFromDcmippGray8Bilinear(
+	const uint8_t *frame_bytes, size_t frame_size_bytes,
+	size_t frame_width_pixels, size_t frame_height_pixels,
+	float source_x, float source_y)
+{
+	if ((frame_bytes == NULL) || (frame_width_pixels == 0U) ||
+		(frame_height_pixels == 0U) ||
+		(frame_size_bytes < frame_width_pixels * frame_height_pixels))
+		return 0.0f;
+	if (source_x < 0.0f) source_x = 0.0f;
+	if (source_y < 0.0f) source_y = 0.0f;
+	if (source_x > (float)(frame_width_pixels - 1U))
+		source_x = (float)(frame_width_pixels - 1U);
+	if (source_y > (float)(frame_height_pixels - 1U))
+		source_y = (float)(frame_height_pixels - 1U);
+
+	const size_t x0 = (size_t)source_x;
+	const size_t y0 = (size_t)source_y;
+	const size_t x1 = (x0 + 1U < frame_width_pixels) ? x0 + 1U : x0;
+	const size_t y1 = (y0 + 1U < frame_height_pixels) ? y0 + 1U : y0;
+	const float fx = source_x - (float)x0;
+	const float fy = source_y - (float)y0;
+	const float p00 = (float)frame_bytes[y0 * frame_width_pixels + x0] / 255.0f;
+	const float p10 = (float)frame_bytes[y0 * frame_width_pixels + x1] / 255.0f;
+	const float p01 = (float)frame_bytes[y1 * frame_width_pixels + x0] / 255.0f;
+	const float p11 = (float)frame_bytes[y1 * frame_width_pixels + x1] / 255.0f;
+	return ((p00 + (p10 - p00) * fx) * (1.0f - fy)) +
+		((p01 + (p11 - p01) * fx) * fy);
+}
+
+/**
+ * @brief Compute a stable signature for an int8 model tensor.
+ * @param tensor_pointer Tensor bytes to hash.
+ * @param tensor_length Number of bytes in the tensor.
+ * @return FNV-1a 32-bit signature.
+ * @sideeffects Reads only the supplied tensor; performs no I/O.
+ *
+ * The hash is deliberately logged instead of the tensor contents.  WSL can
+ * compare it with a replayed TFLite input while the UART remains text-only.
+ */
+static uint32_t AppAI_HashInt8Tensor(const int8_t *tensor_pointer,
+	size_t tensor_length)
+{
+	uint32_t hash = 2166136261UL;
+
+	if (tensor_pointer == NULL)
+		return 0U;
+	for (size_t index = 0U; index < tensor_length; ++index) {
+		hash ^= (uint8_t)tensor_pointer[index];
+		hash *= 16777619UL;
+	}
+	return hash;
+}
+
+#include "app_ai_littlegood_runtime.inc"
+
+static bool AppAI_RunGaugeModelsFromGray640(const uint8_t *frame_bytes,
+	size_t frame_size)
+{
+	const LL_Buffer_InfoTypeDef *ellipse_in = AppAI_GaugeEllipse_InputInfo();
+	const LL_Buffer_InfoTypeDef *ellipse_out = AppAI_GaugeEllipse_OutputInfo();
+	const LL_Buffer_InfoTypeDef *center_tip_in = AppAI_GaugeCenterTip_InputInfo();
+	const LL_Buffer_InfoTypeDef *center_tip_out = AppAI_GaugeCenterTip_OutputInfo();
+	int8_t *ellipse_tensor = NULL;
+	const int8_t *ellipse_contract = NULL;
+	int8_t *center_tip_tensor = NULL;
+	int8_t *center_tip_shadow = (int8_t *)app_ai_center_tip_input_shadow;
+	const int8_t *heatmap = NULL;
+	float ellipse[5] = {0.0f};
+	float center_x = 0.0f, center_y = 0.0f;
+	float radius_x = 0.0f, radius_y = 0.0f;
+	float crop_side = 0.0f;
+	float crop_x = 0.0f, crop_y = 0.0f;
+	float heatmap_peak[2] = {0.0f, 0.0f};
+	float heatmap_x[2] = {0.0f, 0.0f};
+	float heatmap_y[2] = {0.0f, 0.0f};
+	const float output_scale = 0.00390625f;
+	const int32_t output_zero_point = -128;
+	int32_t ellipse_input_min = 127;
+	int32_t ellipse_input_max = -128;
+	int64_t ellipse_input_sum = 0;
+	int32_t center_tip_input_min = 127;
+	int32_t center_tip_input_max = -128;
+	int64_t center_tip_input_sum = 0;
+	size_t crop_left_px = 0U;
+	size_t crop_top_px = 0U;
+	size_t crop_right_px = 0U;
+	size_t crop_bottom_px = 0U;
+
+	if ((frame_bytes == NULL) ||
+		(frame_size < (size_t)APP_AI_CAPTURE_FRAME_BYTES) ||
+		(ellipse_in == NULL) || (ellipse_out == NULL) ||
+		(center_tip_in == NULL) || (center_tip_out == NULL))
+		return false;
+	/* Buffer identity check: both models reuse the same AXISRAM5 pool
+	 * (0x342e0000), so the center/tip input must be overwritten by the fill
+	 * loop before the NPU reads it. Print the actual addresses so an alias or
+	 * stale buffer is visible in the log. */
+	DebugConsole_Printf(
+		"[AI][BUF] ellipse_in=%p(%lu) ellipse_out=%p(%lu) "
+		"ct_in=%p(%lu) ct_out=%p(%lu) frame=%p\r\n",
+		(void *)LL_Buffer_addr_start(ellipse_in),
+		(unsigned long)LL_Buffer_len(ellipse_in),
+		(void *)LL_Buffer_addr_start(ellipse_out),
+		(unsigned long)LL_Buffer_len(ellipse_out),
+		(void *)LL_Buffer_addr_start(center_tip_in),
+		(unsigned long)LL_Buffer_len(center_tip_in),
+		(void *)LL_Buffer_addr_start(center_tip_out),
+		(unsigned long)LL_Buffer_len(center_tip_out),
+		(const void *)frame_bytes);
+	(void)DebugConsole_WriteString("[AI][ELLIPSE] preprocessing 384x384 grayscale input.\r\n");
+
+	ellipse_tensor = (int8_t *)LL_Buffer_addr_start(ellipse_in);
+	ellipse_contract = (const int8_t *)LL_Buffer_addr_start(ellipse_out);
+	center_tip_tensor = (int8_t *)LL_Buffer_addr_start(center_tip_in);
+	if ((ellipse_tensor == NULL) || (ellipse_contract == NULL) ||
+		(center_tip_tensor == NULL) || (center_tip_shadow == NULL))
+		return false;
+
+	/* The ellipse input is uint8 luma normalized to [0,1], quantized with
+	 * scale 1/255 and zero-point -128. */
+	for (size_t y = 0U; y < GAUGE_ELLIPSE_INPUT_HEIGHT_PIXELS; ++y) {
+		for (size_t x = 0U; x < GAUGE_ELLIPSE_INPUT_WIDTH_PIXELS; ++x) {
+			const float sx = ((float)x *
+				((float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS - 1.0f)) /
+				((float)GAUGE_ELLIPSE_INPUT_WIDTH_PIXELS - 1.0f);
+			const float sy = ((float)y *
+				((float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS - 1.0f)) /
+				((float)GAUGE_ELLIPSE_INPUT_HEIGHT_PIXELS - 1.0f);
+			/* DCMIPP already performed the full-frame sensor-to-640 resize. */
+			const float gray = AppAI_ReadNormalizedGrayFromDcmippGray8Bilinear(
+				frame_bytes, frame_size, APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
+				APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS, sx, sy);
+			const int32_t q = (int32_t)lroundf(gray * 255.0f) - 128;
+			ellipse_tensor[y * GAUGE_ELLIPSE_INPUT_WIDTH_PIXELS + x] =
+				(int8_t)((q < -128) ? -128 : (q > 127) ? 127 : q);
+		}
+	}
+	/* Record a compact input signature. This separates a bad camera/resize
+	 * handoff from a model or output-buffer problem without dumping 409 KB. */
+	for (size_t i = 0U; i < GAUGE_ELLIPSE_INPUT_SIZE_BYTES; ++i) {
+		const int32_t sample = (int32_t)ellipse_tensor[i];
+		if (sample < ellipse_input_min)
+			ellipse_input_min = sample;
+		if (sample > ellipse_input_max)
+			ellipse_input_max = sample;
+		ellipse_input_sum += sample;
+	}
+	DebugConsole_Printf("[AI][ELLIPSE] input sig first=%d mid=%d last=%d min=%ld max=%ld sum=%ld hash=0x%08lX\r\n",
+		(int)ellipse_tensor[0],
+		(int)ellipse_tensor[GAUGE_ELLIPSE_INPUT_SIZE_BYTES / 2U],
+		(int)ellipse_tensor[GAUGE_ELLIPSE_INPUT_SIZE_BYTES - 1U],
+		(long)ellipse_input_min, (long)ellipse_input_max,
+		(long)ellipse_input_sum,
+		(unsigned long)AppAI_HashInt8Tensor(ellipse_tensor,
+			GAUGE_ELLIPSE_INPUT_SIZE_BYTES));
+	/* The new model exposes one flat 24207-byte multiscale contract. */
+	mcu_cache_clean_range((uint32_t)(uintptr_t)ellipse_tensor,
+		(uint32_t)((uintptr_t)ellipse_tensor + GAUGE_ELLIPSE_INPUT_SIZE_BYTES));
+	(void)DebugConsole_WriteString("[AI][ELLIPSE] preprocessing done; entering NPU.\r\n");
+	if (!AppAI_GaugeEllipse_Run())
+		return false;
+	(void)DebugConsole_WriteString("[AI][ELLIPSE] NPU done.\r\n");
+	mcu_cache_invalidate_range((uint32_t)(uintptr_t)ellipse_contract,
+		(uint32_t)((uintptr_t)ellipse_contract + LL_Buffer_len(ellipse_out)));
+	/* Contract layout: center/rim maps at 24/48/96, then 12 geometry values,
+	 * then three scale confidences. Decode the selected head like the WSL
+	 * pipeline so board and TFLite inference use identical semantics. */
+	const size_t map_values[3] = {576U, 2304U, 9216U};
+	const size_t sizes[3] = {24U, 48U, 96U};
+	const size_t geometry_offset = 2U * (map_values[0] + map_values[1] + map_values[2]);
+	const size_t confidence_offset = geometry_offset + 12U;
+	float confidence[3] = {0.0f};
+	int selected_head = 0;
+	for (size_t h = 0U; h < 3U; ++h) {
+		confidence[h] = ((float)((int32_t)ellipse_contract[confidence_offset + h] - output_zero_point)) * output_scale;
+		if (confidence[h] > confidence[selected_head]) selected_head = (int)h;
+	}
+	const size_t head_size = sizes[selected_head];
+	const size_t head_start = 2U * ((selected_head == 0) ? 0U : (selected_head == 1 ? map_values[0] : map_values[0] + map_values[1]));
+	float weight_sum = 0.0f, weighted_x = 0.0f, weighted_y = 0.0f;
+	for (size_t y = 0U; y < head_size; ++y) {
+		for (size_t x = 0U; x < head_size; ++x) {
+			const size_t i = head_start + y * head_size + x;
+			const float value = ((float)((int32_t)ellipse_contract[i] - output_zero_point)) * output_scale;
+			const float weight = (value > 0.05f) ? powf(value - 0.05f, 4.0f) : 0.0f;
+			weight_sum += weight;
+			weighted_x += weight * (((float)x + 0.5f) / (float)head_size);
+			weighted_y += weight * (((float)y + 0.5f) / (float)head_size);
+		}
+	}
+	const size_t geo_start = geometry_offset + 4U * (size_t)selected_head;
+	ellipse[0] = (weight_sum > 0.0f) ? weighted_x / weight_sum : 0.5f;
+	ellipse[1] = (weight_sum > 0.0f) ? weighted_y / weight_sum : 0.5f;
+	ellipse[2] = ((float)((int32_t)ellipse_contract[geo_start + 2U] - output_zero_point)) * output_scale;
+	ellipse[3] = ((float)((int32_t)ellipse_contract[geo_start + 3U] - output_zero_point)) * output_scale;
+	ellipse[4] = confidence[selected_head];
+	center_x = ellipse[0] * ((float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS - 1.0f);
+	center_y = ellipse[1] * ((float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS - 1.0f);
+	radius_x = ellipse[2] * ((float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS - 1.0f);
+	radius_y = ellipse[3] * ((float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS - 1.0f);
+	DebugConsole_Printf("[AI][ELLIPSE] selected_head=%d conf=%ld.%03ld qgeo=[%ld,%ld] px=[%ld,%ld] r=[%ld,%ld]\r\n",
+		selected_head, (long)lroundf(ellipse[4] * 1000.0f) / 1000L,
+		labs((long)lroundf(ellipse[4] * 1000.0f)) % 1000L,
+		(long)lroundf(ellipse[2] / output_scale) + output_zero_point,
+		(long)lroundf(ellipse[3] / output_scale) + output_zero_point,
+		(long)lroundf(center_x * 100.0f), (long)lroundf(center_y * 100.0f),
+		(long)lroundf(radius_x * 100.0f), (long)lroundf(radius_y * 100.0f));
+	if ((ellipse[4] < 0.25f) || (radius_x < 4.0f) || (radius_y < 4.0f)) {
+		(void)DebugConsole_WriteString("[AI][ELLIPSE] output gate rejected.\r\n");
+		return false;
+	}
+
+	crop_side = 1.35f * fmaxf(2.0f * radius_x, 2.0f * radius_y);
+	if (crop_side < 8.0f)
+		return false;
+	crop_x = center_x - 0.5f * crop_side;
+	crop_y = center_y - 0.5f * crop_side;
+	/* Match prepare_gauge_keypoint_224_data.py exactly: the training path
+	 * floors the crop rectangle to integer source pixels before Pillow's
+	 * bilinear resize. Sampling the original floating rectangle changes the
+	 * model input, especially at the high-contrast needle edge. */
+	{
+		const float right = crop_x + crop_side;
+		const float bottom = crop_y + crop_side;
+		if ((right <= 0.0f) || (bottom <= 0.0f) ||
+			(crop_x >= (float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS) ||
+			(crop_y >= (float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS))
+			return false;
+		crop_left_px = (crop_x > 0.0f) ? (size_t)crop_x : 0U;
+		crop_top_px = (crop_y > 0.0f) ? (size_t)crop_y : 0U;
+		crop_right_px = (right < (float)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS) ?
+			(size_t)right : (size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS;
+		crop_bottom_px = (bottom < (float)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS) ?
+			(size_t)bottom : (size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS;
+		if ((crop_right_px <= crop_left_px) || (crop_bottom_px <= crop_top_px))
+			return false;
+	}
+	DebugConsole_Printf("[AI][CENTER_TIP] crop float=[%ld,%ld,%ld] px=[%lu,%lu,%lu,%lu].\r\n",
+		(long)lroundf(crop_x * 100.0f),
+		(long)lroundf(crop_y * 100.0f),
+		(long)lroundf(crop_side * 100.0f),
+		(unsigned long)crop_left_px, (unsigned long)crop_top_px,
+		(unsigned long)crop_right_px, (unsigned long)crop_bottom_px);
+
+	/* Probe the source frame directly at the crop centre and compare it with
+	 * the tensor signature below. If the frame holds the dial (bright) while
+	 * the tensor comes out dark, the fill is not reading this frame. */
+	{
+		const float probe_gray = AppAI_ReadNormalizedGrayFromDcmippGray8Bilinear(
+			frame_bytes, frame_size, APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
+			APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS,
+			((float)crop_left_px + (float)crop_right_px) * 0.5f,
+			((float)crop_top_px + (float)crop_bottom_px) * 0.5f);
+		const long probe_milli = lroundf(probe_gray * 1000.0f);
+		DebugConsole_Printf("[AI][CT] frame probe gray=%ld.%03ld\r\n",
+			labs(probe_milli) / 1000L, labs(probe_milli) % 1000L);
+	}
+
+	/* The wide-augmentation keypoint U-Net consumes one normalized grayscale plane. The ellipse mask used
+	 * by the retired center/tip model is deliberately not part of this input. */
+	for (size_t y = 0U; y < GAUGE_CENTER_TIP_INPUT_HEIGHT_PIXELS; ++y) {
+		for (size_t x = 0U; x < GAUGE_CENTER_TIP_INPUT_WIDTH_PIXELS; ++x) {
+			/* Pillow resize uses pixel-center mapping: (out + 0.5) * in/out - 0.5. */
+			const float sx = (float)crop_left_px +
+				(((float)x + 0.5f) * (float)(crop_right_px - crop_left_px) /
+					(float)GAUGE_CENTER_TIP_INPUT_WIDTH_PIXELS) - 0.5f;
+			const float sy = (float)crop_top_px +
+				(((float)y + 0.5f) * (float)(crop_bottom_px - crop_top_px) /
+					(float)GAUGE_CENTER_TIP_INPUT_HEIGHT_PIXELS) - 0.5f;
+			const float gray = AppAI_ReadNormalizedGrayFromDcmippGray8Bilinear(
+				frame_bytes, frame_size, APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
+				APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS, sx, sy);
+			const int32_t image_q = (int32_t)lroundf(gray * 255.0f) - 128;
+			center_tip_shadow[y * GAUGE_CENTER_TIP_INPUT_WIDTH_PIXELS + x] =
+				(int8_t)((image_q < -128) ? -128 : (image_q > 127) ? 127 : image_q);
+		}
+	}
+	for (size_t i = 0U; i < GAUGE_CENTER_TIP_INPUT_SIZE_BYTES; ++i) {
+		const int32_t sample = (int32_t)center_tip_shadow[i];
+		if (sample < center_tip_input_min)
+			center_tip_input_min = sample;
+		if (sample > center_tip_input_max)
+			center_tip_input_max = sample;
+		center_tip_input_sum += sample;
+	}
+	DebugConsole_Printf("[AI][CENTER_TIP] input sig first=%d mid=%d last=%d min=%ld max=%ld sum=%ld hash=0x%08lX\r\n",
+		(int)center_tip_shadow[0],
+		(int)center_tip_shadow[GAUGE_CENTER_TIP_INPUT_SIZE_BYTES / 2U],
+		(int)center_tip_shadow[GAUGE_CENTER_TIP_INPUT_SIZE_BYTES - 1U],
+		(long)center_tip_input_min, (long)center_tip_input_max,
+		(long)center_tip_input_sum,
+		(unsigned long)AppAI_HashInt8Tensor(center_tip_shadow,
+			GAUGE_CENTER_TIP_INPUT_SIZE_BYTES));
+#if APP_AI_DIAG_DUMP_CENTER_TIP_TENSORS
+	/* Dump the exact NPU input tensor so it can be compared offline with the
+	 * firmware crop recomputed from the matching .gray8 capture. The FileX
+	 * write is slow (~0.5 s), so limit it to the first few frames. */
+	{
+		static uint32_t s_diag_in_seq = 0U;
+		if (s_diag_in_seq < 8U) {
+			char diag_name[48];
+			(void)snprintf(diag_name, sizeof(diag_name), "diag_ct_in_%03lu.bin",
+				(unsigned long)s_diag_in_seq);
+			(void)AppFileX_WriteCapturedImage(diag_name,
+				(const void *)center_tip_shadow,
+				(ULONG)GAUGE_CENTER_TIP_INPUT_SIZE_BYTES);
+		}
+		s_diag_in_seq++;
+	}
+	#endif
+	/* The generated package uses the same activation base for ellipse output
+	 * and keypoint input. Copy only after the complete tensor is staged so the
+	 * next NPU invocation sees a coherent, self-contained input image. */
+	(void)memcpy(center_tip_tensor, center_tip_shadow,
+		GAUGE_CENTER_TIP_INPUT_SIZE_BYTES);
+	__DSB();
+	mcu_cache_clean_range((uint32_t)(uintptr_t)center_tip_tensor,
+		(uint32_t)((uintptr_t)center_tip_tensor + GAUGE_CENTER_TIP_INPUT_SIZE_BYTES));
+	(void)DebugConsole_WriteString("[AI][CENTER_TIP] preprocessing done; entering NPU.\r\n");
+	if (!AppAI_GaugeCenterTip_Run())
+		return false;
+	(void)DebugConsole_WriteString("[AI][CENTER_TIP] NPU done.\r\n");
+
+	heatmap = (const int8_t *)LL_Buffer_addr_start(center_tip_out);
+	if (heatmap == NULL)
+		return false;
+	mcu_cache_invalidate_range((uint32_t)(uintptr_t)heatmap,
+		(uint32_t)((uintptr_t)heatmap + GAUGE_CENTER_TIP_OUTPUT_SIZE_BYTES));
+#if APP_AI_DIAG_DUMP_CENTER_TIP_TENSORS
+	/* Dump the raw NPU output tensor: if the input dump matches the offline
+	 * crop but this is still all -128, the NPU graph never wrote its output;
+	 * if this shows real peaks, the decode path is the bug. */
+	{
+		static uint32_t s_diag_out_seq = 0U;
+		if (s_diag_out_seq < 8U) {
+			char diag_name[48];
+			(void)snprintf(diag_name, sizeof(diag_name), "diag_ct_out_%03lu.bin",
+				(unsigned long)s_diag_out_seq);
+			(void)AppFileX_WriteCapturedImage(diag_name,
+				(const void *)heatmap,
+				(ULONG)GAUGE_CENTER_TIP_OUTPUT_SIZE_BYTES);
+		}
+		s_diag_out_seq++;
+	}
+#endif
+	DebugConsole_Printf("[AI][CENTER_TIP] output addr=%p len=%lu hash=0x%08lX raw=[%d,%d,%d,%d,%d,%d,%d,%d]\r\n",
+		(void *)heatmap,
+		(unsigned long)GAUGE_CENTER_TIP_OUTPUT_SIZE_BYTES,
+		(unsigned long)AppAI_HashInt8Tensor(heatmap,
+			GAUGE_CENTER_TIP_OUTPUT_SIZE_BYTES),
+		(int)heatmap[0], (int)heatmap[1], (int)heatmap[2],
+		(int)heatmap[3], (int)heatmap[4], (int)heatmap[5], (int)heatmap[6],
+		(int)heatmap[7]);
+	/* Decode each channel with the offline evaluator's contract: find the
+	 * argmax for diagnostics, then apply fourth-power thresholded weights over
+	 * the complete 56x56 map. */
+	for (size_t channel = 0U; channel < 2U; ++channel) {
+		float peak_value = 0.0f;
+		for (size_t y = 0U; y < APP_AI_GAUGE_CENTER_TIP_HEATMAP_SIDE_PIXELS; ++y) {
+			for (size_t x = 0U; x < APP_AI_GAUGE_CENTER_TIP_HEATMAP_SIDE_PIXELS; ++x) {
+				const size_t index = (y * APP_AI_GAUGE_CENTER_TIP_HEATMAP_SIDE_PIXELS + x) * 2U + channel;
+				const float value = ((float)((int32_t)heatmap[index] - output_zero_point)) * output_scale;
+				if (value > peak_value) {
+					peak_value = value;
+				}
+			}
+		}
+		heatmap_peak[channel] = peak_value;
+		if (peak_value > APP_AI_TIP_FOCUS_AXIS_PEAK_FLOOR) {
+			float weighted_x = 0.0f, weighted_y = 0.0f, weight_sum = 0.0f;
+			for (size_t y = 0U; y < APP_AI_GAUGE_CENTER_TIP_HEATMAP_SIDE_PIXELS; ++y) {
+				for (size_t x = 0U; x < APP_AI_GAUGE_CENTER_TIP_HEATMAP_SIDE_PIXELS; ++x) {
+					const size_t index = (y * APP_AI_GAUGE_CENTER_TIP_HEATMAP_SIDE_PIXELS + x) * 2U + channel;
+					const float value = ((float)((int32_t)heatmap[index] - output_zero_point)) * output_scale;
+					const float excess = fmaxf(value - APP_AI_TIP_FOCUS_AXIS_PEAK_FLOOR, 0.0f);
+					const float weight = excess * excess * excess * excess;
+					weighted_x += (float)x * weight;
+					weighted_y += (float)y * weight;
+					weight_sum += weight;
+				}
+			}
+			if (weight_sum > 0.0f) {
+				heatmap_x[channel] = (weighted_x / weight_sum) /
+					(float)(APP_AI_GAUGE_CENTER_TIP_HEATMAP_SIDE_PIXELS - 1U);
+				heatmap_y[channel] = (weighted_y / weight_sum) /
+					(float)(APP_AI_GAUGE_CENTER_TIP_HEATMAP_SIDE_PIXELS - 1U);
+			}
+		}
+	}
+	DebugConsole_Printf("[AI][CENTER_TIP] peaks milli=[%ld,%ld] xy_milli center=[%ld,%ld] tip=[%ld,%ld]\r\n",
+		(long)lroundf(heatmap_peak[0] * 1000.0f),
+		(long)lroundf(heatmap_peak[1] * 1000.0f),
+		(long)lroundf(heatmap_x[0] * 1000.0f),
+		(long)lroundf(heatmap_y[0] * 1000.0f),
+		(long)lroundf(heatmap_x[1] * 1000.0f),
+		(long)lroundf(heatmap_y[1] * 1000.0f));
+	/* Use the shared configured floor here.  The previous 0.25 literal was
+	 * copied from an older heatmap path and rejected valid asymmetric outputs
+	 * such as center=0.813/tip=0.160 seen on the live camera. */
+	{
+		const float heatmap_peak_floor = APP_AI_TIP_FOCUS_AXIS_PEAK_FLOOR;
+		if ((heatmap_peak[0] < heatmap_peak_floor) ||
+			(heatmap_peak[1] < heatmap_peak_floor)) {
+			DebugConsole_Printf(
+				"[AI][CENTER_TIP] heatmap gate rejected peaks_milli=[%ld,%ld] floor_milli=%ld.\r\n",
+				(long)lroundf(heatmap_peak[0] * 1000.0f),
+				(long)lroundf(heatmap_peak[1] * 1000.0f),
+				(long)lroundf(heatmap_peak_floor * 1000.0f));
+			return false;
+		}
+	}
+
+	/* Image y increases downward. Subtracting 90° changes the previous
+	 * east-zero math angle into the requested north-zero signed angle. */
+	{
+		const float dx = heatmap_x[1] - heatmap_x[0];
+		const float dy = heatmap_y[1] - heatmap_y[0];
+		/* Convert image coordinates directly to a signed north-zero angle.
+		 * Image y increases downward: north is (-dy), and positive angles turn
+		 * clockwise toward the image right/east direction. */
+		float angle_deg = atan2f(dx, -dy) * (180.0f / 3.14159265358979323846f);
+		float value;
+		const float calibration_margin_deg = 5.0f;
+		while (angle_deg <= -180.0f) angle_deg += 360.0f;
+		while (angle_deg > 180.0f) angle_deg -= 360.0f;
+		if ((fabsf(dx) + fabsf(dy)) < 0.03f) {
+			(void)DebugConsole_WriteString("[AI][CENTER_TIP] center/tip separation rejected.\r\n");
+			return false;
+		}
+		/* Do not extrapolate beyond gauge 1's calibrated sweep. Allow a small
+		 * endpoint margin for heatmap quantization, then clamp to the endpoint so
+		 * a cold-end prediction cannot become an impossible positive temperature. */
+		if ((angle_deg < (APP_GAUGE_CALIBRATION_MIN_DEG - calibration_margin_deg)) ||
+			(angle_deg > (APP_GAUGE_CALIBRATION_MAX_DEG + calibration_margin_deg))) {
+			DebugConsole_Printf(
+				"[AI][GAUGE] angle rejected angle_milli=%ld range_milli=[%ld,%ld].\r\n",
+				(long)lroundf(angle_deg * 1000.0f),
+				(long)lroundf(APP_GAUGE_CALIBRATION_MIN_DEG * 1000.0f),
+				(long)lroundf(APP_GAUGE_CALIBRATION_MAX_DEG * 1000.0f));
+			return false;
+		}
+		if (angle_deg < APP_GAUGE_CALIBRATION_MIN_DEG)
+			angle_deg = APP_GAUGE_CALIBRATION_MIN_DEG;
+		if (angle_deg > APP_GAUGE_CALIBRATION_MAX_DEG)
+			angle_deg = APP_GAUGE_CALIBRATION_MAX_DEG;
+		value = AppGaugeGeometry_AngleToGauge1Value(angle_deg);
+		if (!AppAI_IsPlausibleInferenceValue(value)) {
+			DebugConsole_Printf("[AI][GAUGE] mapped value rejected: angle_milli=%ld value_milli=%ld\r\n",
+				(long)lroundf(angle_deg * 1000.0f),
+				(long)lroundf(value * 1000.0f));
+			return false;
+		}
+		app_ai_last_inference_value = value;
+		app_ai_last_inference_valid = true;
+		app_ai_tip_focus_last_published = value;
+		app_ai_tip_focus_last_published_valid = true;
+		/* DebugConsole intentionally has no floating-point formatter. Keep the
+		 * geometry visible as milli-units so this line cannot silently collapse
+		 * to blanks while the exact value path remains fully numeric. */
+		DebugConsole_Printf("[AI][GAUGE] ellipse_milli=[%ld,%ld,%ld,%ld] center_milli=[%ld,%ld] tip_milli=[%ld,%ld] angle_north_milli=%ld value_milli=%ld\r\n",
+			(long)lroundf(ellipse[0] * 1000.0f),
+			(long)lroundf(ellipse[1] * 1000.0f),
+			(long)lroundf(ellipse[2] * 1000.0f),
+			(long)lroundf(ellipse[3] * 1000.0f),
+			(long)lroundf(heatmap_x[0] * 1000.0f),
+			(long)lroundf(heatmap_y[0] * 1000.0f),
+			(long)lroundf(heatmap_x[1] * 1000.0f),
+			(long)lroundf(heatmap_y[1] * 1000.0f),
+			(long)lroundf(angle_deg * 1000.0f),
+			(long)lroundf(value * 1000.0f));
+		/* Close the same transaction opened by the camera worker before the
+		 * snapshot copy; without this, successful geometry runs leave the AI
+		 * latency/result record open even though the value was published. */
+		(void)INA219_LogReading("AI-DONE");
+		Metrics_EndInference("AI", value);
+	}
+	return true;
 }
 
 /**
@@ -397,10 +909,9 @@ void AppAI_ResetInferenceBurstHistory(void)
 
 bool AppAI_RuntimeInitStepwise(void)
 {
-	/* Use the same explicit ATON bring-up sequence that the working generated
-	 * sample uses.  The lighter LL_ATON_RT_RuntimeInit() path proved too weak
-	 * for the OBB stage because it did not leave the NPU interrupt chain in a
-	 * state that reliably wakes the runtime from WFE. */
+	/* Use the explicit ATON bring-up sequence required by both deployed gauge
+	 * networks. The runtime-init shortcut did not reliably wake the NPU epoch
+	 * controller on this board. */
 	(void)DebugConsole_WriteString("[AI] ATON runtime init start.\r\n");
 	LL_ATON_RT_SetRuntimeCallback(NULL);
 	if (LL_ATON_Init() != LL_ATON_OK)
@@ -415,16 +926,16 @@ bool AppAI_RuntimeInitStepwise(void)
 	uint32_t t = 0U;
 
 	ATON_DISABLE_CLR_CONFCLR(INTCTRL, 0);
-	/* Enable streaming engine completions (bits 0-15) AND epoch controller 0
-	 * completions (bits 28-30) on ATON IRQ line 0.  The OBB model is an epoch
-	 * blob — without the EC interrupt routed, RunEpochBlock returns WFE and
-	 * the WFE semaphore is never released. */
+	/* Match the vendor ATON runtime mask semantics. The OR-mask value masks
+	 * streaming-engine events; epoch-controller events must remain unmasked so
+	 * the OBB epoch blob can wake RunEpochBlock through the EC interrupt. The
+	 * previous 0x70000000 addition masked those EC bits and left the board with
+	 * se2_i set but ec_irq/intreg clear. */
 	ATON_INTCTRL_STD_INTORMSK_SET(
-		ATON_STRENG_INT_MASK(ATON_STRENG_NUM, 0, 0)
-		| (0x70000000U));
+		ATON_STRENG_INT_MASK(ATON_STRENG_NUM, 0, 0));
 	ATON_INTCTRL_STD_INTANDMSK_SET(0xFFFFFFFFU);
 #if (ATON_INT_NR > 32)
-	ATON_INTCTRL_STD_INTORMSK_H_SET(0xFFFFFFFFU);
+	ATON_INTCTRL_STD_INTORMSK_H_SET(0U);
 	ATON_INTCTRL_STD_INTANDMSK_H_SET(0xFFFFFFFFU);
 #endif
 	ATON_ENABLE(INTCTRL, 0);
@@ -647,7 +1158,7 @@ void AppAI_ConfigureNpuRisafDefaults(void)
 #endif
 }
 
-bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
+bool App_AI_RunDryInferenceFromGray640(const uint8_t *frame_bytes,
 									  size_t frame_size)
 {
 	const uint8_t *safe_frame_bytes = frame_bytes;
@@ -657,6 +1168,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	 * when the decode actually populated the fields. */
 	obb_box.gauge_center_x = -1.0f;
 	obb_box.gauge_center_y = -1.0f;
+	(void)obb_box;
 	AppAI_SourceCrop full_frame_crop = {0U, 0U,
 										(size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
 										(size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS};
@@ -674,7 +1186,9 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	bool scalar_crop_from_obb = false;
 	float obb_output_value = 0.0f;
 
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 	(void)DebugConsole_WriteString("[AI] Dry-run entry.\r\n");
+#endif
 	AppAI_LogR9("entry");
 	if ((frame_bytes == NULL) || (frame_size < (size_t)APP_AI_CAPTURE_FRAME_BYTES))
 	{
@@ -682,64 +1196,29 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		return false;
 	}
 
+	/* The DCMIPP buffer is now MONO_Y8, not the old packed YUV422 contract.
+	 * Do not queue it into the legacy YUV baseline, whose pixel reader expects
+	 * two bytes per pixel. */
+
 	if (!App_AI_Model_Init())
 	{
 		(void)DebugConsole_WriteString("[AI] Dry-run entry aborted during model init.\r\n");
-		/* Keep the classical path alive even when the AI model cannot start. */
-		if (!AppBaselineRuntime_RequestEstimate(frame_bytes,
-				(ULONG)frame_size))
-		{
-			DebugConsole_WriteString(
-				"[BASELINE] Failed to queue compare frame.\r\n");
-		}
 		return false;
 	}
 
-	/* The tip-focus model is now the live path, so the legacy centre-detector
-	 * block below only matters when that stage is disabled for fallback or
-	 * comparison builds. */
+	/* The ellipse -> center/tip path is live; the compatibility block below is
+	 * compiled only for replay/fallback builds. */
 	AppAI_LogR9("post_model_init");
 
 #if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 	{
-		const bool obb_crop_valid =
-			AppAI_RunObbStageForTipFocusLive(
-				safe_frame_bytes, frame_size,
-				&full_frame_crop,
-				&fixed_training_crop,
-				&scalar_crop,
-				&obb_box);
-		const char *forced_crop_label =
-			obb_crop_valid
-				? "obb_box_board_bbox_deploy_candidate"
-				: "fixed-training";
-
-		scalar_crop_from_obb = obb_crop_valid;
-		DebugConsole_Printf(
-			"[AI] Live crop source: %s\r\n",
-			scalar_crop_from_obb ? "obb" : "fixed-training");
-
-		AppAI_SetForcedCrop(forced_crop_label,
-			scalar_crop.x_min, scalar_crop.y_min,
-			scalar_crop.width, scalar_crop.height);
+		(void)full_frame_crop;
+		(void)fixed_training_crop;
+		(void)scalar_crop;
+		(void)scalar_crop_from_obb;
 		(void)obb_output_info;
 		(void)obb_output_value;
-
-		const bool tip_focus_ok =
-			AppAI_TipFocus_RunDryInferenceFromYuv422(safe_frame_bytes,
-				frame_size);
-		AppAI_ClearForcedCrop();
-
-		/* Queue the same frame for the classical baseline after the AI path
-		 * has finished with it, so both workers can report comparable results. */
-		if (!AppBaselineRuntime_RequestEstimate(frame_bytes,
-				(ULONG)frame_size))
-		{
-			DebugConsole_WriteString(
-				"[BASELINE] Failed to queue compare frame.\r\n");
-		}
-
-		return tip_focus_ok;
+		return AppAI_RunGaugeModelsFromGray640(safe_frame_bytes, frame_size);
 	}
 #endif
 
@@ -771,7 +1250,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 			obb_crop_valid = true;
 			AppAI_LogObbResult(obb_output_info, &obb_box);
 			DebugConsole_Printf(
-				"[AI] OBB crop: x=%lu y=%lu w=%lu h=%lu\r\n",
+				"[AI][LEGACY_OBB] crop: x=%lu y=%lu w=%lu h=%lu\r\n",
 				(unsigned long)obb_crop.x_min,
 				(unsigned long)obb_crop.y_min,
 				(unsigned long)obb_crop.width,
@@ -781,7 +1260,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 		{
 			obb_crop_valid = false;
 			DebugConsole_WriteString(
-				"[AI] OBB stage failed; using fixed training crop.\r\n");
+				"[AI][LEGACY_OBB] stage failed; using fixed training crop.\r\n");
 		}
 	}
 #else
@@ -789,7 +1268,7 @@ bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
 	(void)obb_output_value;
 	obb_crop_valid = false;
 	DebugConsole_WriteString(
-		"[AI] OBB stage disabled; using fixed training crop.\r\n");
+		"[AI][LEGACY_OBB] stage disabled; using fixed training crop.\r\n");
 #endif
 
 	/* -----------------------------------------------------------------------
@@ -2112,10 +2591,12 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 		return false;
 	}
 
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 	DebugConsole_Printf("[AI] Crop %s: x=%lu y=%lu w=%lu h=%lu\r\n",
 					   crop_label,
 					   (unsigned long)crop_x_min, (unsigned long)crop_y_min,
 					   (unsigned long)crop_width, (unsigned long)crop_height);
+#endif
 
 	if (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS)
 	{
@@ -2123,22 +2604,30 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 								  source_height, crop_x_min, crop_y_min, crop_width, crop_height);
 	}
 
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 	(void)DebugConsole_WriteString("[AI] Preprocess diagnostics OK.\r\n");
+#endif
 	/* Keep legacy speed for 3-channel models, but if a wider tensor is
 	 * provisioned (for example, feature-augmented channels), clear it first so
 	 * unwritten channels are deterministic instead of stale SRAM. */
 	if (input_len_bytes > (size_t)APP_AI_MODEL_INPUT_FLOAT_BYTES)
 	{
 		(void)memset(input_ptr, 0, input_len_bytes);
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 		DebugConsole_Printf(
 			"[AI] Preprocess zero-fill applied for extended input: bytes=%lu\r\n",
 			(unsigned long)input_len_bytes);
+#endif
 	}
 	else
 	{
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 		(void)DebugConsole_WriteString("[AI] Preprocess zero-fill skipped.\r\n");
+#endif
 	}
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 	(void)DebugConsole_WriteString("[AI] Preprocess resize start.\r\n");
+#endif
 
 #if APP_AI_YUV422_INPUT_LUMA_ONLY
 	{
@@ -2172,7 +2661,9 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 
 		/* Fast path: when the crop already spans the output tensor, fill it
 		 * directly without extra resize math or padding checks. */
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 		(void)DebugConsole_WriteString("[AI] Preprocess row loop enter (luma).\r\n");
+#endif
 		if ((crop_x_min == 0U) && (crop_y_min == 0U) &&
 			(crop_width == output_width) && (crop_height == output_height))
 		{
@@ -2187,6 +2678,7 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 					(uint8_t *)input_ptr + (out_y * output_row_bytes);
 
 				app_ai_scalar_preprocess_last_row = out_y;
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 				if ((out_y == 0U) || ((out_y & 0x3FU) == 0U))
 				{
 					DebugConsole_Printf(
@@ -2194,6 +2686,7 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 						(unsigned long)out_y,
 						(unsigned long)output_last_row);
 				}
+#endif
 
 				for (size_t out_x = 0U; out_x < output_width; ++out_x)
 				{
@@ -2416,7 +2909,9 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 			return false;
 		}
 
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 		(void)DebugConsole_WriteString("[AI] Preprocess row loop enter.\r\n");
+#endif
 
 		for (size_t chunk_start = 0U; chunk_start < output_height;
 			 chunk_start += APP_AI_SCALAR_PREPROCESS_ROWS_PER_CHUNK)
@@ -2465,7 +2960,9 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 #endif /* APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS */
 	}
 
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 	(void)DebugConsole_WriteString("[AI] Preprocess resize OK.\r\n");
+#endif
 
 	return true;
 }
@@ -2597,6 +3094,7 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToInt8Input(
 		crop_height = source_height - crop_y_min;
 	}
 
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 	DebugConsole_Printf("[AI] Crop %s: x=%lu y=%lu w=%lu h=%lu\r\n",
 					   crop_label,
 					   (unsigned long)crop_x_min, (unsigned long)crop_y_min,
@@ -2604,6 +3102,7 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToInt8Input(
 	(void)DebugConsole_WriteString("[AI] Preprocess diagnostics OK.\r\n");
 	(void)DebugConsole_WriteString("[AI] Preprocess zero-fill skipped.\r\n");
 	(void)DebugConsole_WriteString("[AI] Preprocess resize start.\r\n");
+#endif
 
 	{
 		const float resize_scale =
@@ -2857,6 +3356,7 @@ float __attribute__((noinline)) AppAI_ScorePolarAlignmentCandidate(
 	}
 }
 
+#if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToPolarInput(
 	const uint8_t *frame_bytes, size_t frame_size,
 	uint8_t *input_ptr, size_t input_len_bytes,
@@ -2886,13 +3386,14 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToPolarInput(
 	float crop_height_f = 0.0f;
 	float resized_w = 0.0f;     /* crop dims after resize_with_pad (in output space) */
 	float resized_h = 0.0f;
-	/* Scratch for polar luma plane: 224x224 uint8 (~49 KB in BSS).
+	/* Legacy polar scratch remains fixed at its historical 224x224 size even
+	 * though the live DCMIPP frame is now 640x640.
 	 * Stores quantised luma as uint8 [0..255] instead of float [0..1]
 	 * to keep the buffer footprint manageable even at 224x224.  Gradients are
 	 * recomputed on-the-fly in a second pass instead of being stored in separate
 	 * arrays, which still avoids two large float scratch planes. */
-	static uint8_t resized_rgb[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * 3U] __attribute__((section(".tip_focus_activations"))); /* training-style resized crop */
-	static uint8_t polar_luma[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS] __attribute__((section(".npusram6_polar")));  /* overlaid on OBB AXISRAM6 region, CD-stage only */
+	static uint8_t resized_rgb[224U * 224U * 3U] __attribute__((section(".tip_focus_activations"))); /* legacy training-style resized crop */
+	static uint8_t polar_luma[224U * 224U] __attribute__((section(".npusram6_polar")));  /* legacy polar plane */
 
 	if ((frame_bytes == NULL) || (input_ptr == NULL) || (input_info == NULL))
 	{
@@ -3194,8 +3695,6 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToPolarInput(
 			radial_hist, 256U, total_gradient_samples, 0.99f);
 		const float angular_inv = (angular_threshold > 0U) ? (1.0f / (float)angular_threshold) : 1.0f;
 		const float radial_inv = (radial_threshold > 0U) ? (1.0f / (float)radial_threshold) : 1.0f;
-		const float luma_threshold_f = (float)luma_threshold / 255.0f;
-
 		for (size_t row = 0U; row < output_dim; ++row)
 		{
 			const float row_position = (float)row / row_denominator;
@@ -3349,6 +3848,25 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToPolarInput(
 	(void)DebugConsole_WriteString("[AI] Polar preprocess OK.\r\n");
 	return true;
 }
+#else
+/**
+ * @brief Keep the retired polar API link-compatible without compiling its
+ *        obsolete 640x640 scratch implementation into the live product.
+ * @return false because the live product uses the ellipse/keypoint pair.
+ */
+bool AppAI_PreprocessYuv422FrameToPolarInput(
+	const uint8_t *frame_bytes, size_t frame_size,
+	uint8_t *input_ptr, size_t input_len_bytes,
+	const LL_Buffer_InfoTypeDef *input_info)
+{
+	(void)frame_bytes;
+	(void)frame_size;
+	(void)input_ptr;
+	(void)input_len_bytes;
+	(void)input_info;
+	return false;
+}
+#endif /* !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE */
 
 float AppAI_ClampNormalizedFloat(float value)
 {
@@ -4170,11 +4688,11 @@ void AppAI_TipFocus_ResetMedianHistory(float seed_value)
 }
 
 /**
- * @brief 3-sample median filter with outlier rejection.
+ * @brief 3-sample median filter with outlier recovery.
  *
- * Maintains a ring buffer of accepted tip-focus temperatures.  If the new
- * value deviates from the current median by more than the outlier threshold,
- * it is rejected and the last published value is returned unchanged.
+ * Maintain a tiny amount of smoothing, but re-seed immediately when a valid
+ * reading lands far from the current median. That keeps the live AI path from
+ * sticking on a stale cold-side value after the gauge moves back to zero.
  */
 float AppAI_TipFocus_MedianFilter(float new_value)
 {
@@ -4206,28 +4724,16 @@ float AppAI_TipFocus_MedianFilter(float new_value)
 	}
 	const float median = sorted[APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE / 2U];
 
-	/* Outlier rejection: if new value is too far from median, hold last published */
+	/* Outlier recovery: if new value is too far from median, re-seed at once. */
 	const float delta = (new_value > median) ? (new_value - median) : (median - new_value);
 	if (delta > APP_AI_TIP_FOCUS_MAX_OUTLIER_DELTA_C)
 	{
-		app_ai_tip_focus_outlier_streak++;
-		if (app_ai_tip_focus_outlier_streak >= APP_AI_TIP_FOCUS_OUTLIER_RESET_STREAK)
-		{
-			DebugConsole_Printf(
-				"[AI][TIP_FOCUS] Outlier %.2f C delta=%.2f > %.1f; re-seeding median with %.2f\r\n",
-				new_value, delta, APP_AI_TIP_FOCUS_MAX_OUTLIER_DELTA_C,
-				new_value);
-			AppAI_TipFocus_ResetMedianHistory(new_value);
-			return new_value;
-		}
-
 		DebugConsole_Printf(
-			"[AI][TIP_FOCUS] Outlier %.2f C delta=%.2f > %.1f; holding %.2f (streak=%lu/%u)\r\n",
+			"[AI][TIP_FOCUS] Outlier %.2f C delta=%.2f > %.1f; re-seeding median with %.2f\r\n",
 			new_value, delta, APP_AI_TIP_FOCUS_MAX_OUTLIER_DELTA_C,
-			app_ai_tip_focus_last_published,
-			(unsigned long)app_ai_tip_focus_outlier_streak,
-			(unsigned)APP_AI_TIP_FOCUS_OUTLIER_RESET_STREAK);
-		return app_ai_tip_focus_last_published;
+			new_value);
+		AppAI_TipFocus_ResetMedianHistory(new_value);
+		return new_value;
 	}
 
 	app_ai_tip_focus_outlier_streak = 0U;
@@ -4416,6 +4922,7 @@ bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 			angle_delta_degrees += 360.0f;
 		}
 
+		/* Both paths use the same per-gauge angle-to-temperature profile. */
 		temperature_c = AppBaselineRuntime_ConvertAngleToTemperature(angle_rad);
 
 		center_peak_ok = (center_peak >= center_axis_peak_floor);
@@ -4447,7 +4954,6 @@ bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 
 		if (valid)
 		{
-			temperature_c = AppAI_TipFocus_MedianFilter(temperature_c);
 			app_ai_tip_focus_consecutive_invalid = 0U;
 			app_ai_last_inference_value = temperature_c;
 			app_ai_last_inference_valid = true;
@@ -4595,6 +5101,18 @@ bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 	if (app_ai_tip_focus_consecutive_invalid >= APP_AI_TIP_FOCUS_MAX_INVALID_FRAMES)
 	{
 		app_ai_tip_focus_consecutive_invalid = 0U;
+	}
+
+	if (temperature_finite_ok && temperature_range_ok)
+	{
+		DebugConsole_WriteString(
+			"[AI] Tip-focus rejected; publishing current decoded temperature.\r\n");
+		app_ai_tip_focus_consecutive_invalid = 0U;
+		app_ai_last_inference_value = temperature_c;
+		app_ai_last_inference_valid = true;
+		(void)INA219_LogReading("AI-DONE");
+		Metrics_EndInference("AI", temperature_c);
+		return true;
 	}
 
 	if (app_ai_tip_focus_last_published_valid)
@@ -4981,6 +5499,7 @@ bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 			angle_delta_degrees += 360.0f;
 		}
 
+		/* Both paths use the same per-gauge angle-to-temperature profile. */
 		temperature_c = AppBaselineRuntime_ConvertAngleToTemperature(angle_rad);
 
 		center_peak_ok = (center_peak >= center_axis_peak_floor);
@@ -5015,7 +5534,6 @@ bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 
 		if (valid)
 		{
-			temperature_c = AppAI_TipFocus_MedianFilter(temperature_c);
 			app_ai_tip_focus_consecutive_invalid = 0U;
 			app_ai_last_inference_value = temperature_c;
 			app_ai_last_inference_valid = true;
@@ -5084,6 +5602,18 @@ reject_and_hold:
 		app_ai_tip_focus_consecutive_invalid = 0U;
 	}
 
+	if (temperature_finite_ok && temperature_range_ok)
+	{
+		DebugConsole_WriteString(
+			"[AI] Tip-focus rejected; publishing current decoded temperature.\r\n");
+		app_ai_tip_focus_consecutive_invalid = 0U;
+		app_ai_last_inference_value = temperature_c;
+		app_ai_last_inference_valid = true;
+		(void)INA219_LogReading("AI-DONE");
+		Metrics_EndInference("AI", temperature_c);
+		return true;
+	}
+
 	if (app_ai_tip_focus_last_published_valid)
 	{
 		published_temperature_c = app_ai_tip_focus_last_published;
@@ -5104,7 +5634,10 @@ reject_and_hold:
 }
 #endif /* moved to app_ai_tip_focus_postprocess.inc */
 
+#if APP_AI_ENABLE_LEGACY_TIP_FOCUS_COMPAT
+/* Optional replay-only implementation for the retired tip-focus model. */
 #include "app_ai_tip_focus_postprocess.inc"
+#endif
 
 bool App_AI_GetLastInferenceResult(float *value_out)
 {
