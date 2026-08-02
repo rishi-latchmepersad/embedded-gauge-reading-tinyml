@@ -1,6 +1,6 @@
 # Live contracts
 
-Date: 2026-07-22  
+Date: 2026-08-02
 Status: current  
 Scope: STM32N657 camera and tip-focus deployment path
 
@@ -21,6 +21,9 @@ Scope: STM32N657 camera and tip-focus deployment path
 - Use the Windows checkout for firmware, CubeIDE, packaging inputs, and flashing.
 - Treat the Windows firmware tree as the source of truth for board-flash inputs
   after a model is packaged.
+- The WSL-specific active/research distinction, required inputs, guarded
+  commands, and artifact handoff are maintained in
+  [`ml-pipeline.md`](ml-pipeline.md).
 
 ## Evidence and change policy
 

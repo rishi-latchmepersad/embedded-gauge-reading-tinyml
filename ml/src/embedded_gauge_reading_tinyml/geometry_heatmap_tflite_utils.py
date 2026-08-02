@@ -98,6 +98,67 @@ def reorder_tflite_outputs(outputs: Sequence[np.ndarray], order_indices: Sequenc
     return reordered
 
 
+def decode_heatmap_point(
+    heatmap: np.ndarray,
+    *,
+    method: str = "softargmax",
+    window_size: int = 5,
+) -> tuple[float, float]:
+    """Decode one heatmap into a ``(row, column)`` coordinate.
+
+    The decoder uses a sharp positive-power weighting rather than a raw
+    probability softmax. This keeps an int8 heatmap's strongest local peak
+    dominant when the background has a nonzero quantized floor.
+    """
+
+    values = np.asarray(heatmap, dtype=np.float32).squeeze()
+    if values.ndim != 2:
+        raise ValueError(f"expected a two-dimensional heatmap, got {values.shape}")
+    peak_row, peak_col = np.unravel_index(int(np.argmax(values)), values.shape)
+    if method == "argmax":
+        return float(peak_row), float(peak_col)
+    if method not in {"softargmax", "local_window_softargmax", "peak_weighted_centroid"}:
+        raise ValueError(f"unsupported heatmap decoder: {method}")
+
+    if method == "softargmax":
+        row_start, row_stop = 0, values.shape[0]
+        col_start, col_stop = 0, values.shape[1]
+    else:
+        radius = max(0, int(window_size) // 2)
+        row_start = max(0, peak_row - radius)
+        row_stop = min(values.shape[0], peak_row + radius + 1)
+        col_start = max(0, peak_col - radius)
+        col_stop = min(values.shape[1], peak_col + radius + 1)
+
+    local = values[row_start:row_stop, col_start:col_stop]
+    # why: exponentiating the peak contrast suppresses quantized background
+    # without introducing a model-specific threshold into postprocessing.
+    weights = np.maximum(local - float(local.min()), 0.0) ** 4.0
+    if not np.any(weights):
+        return float(peak_row), float(peak_col)
+    rows, cols = np.indices(local.shape, dtype=np.float32)
+    row = float((weights * (rows + row_start)).sum() / weights.sum())
+    col = float((weights * (cols + col_start)).sum() / weights.sum())
+    return row, col
+
+
+def decode_heatmap_point_xy(
+    heatmap: np.ndarray,
+    *,
+    method: str = "softargmax",
+    window_size: int = 5,
+    heatmap_size: int | None = None,
+    input_size: int = 224,
+) -> tuple[float, float]:
+    """Decode a heatmap and scale its ``(row, col)`` point to input pixels."""
+
+    values = np.asarray(heatmap)
+    source_size = int(heatmap_size or values.shape[-1])
+    row, col = decode_heatmap_point(values, method=method, window_size=window_size)
+    scale = float(input_size - 1) / max(source_size - 1, 1)
+    return col * scale, row * scale
+
+
 def summarize_tflite_contract(model_path: Path) -> dict[str, Any]:
     """Summarize the TFLite input/output contract for export and replay logs."""
 
@@ -128,4 +189,3 @@ def summarize_tflite_contract(model_path: Path) -> dict[str, Any]:
         except json.JSONDecodeError:
             pass
     return contract
-

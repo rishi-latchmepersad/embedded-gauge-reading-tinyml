@@ -390,4 +390,3 @@ class TestJitterRanges:
         for _ in range(100):
             jitter = generate_jitter_params(rng)
             assert 0.90 <= jitter.aspect <= 1.10
-

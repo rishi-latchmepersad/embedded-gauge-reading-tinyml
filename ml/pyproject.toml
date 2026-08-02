@@ -31,3 +31,10 @@ packages = [{ include = "embedded_gauge_reading_tinyml", from = "src" }]
 
 [dependency-groups]
 dev = ["pytest (>=9.0.2,<10.0.0)", "ruff (>=0.14.14,<0.15.0)"]
+
+[tool.pytest.ini_options]
+# Only package tests are collection-safe by default. Script-level probes often
+# load local checkpoints or complete CVAT archives during module import.
+testpaths = ["tests/smoke"]
+python_files = ["test_*.py"]
+norecursedirs = ["legacy"]

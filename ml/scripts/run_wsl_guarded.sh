@@ -18,7 +18,7 @@ fi
 # Override only after checking the machine's actual memory size.
 MIN_AVAILABLE_MB="${WSL_MIN_AVAILABLE_MB:-2048}"
 CHECK_INTERVAL_SECONDS="${WSL_MEMORY_CHECK_INTERVAL_SECONDS:-5}"
-GPU_MEMORY_LIMIT_MB="${TF_GPU_MEMORY_LIMIT_MB:-12000}"
+GPU_MEMORY_LIMIT_MB="${TF_GPU_MEMORY_LIMIT_MB:-15000}"
 LOCK_FILE="${WSL_TRAINING_LOCK_FILE:-/tmp/embedded-gauge-reading-tinyml-training.lock}"
 
 case "$MIN_AVAILABLE_MB" in (*[!0-9]*|'') printf 'WSL_MIN_AVAILABLE_MB must be an integer\n' >&2; exit 64;; esac
@@ -52,6 +52,8 @@ export TF_NUM_INTEROP_THREADS="${TF_NUM_INTEROP_THREADS:-1}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-2}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-2}"
 export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-2}"
+# Training scripts read this project-specific value before configuring their
+# logical device. TensorFlow does not consume this variable automatically.
 export TF_GPU_MEMORY_LIMIT_MB="$GPU_MEMORY_LIMIT_MB"
 
 printf 'guarded ML job: %s\n' "$*"

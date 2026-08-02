@@ -1,0 +1,48 @@
+# Inputs and optional outputs needed to reproduce the current WSL/ML workflows.
+# Paths are relative to ml/. Optional model artifacts are normally supplied by
+# a prior training/export run and are intentionally not committed.
+
+[workspace]
+schema_version = 1
+active_board_contract = "obb_then_tip_focus_v18"
+research_candidate = "ellipse_then_keypoint_temperature"
+
+[[required_inputs]]
+path = "data/labelled/train_1.zip"
+purpose = "generic CVAT training archive"
+
+[[required_inputs]]
+path = "data/labelled/val_1.zip"
+purpose = "generic CVAT validation archive"
+
+[[required_inputs]]
+path = "data/labelled/test_3.zip"
+purpose = "LittleGood held-out board test archive"
+
+[[required_inputs]]
+path = "data/raw"
+purpose = "source phone captures used to repair board archives"
+
+[[required_inputs]]
+path = "data/captured_images"
+purpose = "board captures and offline replay inputs"
+
+[[required_inputs]]
+path = "src/embedded_gauge_reading_tinyml/gauge/gauge_calibration_parameters.toml"
+purpose = "gauge specification and calibration registry"
+
+[[optional_artifacts]]
+path = "artifacts/ellipse_iter8_universal_wide_deep/model_int8.tflite"
+purpose = "validated research-candidate ellipse int8 model"
+
+[[optional_artifacts]]
+path = "artifacts/keypoint_unet_224g_wide_aug/model_int8.tflite"
+purpose = "validated research-candidate center/tip int8 model"
+
+[[optional_artifacts]]
+path = "artifacts/keypoint_unet_224g_wide_aug/c_info.json"
+purpose = "ST Edge AI metadata for the research candidate"
+
+[[optional_artifacts]]
+path = "artifacts/keypoint_unet_224g_wide_aug/network.csv"
+purpose = "ST Edge AI network contract for the research candidate"

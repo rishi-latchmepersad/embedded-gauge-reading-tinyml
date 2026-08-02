@@ -21,12 +21,20 @@ def linear_temperature_from_angle_tf(
     sweep_degrees: float = 270.0,
     value_min: float = -30.0,
     value_max: float = 50.0,
+    slope: float | None = None,
+    intercept: float | None = None,
 ) -> tf.Tensor:
     """Convert an angle to a temperature on the gauge's linear scale."""
 
     angle = tf.cast(angle_degrees, tf.float32)
     normalized = tf.math.floormod(angle - cold_angle_degrees, 360.0) / max(sweep_degrees, 1e-6)
     normalized = tf.clip_by_value(normalized, 0.0, 1.0)
+    if slope is not None or intercept is not None:
+        # why: retain the old affine-test spelling while the production API
+        # remains expressed in physical minimum/maximum values.
+        return (value_min if slope is None else slope) * normalized + (
+            value_max if intercept is None else intercept
+        )
     return value_min + (value_max - value_min) * normalized
 
 
@@ -44,20 +52,43 @@ def angle_degrees_from_center_to_tip_tf(
     return tf.math.floormod(angle + 360.0, 360.0)
 
 
-def normalized_softargmax_coordinates_tf(heatmap: tf.Tensor) -> tf.Tensor:
-    """Decode a heatmap into normalized [0, 1] x/y coordinates."""
+def _batched_heatmap_weights(heatmap: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Return sharp positive weights and the heatmap height and width."""
 
-    hm = tf.cast(tf.squeeze(heatmap), tf.float32)
-    hm_shape = tf.shape(hm)
-    height = tf.cast(hm_shape[0], tf.float32)
-    width = tf.cast(hm_shape[1], tf.float32)
-    flat = tf.reshape(hm, [-1])
-    weights = tf.nn.softmax(flat)
-    ys = tf.repeat(tf.range(hm_shape[0], dtype=tf.float32), hm_shape[1])
-    xs = tf.tile(tf.range(hm_shape[1], dtype=tf.float32), [hm_shape[0]])
-    x = tf.reduce_sum(weights * xs) / tf.maximum(width - 1.0, 1.0)
-    y = tf.reduce_sum(weights * ys) / tf.maximum(height - 1.0, 1.0)
-    return tf.stack([x, y], axis=0)
+    values = tf.cast(heatmap, tf.float32)
+    if values.shape.rank == 4:
+        values = tf.squeeze(values, axis=-1)
+    if values.shape.rank == 2:
+        values = values[None, ...]
+    shape = tf.shape(values)
+    height = tf.cast(shape[1], tf.float32)
+    width = tf.cast(shape[2], tf.float32)
+    # why: a fourth-power positive contrast keeps a quantized heatmap's peak
+    # local instead of averaging it toward the background floor.
+    weights = tf.pow(tf.nn.relu(values - tf.reduce_min(values, axis=[1, 2], keepdims=True)), 4.0)
+    weights /= tf.maximum(tf.reduce_sum(weights, axis=[1, 2], keepdims=True), 1e-6)
+    return weights, height, width
+
+
+def softargmax_coordinates_tf(heatmap: tf.Tensor) -> tf.Tensor:
+    """Decode batched heatmaps into raw ``(x, y)`` pixel coordinates."""
+
+    weights, height, width = _batched_heatmap_weights(heatmap)
+    shape = tf.shape(weights)
+    ys = tf.cast(tf.range(shape[1]), tf.float32)[None, :, None]
+    xs = tf.cast(tf.range(shape[2]), tf.float32)[None, None, :]
+    x = tf.reduce_sum(weights * xs, axis=[1, 2])
+    y = tf.reduce_sum(weights * ys, axis=[1, 2])
+    return tf.stack([x, y], axis=1)
+
+
+def normalized_softargmax_coordinates_tf(heatmap: tf.Tensor) -> tf.Tensor:
+    """Decode batched heatmaps into normalized ``(x, y)`` coordinates."""
+
+    coords = softargmax_coordinates_tf(heatmap)
+    _, height, width = _batched_heatmap_weights(heatmap)
+    scale = tf.stack([tf.maximum(width - 1.0, 1.0), tf.maximum(height - 1.0, 1.0)])
+    return coords / scale[None, :]
 
 
 def temperature_from_coords_tf(
@@ -70,6 +101,8 @@ def temperature_from_coords_tf(
     sweep_degrees: float = 270.0,
     value_min: float = -30.0,
     value_max: float = 50.0,
+    slope: float | None = None,
+    intercept: float | None = None,
 ) -> tf.Tensor:
     """Convert center/tip coordinates directly into a temperature tensor."""
 
@@ -80,7 +113,21 @@ def temperature_from_coords_tf(
         sweep_degrees=sweep_degrees,
         value_min=value_min,
         value_max=value_max,
+        slope=slope,
+        intercept=intercept,
     )
+
+
+def circular_angle_difference_degrees_tf(
+    predicted: tf.Tensor,
+    target: tf.Tensor,
+) -> tf.Tensor:
+    """Return the absolute shortest angular difference in degrees."""
+
+    predicted = tf.cast(predicted, tf.float32)
+    target = tf.cast(target, tf.float32)
+    delta = tf.math.floormod(predicted - target + 180.0, 360.0) - 180.0
+    return tf.abs(delta)
 
 
 def circular_angle_loss_tf(predicted: tf.Tensor, target: tf.Tensor) -> tf.Tensor:
@@ -89,7 +136,7 @@ def circular_angle_loss_tf(predicted: tf.Tensor, target: tf.Tensor) -> tf.Tensor
     predicted = tf.cast(predicted, tf.float32)
     target = tf.cast(target, tf.float32)
     delta = tf.math.floormod(predicted - target + 180.0, 360.0) - 180.0
-    return tf.abs(delta) / 180.0
+    return tf.square(delta / 180.0)
 
 
 def normalized_temperature_huber_loss_tf(
@@ -98,10 +145,13 @@ def normalized_temperature_huber_loss_tf(
     *,
     value_min: float = -30.0,
     value_max: float = 50.0,
+    minimum_celsius: float | None = None,
+    maximum_celsius: float | None = None,
 ) -> tf.Tensor:
     """Huber loss on normalized temperature predictions."""
 
-    pred_norm = normalize_scalar_tf(predicted, minimum=value_min, maximum=value_max)
-    target_norm = normalize_scalar_tf(target, minimum=value_min, maximum=value_max)
+    minimum = value_min if minimum_celsius is None else minimum_celsius
+    maximum = value_max if maximum_celsius is None else maximum_celsius
+    pred_norm = normalize_scalar_tf(predicted, minimum=minimum, maximum=maximum)
+    target_norm = normalize_scalar_tf(target, minimum=minimum, maximum=maximum)
     return tf.keras.losses.huber(target_norm, pred_norm)
-

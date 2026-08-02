@@ -1,141 +1,113 @@
-# ML Workflow
+# WSL ML Workspace
 
-The ML side of this project is intended to run in WSL on Ubuntu 24.04 with Poetry and GPU support.
+This directory is the WSL-side workspace for training, offline evaluation,
+TFLite export, and model handoff. Use the Linux checkout, not the Windows
+firmware checkout, for these commands:
 
-This is the default workflow I would use for:
-- baseline classical CV runs
-- CNN training
-- future export and evaluation scripts
-
-## Recommended Environment
-
-Use the WSL shell rather than native Windows Python when working in `ml/`.
-
-The helper script below keeps the common commands as one-liners:
-
-```sh
-bash scripts/wsl_ml.sh help
-bash scripts/wsl_ml.sh setup
-bash scripts/wsl_ml.sh gpu-check
-bash scripts/wsl_ml.sh baseline --max-samples 24
-bash scripts/wsl_ml.sh single-image --image-path ../ml/data/captured_images/capture_0006.png
-bash scripts/wsl_ml.sh train
-bash scripts/wsl_ml.sh fit-search
-bash scripts/wsl_ml.sh export
-bash scripts/wsl_ml.sh pytest tests/test_baseline_runner.py
+```bash
+cd /home/rishi_latchmepersad/Projects/embedded-gauge-reading-tinyml/ml
+poetry install --with dev
 ```
 
-The script lives at [ml/scripts/wsl_ml.sh](scripts/wsl_ml.sh).
+Read the canonical pipeline contract before choosing a model:
+[`docs/ai-memory/current-state/ml-pipeline.md`](../docs/ai-memory/current-state/ml-pipeline.md).
 
-```sh
-cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml
-~/.local/bin/poetry --version
+## Layout
+
+- `src/embedded_gauge_reading_tinyml/`: importable Python package.
+- `scripts/`: runnable preparation, training, evaluation, and export jobs.
+- `tests/`: default collection-safe pytest suite.
+- `data/`: source archives, manifests, and captured inputs.
+- `artifacts/`: local model checkpoints and exports; ignored by Git.
+- `workspace_manifest.toml`: required inputs and optional artifact contract.
+
+## Workspace Check
+
+Run this before a training or evaluation job:
+
+```bash
+bash scripts/run_wsl_guarded.sh poetry run python scripts/verify_ml_workspace.py
 ```
 
-If `~/.local/bin` is not already on your PATH, either call Poetry with the full path
-or add this line to your WSL shell profile:
+If a model artifact is required for a replay, request strict checking:
 
-```sh
-export PATH="$HOME/.local/bin:$PATH"
+```bash
+bash scripts/run_wsl_guarded.sh poetry run python scripts/verify_ml_workspace.py \
+  --require-artifacts
 ```
 
-## Setup
+Most model artifacts are intentionally not committed. A fresh checkout should
+report them as optional and name the exact paths that must be produced or
+handed off; it should not fail during Python import.
 
-```sh
-cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml
-~/.local/bin/poetry install --with dev
+## Memory-Safe Jobs
+
+Every training, conversion, evaluation, and packaging job must run through the
+guarded launcher:
+
+```bash
+bash scripts/run_wsl_guarded.sh poetry run python scripts/<job>.py [args...]
 ```
 
-## GPU Sanity Check
+The launcher enforces a single active job, a host-memory floor, bounded CPU
+thread fan-out, and a 15,000 MiB TensorFlow GPU budget environment. Training
+scripts that allocate TensorFlow devices must also configure the 15,000 MiB
+logical GPU limit themselves. Do not launch a long job with bare `setsid`,
+`nohup`, or direct `poetry run`.
 
-Verify that TensorFlow can see the GPU inside the Poetry environment:
+The guarded launcher must be invoked from `ml/`, because Poetry resolves the
+project from `ml/pyproject.toml`.
 
-```sh
-cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml
-~/.local/bin/poetry run python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
+## Data Preparation
+
+The LittleGood board archives may contain annotations without image bytes in a
+fresh checkout. Repair them from the tracked raw captures before board-pool
+training:
+
+```bash
+bash scripts/run_wsl_guarded.sh poetry run python scripts/repair_board_archive_images.py
 ```
 
-## Baseline Run
+Never train on `data/labelled/initial_temp_gauge/board_captures_2.zip`; it is a
+duplicate of the `test_3.zip` holdout. See
+`../docs/ai-memory/current-state/labelled-data.md` for the complete archive
+inventory and split rules.
 
-Run the classical polar spoke-voting baseline from WSL:
+## Current Offline Candidate
 
-```sh
-cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml
-~/.local/bin/poetry run python scripts/run_classical_baseline.py
+The current WSL research candidate is the ellipse -> keypoint -> temperature
+pipeline. Its exact model contracts, validation results, calibration constants,
+and promotion status are in the current-state and model-update notes.
+
+```bash
+bash scripts/run_wsl_guarded.sh poetry run python \
+  scripts/pipeline_ellipse_keypoint_temperature.py \
+  --ellipse artifacts/ellipse_iter8_universal_wide_deep/model_int8.tflite \
+  --keypoint artifacts/keypoint_unet_224g_wide_aug/model_int8.tflite \
+  --images data/labelled/test_3.zip
 ```
 
-Use `--max-samples` for a faster smoke test.
+The board production contract remains the Windows-validated OBB localizer
+followed by `tip_focus_v18_int8_n6_npu` until the ellipse/keypoint candidate is
+explicitly promoted through a Windows firmware handoff.
 
-## CNN Training
+## Tests
 
-Run the CNN training job from the same WSL Poetry environment:
+Run the default collection-safe smoke suite from `ml/`:
 
-```sh
-cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml
-~/.local/bin/poetry run python scripts/run_training.py
+```bash
+bash scripts/run_wsl_guarded.sh poetry run pytest -q
 ```
 
-Training now defaults to the strongest known MobileNetV2 preset for this
-dataset: `224x224`, `epochs=40`, `batch_size=8`, `seed=21`, `strict_labels=False`,
-and GPU mode when TensorFlow sees a GPU.
+The default suite intentionally covers only environment and contract smoke
+tests. The older tests under `ml/tests/` and the `ml/scripts/test_*.py` files
+are retained historical or asset-dependent suites; run one explicitly only
+after supplying its required model and dataset paths.
 
-If you want the same preset with explicit logging and a tee'd artifact log, use
-`bash scripts/run_mobilenetv2_full.sh`.
+## Handoff Rules
 
-To probe the largest MobileNetV2 width that still fits the STM32N6 relocatable
-memory pools, use:
-
-```sh
-bash scripts/wsl_ml.sh fit-search
-```
-
-Future export/evaluation scripts should import their defaults from
-[`embedded_gauge_reading_tinyml.presets`](src/embedded_gauge_reading_tinyml/presets.py)
-so they stay aligned with the same `224x224` MobileNetV2 baseline.
-
-## Board Export
-
-When you want a deployable artifact for the STM32 side, export the calibrated
-scalar model to int8 TFLite plus a metadata sidecar:
-
-```sh
-cd /mnt/d/Projects/embedded-gauge-reading-tinyml/ml
-~/.local/bin/poetry run python scripts/export_board_artifacts.py
-```
-
-The default export reads the calibrated full-finetune model and writes the
-board bundle under `artifacts/deployment/scalar_full_finetune_from_best_calibrated_int8/`.
-The metadata file records the `224x224` board input size and the TFLite tensor
-quantization parameters the MCU runtime will need.
-
-The packaging step also refreshes the canonical raw blob at
-`../firmware/stm32/n657/st_ai_output/atonbuf.xSPI2.raw`. That is the single file you should copy to
-the SD card root for board boot testing.
-
-If you prefer the WSL helper:
-
-```sh
-bash scripts/wsl_ml.sh export
-```
-
-## Export and Evaluation
-
-Keep any future export/evaluation scripts in `ml/scripts/` and run them from the
-same WSL Poetry environment so they share the same TensorFlow and CUDA setup.
-
-That keeps the baseline, training, export, and evaluation workflows aligned on
-the same runtime.
-
-## Output Layout
-
-Generated model artifacts continue to live under `ml/artifacts/`.
-
-The `firmware/stm32/n657/st_ai_output/` directory is reserved for the ST Edge AI
-generator workspaces and packaged outputs that accompany the STM32N6 flow:
-
-- `firmware/stm32/n657/st_ai_output/packages/`
-- `firmware/stm32/n657/st_ai_output/gauge_scalar_c_info.json`
-- `firmware/stm32/n657/st_ai_output/gauge_scalar_clean_c_info.json`
-
-That keeps the training/deployment artifacts separate from the ST Edge AI
-workspace files while still giving the package outputs a single home.
+WSL exports belong under `ml/artifacts/`. Do not write WSL-relative paths into
+firmware instructions. After export, copy the final raw xSPI2 blob and its
+`c_info.json` and `network.csv` to the Windows firmware package, then perform
+board packaging and flashing from Windows. The Windows package is the final
+source of truth for signatures and flash addresses.

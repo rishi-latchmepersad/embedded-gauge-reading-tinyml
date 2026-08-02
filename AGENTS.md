@@ -17,8 +17,11 @@
   - It expects `224x224` color input.
   - It exposes `56x56` center and tip heatmaps plus scalar `confidence` and
     `is_main_needle` outputs.
-  - Keep `c_info.json` and `network.csv` beside the raw xSPI2 blob in the
-    firmware package directory so board-side verification stays reproducible.
+- Keep `c_info.json` and `network.csv` beside the raw xSPI2 blob in the
+  firmware package directory so board-side verification stays reproducible.
+- The WSL-side current pipeline contract is
+  `docs/ai-memory/current-state/ml-pipeline.md`; use it to distinguish the
+  board production contract from research candidates before running a job.
 
 ## Expectations
 - Prefer small, testable changes. Don't change code that you don't need to.
@@ -77,11 +80,11 @@
 - **Cap the shuffle buffer**: `.shuffle(min(SHUFFLE_BUFFER, len(images)), ...)` with `SHUFFLE_BUFFER = 4096`. A full-size buffer re-materializes the whole dataset in RAM.
 - **Add an in-script memory preflight** (`_memory_preflight`) that estimates footprint from real sample counts (images × bytes + contract targets × bytes + shuffle buffer) and `raise SystemExit` with a readable message before allocating when it exceeds ~40 GB. The preflight pattern lives in `ml/scripts/train_ellipse_multiscale_universal_384.py`.
 - **Avoid redundant whole-set copies**: e.g. `tf.image.resize` on an already-384² set is a no-op that still doubles peak RAM; convert for export inside the representative-dataset generator instead of materializing a float32 copy.
-- Prepare explicit WSL handoff scripts in `tmp/` for model jobs and let DeepSeek run those directly; keep the workflow script-driven instead of manual and stateful.
+- Prepare explicit WSL handoff scripts in `tmp/` for model jobs and let DeepSeek run those through `ml/scripts/run_wsl_guarded.sh`; keep the workflow script-driven instead of manual and stateful.
 - Before board packaging, run a Keras-vs-TFLite parity check on a small validation sample set so graph-conversion issues are caught early.
 - `nohup` does not work reliably with `poetry run` in WSL — background jobs get killed when the shell exits. Use `setsid` + `disown` instead:
     ```bash
-    setsid poetry run python scripts/train_qat_micro_yolov8.py > /tmp/log.log 2>&1 &
+    setsid bash scripts/run_wsl_guarded.sh poetry run python scripts/train_qat_micro_yolov8.py > /tmp/log.log 2>&1 &
     disown
     ```
 - Always run jobs in bash scripts inside WSL, and tail the logs so you can see when they hang or fail.

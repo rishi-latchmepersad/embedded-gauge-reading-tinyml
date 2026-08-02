@@ -95,6 +95,20 @@ if [[ -n "${cmd}" ]]; then
   shift
 fi
 
+# Keep the historical command router useful without allowing its training,
+# evaluation, export, or test branches to bypass the memory guard. Setup and
+# lightweight help/GPU probes do not allocate a training workload.
+case "${cmd}" in
+  setup|gpu-check|""|-h|--help|help)
+    ;;
+  *)
+    if [[ "${WSL_GUARDED:-0}" != "1" ]]; then
+      exec "${ROOT_DIR}/scripts/run_wsl_guarded.sh" env WSL_GUARDED=1 \
+        bash "${BASH_SOURCE[0]}" "${cmd}" "$@"
+    fi
+    ;;
+esac
+
 case "${cmd}" in
   setup)
     # Install the project and dev dependencies in the active WSL Poetry env.
