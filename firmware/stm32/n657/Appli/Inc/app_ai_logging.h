@@ -90,6 +90,11 @@ extern void AppAI_LogBufferInfoAndSignature(
 extern void AppAI_LogBufferPreview(const char *label,
                                    const LL_Buffer_InfoTypeDef *buffer_info);
 
+extern void AppAI_LogRawBufferPreview(const char *label,
+                                      const uint8_t *buffer_ptr,
+                                      size_t buffer_len_bytes,
+                                      const char *buffer_name);
+
 /* ------------------------------------------------------------------ */
 /* Gauge crop heuristic                                               */
 /* Implemented in app_ai_helpers_logging.inc (unconditional).         */

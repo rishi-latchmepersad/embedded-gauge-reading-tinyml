@@ -10,6 +10,9 @@
 #ifndef NDEBUG
 #define NDEBUG
 #endif
+#ifndef LL_ATON_RT_RELOC
+#define LL_ATON_RT_RELOC 1
+#endif
 #ifndef LL_ATON_DBG_BUFFER_INFO_EXCLUDED
 #define LL_ATON_DBG_BUFFER_INFO_EXCLUDED 1
 #endif

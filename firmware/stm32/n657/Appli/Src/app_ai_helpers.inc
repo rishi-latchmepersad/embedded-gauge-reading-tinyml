@@ -45,6 +45,9 @@ void AppAI_LogInt8BufferSignature(const char *label,
 										 const int8_t *buffer_ptr, size_t buffer_len_bytes);
 void AppAI_LogRawBufferSignature(const char *label,
 										const uint8_t *buffer_ptr, size_t buffer_len_bytes);
+void AppAI_LogRawBufferPreview(const char *label,
+									 const uint8_t *buffer_ptr, size_t buffer_len_bytes,
+									 const char *buffer_name);
 const char *AppAI_BufferTypeName(const LL_Buffer_InfoTypeDef *buffer_info);
 void AppAI_LogBufferInfoAndSignature(const char *label,
 												const LL_Buffer_InfoTypeDef *buffer_info);
@@ -125,5 +128,4 @@ void AppAI_ReadRgbFromRgbBilinear(const uint8_t *rgb_bytes,
 	size_t frame_width_pixels, size_t frame_height_pixels,
 	float source_x, float source_y, float *r_out, float *g_out, float *b_out);
 float AppAI_ClampNormalizedFloat(float value);
-
 

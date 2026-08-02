@@ -32,6 +32,11 @@ extern "C" {
  * usable live image. Set to 1 only if we need raw Pipe0 diagnostics. */
 #define CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC 0
 #define CAMERA_CAPTURE_TARGET_FRAME_COUNT   4U
+/* Keep an immutable CPU-owned copy for the AI worker. The stopped-sensor
+ * buffer is still vulnerable to middleware/capture ownership transitions, and
+ * a two-stage pipeline must never preprocess a live DMA buffer. The copy uses
+ * a bounded 32-bit loop in app_camera_buffers.c and does not require HyperRAM. */
+#define CAMERA_CAPTURE_USE_PRIVATE_SNAPSHOT 1U
 /* Brightness gate: reject frames that are still too dim for the gauge face or
  * genuinely blown out, then nudge the sensor before trying again.
  *
@@ -53,28 +58,27 @@ extern "C" {
  * to catch scenes where most of the crop is still near-white even if a narrow
  * needle keeps the minimum luma low.
  *
- * Brightness gate now measures the full training crop (155x123 = ~19k pixels)
- * rather than a small centre ROI.  A specular reflection on the gauge glass
- * at frame centre was making the old 32x32 ROI read as "bright enough" while
- * the rest of the dial face was still underexposed, causing systematic
- * under-reading.  Crop-mean thresholds are calibrated from captured frames:
+ * Brightness gate now measures the full resized 640x640 frame rather than a
+ * small centre ROI. A specular reflection on the gauge glass at frame centre
+ * was making the old 32x32 ROI read as "bright enough" while the rest of the
+ * dial face was still underexposed, causing systematic under-reading. The
+ * thresholds remain calibrated from captured frames:
  * good frames (13:xx session, model reading ~31C) had crop mean 97-156;
  * bad frames (18:xx, model reading 14-20C) had crop mean 43-87.
- * DARK threshold=100 rejects the dim frames; BRIGHT threshold=190 plus a
- * 50% bright-pixel ratio catches the still-overexposed frames a little
- * earlier, while a 215/45 solid-overexposure fallback still catches the
- * near-white frame from
- * 11:51. */
-/* Mean luma below 150 triggers a brightness nudge.  The OBB localizer's
- * x-centre drifts 3–6 px at mean ≤ 130 and stabilizes by mean ≈ 170.
- * This threshold forces one extra exposure stop so the OBB output is
- * lighting-invariant regardless of initial scene brightness. */
+ * DARK threshold=150 rejects the dim frames; the current board captures still
+ * contain a small gauge on a bright scene, so the previous 190/50 gate let
+ * several blown-out frames through. BRIGHT threshold=175 plus a 35% bright
+ * pixel ratio now rejects those frames earlier, while a 200/45 solid-
+ * overexposure fallback catches near-white scenes. */
+/* Mean luma below 150 triggers a brightness nudge so the ellipse input is not
+ * lighting-limited regardless of initial scene brightness. */
 #define CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD     150U
 #define CAMERA_CAPTURE_BRIGHTNESS_DARK_MAX_THRESHOLD      240U
-#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD   190U
+#define CAMERA_CAPTURE_BRIGHTNESS_DARK_BRIGHT_RATIO_MAX_PERCENT 10U
+#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD   175U
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_PIXEL_LEVEL_THRESHOLD 220U
-#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_RATIO_PERCENT     50U
-#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_SOLID_MEAN_THRESHOLD 215U
+#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_RATIO_PERCENT     35U
+#define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_SOLID_MEAN_THRESHOLD 200U
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MIN_THRESHOLD     45U
 /* Keep brightness nudges centered around the usable band instead of using a
  * single fixed step that can bounce between too-dark and too-bright frames.
@@ -92,7 +96,8 @@ extern "C" {
  * capture loop unbounded. */
 #define CAMERA_CAPTURE_BRIGHTNESS_RETRY_LIMIT             14U
 #define CAMERA_CAPTURE_BRIGHTNESS_SETTLE_DELAY_MS         250U
-/* Capture crop is expressed directly in pixels/lines. */
+/* The live CMW/ DCMIPP path uses the complete sensor frame and resizes it;
+ * these values remain only for the disabled RAW diagnostic path. */
 #define CAMERA_CAPTURE_CROP_HSTART_PIXELS   0U
 #define CAMERA_CAPTURE_CROP_VSTART_LINES    0U
 /* Time to let AE hardware converge before locking exposure/gain for capture. */
@@ -106,9 +111,8 @@ extern "C" {
  * sample a blank top-left margin from the sensor frame. */
 #define CAMERA_CAPTURE_RAW_CROP_HSTART_PIXELS   ((IMX335_SENSOR_WIDTH_PIXELS - CAMERA_CAPTURE_WIDTH_PIXELS) / 2U)
 #define CAMERA_CAPTURE_RAW_CROP_VSTART_LINES    ((IMX335_SENSOR_HEIGHT_LINES - CAMERA_CAPTURE_HEIGHT_PIXELS) / 2U)
-/* Pipe0 raw-capture frames store one 16-bit padded pixel per sample, so the
- * preview code should read them as a 224x224 source image and upscale only
- * the view. */
+/* RAW diagnostic frames use the same 640x640 application buffer contract;
+ * preview code may upscale only for display. */
 #define CAMERA_CAPTURE_RAW_SOURCE_WIDTH_PIXELS    CAMERA_CAPTURE_WIDTH_PIXELS
 #define CAMERA_CAPTURE_RAW_SOURCE_HEIGHT_LINES    CAMERA_CAPTURE_HEIGHT_PIXELS
 #define CAMERA_CAPTURE_RAW_BMP_PREVIEW_SCALE      2U
@@ -139,7 +143,7 @@ extern "C" {
 #define CAMERA_IMX335_SEED_EXPOSURE_FRACTION_NUMERATOR    1U
 #define CAMERA_IMX335_SEED_EXPOSURE_FRACTION_DENOMINATOR  3U
 #define CAMERA_IMX335_SEED_GAIN_FRACTION_NUMERATOR        1U
-#define CAMERA_IMX335_SEED_GAIN_FRACTION_DENOMINATOR      2U
+#define CAMERA_IMX335_SEED_GAIN_FRACTION_DENOMINATOR      3U
 /* Prefer a fixed white-balance preset so AWB cannot silently shift the
  * processed crop between captures. The runtime helper will choose the closest
  * supported middleware reference at stream start. */

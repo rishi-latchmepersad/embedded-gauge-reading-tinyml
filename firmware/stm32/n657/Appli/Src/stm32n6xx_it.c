@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "cmw_camera.h"
+#include "app_camera_buffers.h"
 #include "debug_console.h"
 #include "stm32n6xx_ll_lpuart.h"
 #include <stdio.h>
@@ -174,6 +175,11 @@ void HardFault_Handler_C(uint32_t *stacked_regs, uint32_t exc_lr)
   const uint32_t msplim_val = __get_MSPLIM();
   const uint32_t psp_val   = __get_PSP();
   const uint32_t psplim_val = __get_PSPLIM();
+  uint32_t r9_val = 0U;
+
+  /* r9 is the relocatable SW-operator base; capture it before any logging
+   * call can change the diagnostic register state. */
+  __asm volatile("mov %0, r9" : "=r"(r9_val));
 
   (void)exc_lr;
 
@@ -189,6 +195,8 @@ void HardFault_Handler_C(uint32_t *stacked_regs, uint32_t exc_lr)
   IT_RawUartWriteHex32(stacked_r2);
   IT_RawUartWrite(" R3=");
   IT_RawUartWriteHex32(stacked_r3);
+  IT_RawUartWrite(" R9=");
+  IT_RawUartWriteHex32(r9_val);
   IT_RawUartWrite(" R12=");
   IT_RawUartWriteHex32(stacked_r12);
   IT_RawUartWrite(" PSR=");
@@ -203,6 +211,10 @@ void HardFault_Handler_C(uint32_t *stacked_regs, uint32_t exc_lr)
   IT_RawUartWriteHex32(psp_val);
   IT_RawUartWrite(" PSPLIM=");
   IT_RawUartWriteHex32(psplim_val);
+  IT_RawUartWrite(" snapshot_active=");
+  IT_RawUartWriteHex32(camera_snapshot_copy_active);
+  IT_RawUartWrite(" snapshot_words=");
+  IT_RawUartWriteHex32(camera_snapshot_copy_progress_words);
   IT_RawUartWrite(" last_scalar_row=");
   IT_RawUartWriteHex32((uint32_t)app_ai_scalar_preprocess_last_row);
   IT_RawUartWrite("\r\n");
@@ -246,6 +258,10 @@ static void IT_LogContextFault(const char *fault_name, uint32_t *stacked_regs, u
   IT_RawUartWriteHex32(stacked_psr);
   IT_RawUartWrite(" EXC_LR=");
   IT_RawUartWriteHex32(exc_lr);
+  IT_RawUartWrite(" snapshot_active=");
+  IT_RawUartWriteHex32(camera_snapshot_copy_active);
+  IT_RawUartWrite(" snapshot_words=");
+  IT_RawUartWriteHex32(camera_snapshot_copy_progress_words);
   IT_RawUartWrite(" last_scalar_row=");
   IT_RawUartWriteHex32((uint32_t)app_ai_scalar_preprocess_last_row);
   IT_RawUartWrite("\r\n");
@@ -482,9 +498,9 @@ void DCMIPP_IRQHandler(void)
 /**
   * @brief These handlers forward any sibling NPU completion lines to the same
   * ATON runtime handler as the primary line. The generated model should wake
-  * on NPU0, but this keeps the other completion lines from silently falling
-  * back to the weak default handler if the runtime routes a completion there.
-  */
+ * on NPU0, but this keeps the other completion lines from silently falling
+ * back to the weak default handler if the runtime routes a completion there.
+ */
 void NPU1_IRQHandler(void)
 {
   NPU0_IRQHandler();

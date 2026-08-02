@@ -6,6 +6,7 @@
  */
 #define DEBUG_CONSOLE_IMPLEMENTATION
 #include "debug_console.h"
+#include "app_camera_buffers.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -15,6 +16,13 @@
 #define DEBUG_CONSOLE_FORMAT_BUFFER_SIZE_BYTES (256U)
 #endif
 
+/* Console messages are short text records, never image or tensor payloads.
+ * Keep this well below the HAL UART length truncation hazard so an accidental
+ * frame pointer cannot become a UART dump. */
+#ifndef DEBUG_CONSOLE_MAX_TRANSMIT_BYTES
+#define DEBUG_CONSOLE_MAX_TRANSMIT_BYTES (1024U)
+#endif
+
 static DebugConsole_Configuration_t g_debug_console_configuration;
 static bool g_debug_console_is_initialized = false;
 
@@ -22,6 +30,31 @@ static bool DebugConsole_InternalLock(void);
 static void DebugConsole_InternalUnlock(void);
 static bool DebugConsole_InternalUartTransmitBlocking(
 		const uint8_t *byte_array_pointer, size_t byte_array_length);
+
+/**
+ * @brief Test whether a proposed console payload overlaps a camera buffer.
+ * @param byte_array_pointer Candidate payload start.
+ * @param byte_array_length Candidate payload length in bytes.
+ * @retval true when the range overlaps a live or private camera buffer.
+ * @sideeffects Reads only linker-visible RAM addresses; performs no I/O.
+ */
+bool DebugConsole_IsCameraBufferRange(const uint8_t *byte_array_pointer,
+		size_t byte_array_length) {
+	const uintptr_t payload_start = (uintptr_t)byte_array_pointer;
+	const uintptr_t payload_end = payload_start + byte_array_length;
+	const uintptr_t capture_start = (uintptr_t)&camera_capture_buffers[0][0];
+	const uintptr_t capture_end = capture_start +
+		((uintptr_t)CAMERA_CAPTURE_BUFFER_COUNT *
+		 (uintptr_t)CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
+	const uintptr_t snapshot_start = (uintptr_t)camera_inference_frame_snapshot;
+	const uintptr_t snapshot_end = snapshot_start +
+		(uintptr_t)CAMERA_CAPTURE_BUFFER_SIZE_BYTES;
+
+	return (byte_array_pointer == NULL) || (byte_array_length == 0U) ||
+		(payload_end < payload_start) ||
+		((payload_start < capture_end) && (capture_start < payload_end)) ||
+		((payload_start < snapshot_end) && (snapshot_start < payload_end));
+}
 
 /**
  * @brief  Initializes the debug console module.
@@ -128,9 +161,39 @@ bool DebugConsole_WriteBytes(const uint8_t *byte_array_pointer,
 		return true;
 	}
 
+	/* why: HAL_UART_Transmit accepts a uint16_t length, while this public API
+	 * accepts size_t. Reject oversized payloads instead of silently truncating
+	 * them or allowing a camera frame to reach the console transport. */
+	if (byte_array_length > DEBUG_CONSOLE_MAX_TRANSMIT_BYTES) {
+		return false;
+	}
+
+	/* why: the camera snapshot transfer is intentionally UART-silent. The
+	 * transfer has already produced its begin/probe record, and allowing other
+	 * threads to log while it monopolizes the memory bus can interleave stale
+	 * frame bytes or leave a half-written diagnostic record on the console. */
+	if (AppCameraBuffers_IsSnapshotCopyActive()) {
+		return false;
+	}
+
+	/* why: a frame accidentally passed to the console must be dropped at the
+	 * final UART boundary, after all caller-side races have settled. */
+	if (DebugConsole_IsCameraBufferRange(byte_array_pointer,
+			byte_array_length)) {
+		return false;
+	}
+
 	if (!DebugConsole_InternalLock()) {
 		/* Drop contended log messages instead of spinning and starving a lower-
 		 * priority thread already in the transmit path. */
+		return false;
+	}
+	/* why: the copy flag may have changed while this task waited for the
+	 * console mutex; re-check it immediately before touching the UART. */
+	if (AppCameraBuffers_IsSnapshotCopyActive() ||
+		DebugConsole_IsCameraBufferRange(byte_array_pointer,
+			byte_array_length)) {
+		DebugConsole_InternalUnlock();
 		return false;
 	}
 	transmit_successful = DebugConsole_InternalUartTransmitBlocking(
@@ -189,6 +252,12 @@ bool DebugConsole_Printf(const char *format_string_pointer, ...) {
 		return false;
 	}
 
+	/* Formatted output transmits directly after formatting, so it needs the
+	 * same snapshot-copy boundary as DebugConsole_WriteBytes(). */
+	if (AppCameraBuffers_IsSnapshotCopyActive()) {
+		return false;
+	}
+
 	if (!DebugConsole_InternalLock()) {
 		return false;
 	}
@@ -208,6 +277,13 @@ bool DebugConsole_Printf(const char *format_string_pointer, ...) {
 
 	if ((size_t) formatted_character_count >= sizeof(formatted_output_buffer)) {
 		formatted_output_buffer[sizeof(formatted_output_buffer) - 1U] = '\0';
+	}
+
+	/* why: another thread may have entered the copy after this formatter took
+	 * its lock; do not begin a UART transaction once the copy owns the bus. */
+	if (AppCameraBuffers_IsSnapshotCopyActive()) {
+		DebugConsole_InternalUnlock();
+		return false;
 	}
 
 	transmit_successful = DebugConsole_InternalUartTransmitBlocking(
@@ -245,6 +321,10 @@ bool DebugConsole_VPrintf(const char *format_string_pointer,
 		return false;
 	}
 
+	if (AppCameraBuffers_IsSnapshotCopyActive()) {
+		return false;
+	}
+
 	if (!DebugConsole_InternalLock()) {
 		return false;
 	}
@@ -269,6 +349,11 @@ bool DebugConsole_VPrintf(const char *format_string_pointer,
 	if ((size_t) formatted_character_count >= sizeof(formatted_output_buffer)) {
 		/* Output was truncated, still transmit what we have */
 		formatted_output_buffer[sizeof(formatted_output_buffer) - 1U] = '\0';
+	}
+
+	if (AppCameraBuffers_IsSnapshotCopyActive()) {
+		DebugConsole_InternalUnlock();
+		return false;
 	}
 
 	transmit_successful = DebugConsole_InternalUartTransmitBlocking(

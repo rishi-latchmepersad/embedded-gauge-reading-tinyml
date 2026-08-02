@@ -1,5 +1,11 @@
 /* This file is included by app_ai_helpers.inc. */
 
+/* The legacy OBB/scalar decoder remains available for explicit replay and
+ * compatibility builds; its debug-only intermediates are not part of the
+ * active ellipse/keypoint pipeline. */
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+
 
 	if (use_fixed_training_crop)
 	{
@@ -1245,7 +1251,41 @@ bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	 * want the follow-on logs and cache maintenance to run with a clean reloc
 	 * base instead of inheriting a poisoned value.
 	 */
-	__asm volatile("mov r9, %0" ::"r"(app_ai_saved_r9) : "r9");
+	{
+		const uintptr_t post_preprocess_r9 =
+			(app_ai_saved_r9 != 0U) ? app_ai_saved_r9 : caller_r9;
+		const bool saved_r9_missing = (app_ai_saved_r9 == 0U);
+
+		/* Restore the caller-side base before any more ordinary C calls.
+		 * The ATON runtime base is reapplied immediately before epoch execution,
+		 * so the post-preprocess console and cache helpers should run with the
+		 * normal firmware static base rather than the model reloc base. */
+		__asm volatile("mov r9, %0" ::"r"(caller_r9) : "r9");
+
+		if (saved_r9_missing && emit_stage_diagnostics)
+		{
+			DebugConsole_Printf(
+				"[AI][DIAG] Stage %s: saved r9 missing after preprocess, using caller r9=%p\r\n",
+				(stage->stage_label != NULL) ? stage->stage_label : "?",
+				(const void *)caller_r9);
+		}
+		else if (emit_stage_diagnostics && (post_preprocess_r9 != caller_r9))
+		{
+			DebugConsole_Printf(
+				"[AI][DIAG] Stage %s: switching from reloc r9=%p back to caller r9=%p after preprocess\r\n",
+				(stage->stage_label != NULL) ? stage->stage_label : "?",
+				(const void *)post_preprocess_r9,
+				(const void *)caller_r9);
+		}
+
+		if (emit_stage_diagnostics)
+		{
+			DebugConsole_Printf(
+				"[AI][DIAG] Stage %s: restored caller r9=%p after preprocess\r\n",
+				(stage->stage_label != NULL) ? stage->stage_label : "?",
+				(const void *)caller_r9);
+		}
+	}
 
 	if (emit_stage_diagnostics)
 	{
@@ -1287,7 +1327,13 @@ bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 
 	if (emit_stage_diagnostics)
 	{
-		AppAI_LogBufferPreview("Stage input", input_info);
+		(void)DebugConsole_WriteString("[AI] Stage input preview start.\r\n");
+		AppAI_LogRawBufferPreview(
+			"Stage input",
+			input_bytes_ptr,
+			input_len_bytes,
+			(input_info->name != NULL) ? input_info->name : "(unnamed)");
+		(void)DebugConsole_WriteString("[AI] Stage input preview OK.\r\n");
 		(void)DebugConsole_WriteString("[AI] Stage input cache clean start.\r\n");
 	}
 	(void)mcu_cache_clean_range((uint32_t)(uintptr_t)input_ptr,
@@ -1351,6 +1397,7 @@ bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	 * count would be > 0, causing the next inference's WFE to return immediately. */
 	extern void LL_ATON_OSAL_DrainWfeSemaphore(void);
 	extern UINT LL_ATON_OSAL_GetWfeSemaphoreCount(void);
+	extern bool LL_ATON_OSAL_WfeGuardExpired(void);
 	if (stage == &app_ai_obb_stage)
 	{
 		DebugConsole_Printf("[AI] WFE sem count before drain: %lu\r\n",
@@ -1438,13 +1485,20 @@ bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 		__asm volatile("mov r9, %0" ::"r"(app_ai_saved_r9) : "r9");
 		const LL_ATON_RT_RetValues_t run_status =
 			LL_ATON_RT_RunEpochBlock(stage->nn_instance);
+		/* Return to the firmware caller base before ordinary C, xSPI, and UART
+		 * helpers run. The reloc base is loaded again immediately before the
+		 * next ATON epoch below. Leaving the model base active here can make the
+		 * post-WFE path access globals through the wrong static-data window. */
+		__asm volatile("mov r9, %0" ::"r"(caller_r9) : "r9");
 		const bool log_epoch_detail =
-			(stage == &app_ai_obb_stage) && (epoch_step < 8U);
+			(APP_AI_ENABLE_EPOCH_DEBUG_LOGS != 0U) &&
+			(stage == &app_ai_obb_stage) && (epoch_step == 0U);
 
-		/* Log the first few OBB epochs in detail, then throttle the rest so we
-		 * can still see whether the loop is spinning fast (NO_WFE) or blocked
-		 * in WFE without flooding the UART forever. */
-		if (log_epoch_detail || ((epoch_step % 50U) == 0U))
+		/* Keep the OBB loop quiet in the hot path. One early status line is
+		 * enough to confirm progress, and the extra prints have been a source of
+		 * UART backpressure on this board. */
+		if ((APP_AI_ENABLE_EPOCH_DEBUG_LOGS != 0U) &&
+			(log_epoch_detail || ((epoch_step % 100U) == 0U)))
 		{
 			const uint32_t now = HAL_GetTick();
 			if (stage == &app_ai_obb_stage)
@@ -1475,7 +1529,7 @@ bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 			/* Probe EC/interrupt-controller state after SetWaitMask so we
 			 * can see where the IRQ path breaks. */
 #if defined(ATON_EPOCHCTRL_NUM) && defined(ATON_STRENG_NUM)
-			if (log_epoch_detail || ((epoch_step % 50U) == 0U))
+			if (log_epoch_detail)
 			{
 				const uint32_t ec_ctrl   = ATON_EPOCHCTRL_CTRL_GET(0);
 				const uint32_t ec_irq    = ATON_EPOCHCTRL_IRQ_GET(0);
@@ -1519,8 +1573,18 @@ bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 			const uint32_t wfe_before = HAL_GetTick();
 
 			LL_ATON_OSAL_WFE();
-			__asm volatile("mov r9, %0" ::"r"(app_ai_saved_r9) : "r9");
+			/* WFE returns to ordinary firmware code; do not leave the relocatable
+			 * model base active while the loop checks time and logs diagnostics. */
+			__asm volatile("mov r9, %0" ::"r"(caller_r9) : "r9");
 			const uint32_t wfe_after = HAL_GetTick();
+			if (LL_ATON_OSAL_WfeGuardExpired())
+			{
+				DebugConsole_Printf(
+					"[AI] Stage inference aborted: ATON WFE guard expired at epoch=%lu.\r\n",
+					(unsigned long)epoch_step);
+				inference_aborted = true;
+				break;
+			}
 
 			if (log_epoch_detail)
 			{
@@ -1716,4 +1780,3 @@ bool AppAI_RunStageInference(const AppAI_ModelStageSpec *stage,
 	__asm volatile("mov r9, %0" ::"r"(caller_r9) : "r9");
 	return true;
 }
-

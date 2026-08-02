@@ -17,6 +17,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "app_threadx.h"
+#include "app_camera_buffers.h"
 #include "main.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -88,7 +89,12 @@ extern uint32_t __enoncacheable;
 /* USER CODE BEGIN 0 */
 
 int __io_putchar(int ch) {
-	HAL_UART_Transmit(&hlpuart1, (uint8_t*) &ch, 1, 10);
+	/* The application log transport is DebugConsole.  The linked ISP
+	 * middleware also uses libc printf/puts, and retargeting that stream to
+	 * LPUART1 allows unframed middleware data to appear on the board console.
+	 * Keep this hook consumed so only explicit DebugConsole messages reach the
+	 * UART; this does not affect the camera, AI, or FileX data paths. */
+	(void) ch;
 	return ch;
 }
 
@@ -256,8 +262,8 @@ static void App_CameraKernelClock_Config(void) {
 static void Setup_Mpu(void) {
 	MPU_Attributes_InitTypeDef attr = { 0 };
 	MPU_Region_InitTypeDef region = { 0 };
-	size_t noncacheable_size = (size_t) ((uint8_t*) &__enoncacheable
-			- (uint8_t*) &__snoncacheable);
+	MPU_Attributes_InitTypeDef snapshot_attr = { 0 };
+	MPU_Region_InitTypeDef snapshot_region = { 0 };
 
 	attr.Number = MPU_ATTRIBUTES_NUMBER0;
 	attr.Attributes = MPU_NOT_CACHEABLE;
@@ -273,6 +279,26 @@ static void Setup_Mpu(void) {
 	region.DisablePrivExec = MPU_PRIV_INSTRUCTION_ACCESS_ENABLE;
 	region.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
 	HAL_MPU_ConfigRegion(&region);
+
+	/* Region 1 has higher priority than the DMA region above. Keep the private
+	 * snapshot non-cacheable as well: a long CPU copy otherwise fills D-cache,
+	 * then stalls when dirty lines are evicted to AXISRAM1. */
+	snapshot_attr.Number = MPU_ATTRIBUTES_NUMBER1;
+	snapshot_attr.Attributes = MPU_NOT_CACHEABLE;
+	HAL_MPU_ConfigMemoryAttributes(&snapshot_attr);
+
+	snapshot_region.Enable = MPU_REGION_ENABLE;
+	snapshot_region.Number = MPU_REGION_NUMBER1;
+	snapshot_region.BaseAddress = (uint32_t) camera_inference_frame_snapshot;
+	snapshot_region.LimitAddress =
+		(uint32_t) camera_inference_frame_snapshot +
+		CAMERA_CAPTURE_BUFFER_SIZE_BYTES - 1U;
+	snapshot_region.AttributesIndex = MPU_ATTRIBUTES_NUMBER1;
+	snapshot_region.AccessPermission = MPU_REGION_ALL_RW;
+	snapshot_region.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE;
+	snapshot_region.DisablePrivExec = MPU_PRIV_INSTRUCTION_ACCESS_ENABLE;
+	snapshot_region.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
+	HAL_MPU_ConfigRegion(&snapshot_region);
 	HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
 	/* NOTE: do NOT memset the noncacheable buffer here — it lives at the NS alias
 	 * address (0x24xxxxxx) which RISAF1 may not yet be open at this point in the
@@ -357,6 +383,11 @@ int main(void) {
 	debug_console_configuration.lock_callback = NULL;
 	debug_console_configuration.unlock_callback = NULL;
 	(void) DebugConsole_Init(&debug_console_configuration);
+	/* This marker proves that the flashed board is running the console-safe
+	 * baseline redesign image rather than an older image that still emitted
+	 * snapshot bytes through a tuning transport. */
+	DebugConsole_Printf(
+			"[BOOT] firmware=2026-08-02-baseline-redesign-console-safe\r\n");
 	DebugConsole_Printf("[BOOT] UART console initialized.\r\n");
 	App_LogResetCause();
 	DS3231_LogI2c1LineState();
@@ -723,12 +754,15 @@ static void SystemIsolation_Config(void) {
 	/* USER CODE END RIF_Init 1 */
 	/* USER CODE BEGIN RIF_Init 2 */
 
-	/* Enable all NPU SRAM clocks (AXISRAM2-6) so the YOLO OBB model vpool
-	 * (0x34100000, ~2.75 MB spanning AXISRAM2 through AXISRAM6) is accessible
-	 * to the NPU. AXISRAM1 stays at its reset-default enabled state. */
-	RCC->MEMENR |= RCC_MEMENR_AXISRAM2EN | RCC_MEMENR_AXISRAM3EN
+	/* Enable AXISRAM1 explicitly as well as the NPU SRAM clocks. The camera DMA
+	 * alias and the private debug snapshot both live in AXISRAM1; relying on its
+	 * reset-default clock state made CPU writes to the snapshot stall on one
+	 * board boot even though DCMIPP could still fill the DMA window. */
+	RCC->MEMENR |= RCC_MEMENR_AXISRAM1EN | RCC_MEMENR_AXISRAM2EN
+			| RCC_MEMENR_AXISRAM3EN
 			| RCC_MEMENR_AXISRAM4EN | RCC_MEMENR_AXISRAM5EN
 			| RCC_MEMENR_AXISRAM6EN;
+	RAMCFG_SRAM1_AXI->CR &= ~RAMCFG_CR_SRAMSD;
 	RAMCFG_SRAM2_AXI->CR &= ~RAMCFG_CR_SRAMSD;
 	RAMCFG_SRAM3_AXI->CR &= ~RAMCFG_CR_SRAMSD;
 	RAMCFG_SRAM4_AXI->CR &= ~RAMCFG_CR_SRAMSD;
@@ -894,4 +928,3 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
-

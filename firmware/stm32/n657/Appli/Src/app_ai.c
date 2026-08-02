@@ -165,6 +165,13 @@ uint8_t _mem_pool_xSPI2_mobilenetv2_source_crop_box_v1_stripped_int8[32U] = {
 };
 #endif
 
+/* Live gauge model pool markers remain enabled when the geometry pipeline is
+ * selected, because their generated reloc code always needs these symbols. */
+__attribute__((section(".gauge_ellipse_params_0"), aligned(APP_AI_CACHE_LINE_BYTES)))
+uint8_t _mem_pool_xSPI2_gauge_ellipse_qat_encoder_384g_cvat_v2_int8[32U] = { 0U };
+__attribute__((section(".gauge_center_tip_params_0"), aligned(APP_AI_CACHE_LINE_BYTES)))
+uint8_t _mem_pool_xSPI2_gauge_keypoint_unet_224g_v4_int8[32U] = { 0U };
+
 /* Legacy OBB pool symbol kept for compatibility with the older face-localizer wrapper. */
 __attribute__((section(".xspi2_obb_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
 uint8_t _mem_pool_xSPI2_obb_face_v2_int8[32U] = { 0U, };
@@ -182,6 +189,7 @@ uint8_t _mem_pool_xSPI2_obb_box_board_bbox_deploy_candidate[32U] = { 0U, };
  * flash_boot.bat before inference. */
 __attribute__((section(".xspi2_tip_focus_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
 uint8_t _mem_pool_xSPI2_tip_focus_v18_int8[32U] = { 0U, };
+
 /* No xSPI1/HyperRAM pool needed — this model fits entirely on-chip. */
 uint8_t app_ai_xspi2_program_buffer[APP_AI_XSPI2_PROGRAM_CHUNK_BYTES];
 __attribute__((aligned(APP_AI_CACHE_LINE_BYTES)))
@@ -189,6 +197,12 @@ uint8_t app_ai_scalar_row_scratch[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAP
 __attribute__((aligned(APP_AI_CACHE_LINE_BYTES)))
 uint8_t app_ai_scalar_output_row_scratch[APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * 3U * sizeof(float)];
 volatile size_t app_ai_scalar_preprocess_last_row = (size_t)SIZE_MAX;
+/* Stage the keypoint tensor outside the shared NPU activation window. The
+ * ellipse and keypoint packages both expose 0x342e0000 as their public input
+ * address; staging here prevents the second model's CPU fill from aliasing
+ * stale bytes left by the first model's in-place output. */
+__attribute__((section(".noncacheable"), aligned(APP_AI_CACHE_LINE_BYTES)))
+uint8_t app_ai_center_tip_input_shadow[GAUGE_CENTER_TIP_INPUT_SIZE_BYTES];
 /* Trace the scalar resize loop only every so often so we can tell whether it
  * is progressing without flooding UART in the hot path. */
 #define APP_AI_SCALAR_PREPROCESS_ROW_TRACE_INTERVAL_ROWS 32U
@@ -253,7 +267,25 @@ const uint8_t app_ai_tip_focus_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = 
 	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
 	0x80U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
 };
-/* The shared xSPI2 helper paths should verify against the live UNet blob. */
+/* New model signatures generated from the staged raw blobs. */
+const uint8_t app_ai_gauge_ellipse_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
+	0xF2U, 0x09U, 0x12U, 0xD1U, 0x3CU, 0x1FU, 0x24U, 0x1CU,
+	0x10U, 0x0CU, 0xFBU, 0xEBU, 0x2CU, 0xDCU, 0x1FU, 0x1AU,
+};
+const uint8_t app_ai_gauge_ellipse_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+};
+const uint8_t app_ai_gauge_center_tip_xspi2_signature_start[APP_AI_XSPI2_PROBE_BYTES] = {
+	0xB2U, 0xE3U, 0xF7U, 0x1DU, 0x01U, 0x00U, 0x05U, 0x1CU,
+	0xE3U, 0xDDU, 0xEFU, 0xF3U, 0xE0U, 0xDAU, 0x0CU, 0x27U,
+};
+const uint8_t app_ai_gauge_center_tip_xspi2_signature_tail[APP_AI_XSPI2_PROBE_BYTES] = {
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+	0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x80U,
+};
+/* The shared xSPI2 helper paths retain the legacy probe alias; live gauge
+ * model verification uses the per-model signatures above. */
 #define app_ai_xspi2_signature_start app_ai_tip_focus_xspi2_signature_start
 #define app_ai_xspi2_signature_tail app_ai_tip_focus_xspi2_signature_tail
 /* Per-stage programmed sizes. Set during provisioning and used by the verify
@@ -280,8 +312,8 @@ bool app_ai_obb_sig_valid = false;
 uint8_t app_ai_source_crop_box_sig_start[APP_AI_XSPI2_PROBE_BYTES] = {0U};
 uint8_t app_ai_source_crop_box_sig_tail[APP_AI_XSPI2_PROBE_BYTES] = {0U};
 bool app_ai_source_crop_box_sig_valid = false;
-/* Legacy alias kept for the shared xSPI2 logging helpers; the live tip-focus
- * build still expects this size tracker to exist. */
+/* Legacy alias kept for shared xSPI2 logging helpers; the live gauge build
+ * still expects this compatibility storage to exist. */
 ULONG app_ai_xspi2_programmed_size = 0UL;
 ULONG app_ai_tip_focus_programmed_size = 0UL;
 uint8_t app_ai_tip_focus_sig_start[APP_AI_XSPI2_PROBE_BYTES] = {0U};
@@ -311,7 +343,7 @@ bool AppAI_ShouldLogStageDiagnostics(
 	const AppAI_ModelStageSpec *stage)
 {
 	(void)stage;
-	return true;
+	return (APP_AI_ENABLE_STAGE_DIAGNOSTICS != 0U);
 }
 
 /* Forward declarations for the local helpers that the board-bbox decoder uses
@@ -578,6 +610,7 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 		crop_height = source_height - crop_y_min;
 	}
 
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 	DebugConsole_Printf("[AI] Crop %s: x=%lu y=%lu w=%lu h=%lu\r\n",
 					   crop_label,
 					   (unsigned long)crop_x_min,
@@ -587,6 +620,7 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 	(void)DebugConsole_WriteString("[AI] Preprocess diagnostics OK.\r\n");
 	(void)DebugConsole_WriteString("[AI] Preprocess zero-fill skipped.\r\n");
 	(void)DebugConsole_WriteString("[AI] Preprocess resize start.\r\n");
+#endif
 
 	{
 		const float resize_scale =
@@ -616,7 +650,9 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 		const size_t resize_pad_x = (output_width - resized_width) / 2U;
 		const size_t resize_pad_y = (output_height - resized_height) / 2U;
 
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 		(void)DebugConsole_WriteString("[AI] Preprocess row loop enter.\r\n");
+#endif
 
 		for (size_t out_y = 0U; out_y < output_height; ++out_y)
 		{
@@ -650,7 +686,9 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 		}
 	}
 
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 	(void)DebugConsole_WriteString("[AI] Preprocess resize OK.\r\n");
+#endif
 	/* Log the input buffer address, length, and live r9 right after the resize
 	 * so we can tell whether the tip-focus model is being handed a valid
 	 * tensor pointer and a sane reloc base. A null input_ptr or a zero r9
@@ -658,12 +696,16 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 	{
 		uintptr_t post_resize_r9 = 0U;
 		__asm volatile("mov %0, r9" : "=r"(post_resize_r9));
+#if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 		DebugConsole_Printf(
 			"[AI] Preprocess post: input_ptr=%p input_len=%lu floats=%lu r9=%p\r\n",
 			(const void *)input_ptr,
 			(unsigned long)input_len_bytes,
 			(unsigned long)input_float_count,
 			(const void *)post_resize_r9);
+#else
+		(void)post_resize_r9;
+#endif
 	}
 	return true;
 }

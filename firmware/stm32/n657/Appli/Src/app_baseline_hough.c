@@ -42,8 +42,8 @@
 #define APP_BASELINE_HOUGH_RADIUS_FINE_STEP 2U
 
 /**
- * @brief Read the luma byte from one packed YUV422 pixel.
- * @param frame_bytes Packed YUV422 frame.
+ * @brief Read the luma byte from one MONO_Y8 pixel.
+ * @param frame_bytes Complete 640x640 one-byte grayscale frame.
  * @param frame_width_pixels Frame width in pixels.
  * @param x Pixel x coordinate.
  * @param y Pixel y coordinate.
@@ -52,12 +52,7 @@
 static float AppBaselineHough_ReadLuma(
 	const uint8_t *frame_bytes, size_t frame_width_pixels, size_t x, size_t y)
 {
-	const size_t row_stride_bytes = frame_width_pixels * 2U;
-	const size_t pair_offset =
-		(y * row_stride_bytes) + ((x & ~1U) * 2U);
-	const size_t y_offset = pair_offset + (((x & 1U) != 0U) ? 2U : 0U);
-
-	return (float)frame_bytes[y_offset];
+	return (float)frame_bytes[(y * frame_width_pixels) + x];
 }
 
 /**
@@ -139,7 +134,7 @@ static float AppBaselineHough_ScoreFace(
 
 /**
  * @brief Find a frame-local dial center and radius.
- * @param frame_bytes Packed YUV422 frame.
+ * @param frame_bytes Complete MONO_Y8 frame.
  * @param frame_width_pixels Frame width.
  * @param frame_height_pixels Frame height.
  * @param center_x_out Detected center x destination.
@@ -272,7 +267,7 @@ static void AppBaselineHough_FindFaceGeometry(
 
 /**
  * @brief Return one radial line score from local dark-line contrast.
- * @param frame_bytes Packed YUV422 frame.
+ * @param frame_bytes Complete MONO_Y8 frame.
  * @param frame_width_pixels Frame width in pixels.
  * @param frame_height_pixels Frame height in pixels.
  * @param center_x Calibrated center x coordinate.
@@ -496,7 +491,7 @@ bool AppBaselineHough_Estimate(
 
 	if ((frame_bytes == NULL) || (estimate_out == NULL) ||
 		(frame_width_pixels == 0U) || (frame_height_pixels == 0U) ||
-		(frame_size < (frame_width_pixels * frame_height_pixels * 2U)))
+		(frame_size < (frame_width_pixels * frame_height_pixels)))
 	{
 		return false;
 	}

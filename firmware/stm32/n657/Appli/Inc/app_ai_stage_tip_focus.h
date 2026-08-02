@@ -1,8 +1,8 @@
 /**
  * @file    app_ai_stage_tip_focus.h
- * @brief   Extern declarations for the tip-focus UNet geometry stage.
+ * @brief   Extern declarations for the gauge geometry and compatibility stages.
  *
- * Collects the public surface of tip-focus heatmap decode, median
+ * Collects the public surface of center/tip heatmap decode, median
  * filtering, geometry scoring, polar preprocessing, NPU/RISAF config,
  * and inference calibration so they can be called from other
  * compilation units (e.g. app_ai_stage_tip_focus.c) without
@@ -24,11 +24,21 @@ extern "C" {
 /** RISAF_TypeDef is provided by the STM32 HAL headers. */
 
 /* ------------------------------------------------------------------ */
-/* Tip-focus main entry points                                        */
+/* Gauge geometry and compatibility entry points                      */
 /* ------------------------------------------------------------------ */
 
 extern bool AppAI_TipFocus_RunDryInferenceFromYuv422(
 	const uint8_t *frame_bytes, size_t frame_size);
+
+/* New sequential ellipse -> center/tip model path. */
+extern bool AppAI_GaugeEllipse_Init(void);
+extern bool AppAI_GaugeEllipse_Run(void);
+extern const LL_Buffer_InfoTypeDef *AppAI_GaugeEllipse_InputInfo(void);
+extern const LL_Buffer_InfoTypeDef *AppAI_GaugeEllipse_OutputInfo(void);
+extern bool AppAI_GaugeCenterTip_Init(void);
+extern bool AppAI_GaugeCenterTip_Run(void);
+extern const LL_Buffer_InfoTypeDef *AppAI_GaugeCenterTip_InputInfo(void);
+extern const LL_Buffer_InfoTypeDef *AppAI_GaugeCenterTip_OutputInfo(void);
 extern const LL_Buffer_InfoTypeDef *LL_ATON_Input_Buffers_Info_tip_focus_v18_int8(void);
 extern const LL_Buffer_InfoTypeDef *LL_ATON_Output_Buffers_Info_tip_focus_v18_int8(void);
 extern const LL_Buffer_InfoTypeDef *LL_ATON_Internal_Buffers_Info_tip_focus_v18_int8(void);

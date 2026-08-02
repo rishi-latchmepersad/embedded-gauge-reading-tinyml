@@ -18,19 +18,17 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
-/* Force the live firmware onto the sc128 tip-focus geometry path even when
- * the generated CubeIDE makefile leaves the stage switch at its default 0.
- * This keeps app_ai.c, app_threadx.c, and the runtime tail aligned on the
- * same compile-time route. */
+/* Keep the live geometry-stage route enabled even when the generated CubeIDE
+ * makefile leaves its legacy switch at the default 0. The implementation now
+ * runs the 384g ellipse encoder followed by keypoint U-Net v4. */
 #ifdef APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 #undef APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 #endif
 #define APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE 1U
 
-/* Tip-focus heatmap UNET stage.
- * This is the active live-board geometry model wrapper, so expose it through
- * the public AI header for the runtime and the ThreadX bootstrap. */
-#include "ai_network_tip_focus_v4_112_int8.h"
+/* The retired tip-focus wrapper is not part of the production header.  A
+ * replay-only target must explicitly enable APP_AI_ENABLE_LEGACY_TIP_FOCUS_COMPAT
+ * and include its compatibility header directly. */
 
 /**
  * @brief Initialize the generated AI runtime package.
@@ -44,18 +42,19 @@ extern "C" {
 bool App_AI_Model_Init(void);
 
 /**
- * @brief Run a one-shot inference using a captured 224x224 YUV422 frame.
+ * @brief Run a one-shot inference using a captured 640x640 MONO_Y8 frame.
  *
- * The helper converts the colour frame into the model float RGB input
- * buffer, runs the generated LL_ATON runtime once, and logs the heatmap
- * output summary.
+ * The helper consumes the 640x640 DCMIPP luma, resizes it for the 384x384
+ * ellipse encoder, builds the 224x224 keypoint tensor, runs both generated
+ * networks, and maps the
+ * final needle angle through the gauge-1 north-zero calibration endpoints.
  *
  * @param frame_bytes Pointer to the captured frame bytes.
  * @param frame_size Number of valid bytes in the captured frame.
  * @retval true when the runtime run completes successfully.
  * @retval false when preprocessing or runtime execution fails.
  */
-bool App_AI_RunDryInferenceFromYuv422(const uint8_t *frame_bytes,
+bool App_AI_RunDryInferenceFromGray640(const uint8_t *frame_bytes,
 		size_t frame_size);
 
 /**
@@ -82,10 +81,10 @@ bool AppAI_Xspi2EnsureMemoryMappedMode(void);
 bool App_AI_GetLastInferenceResult(float *value_out);
 
 /**
- * @brief Verify that tip-focus weights are programmed in xSPI2 flash.
+ * @brief Verify that the active gauge-model weights are programmed in xSPI2.
  *
- * Reads the signature bytes from xSPI2 at 0x70400000 and compares
- * against the expected tip_focus_v18_int8_atonbuf.xSPI2.raw header.
+ * The active model signatures are checked by the generated stage wrappers and
+ * the flash script; this compatibility API remains for older callers.
  *
  * @retval true xSPI2 contains valid tip-focus weights.
  * @retval false xSPI2 is empty or corrupted - run flash_boot.ps1.

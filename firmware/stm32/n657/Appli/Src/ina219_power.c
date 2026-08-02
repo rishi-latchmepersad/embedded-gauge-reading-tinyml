@@ -49,11 +49,6 @@ static float INA219_ConvertSignedRaw(uint16_t raw_value, float scale)
     return (float)signed_raw * scale;
 }
 
-static long INA219_ToTenths(float value)
-{
-    return (long)lroundf(value * 10.0f);
-}
-
 /* Private function prototypes -----------------------------------------------*/
 static bool INA219_WriteRegister(uint8_t reg, uint16_t value);
 static bool INA219_ReadRegister(uint8_t reg, uint16_t *value);
@@ -234,8 +229,6 @@ static void INA219_ThreadEntry(ULONG thread_input)
     (void)thread_input;
     
     INA219_Measurement_t measurement;
-    ULONG actual_flags;
-    
     DebugConsole_Printf("[INA219] Monitoring thread started\r\n");
     
     while (g_thread_running) {

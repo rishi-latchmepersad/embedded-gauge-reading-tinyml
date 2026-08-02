@@ -26,6 +26,8 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void);
 /* Internal capture helpers now owned by the capture module. */
 bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr);
 void AppCameraCapture_LogCaptureState(const char *reason);
+/** Release the paused ISP service after the AI worker releases its snapshot. */
+void AppCameraCapture_ReleaseInferenceFrame(void);
 
 #ifdef __cplusplus
 }

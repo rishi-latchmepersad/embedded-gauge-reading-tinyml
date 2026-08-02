@@ -990,6 +990,72 @@ void AppAI_LogBufferPreview(const char *label,
 }
 
 /**
+ * @brief Log a short preview for an already validated raw buffer.
+ *
+ * This avoids re-dereferencing an ST buffer descriptor after preprocess, which
+ * can fault if the descriptor metadata has gone stale even when the tensor
+ * bytes themselves are still valid.
+ */
+void AppAI_LogRawBufferPreview(const char *label,
+									 const uint8_t *buffer_ptr, size_t buffer_len_bytes,
+									 const char *buffer_name)
+{
+	uint8_t first_bytes[8U] = {0U};
+	uint8_t mid_bytes[8U] = {0U};
+	uint8_t last_bytes[8U] = {0U};
+	uint32_t hash = 2166136261UL;
+	size_t preview_len = 0U;
+	size_t mid_offset = 0U;
+	size_t last_offset = 0U;
+
+	if ((label == NULL) || (buffer_ptr == NULL) || (buffer_len_bytes == 0U))
+	{
+		return;
+	}
+
+	preview_len = (buffer_len_bytes < sizeof(first_bytes)) ? buffer_len_bytes
+														 : sizeof(first_bytes);
+	mid_offset = (buffer_len_bytes > preview_len) ? (buffer_len_bytes / 2U) : 0U;
+	if ((mid_offset + preview_len) > buffer_len_bytes)
+	{
+		mid_offset = buffer_len_bytes - preview_len;
+	}
+	last_offset = (buffer_len_bytes > preview_len) ? (buffer_len_bytes - preview_len) : 0U;
+
+	for (size_t index = 0U; index < preview_len; ++index)
+	{
+		first_bytes[index] = buffer_ptr[index];
+		mid_bytes[index] = buffer_ptr[mid_offset + index];
+		last_bytes[index] = buffer_ptr[last_offset + index];
+	}
+
+	for (size_t index = 0U; index < buffer_len_bytes; ++index)
+	{
+		hash ^= buffer_ptr[index];
+		hash *= 16777619UL;
+	}
+
+	DebugConsole_Printf(
+		"[AI] %s probe: name=%s addr=%p len=%lu hash=0x%08lX first8=[%02X %02X %02X %02X %02X %02X %02X %02X] mid8=[%02X %02X %02X %02X %02X %02X %02X %02X] last8=[%02X %02X %02X %02X %02X %02X %02X %02X]\r\n",
+		label,
+		(buffer_name != NULL) ? buffer_name : "(unnamed)",
+		(const void *)buffer_ptr, (unsigned long)buffer_len_bytes,
+		(unsigned long)hash,
+		(unsigned int)first_bytes[0], (unsigned int)first_bytes[1],
+		(unsigned int)first_bytes[2], (unsigned int)first_bytes[3],
+		(unsigned int)first_bytes[4], (unsigned int)first_bytes[5],
+		(unsigned int)first_bytes[6], (unsigned int)first_bytes[7],
+		(unsigned int)mid_bytes[0], (unsigned int)mid_bytes[1],
+		(unsigned int)mid_bytes[2], (unsigned int)mid_bytes[3],
+		(unsigned int)mid_bytes[4], (unsigned int)mid_bytes[5],
+		(unsigned int)mid_bytes[6], (unsigned int)mid_bytes[7],
+		(unsigned int)last_bytes[0], (unsigned int)last_bytes[1],
+		(unsigned int)last_bytes[2], (unsigned int)last_bytes[3],
+		(unsigned int)last_bytes[4], (unsigned int)last_bytes[5],
+		(unsigned int)last_bytes[6], (unsigned int)last_bytes[7]);
+}
+
+/**
  * @brief Estimate a gauge crop from bright pixels in the Y channel.
  *
  * The dial face is usually the brightest contiguous object in these captures,

@@ -39,6 +39,21 @@
 #ifndef APP_AI_ENABLE_RUNTIME_METRICS
 #define APP_AI_ENABLE_RUNTIME_METRICS 1U
 #endif
+/* Keep the normal AI thread quiet after bring-up. Enable this only when
+ * diagnosing stage descriptors, preprocess buffers, or reloc handoff. */
+#ifndef APP_AI_ENABLE_STAGE_DIAGNOSTICS
+#define APP_AI_ENABLE_STAGE_DIAGNOSTICS 0U
+#endif
+/* Epoch/WFE register traces are useful for NPU bring-up but too noisy for the
+ * live camera loop. Runtime failures remain logged regardless of this flag. */
+#ifndef APP_AI_ENABLE_EPOCH_DEBUG_LOGS
+#define APP_AI_ENABLE_EPOCH_DEBUG_LOGS 1U
+#endif
+/* Heatmap summaries are offline diagnostics; the decoded angle/value remains
+ * always-on so normal inference output is still visible. */
+#ifndef APP_AI_ENABLE_HEATMAP_DEBUG_LOGS
+#define APP_AI_ENABLE_HEATMAP_DEBUG_LOGS 0U
+#endif
 /* Keep rectifier diagnostics available even when the rest of the verbose
  * console logging stays off. This is a temporary bring-up aid for crop
  * debugging and can be flipped back to 0 once the rectifier is stable. */
@@ -61,16 +76,21 @@
 #ifndef APP_AI_RESET_NETWORK_EACH_INFERENCE
 #define APP_AI_RESET_NETWORK_EACH_INFERENCE 0
 #endif
-/* The OBB stage is now fallback-only. The live board inference path routes
- * through the tip-focus UNet heatmap model first, but we keep the old
- * crop front-end behind a switch so it can still be re-enabled for debug. */
+/* The deployed path is ellipse localization followed by center/tip heatmaps.
+ * The old OBB/localizer code remains compile-only fallback code for replay
+ * diagnostics and is not initialized or called by the live path. */
 #ifndef APP_AI_ENABLE_OBB_STAGE
-#define APP_AI_ENABLE_OBB_STAGE 1U
+#define APP_AI_ENABLE_OBB_STAGE 0U
 #endif
-/* Keep the OBB-to-tip-focus handoff enabled in the live path. The UNet should
- * consume the OBB crop unless the OBB stage itself fails. */
+/* The former v18/112x112 tip-focus implementation is replay-only.  Keep it
+ * opt-in so the production image has one unambiguous model pair: the 384x384
+ * ellipse followed by the 224x224, 56x56x2 keypoint network. */
+#ifndef APP_AI_ENABLE_LEGACY_TIP_FOCUS_COMPAT
+#define APP_AI_ENABLE_LEGACY_TIP_FOCUS_COMPAT 0U
+#endif
+/* The OBB-to-tip-focus handoff is no longer part of the live path. */
 #ifndef APP_AI_ENABLE_OBB_TIP_FOCUS_CROP_HANOFF
-#define APP_AI_ENABLE_OBB_TIP_FOCUS_CROP_HANOFF 1U
+#define APP_AI_ENABLE_OBB_TIP_FOCUS_CROP_HANOFF 0U
 #endif
 /* Optional CPU refinement for the OBB crop.  This keeps the live path tight
  * without bringing back the old rectifier or source-crop-box stages. */
@@ -78,10 +98,10 @@
 #define APP_AI_ENABLE_LUMA_REFINER 1U
 #endif
 #ifndef APP_AI_ENABLE_OBB_DECODE_DIAGNOSTICS
-#define APP_AI_ENABLE_OBB_DECODE_DIAGNOSTICS 1U
+#define APP_AI_ENABLE_OBB_DECODE_DIAGNOSTICS 0U
 #endif
 #ifndef APP_AI_ENABLE_TIP_FOCUS_INPUT_DUMP
-#define APP_AI_ENABLE_TIP_FOCUS_INPUT_DUMP 1U
+#define APP_AI_ENABLE_TIP_FOCUS_INPUT_DUMP 0U
 #endif
 /* Production path: model images are provisioned via xSPI flash script.
  * Keep SD-based scalar reprovision disabled in live runtime. */
@@ -93,6 +113,19 @@
  * the matching gauge family when the board is flashed for a different dial. */
 #ifndef APP_BASELINE_CALIBRATION_PROFILE_NAME
 #define APP_BASELINE_CALIBRATION_PROFILE_NAME "board_celsius_v1"
+#endif
+
+/* The classical detector is a diagnostic comparator and a future fallback,
+ * not a hidden second answer authority.  It consumes the same immutable
+ * MONO_Y8 snapshot as the learned pipeline and publishes a separately tagged
+ * result.  Keeping the switch explicit prevents the old "started but never
+ * queued" state from returning. */
+#ifndef APP_BASELINE_ENABLE_THREAD
+#define APP_BASELINE_ENABLE_THREAD 1U
+#endif
+
+#ifndef APP_BASELINE_QUEUE_WITH_CAPTURE
+#define APP_BASELINE_QUEUE_WITH_CAPTURE 1U
 #endif
 
 /* OBB reloc runtime base.
@@ -113,9 +146,9 @@
 #define APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL CAMERA_CAPTURE_BYTES_PER_PIXEL
 #define APP_AI_CAPTURE_FRAME_BYTES \
 	(APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * APP_AI_CAPTURE_FRAME_BYTES_PER_PIXEL)
-/* Rectified scalar reader: 224x224x3 float RGB input. The offline prod v0.8
- * recipe uses the luma-refined crop to feed this float path, then applies the
- * external calibration/postprocess in firmware. */
+/* Legacy scalar reader contract retained for replay-only compatibility. The
+ * deployed gauge path uses the 384x384 ellipse input and 224x224 keypoint
+ * input declared below. */
 #define APP_AI_MODEL_INPUT_FLOAT_COUNT \
 	(APP_AI_CAPTURE_FRAME_WIDTH_PIXELS * APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS * 3U)
 /* Bright-object detector threshold used to find the gauge face before
@@ -164,9 +197,8 @@
 #define APP_AI_MODEL_OUTPUT_FLOAT_COUNT 1U
 #define APP_AI_MODEL_OUTPUT_FLOAT_BYTES \
 	(APP_AI_MODEL_OUTPUT_FLOAT_COUNT * sizeof(float))
-/* Circular decode constants from gauge_calibration_parameters.toml.
- * The gauge sweeps clockwise from 135 deg (2.356 rad) over 270 deg (4.712 rad).
- * Value range: -30 C to +50 C. */
+/* Legacy polar-reader constants. The deployed path reads the north-zero
+ * gauge-1 endpoints from app_gauge_geometry.h instead. */
 /* Keep the circular vote at 224 bins even as the square image geometry moves
  * to 224x224; the decode helper still expects the original angular resolution.
  */
@@ -206,13 +238,16 @@
 #define APP_AI_RECTIFIER_XSPI2_MODEL_IMAGE_PATH \
 	"atonbuf.rectifier.xSPI2.raw"
 #endif
-/* Live board models use the recent OBB winner plus the board-fit tip-focus
- * heatmap package. */
+/* Legacy package names retained only for compatibility with replay sources. */
 #define APP_AI_OBB_XSPI2_MODEL_IMAGE_PATH \
 	"packages/obb_box_board_bbox_deploy_candidate/st_ai_output/obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw" /* board-bbox OBB, 664 KB */
 #define APP_AI_TIP_FOCUS_XSPI2_MODEL_IMAGE_PATH \
 	"packages/tip_focus_v18_int8_n6_npu/st_ai_output/tip_focus_v18_int8_atonbuf.xSPI2.raw" /* tip-focus heatmap model, 815 KB */
-#define APP_AI_XSPI2_MODEL_IMAGE_PATH APP_AI_TIP_FOCUS_XSPI2_MODEL_IMAGE_PATH
+#define APP_AI_GAUGE_ELLIPSE_XSPI2_MODEL_IMAGE_PATH \
+	"packages/ellipse_iter8_universal_wide_deep_int8_n6_npu/st_ai_output/ellipse_iter8_universal_wide_deep_int8_atonbuf.xSPI2.raw"
+#define APP_AI_GAUGE_CENTER_TIP_XSPI2_MODEL_IMAGE_PATH \
+	"packages/keypoint_unet_224g_wide_aug_int8_n6_npu/st_ai_output/keypoint_unet_224g_wide_aug_int8_atonbuf.xSPI2.raw"
+#define APP_AI_XSPI2_MODEL_IMAGE_PATH APP_AI_GAUGE_ELLIPSE_XSPI2_MODEL_IMAGE_PATH
 #define APP_AI_XSPI2_PROGRAM_CHUNK_BYTES 4096U
 #define APP_AI_XSPI2_ERASE_BLOCK_BYTES (64U * 1024U)
 #define APP_AI_XSPI2_PROBE_BYTES 16U
@@ -306,17 +341,24 @@
 #define APP_AI_OBB_EPOCH_BUDGET_STEPS 6000U
 /* xSPI2 window base address (chip address 0). */
 #define APP_AI_XSPI2_CHIP_BASE_ADDR 0x70000000UL
-/* Tip-focus UNet v18 model: xSPI2 weights at 0x70400000. */
+/* Legacy tip-focus slot alias; the live ellipse model now occupies this
+ * address. */
 #define APP_AI_XSPI2_TIP_FOCUS_BASE_ADDR 0x70400000UL
 #define APP_AI_XSPI2_TIP_FOCUS_CHIP_OFFSET (APP_AI_XSPI2_TIP_FOCUS_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
 /* Board bbox OBB model: xSPI2 weights at 0x71400000. */
 #define APP_AI_XSPI2_OBB_BASE_ADDR 0x71400000UL
 #define APP_AI_XSPI2_OBB_CHIP_OFFSET (APP_AI_XSPI2_OBB_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
-/* Legacy aliases used by the shared xSPI2 helpers now point at the live
- * tip-focus slot so the generic probe/logging code matches the active model. */
-#define APP_AI_XSPI2_MODEL_BASE_ADDR APP_AI_XSPI2_TIP_FOCUS_BASE_ADDR
-#define APP_AI_XSPI2_MODEL_CHIP_OFFSET APP_AI_XSPI2_TIP_FOCUS_CHIP_OFFSET
-/* Shared runtime types are used by both the live tip-focus path and the
+#define APP_AI_XSPI2_GAUGE_ELLIPSE_BASE_ADDR 0x70400000UL
+#define APP_AI_XSPI2_GAUGE_CENTER_TIP_BASE_ADDR 0x70800000UL
+#define APP_AI_XSPI2_GAUGE_ELLIPSE_CHIP_OFFSET \
+	(APP_AI_XSPI2_GAUGE_ELLIPSE_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
+#define APP_AI_XSPI2_GAUGE_CENTER_TIP_CHIP_OFFSET \
+	(APP_AI_XSPI2_GAUGE_CENTER_TIP_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
+/* Legacy aliases used by shared xSPI2 helpers point at the live ellipse slot
+ * so generic probe/logging code remains harmless in compatibility builds. */
+#define APP_AI_XSPI2_MODEL_BASE_ADDR APP_AI_XSPI2_GAUGE_ELLIPSE_BASE_ADDR
+#define APP_AI_XSPI2_MODEL_CHIP_OFFSET APP_AI_XSPI2_GAUGE_ELLIPSE_CHIP_OFFSET
+/* Shared runtime types are used by both the live gauge path and the
  * compile-guarded legacy fallback helpers, so keep them available in both
  * build modes. */
 /* Shared types are now in app_ai_types.h — included above. */
@@ -332,8 +374,8 @@
 #define APP_AI_XSPI2_RECTIFIER_BASE_ADDR 0x70600000UL
 #define APP_AI_XSPI2_RECTIFIER_CHIP_OFFSET (APP_AI_XSPI2_RECTIFIER_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
 /* Center detector model (DS-CNN v4): xSPI2 weights at 0x70200000.
- * The NPU reads weights directly from xSPI2 flash; activation scratch uses
- * xSPI1 hyperRAM (0x90000000) + on-chip AXISRAM2-6. */
+ * This is a legacy configuration path; the active geometry pair below uses
+ * only xSPI2 weights and on-chip NPU RAM. */
 #define APP_AI_XSPI2_CENTER_DETECTOR_BASE_ADDR APP_AI_XSPI2_SCALAR_BASE_ADDR
 #define APP_AI_XSPI2_CENTER_DETECTOR_CHIP_OFFSET (APP_AI_XSPI2_CENTER_DETECTOR_BASE_ADDR - APP_AI_XSPI2_CHIP_BASE_ADDR)
 #endif
@@ -353,10 +395,20 @@
 #define APP_AI_TIP_FOCUS_HEATMAP_PIXELS \
 	(APP_AI_TIP_FOCUS_HEATMAP_SIDE_PIXELS * APP_AI_TIP_FOCUS_HEATMAP_SIDE_PIXELS)
 #define APP_AI_TIP_FOCUS_SIMCC_BINS         APP_AI_TIP_FOCUS_HEATMAP_SIDE_PIXELS
+
+/* New model tensor contracts. The wide-augmentation keypoint U-Net heatmap is 56x56 with
+ * two channels: channel 0 is center and channel 1 is needle tip. */
+#define APP_AI_GAUGE_ELLIPSE_INPUT_WIDTH_PIXELS 384U
+#define APP_AI_GAUGE_ELLIPSE_INPUT_HEIGHT_PIXELS 384U
+#define APP_AI_GAUGE_CENTER_TIP_INPUT_WIDTH_PIXELS 224U
+#define APP_AI_GAUGE_CENTER_TIP_INPUT_HEIGHT_PIXELS 224U
+#define APP_AI_GAUGE_CENTER_TIP_HEATMAP_SIDE_PIXELS 56U
 #define APP_AI_TIP_FOCUS_CONFIDENCE_FLOOR   0.40f
-/* The heatmap peaks still need a small floor so we can reject obviously flat
- * activations without over-fitting the gate to one camera session. */
-#define APP_AI_TIP_FOCUS_AXIS_PEAK_FLOOR    0.06f
+/* Match the deployment candidate's offline decoder: values below 0.05 do not
+ * contribute, and the remaining heatmap excess is raised to the fourth power.
+ * Keep the downstream angle, separation, and calibrated-value gates as the
+ * final false-positive guards. */
+#define APP_AI_TIP_FOCUS_AXIS_PEAK_FLOOR    0.05f
 #define APP_AI_TIP_FOCUS_AXIS_SPREAD_MAX_PX  32.0f
 #define APP_AI_TIP_FOCUS_TEMP_MIN_C         (-35.0f)
 #define APP_AI_TIP_FOCUS_TEMP_MAX_C         55.0f
@@ -365,5 +417,12 @@
 #define APP_AI_TIP_FOCUS_MAX_OUTLIER_DELTA_C  5.0f
 #define APP_AI_TIP_FOCUS_OUTLIER_RESET_STREAK 3U
 #define APP_AI_TIP_FOCUS_MAX_INVALID_FRAMES   10U
+
+/* Keep the first eight exact center/tip input/output tensors on the SD card
+ * while the live handoff is being validated. These are binary tensors, not
+ * UART frame dumps, and let the WSL TFLite runner prove whether the board saw
+ * the same 224x224 crop as the saved gray8 image. Disable after parity is
+ * established because FileX writes add latency to each inference. */
+#define APP_AI_DIAG_DUMP_CENTER_TIP_TENSORS 1U
 
 #endif /* __APP_AI_CONFIG_H */

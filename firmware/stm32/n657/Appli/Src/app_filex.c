@@ -278,8 +278,10 @@ static bool AppFileX_ParseCaptureSlotName(const CHAR *file_name_ptr,
 		ULONG *slot_index_ptr, AppFileX_CaptureFileFormat *format_ptr);
 static bool AppFileX_StampCapturedImageTimestampLocked(
 		const CHAR *file_name_ptr, const CHAR *timestamp_string_ptr);
+#if !APP_FILEX_ENABLE_CAPTURE_FILE_TIMESTAMP
 static UINT AppFileX_QueueCapturedImageTimestampLocked(
 		const CHAR *file_name_ptr);
+#endif
 static bool AppFileX_ProcessQueuedCapturedImageTimestampsLocked(void);
 static bool AppFileX_ShouldFlushCaptureMediaLocked(void);
 static void AppFileX_FlashCaptureBlue(uint32_t hold_ms);
@@ -1158,6 +1160,7 @@ static bool AppFileX_StampCapturedImageTimestampLocked(
 	return true;
 }
 
+#if !APP_FILEX_ENABLE_CAPTURE_FILE_TIMESTAMP
 /*==============================================================================*/
 static UINT AppFileX_QueueCapturedImageTimestampLocked(
 		const CHAR *file_name_ptr) {
@@ -1206,10 +1209,14 @@ static UINT AppFileX_QueueCapturedImageTimestampLocked(
 	g_capture_media_timestamp_pending = true;
 	return TX_SUCCESS;
 }
+#endif /* !APP_FILEX_ENABLE_CAPTURE_FILE_TIMESTAMP */
 
 /*==============================================================================*/
 static bool AppFileX_ProcessQueuedCapturedImageTimestampsLocked(void) {
 	bool stamped_any = false;
+	/* The producer is compiled out when direct FileX timestamping is enabled;
+	 * retain the queue consumer for configuration switches without warning. */
+	(void) g_capture_timestamp_queue_tail;
 
 	while (g_capture_timestamp_queue_count > 0U) {
 		AppFileX_CaptureTimestampEntry *entry_ptr =

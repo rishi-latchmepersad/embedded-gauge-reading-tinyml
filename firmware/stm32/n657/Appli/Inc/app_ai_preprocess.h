@@ -36,6 +36,11 @@ extern void AppAI_ReadRgbFromYuv422Bilinear(const uint8_t *frame_bytes,
 	float source_x, float source_y,
 	float *r_out, float *g_out, float *b_out);
 
+extern float AppAI_ReadNormalizedGrayFromYuv422Bilinear(
+	const uint8_t *frame_bytes, size_t frame_size_bytes,
+	size_t frame_width_pixels, size_t frame_height_pixels,
+	float source_x, float source_y);
+
 extern void AppAI_ReadRgbFromRgbBilinear(const uint8_t *rgb_bytes,
 	size_t frame_width_pixels, size_t frame_height_pixels,
 	float source_x, float source_y,

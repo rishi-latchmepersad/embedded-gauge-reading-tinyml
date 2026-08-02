@@ -488,12 +488,12 @@ void AppCameraDiagnostics_LogCaptureBufferPreview(const char *reason,
 }
 
 /**
- * @brief Log a compact diagnostic window from the processed YUV frame.
+ * @brief Log a compact diagnostic window from the processed MONO_Y8 frame.
  *
  * This helps distinguish a truly dark frame from a frame that just needs the
  * center ROI or exposure state to settle.
  * @param reason Human-readable reason that triggered the diagnostics.
- * @param buffer_ptr Processed YUV422 frame bytes.
+ * @param buffer_ptr Processed one-byte grayscale frame bytes.
  * @param length_bytes Number of bytes available in the frame buffer.
  */
 void AppCameraDiagnostics_LogProcessedFrameDiagnostics(const char *reason,

@@ -25,4 +25,19 @@
 #define ISP_MW_SW_AEC_ALGO_SUPPORT
 #define ISP_MW_SW_AWB_ALGO_SUPPORT
 
+/*
+ * Product-build safety boundary.
+ *
+ * ST's optional ISP tuning transport can answer a host dump command with the
+ * complete camera frame through USBX.  That is useful on a tuning bench but
+ * it is never part of the gauge firmware console contract: it can appear as
+ * binary/ASCII garbage on the same host serial session and it can expose the
+ * live DMA buffer while capture is running.  Keep the symbol explicitly
+ * undefined here even if a CubeIDE configuration or inherited command line
+ * accidentally defines it.
+ */
+#ifdef ISP_MW_TUNING_TOOL_SUPPORT
+#undef ISP_MW_TUNING_TOOL_SUPPORT
+#endif
+
 #endif /* __ISP_CONF_H */

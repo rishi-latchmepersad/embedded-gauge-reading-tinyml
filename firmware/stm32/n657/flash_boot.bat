@@ -22,19 +22,15 @@ set "SCRIPT_DIR=%~dp0"
 set "REPO_ROOT=%SCRIPT_DIR%..\..\..\"
 set "FSBL_BIN=%SCRIPT_DIR%FSBL\Debug\n657_FSBL.bin"
 set "FSBL_TRUSTED=%SCRIPT_DIR%FSBL\Debug\FSBL_trusted.bin"
-set "CENTER_DETECTOR_RAW=%SCRIPT_DIR%st_ai_output\packages\heatmap_cd_v4s_80\st_ai_output\heatmap_cd_atonbuf.xSPI2.raw"
-set "TIP_FOCUS_RAW=%SCRIPT_DIR%st_ai_output\packages\tip_focus_v18_int8_n6_npu\st_ai_output\tip_focus_v18_int8_atonbuf.xSPI2.raw"
-REM Board bbox OBB deploy candidate flashed into the OBB slot at 0x71400000.
-set "OBB_RAW=%SCRIPT_DIR%st_ai_output\packages\obb_box_board_bbox_deploy_candidate\st_ai_output\obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw"
+set "ELLIPSE_RAW=%SCRIPT_DIR%st_ai_output\packages\ellipse_iter8_universal_wide_deep_int8_n6_npu\st_ai_output\ellipse_iter8_universal_wide_deep_int8_atonbuf.xSPI2.raw"
+set "CENTER_TIP_RAW=%SCRIPT_DIR%st_ai_output\packages\keypoint_unet_224g_wide_aug_int8_n6_npu\st_ai_output\keypoint_unet_224g_wide_aug_int8_atonbuf.xSPI2.raw"
 
-if not exist "%CENTER_DETECTOR_RAW%" set "CENTER_DETECTOR_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\heatmap_cd_v4s_80\st_ai_output\heatmap_cd_atonbuf.xSPI2.raw"
-if not exist "%TIP_FOCUS_RAW%" set "TIP_FOCUS_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\tip_focus_v18_int8_n6_npu\st_ai_output\tip_focus_v18_int8_atonbuf.xSPI2.raw"
-if not exist "%OBB_RAW%" set "OBB_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\obb_box_board_bbox_deploy_candidate\st_ai_output\obb_box_board_bbox_deploy_candidate_atonbuf.xSPI2.raw"
+if not exist "%ELLIPSE_RAW%" set "ELLIPSE_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\ellipse_iter8_universal_wide_deep_int8_n6_npu\st_ai_output\ellipse_iter8_universal_wide_deep_int8_atonbuf.xSPI2.raw"
+if not exist "%CENTER_TIP_RAW%" set "CENTER_TIP_RAW=%REPO_ROOT%firmware\stm32\n657\st_ai_output\packages\keypoint_unet_224g_wide_aug_int8_n6_npu\st_ai_output\keypoint_unet_224g_wide_aug_int8_atonbuf.xSPI2.raw"
 
 REM CubeProgrammer v2.21 does not accept .raw extension with -w; stage as .bin
-set "CENTER_DETECTOR_BIN=%SCRIPT_DIR%Appli\Debug\center_detector_model_stage.bin"
-set "TIP_FOCUS_BIN=%SCRIPT_DIR%Appli\Debug\tip_focus_v18_int8_n6_npu.bin"
-set "OBB_BIN=%SCRIPT_DIR%Appli\Debug\obb_model_stage.bin"
+set "ELLIPSE_BIN=%SCRIPT_DIR%Appli\Debug\ellipse_iter8_universal_wide_deep_int8_n6_npu.bin"
+set "CENTER_TIP_BIN=%SCRIPT_DIR%Appli\Debug\keypoint_unet_224g_wide_aug_int8_n6_npu.bin"
 
 set "APP_BIN=%SCRIPT_DIR%Appli\Debug\n657_Appli.bin"
 set "APP_SIGN=%SCRIPT_DIR%Appli\Debug\n657_Appli_sign_new.bin"
@@ -72,15 +68,20 @@ if "%FLASH_APP%"=="1" if not exist "%APP_BIN%" (
     echo ERROR: Application binary not found: "%APP_BIN%"
     exit /b 1
 )
-if "%FLASH_MODEL%"=="1" if not exist "%CENTER_DETECTOR_RAW%" (
-    echo WARNING: Center detector model not found (optional — OBB face-localizer provides the centre): "%CENTER_DETECTOR_RAW%"
+if "%FLASH_APP%"=="1" (
+    REM Refuse to sign/flash an older image that can still emit raw frame bytes.
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "$b=[IO.File]::ReadAllBytes('%APP_BIN%');$s=[Text.Encoding]::ASCII.GetString($b);if(-not $s.Contains('[BOOT] firmware=2026-08-02-baseline-redesign-console-safe')){Write-Error 'Application is not the console-safe build';exit 1};if($s.Contains('snapshot-copy progress +64KiB')){Write-Error 'Application contains the removed raw-copy progress marker';exit 1};Write-Host ('Console-safe application verified. SHA256=' + (Get-FileHash -LiteralPath '%APP_BIN%' -Algorithm SHA256).Hash)"
+    if errorlevel 1 (
+        echo ERROR: Refusing to flash stale or non-console-safe application.
+        exit /b 1
+    )
 )
-if "%FLASH_MODEL%"=="1" if not exist "%TIP_FOCUS_RAW%" (
-    echo ERROR: Tip-focus model not found: "%TIP_FOCUS_RAW%"
+if "%FLASH_MODEL%"=="1" if not exist "%ELLIPSE_RAW%" (
+    echo ERROR: Ellipse model not found: "%ELLIPSE_RAW%"
     exit /b 1
 )
-if "%FLASH_MODEL%"=="1" if not exist "%OBB_RAW%" (
-    echo ERROR: OBB face-localizer model not found: "%OBB_RAW%"
+if "%FLASH_MODEL%"=="1" if not exist "%CENTER_TIP_RAW%" (
+    echo ERROR: Center/tip model not found: "%CENTER_TIP_RAW%"
     exit /b 1
 )
 
@@ -100,7 +101,10 @@ echo Trusted FSBL: %FSBL_TRUSTED%
 
 echo.
 echo === Step 3: Flash FSBL at 0x70000000 ===
-"%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%FSBL_TRUSTED%" 0x70000000
+REM HWRSTPULSE gives the external loader control of xSPI2 before erase/write;
+REM verify in the same invocation so CubeProgrammer does not reject a second
+REM standalone verification command.
+"%PROG%" -c port=SWD mode=HWRSTPULSE -el "%ELDR%" -w "%FSBL_TRUSTED%" 0x70000000 -v
 if errorlevel 1 (
     echo ERROR: FSBL flash failed.
     exit /b 1
@@ -108,79 +112,52 @@ if errorlevel 1 (
 
 echo.
 if "%FLASH_MODEL%"=="1" (
-    if exist "%CENTER_DETECTOR_RAW%" (
-        echo === Step 4a: Flash heatmap center detector at 0x70200000 (optional — joint model provides the centre) ===
-        echo Heatmap center detector source: "%CENTER_DETECTOR_RAW%"
-        for %%I in ("%CENTER_DETECTOR_RAW%") do echo Center detector source size: %%~zI bytes
-        copy /y "%CENTER_DETECTOR_RAW%" "%CENTER_DETECTOR_BIN%" >nul
-        if errorlevel 1 (
-            echo ERROR: Could not stage heatmap center detector model as .bin.
-            exit /b 1
-        )
-        "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%CENTER_DETECTOR_BIN%" 0x70200000
-        if errorlevel 1 (
-            echo ERROR: Heatmap center detector model flash failed.
-            exit /b 1
-        )
-        echo Heatmap center detector model flashed at 0x70200000.
-    ) else (
-        echo === Step 4a: Skipping center detector (not found — joint model provides the centre) ===
+    echo === Step 4a: Flash 384x384 grayscale ellipse v2 model at 0x70400000 ===
+    echo Ellipse source: "%ELLIPSE_RAW%"
+    for %%I in ("%ELLIPSE_RAW%") do echo Ellipse source size: %%~zI bytes
+    copy /y "%ELLIPSE_RAW%" "%ELLIPSE_BIN%" >nul
+    if errorlevel 1 (
+        echo ERROR: Could not stage ellipse model as .bin.
+        exit /b 1
     )
+    "%PROG%" -c port=SWD mode=HWRSTPULSE -el "%ELDR%" -w "%ELLIPSE_BIN%" 0x70400000 -v
+    if errorlevel 1 (
+        echo ERROR: Ellipse model flash failed.
+        exit /b 1
+    )
+    echo Ellipse model flashed at 0x70400000.
 
-    echo === Step 4b: Flash tip-focus UNet v18 model at 0x70400000 (required) ===
-    echo Tip-focus source: "%TIP_FOCUS_RAW%"
-    for %%I in ("%TIP_FOCUS_RAW%") do echo Tip-focus source size: %%~zI bytes
-    copy /y "%TIP_FOCUS_RAW%" "%TIP_FOCUS_BIN%" >nul
+    echo === Step 4b: Flash 224x224 grayscale wide-aug keypoint U-Net at 0x70800000 ===
+    echo Center/tip source: "%CENTER_TIP_RAW%"
+    for %%I in ("%CENTER_TIP_RAW%") do echo Center/tip source size: %%~zI bytes
+    copy /y "%CENTER_TIP_RAW%" "%CENTER_TIP_BIN%" >nul
     if errorlevel 1 (
-        echo ERROR: Could not stage tip-focus UNet model as .bin.
+        echo ERROR: Could not stage center/tip model as .bin.
         exit /b 1
     )
-    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%TIP_FOCUS_BIN%" 0x70400000
+    "%PROG%" -c port=SWD mode=HWRSTPULSE -el "%ELDR%" -w "%CENTER_TIP_BIN%" 0x70800000 -v
     if errorlevel 1 (
-        echo ERROR: Tip-focus UNet model flash failed.
+        echo ERROR: Center/tip model flash failed.
         exit /b 1
     )
-    echo Tip-focus UNet v18 model flashed at 0x70400000.
-
-    echo === Step 4c: Flash board bbox OBB candidate at 0x71400000 (required) ===
-    echo Board bbox source: "%OBB_RAW%"
-    for %%I in ("%OBB_RAW%") do echo Board bbox source size: %%~zI bytes
-    copy /y "%OBB_RAW%" "%OBB_BIN%" >nul
-    if errorlevel 1 (
-        echo ERROR: Could not stage OBB face-localizer model as .bin.
-        exit /b 1
-    )
-    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%OBB_BIN%" 0x71400000
-    if errorlevel 1 (
-        echo ERROR: OBB face-localizer model flash failed.
-        exit /b 1
-    )
-    echo Board bbox OBB model flashed at 0x71400000.
+    echo Center/tip model flashed at 0x70800000.
 )
 
 if "%FLASH_MODEL%"=="1" (
     echo.
     echo === Step 4d: Extract model signatures for firmware update ===
-    if exist "%CENTER_DETECTOR_RAW%" (
-        python "%SCRIPT_DIR%tools\extract_model_signature.py" "%CENTER_DETECTOR_RAW%" > "%SIG_REPORT_DIR%\heatmap_cd_signature.txt"
-        if errorlevel 1 (
-            echo ERROR: Heatmap center detector signature extraction failed.
-            exit /b 1
-        )
-        echo Heatmap center detector signature report: "%SIG_REPORT_DIR%\heatmap_cd_signature.txt"
-    )
-    python "%SCRIPT_DIR%tools\extract_model_signature.py" "%TIP_FOCUS_RAW%" > "%SIG_REPORT_DIR%\tip_focus_v18_signature.txt"
+    python "%SCRIPT_DIR%tools\extract_model_signature.py" "%ELLIPSE_RAW%" > "%SIG_REPORT_DIR%\gauge_ellipse_v2_signature.txt"
     if errorlevel 1 (
-        echo ERROR: Tip-focus UNet signature extraction failed.
+        echo ERROR: Ellipse signature extraction failed.
         exit /b 1
     )
-    echo Tip-focus signature report: "%SIG_REPORT_DIR%\tip_focus_v18_signature.txt"
-    python "%SCRIPT_DIR%tools\extract_model_signature.py" "%OBB_RAW%" > "%SIG_REPORT_DIR%\obb_signature.txt"
+    echo Ellipse signature report: "%SIG_REPORT_DIR%\gauge_ellipse_v2_signature.txt"
+    python "%SCRIPT_DIR%tools\extract_model_signature.py" "%CENTER_TIP_RAW%" > "%SIG_REPORT_DIR%\gauge_keypoint_unet_wide_aug_signature.txt"
     if errorlevel 1 (
-        echo ERROR: OBB signature extraction failed.
+        echo ERROR: Center/tip signature extraction failed.
         exit /b 1
     )
-    echo OBB signature report: "%SIG_REPORT_DIR%\obb_signature.txt"
+    echo Center/tip signature report: "%SIG_REPORT_DIR%\gauge_keypoint_unet_wide_aug_signature.txt"
 )
 
 if "%FLASH_APP%"=="1" (
@@ -211,7 +188,7 @@ if "%FLASH_APP%"=="1" (
 
     echo.
     echo === Step 6: Flash signed application at 0x70100000 ===
-    "%PROG%" -c port=SWD mode=HOTPLUG -el "%ELDR%" -hardRst -w "%APP_SIGN%" 0x70100000
+    "%PROG%" -c port=SWD mode=HWRSTPULSE -el "%ELDR%" -w "%APP_SIGN%" 0x70100000 -v
     if errorlevel 1 (
         echo ERROR: Application flash failed.
         exit /b 1

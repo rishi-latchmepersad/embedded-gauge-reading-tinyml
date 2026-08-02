@@ -10,7 +10,13 @@
  * We keep the firmware-facing API stable by reusing the existing wrapper
  * filename while swapping the underlying generated package to tip_focus_v18.
  * No HyperRAM needed; 1.72 MiB on-chip activations, 815 KB xSPI2 weights.
- */
+ *
+ * The live product uses the ellipse/keypoint pair.  This wrapper is compiled
+ * only for an explicit replay compatibility target. */
+
+#include "app_ai_config.h"
+
+#if APP_AI_ENABLE_LEGACY_TIP_FOCUS_COMPAT
 
 #define LL_ATON_PLATFORM LL_ATON_PLAT_STM32N6
 #define LL_ATON_OSAL LL_ATON_OSAL_THREADX
@@ -34,6 +40,7 @@
 #include "debug_console.h"
 #include "npu_cache.h"
 #include "mcu_cache.h"
+#include "main.h"
 
 #include <string.h>
 
@@ -42,6 +49,8 @@ extern bool AppAI_VerifyTipFocusWeights(void);
 extern const LL_Buffer_InfoTypeDef *LL_ATON_Input_Buffers_Info_tip_focus_v18_int8(void);
 extern const LL_Buffer_InfoTypeDef *LL_ATON_Output_Buffers_Info_tip_focus_v18_int8(void);
 extern const LL_Buffer_InfoTypeDef *LL_ATON_Internal_Buffers_Info_tip_focus_v18_int8(void);
+extern void LL_ATON_OSAL_DrainWfeSemaphore(void);
+extern bool LL_ATON_OSAL_WfeGuardExpired(void);
 
 #include "../../st_ai_output/packages/tip_focus_v18_int8_n6_npu/st_ai_output/tip_focus_v18_int8.h"
 
@@ -63,57 +72,6 @@ static float app_ai_tip_focus_tip_heatmap_fallback[3136U];
  * fixed by the linker script (`STM32N657X0HXQ_LRUN.ld` `TIP_FOCUS_WEIGHTS`
  * region at 0x70400000) and the `flash_boot.ps1` flash target. */
 #define APP_AI_XSPI2_TIP_FOCUS_BASE_ADDR 0x70400000UL
-
-/* `ll_aton_reloc_network.c` references `LL_ATON_Cache_NPU_Invalidate` (the
- * full-cache invalidate, not the address-range variant), but the X-CUBE-AI
- * `ll_aton_reloc_callbacks.c` only implements the two range variants. Provide
- * the missing wrapper here so the reloc link resolves; the implementation
- * just delegates to the project's existing NPU cache helper. */
-void LL_ATON_Cache_NPU_Invalidate(void)
-{
-    npu_cache_invalidate();
-}
-
-/* When `BUILD_AI_NETWORK_RELOC=1` is defined, the ATON cache-interface
- * header (`ll_aton_caches_interface.h`) changes the MCU/NPU cache helpers
- * from `static inline` wrappers to plain extern declarations. The per-model
- * build rule for the tip-focus now sets that define so `_network_rt_ctx` is
- * emitted, which means the model's SW quantize/dequantize epoch blocks
- * expect these functions to be resolved at link time. We provide thin
- * implementations that delegate to the project's existing cache primitives
- * and drop the callback layer — the callback bridge in `ll_aton_reloc_
- * callbacks.c` duplicates symbols already defined in `ll_aton_lib.c`, so
- * we avoid building that file entirely and define only what the reloc
- * runtime actually needs. */
-void LL_ATON_Cache_MCU_Clean_Range(uintptr_t virtual_addr, uint32_t size)
-{
-    (void)mcu_cache_clean_range((uint32_t)virtual_addr,
-                                 (uint32_t)(virtual_addr + size));
-}
-
-void LL_ATON_Cache_MCU_Invalidate_Range(uintptr_t virtual_addr, uint32_t size)
-{
-    (void)mcu_cache_invalidate_range((uint32_t)virtual_addr,
-                                      (uint32_t)(virtual_addr + size));
-}
-
-void LL_ATON_Cache_MCU_Clean_Invalidate_Range(uintptr_t virtual_addr, uint32_t size)
-{
-    (void)mcu_cache_clean_invalidate_range((uint32_t)virtual_addr,
-                                            (uint32_t)(virtual_addr + size));
-}
-
-void LL_ATON_Cache_NPU_Clean_Range(uintptr_t virtual_addr, uint32_t size)
-{
-    npu_cache_clean_range((uint32_t)virtual_addr,
-                           (uint32_t)(virtual_addr + size));
-}
-
-void LL_ATON_Cache_NPU_Clean_Invalidate_Range(uintptr_t virtual_addr, uint32_t size)
-{
-    npu_cache_clean_invalidate_range((uint32_t)virtual_addr,
-                                      (uint32_t)(virtual_addr + size));
-}
 
 /* RAM region for the tip-focus model's data/bss segment.
  *
@@ -517,6 +475,9 @@ bool AppAI_TipFocus_Init(void)
         return false;
     }
 
+    /* This package is compile-in relocatable C, not an ll_aton_reloc_install()
+     * binary. Let the stock runtime build its direct epoch list first. */
+    NN_Instance_tip_focus_v18_int8.exec_state.inst_reloc = 0U;
     LL_ATON_RT_Init_Network(&NN_Instance_tip_focus_v18_int8);
     {
         /* Wire the per-model `_network_rt_ctx` into the NN instance so
@@ -551,7 +512,11 @@ bool AppAI_TipFocus_Init(void)
 
 bool AppAI_TipFocus_Run(void)
 {
-    uintptr_t caller_r9 = 0U;
+	/* The OBB stage can abort with a stale software event token or a missing
+	 * completion interrupt. Bound the recovery path so tip-focus cannot freeze
+	 * the camera worker after an OBB fallback. */
+	#define APP_AI_TIP_FOCUS_RUN_GUARD_MS 10000U
+	uintptr_t caller_r9 = 0U;
     const LL_Buffer_InfoTypeDef *input_info = NULL;
     const LL_Buffer_InfoTypeDef *output_info = NULL;
     const uint8_t *input_ptr = NULL;
@@ -571,6 +536,9 @@ bool AppAI_TipFocus_Run(void)
         return false;
     }
 
+    /* Clear the compile-in context while the runtime rebuilds its direct
+     * epoch list; it is re-enabled only after generated inference init. */
+    NN_Instance_tip_focus_v18_int8.exec_state.inst_reloc = 0U;
     LL_ATON_RT_Init_Network(&NN_Instance_tip_focus_v18_int8);
     /* `LL_ATON_RT_Init_Network` resets `inst_reloc` to zero, so the
      * reloc context must be re-installed here before every inference. */
@@ -587,6 +555,11 @@ bool AppAI_TipFocus_Run(void)
         __asm volatile("mov r9, %0" ::"r"(caller_r9) : "r9");
         return false;
     }
+
+    /* The direct generated init replaces the binary reloc handler's setup.
+     * Mark it complete before enabling the lightweight context so the runtime
+     * only uses that context to preserve r9 around start/end epoch calls. */
+    NN_Instance_tip_focus_v18_int8.exec_state.inference_started = true;
 
     input_info = AppAI_TipFocus_GetDirectInputInfo();
     output_info = AppAI_TipFocus_GetDirectOutputInfo();
@@ -615,6 +588,8 @@ bool AppAI_TipFocus_Run(void)
     {
         LL_ATON_RT_RetValues_t status = LL_ATON_RT_DONE;
         const struct ai_reloc_rt_ctx *rt_ctx = NULL;
+        const uint32_t run_start_tick = HAL_GetTick();
+        uint32_t epoch_steps = 0U;
         /* Always start the epoch loop from the model's own reloc base when the
          * installed instance reports one. When it does not, fall back to the
          * live r9 (e.g. carried over from the OBB logging pass) so the SW
@@ -642,15 +617,35 @@ bool AppAI_TipFocus_Run(void)
             app_ai_tip_focus_logged_compiled_in_runtime = true;
         }
 
+        LL_ATON_OSAL_DrainWfeSemaphore();
+
         for (;;) {
+            if ((HAL_GetTick() - run_start_tick) >=
+                APP_AI_TIP_FOCUS_RUN_GUARD_MS) {
+                DebugConsole_Printf(
+                    "[AI][TIP_FOCUS] Run guard expired after %lu ms at epoch=%lu.\r\n",
+                    (unsigned long)(HAL_GetTick() - run_start_tick),
+                    (unsigned long)epoch_steps);
+                __asm volatile("mov r9, %0" ::"r"(caller_r9) : "r9");
+                return false;
+            }
+
             __asm volatile("mov r9, %0" ::"r"(runtime_r9) : "r9");
             status = LL_ATON_RT_RunEpochBlock(&NN_Instance_tip_focus_v18_int8);
+            epoch_steps++;
             if (status == LL_ATON_RT_DONE) {
                 break;
             }
             if (status == LL_ATON_RT_WFE) {
                 LL_ATON_OSAL_WFE();
                 __asm volatile("mov r9, %0" ::"r"(runtime_r9) : "r9");
+                if (LL_ATON_OSAL_WfeGuardExpired()) {
+                    DebugConsole_Printf(
+                        "[AI][TIP_FOCUS] Run aborted: ATON WFE guard expired at epoch=%lu.\r\n",
+                        (unsigned long)epoch_steps);
+                    __asm volatile("mov r9, %0" ::"r"(caller_r9) : "r9");
+                    return false;
+                }
                 continue;
             }
             if (status == LL_ATON_RT_NO_WFE) {
@@ -759,3 +754,5 @@ bool AppAI_TipFocus_DryRun(void)
 
     return AppAI_TipFocus_Run();
 }
+
+#endif /* APP_AI_ENABLE_LEGACY_TIP_FOCUS_COMPAT */

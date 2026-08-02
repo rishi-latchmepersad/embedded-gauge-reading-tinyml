@@ -38,6 +38,7 @@ extern int mcu_cache_invalidate_range(uint32_t start_addr, uint32_t end_addr);
 
 /* Generated ST Edge AI package for the heatmap center detector. */
 #include "../../st_ai_output/packages/heatmap_cd_v4s_80/st_ai_output/heatmap_cd.h"
+#include "../../st_ai_output/packages/heatmap_cd_v4s_80/st_ai_output/heatmap_cd.c"
 
 /**
  * @brief Return the relocatable runtime base that the generated CNN expects
@@ -68,8 +69,8 @@ static uintptr_t AppCenterDetector_GetRuntimeR9(const NN_Instance_TypeDef *insta
 /* USER CODE BEGIN PD */
 
 /* Center detector model input dimensions. */
-#define CENTER_DET_INPUT_WIDTH  CAMERA_CAPTURE_WIDTH_PIXELS
-#define CENTER_DET_INPUT_HEIGHT CAMERA_CAPTURE_HEIGHT_PIXELS
+#define CENTER_DET_INPUT_WIDTH  224U
+#define CENTER_DET_INPUT_HEIGHT 224U
 #define CENTER_DET_INPUT_CHANS  3U
 
 /* Heatmap output dimensions from the deployed DS-CNN 80x80 slim package. */

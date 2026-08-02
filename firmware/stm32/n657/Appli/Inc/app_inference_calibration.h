@@ -17,10 +17,10 @@ extern "C" {
 /**
  * @brief Apply the deploy-time scalar calibration to the model output.
  *
- * The board currently uses the active piecewise postprocess in
- * app_inference_calibration.c so we can compare calibrated and raw outputs
- * during live capture work. If the correction needs to be disabled again,
- * that file owns the switch.
+ * The live ellipse/center-tip board path leaves this as a no-op by default so the
+ * model output is published directly. The legacy piecewise correction still
+ * exists in app_inference_calibration.c for replay or experimentation, but
+ * it is compiled out unless explicitly re-enabled there.
  *
  * @param raw_value Model output in Celsius before calibration.
  * @return Calibrated output in Celsius, or the raw value when calibration is

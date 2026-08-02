@@ -28,6 +28,10 @@
 #ifndef APP_QAREPVGG_DECODE_INC
 #define APP_QAREPVGG_DECODE_INC
 
+/* This decoder is retained as an optional OBB compatibility helper. The
+ * production pipeline uses the ellipse wrapper, so the helper may be unused. */
+#pragma GCC diagnostic ignored "-Wunused-function"
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <math.h>

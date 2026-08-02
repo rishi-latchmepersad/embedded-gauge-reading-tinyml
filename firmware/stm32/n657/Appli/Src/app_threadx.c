@@ -60,6 +60,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define CAMERA_STARTUP_MEDIA_READY_TIMEOUT_MS 90000U
 
 /* USER CODE END PD */
 
@@ -88,9 +89,10 @@ static TX_MUTEX camera_capture_cmw_mutex;
 static bool camera_capture_cmw_mutex_created = false;
 CMW_IMX335_t camera_sensor;
 bool camera_cmw_initialized = false;
-/* Keep the middleware path active so the ISP/AEC pipeline can produce optical
- * frames instead of the raw sensor dump. */
-bool camera_capture_use_cmw_pipeline = false;
+/* The live product contract is CMW/ISP MONO_Y8.  The platform probe may set
+ * this again after sensor initialization, but the pre-probe default must not
+ * accidentally arm the raw diagnostic pipe. */
+bool camera_capture_use_cmw_pipeline = true;
 TX_SEMAPHORE camera_capture_done_semaphore;
 TX_SEMAPHORE camera_capture_isp_semaphore;
 static bool camera_capture_sync_created = false;
@@ -242,6 +244,7 @@ UINT App_ThreadX_Start(void) {
 		}
 	}
 
+	#if APP_BASELINE_ENABLE_THREAD
 	{
 		AppBaselineRuntime_SetCalibrationProfileByName(
 			APP_BASELINE_CALIBRATION_PROFILE_NAME);
@@ -254,6 +257,7 @@ UINT App_ThreadX_Start(void) {
 			return baseline_runtime_status;
 		}
 	}
+	#endif
 
 	if (!camera_isp_thread_created) {
 		const UINT isp_create_status = tx_thread_create(&camera_isp_thread,
@@ -420,6 +424,19 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 			DebugConsole_Printf(
 					"[CAMERA][THREAD] Camera probe completed successfully.\r\n");
 
+			/* FileX mounts asynchronously. Complete that one-time startup work
+			 * before model initialization so the boot dry-run cannot overlap SD
+			 * ACMD41 polling and consume its inference time budget. */
+			if (!AppFileX_IsMediaReady()) {
+				DebugConsole_Printf(
+						"[CAMERA][THREAD] Waiting for FileX media before AI startup.\r\n");
+				if (!AppStorage_WaitForMediaReady(
+						CAMERA_STARTUP_MEDIA_READY_TIMEOUT_MS)) {
+					DebugConsole_Printf(
+							"[CAMERA][THREAD] FileX startup wait timed out; continuing without SD.\r\n");
+				}
+			}
+
 			/* Start cleanup only after the camera has proven it can probe and
 			 * capture, so the background sweeper cannot interfere with startup. */
 			{
@@ -444,8 +461,26 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 		DebugConsole_Printf(
 				"[CAMERA][THREAD] Entering capture/inference loop (period=60s)...\r\n");
 		while (1) {
-			const bool storage_ready = AppFileX_IsMediaReady();
+			bool storage_ready = AppFileX_IsMediaReady();
 			uint32_t next_delay_ms = CAMERA_CAPTURE_PERIOD_MS;
+
+			/* Do not consume the first frame while FileX is still mounting the
+			 * card. The previous flow captured immediately, skipped the SD write,
+			 * and then allowed AI and SD bring-up to contend for the same window. */
+			if (!storage_ready) {
+				DebugConsole_Printf(
+						"[CAMERA][THREAD] Waiting for FileX media before capture.\r\n");
+				if (!AppStorage_WaitForMediaReady(
+						CAMERA_STARTUP_MEDIA_READY_TIMEOUT_MS)) {
+					DebugConsole_Printf(
+							"[CAMERA][THREAD] FileX media wait timed out; retrying capture later.\r\n");
+					DelayMilliseconds_Cooperative(5000U);
+					continue;
+				}
+				storage_ready = true;
+				DebugConsole_Printf(
+						"[CAMERA][THREAD] FileX media ready; starting capture.\r\n");
+			}
 
 			if (AppCameraCapture_CaptureAndStoreSingleFrame()) {
 				DebugConsole_Printf(
@@ -453,13 +488,6 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 			} else {
 				DebugConsole_Printf(
 						"[CAMERA][THREAD] Capture/inference attempt failed.\r\n");
-			}
-
-			/* While FileX is still coming up, retry sooner so the board keeps
-			 * producing visible progress instead of looking stalled for a full
-			 * minute between attempts. */
-			if (!storage_ready) {
-				next_delay_ms = 5000U;
 			}
 
 			DelayMilliseconds_Cooperative(next_delay_ms);
@@ -725,5 +753,3 @@ void HAL_DCMIPP_CSI_LineByteEventCallback(DCMIPP_HandleTypeDef *hdcmipp,
 }
 
 /* USER CODE END 1 */
-
-

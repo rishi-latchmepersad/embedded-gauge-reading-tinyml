@@ -24,6 +24,12 @@ UINT AppInferenceRuntime_Start(void);
 bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
 		ULONG frame_length);
 
+/**
+ * @brief Report whether the AI worker still owns the capture buffer.
+ * @retval true while the queued request or model execution is active.
+ */
+bool AppInferenceRuntime_IsInferenceInFlight(void);
+
 #ifdef __cplusplus
 }
 #endif

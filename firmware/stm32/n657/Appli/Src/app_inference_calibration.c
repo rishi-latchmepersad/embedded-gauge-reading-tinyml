@@ -20,9 +20,11 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #ifndef APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION
-/* Prod v0.8 uses the external scalar calibration / postprocess path to keep
- * the live board aligned with the offline rectified-scalar recipe. */
-#define APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION 1
+/* The live board now publishes the tip-focus model output directly.
+ * Keep the legacy piecewise fit available for replay experiments, but leave
+ * it disabled by default so it cannot inject an old scalar bias into the
+ * deployed temperature path. */
+#define APP_INFERENCE_ENABLE_OUTPUT_CALIBRATION 0
 #endif
 
 #define APP_INFERENCE_CALIBRATION_PIECEWISE_KNOT_COUNT 6U

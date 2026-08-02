@@ -82,8 +82,9 @@ UINT AppBaselineRuntime_Init(void);
 /**
  * @brief Start the baseline worker thread.
  *
- * The worker consumes copied YUV422 frames from a private snapshot buffer and
- * emits a temperature estimate for each accepted camera frame.
+ * The worker consumes the immutable MONO_Y8 snapshot published by the camera
+ * coordinator and emits a separately tagged temperature estimate for each
+ * accepted camera frame.
  *
  * @retval TX_SUCCESS on success.
  */
@@ -99,6 +100,12 @@ UINT AppBaselineRuntime_Start(void);
  */
 bool AppBaselineRuntime_RequestEstimate(const uint8_t *frame_ptr,
 		ULONG frame_length);
+
+/**
+ * @brief Report whether the baseline worker is using the shared snapshot.
+ * @retval true while a request is queued or being processed.
+ */
+bool AppBaselineRuntime_IsEstimateInFlight(void);
 
 /**
  * @brief Run the polar-vote needle detector at a given center point.
@@ -155,6 +162,15 @@ void AppBaselineRuntime_SetCalibrationProfileByName(const char *profile_name);
  * @brief Map angle to temperature using the active gauge calibration profile.
  */
 float AppBaselineRuntime_ConvertAngleToTemperature(float angle_rad);
+
+/**
+ * @brief Map an angle linearly between the active profile's extreme anchors.
+ *
+ * This intentionally ignores interior calibration anchors. It is used by the
+ * AI geometry path when the model must interpolate consistently from the
+ * cold-end to the hot-end gauge limits.
+ */
+float AppBaselineRuntime_ConvertAngleToTemperatureExtremes(float angle_rad);
 
 #ifdef __cplusplus
 }
