@@ -19,6 +19,13 @@ extern "C" {
 
 #include "app_memory_budget.h"
 
+/* Buffer diagnostics are intentionally independent of the DCMIPP camera
+ * configuration header so this low-level RAM module does not pull HAL module
+ * headers into a different include order. */
+#ifndef CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
+#define CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS 0U
+#endif
+
 /* Shared camera buffer state ------------------------------------------------ */
 extern uint32_t camera_capture_active_buffer_index;
 extern uint8_t *camera_capture_result_buffer;
@@ -39,7 +46,12 @@ uint32_t AppCameraBuffers_CountNonZeroBytes(const uint8_t *buffer_ptr,
 		uint32_t length_bytes);
 void AppCameraBuffers_LogFrameSignature(const char *label,
 		const uint8_t *buffer_ptr, uint32_t length_bytes);
-void AppCameraBuffers_CopyCaptureToSnapshot(const uint8_t *source_ptr,
+/**
+ * @brief Copy one complete MONO_Y8 capture into the private AI snapshot.
+ * @retval true when the complete frame was copied.
+ * @retval false when the source or frame length is invalid.
+ */
+bool AppCameraBuffers_CopyCaptureToSnapshot(const uint8_t *source_ptr,
 		uint32_t length_bytes);
 bool AppCameraBuffers_IsSnapshotCopyActive(void);
 

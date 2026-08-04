@@ -41,6 +41,7 @@
 #include "app_memory_budget.h"
 #include "app_filex.h"
 #include "app_ai.h"
+#include "ds3231_clock.h"
 #include "main.h"
 #include "debug_console.h"
 #include "debug_led.h"
@@ -93,8 +94,6 @@ bool camera_cmw_initialized = false;
  * this again after sensor initialization, but the pre-probe default must not
  * accidentally arm the raw diagnostic pipe. */
 bool camera_capture_use_cmw_pipeline = true;
-TX_SEMAPHORE camera_capture_done_semaphore;
-TX_SEMAPHORE camera_capture_isp_semaphore;
 static bool camera_capture_sync_created = false;
 bool camera_stream_started = false;
 volatile bool camera_capture_failed = false;
@@ -105,6 +104,10 @@ volatile bool camera_capture_eof_seen = false;
 volatile bool camera_capture_frame_done = false;
 volatile bool camera_capture_snapshot_armed = false;
 volatile uint32_t camera_capture_frame_event_count = 0U;
+/* DCMIPP callbacks run in interrupt context.  This monotonically increasing
+ * event count is the only completion notification they publish; the capture
+ * thread consumes it without calling ThreadX from the ISR. */
+volatile uint32_t camera_capture_done_event_count = 0U;
 volatile uint32_t camera_capture_line_error_count = 0U;
 volatile uint32_t camera_capture_line_error_mask = 0U;
 volatile uint32_t camera_capture_csi_linebyte_event_count = 0U;
@@ -174,31 +177,13 @@ UINT App_ThreadX_Start(void) {
 	}
 
 	if (!camera_capture_sync_created) {
-		UINT semaphore_status = tx_semaphore_create(
-				&camera_capture_done_semaphore, "camera_capture_done", 0U);
-		if (semaphore_status != TX_SUCCESS) {
-			DebugConsole_Printf(
-					"[CAMERA][THREAD] Failed to create capture semaphore, status=%lu\r\n",
-					(unsigned long) semaphore_status);
-			return semaphore_status;
-		}
-
-		semaphore_status = tx_semaphore_create(&camera_capture_isp_semaphore,
-				"camera_capture_isp", 0U);
-		if (semaphore_status != TX_SUCCESS) {
-			DebugConsole_Printf(
-					"[CAMERA][THREAD] Failed to create ISP semaphore, status=%lu\r\n",
-					(unsigned long) semaphore_status);
-			return semaphore_status;
-		}
-
-		semaphore_status = tx_mutex_create(&camera_capture_cmw_mutex,
+		const UINT mutex_status = tx_mutex_create(&camera_capture_cmw_mutex,
 				"camera_capture_cmw", TX_INHERIT);
-		if (semaphore_status != TX_SUCCESS) {
+		if (mutex_status != TX_SUCCESS) {
 			DebugConsole_Printf(
 					"[CAMERA][THREAD] Failed to create camera middleware mutex, status=%lu\r\n",
-					(unsigned long) semaphore_status);
-			return semaphore_status;
+					(unsigned long) mutex_status);
+			return mutex_status;
 		}
 		camera_capture_cmw_mutex_created = true;
 
@@ -484,7 +469,7 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 
 			if (AppCameraCapture_CaptureAndStoreSingleFrame()) {
 				DebugConsole_Printf(
-						"[CAMERA][THREAD] Capture and inference completed successfully.\r\n");
+					"[CAMERA][THREAD] Capture saved and AI handoff accepted.\r\n");
 			} else {
 				DebugConsole_Printf(
 						"[CAMERA][THREAD] Capture/inference attempt failed.\r\n");
@@ -514,7 +499,22 @@ static VOID CameraHeartbeatThread_Entry(ULONG thread_input) {
 
 	while (1) {
 		BSP_LED_Toggle(LED_GREEN);
-		DebugConsole_WriteString("[WATCHDOG] pulse\r\n");
+		/* The LED remains the liveness indicator. UART pulses are opt-in because
+		 * a five-second heartbeat obscures capture and inference failures. */
+#if CAMERA_HEARTBEAT_ENABLE_UART_PULSES
+		/* Read the external RTC only for this low-rate diagnostic line.  Keeping
+		 * the capture and inference logs free of per-line I2C reads avoids adding
+		 * blocking RTC retries to the hot path. */
+		char watchdog_timestamp[32] = { 0 };
+		if (App_Clock_GetCurrentTimestamp(watchdog_timestamp,
+				sizeof(watchdog_timestamp))) {
+			DebugConsole_Printf("[%s] [WATCHDOG] pulse\r\n",
+					watchdog_timestamp);
+		} else {
+			/* Preserve the heartbeat even if the DS3231 is temporarily offline. */
+			DebugConsole_WriteString("[WATCHDOG] pulse (RTC unavailable)\r\n");
+		}
+#endif
 		DelayMilliseconds_ThreadX(CAMERA_HEARTBEAT_PULSE_MS);
 		BSP_LED_Toggle(LED_GREEN);
 		DelayMilliseconds_ThreadX(CAMERA_HEARTBEAT_PERIOD_MS
@@ -533,17 +533,18 @@ static VOID CameraIspThread_Entry(ULONG thread_input) {
 			"[CAMERA][THREAD] Camera ISP service thread running.\r\n");
 
 	while (1) {
-		UINT semaphore_status = tx_semaphore_get(&camera_capture_isp_semaphore,
-				CameraPlatform_MillisecondsToTicks(20U));
-
-		if ((semaphore_status == TX_SUCCESS)
-				|| (camera_stream_started && camera_cmw_initialized)) {
+		/* The ISP service owns CMW only when the capture transaction is not
+		 * paused.  The old timeout-based semaphore path could wake here during
+		 * snapshot setup and race the capture thread inside the same middleware. */
+		if (camera_stream_started && camera_cmw_initialized
+				&& !camera_capture_isp_loop_paused) {
 			if (!AppCameraCapture_RunImx335Background()) {
 				camera_capture_failed = true;
 				camera_capture_error_code = 0x49535052U; /* 'ISPR' */
-				(void) tx_semaphore_put(&camera_capture_done_semaphore);
 			}
 		}
+
+		DelayMilliseconds_ThreadX(20U);
 	}
 }
 
@@ -557,7 +558,6 @@ int CMW_CAMERA_PIPE_VsyncEventCallback(uint32_t pipe) {
 		return CMW_ERROR_NONE;
 	}
 
-	(void) tx_semaphore_put(&camera_capture_isp_semaphore);
 	camera_capture_vsync_event_count++;
 
 	/* No DebugConsole_Printf from ISR Ã¢â‚¬â€ mutex is illegal in interrupt context. */
@@ -597,22 +597,16 @@ int CMW_CAMERA_PIPE_FrameEventCallback(uint32_t pipe) {
 		byte_count = CAMERA_CAPTURE_BUFFER_SIZE_BYTES;
 	} else if (!camera_capture_use_cmw_pipeline
 			&& (byte_count > CAMERA_CAPTURE_BUFFER_SIZE_BYTES)) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Raw pipe counter %lu exceeds the %lux%lu capture buffer; normalizing to %lu bytes for save.\r\n",
-				(unsigned long) byte_count,
-				(unsigned long) CAMERA_CAPTURE_WIDTH_PIXELS,
-				(unsigned long) CAMERA_CAPTURE_HEIGHT_PIXELS,
-				(unsigned long) CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
 		byte_count = CAMERA_CAPTURE_BUFFER_SIZE_BYTES;
 	}
 
 	camera_capture_byte_count = byte_count;
 	camera_capture_frame_done = true;
+	camera_capture_done_event_count++;
 
-	/* No DebugConsole_Printf from ISR Ã¢â‚¬â€ tx_mutex_get is illegal in interrupt
-	 * context.  The main capture thread logs first8 after the semaphore fires. */
-
-	(void) tx_semaphore_put(&camera_capture_done_semaphore);
+	/* No DebugConsole_Printf or ThreadX call from ISR. The capture thread
+	 * observes the event counter and performs all follow-up work in thread
+	 * context. */
 
 	return CMW_ERROR_NONE;
 }
@@ -632,7 +626,7 @@ void CMW_CAMERA_PIPE_ErrorCallback(uint32_t pipe) {
 	camera_capture_failed = true;
 	camera_capture_error_code = capture_dcmipp->ErrorCode;
 	camera_capture_snapshot_armed = false;
-	(void) tx_semaphore_put(&camera_capture_done_semaphore);
+	camera_capture_done_event_count++;
 }
 
 /**
@@ -648,7 +642,7 @@ void HAL_DCMIPP_ErrorCallback(DCMIPP_HandleTypeDef *hdcmipp) {
 	camera_capture_error_code = hdcmipp->ErrorCode;
 	camera_capture_snapshot_armed = false;
 	/* Log from main thread after semaphore fires Ã¢â‚¬â€ no Printf from ISR. */
-	(void) tx_semaphore_put(&camera_capture_done_semaphore);
+	camera_capture_done_event_count++;
 }
 
 /**
@@ -660,7 +654,7 @@ void HAL_DCMIPP_CSI_ClockChangerFifoFullEventCallback(
 	UNUSED(hdcmipp);
 	camera_capture_failed = true;
 	camera_capture_error_code = 0xCCF1F0U;
-	(void) tx_semaphore_put(&camera_capture_done_semaphore);
+	camera_capture_done_event_count++;
 }
 
 /**
@@ -722,7 +716,7 @@ void HAL_DCMIPP_CSI_LineErrorCallback(DCMIPP_HandleTypeDef *hdcmipp,
 	if ((camera_capture_line_error_count >= 8U) && !camera_capture_sof_seen) {
 		camera_capture_failed = true;
 		camera_capture_error_code = 0x1E000000U | DataLane;
-		(void) tx_semaphore_put(&camera_capture_done_semaphore);
+		camera_capture_done_event_count++;
 	}
 }
 

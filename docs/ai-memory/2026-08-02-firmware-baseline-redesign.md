@@ -65,3 +65,30 @@ These ranges do not overlap. The snapshot is aligned to its own MPU region and r
 ## Verification
 
 The final Windows STM32CubeIDE Debug build completed with `0 errors, 0 warnings` and produced `firmware/stm32/n657/Appli/Debug/n657_Appli.bin`. The flash script points to the ellipse and keypoint raw packages at `0x70400000` and `0x70800000`, checks slot ranges/overlap, signs the FSBL and application, and verifies each CubeProgrammer write. Live board validation must begin by confirming the new boot marker, then comparing the logged tensor hashes against the corresponding SD/WSL replay.
+
+## 2026-08-03 live replay mismatch correction
+
+The board confirmed that the first private 400 KiB CPU snapshot implementation
+was not viable: it used uncached AXISRAM stores and stalled during the copy. The
+replacement keeps the private snapshot but configures it as CPU-cacheable and
+copies one 640-byte image row at a time with no UART activity. CSI and IMX335
+are stopped before the handoff, and FileX and AI still use one immutable frame
+contract. The CMW pitch remains checked against the required packed 640-byte
+MONO_Y8 stride.
+
+The corrected application marker is
+`[BOOT] firmware=2026-08-03-capture-owner-v14-serialized-ai-diagnostics`.
+
+The v12 transaction fix makes the SD write best-effort. A FileX media, filename,
+or write failure is logged but no longer prevents the immutable snapshot from
+being queued to the AI worker; the camera result is now governed by AI handoff
+success. This keeps offline/firmware inference alive when storage is late or
+intermittent while preserving captured images whenever the SD path is healthy.
+
+The v13 diagnostic image adds one-line NPU/pipeline failure stages without
+enabling verbose tensor dumps. It distinguishes xSPI2/runtime failures from
+ellipse gating, crop validation, keypoint runtime, and heatmap decoding.
+
+The v14 console transport waits up to 250 ms for the UART lock instead of
+silently dropping complete records when watchdog, camera, and AI tasks log at
+the same time. The bound prevents a dead UART from blocking the pipeline.

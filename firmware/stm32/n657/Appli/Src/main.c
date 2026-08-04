@@ -280,11 +280,14 @@ static void Setup_Mpu(void) {
 	region.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
 	HAL_MPU_ConfigRegion(&region);
 
-	/* Region 1 has higher priority than the DMA region above. Keep the private
-	 * snapshot non-cacheable as well: a long CPU copy otherwise fills D-cache,
-	 * then stalls when dirty lines are evicted to AXISRAM1. */
+	/* Region 1 has higher priority than the DMA region above. The private
+	 * snapshot is CPU-only; make it normal write-back memory so the 400 KiB
+	 * ownership copy uses the AXISRAM cache path instead of thousands of slow
+	 * uncached stores. It is never a DMA target and is copied into the NPU input
+	 * shadow before inference. */
 	snapshot_attr.Number = MPU_ATTRIBUTES_NUMBER1;
-	snapshot_attr.Attributes = MPU_NOT_CACHEABLE;
+	snapshot_attr.Attributes = INNER_OUTER(
+			MPU_WRITE_BACK | MPU_RW_ALLOCATE | MPU_NON_TRANSIENT);
 	HAL_MPU_ConfigMemoryAttributes(&snapshot_attr);
 
 	snapshot_region.Enable = MPU_REGION_ENABLE;
@@ -379,7 +382,12 @@ int main(void) {
 	 * which early boot step stops making progress. */
 	DebugConsole_Configuration_t debug_console_configuration = { 0 };
 	debug_console_configuration.uart_handle_pointer = &hlpuart1;
-	debug_console_configuration.uart_transmit_timeout_milliseconds = 100U;
+	/* why: the HAL transmit budget is measured from the start of each call and
+	 * must cover the whole line plus any concurrent CPU stall (snapshot copy,
+	 * FileX write, ATON/NPU activity). 100 ms only barely exceeded the max
+	 * 1024-byte payload time (~89 ms at 115200), so lines were truncated
+	 * mid-transmit whenever a stall pushed them over the budget. */
+	debug_console_configuration.uart_transmit_timeout_milliseconds = 1000U;
 	debug_console_configuration.lock_callback = NULL;
 	debug_console_configuration.unlock_callback = NULL;
 	(void) DebugConsole_Init(&debug_console_configuration);
@@ -387,7 +395,7 @@ int main(void) {
 	 * baseline redesign image rather than an older image that still emitted
 	 * snapshot bytes through a tuning transport. */
 	DebugConsole_Printf(
-			"[BOOT] firmware=2026-08-02-baseline-redesign-console-safe\r\n");
+			"[BOOT] firmware=2026-08-03-capture-owner-v17-isr-safe-capture-events\r\n");
 	DebugConsole_Printf("[BOOT] UART console initialized.\r\n");
 	App_LogResetCause();
 	DS3231_LogI2c1LineState();
@@ -754,10 +762,11 @@ static void SystemIsolation_Config(void) {
 	/* USER CODE END RIF_Init 1 */
 	/* USER CODE BEGIN RIF_Init 2 */
 
-	/* Enable AXISRAM1 explicitly as well as the NPU SRAM clocks. The camera DMA
-	 * alias and the private debug snapshot both live in AXISRAM1; relying on its
-	 * reset-default clock state made CPU writes to the snapshot stall on one
-	 * board boot even though DCMIPP could still fill the DMA window. */
+	/* Enable every AXISRAM bank explicitly as well as the NPU SRAM clocks.
+	 * The camera DMA alias (0x24160000, AXISRAM3) and the private snapshot
+	 * (0x24200000, AXISRAM5) live in different banks; relying on reset-default
+	 * clock state made CPU writes to the snapshot stall on one board boot even
+	 * though DCMIPP could still fill the DMA window. */
 	RCC->MEMENR |= RCC_MEMENR_AXISRAM1EN | RCC_MEMENR_AXISRAM2EN
 			| RCC_MEMENR_AXISRAM3EN
 			| RCC_MEMENR_AXISRAM4EN | RCC_MEMENR_AXISRAM5EN

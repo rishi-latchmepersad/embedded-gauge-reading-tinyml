@@ -7,7 +7,7 @@ Goal:
 Scope note:
 - This file tracks the deploy-specific details.
 - The broader runtime + training + integration chronology for this same period is recorded in:
-  - `docs/ai-memory/model-updates/ml-experiments.md`
+  - `docs/ai-memory/ml-experiments.md`
   - section: `2026-05-18 End-to-End Deployment + Firmware Integration Notes`
 
 What was integrated:

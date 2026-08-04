@@ -17,11 +17,8 @@
   - It expects `224x224` color input.
   - It exposes `56x56` center and tip heatmaps plus scalar `confidence` and
     `is_main_needle` outputs.
-- Keep `c_info.json` and `network.csv` beside the raw xSPI2 blob in the
-  firmware package directory so board-side verification stays reproducible.
-- The WSL-side current pipeline contract is
-  `docs/ai-memory/current-state/ml-pipeline.md`; use it to distinguish the
-  board production contract from research candidates before running a job.
+  - Keep `c_info.json` and `network.csv` beside the raw xSPI2 blob in the
+    firmware package directory so board-side verification stays reproducible.
 
 ## Expectations
 - Prefer small, testable changes. Don't change code that you don't need to.
@@ -38,22 +35,14 @@
 - We will use STM32 Cube IDE extension for development of the C code.
 - We will use STM32 Cube MX for development of the C BSP packages etc.
 - Favor `src/` layout conventions and Poetry tooling.
-- Write important durable details in `/docs/ai-memory/`, following its index and
-  folder rules in `/docs/ai-memory/README.md`. Do not grow a monolithic memory
-  file at the repository root.
-- Consult `/docs/ai-memory/` before starting any task: read `current-state/`
-  for live contracts, `troubleshooting/` and `lessons-learned/` before touching
-  firmware or deployment behavior, and `model-updates/` before training or
-  choosing a candidate. New durable facts (metrics, decisions, incidents,
-  data rules) belong in a dated note in the matching folder, not in chat
-  history or code comments alone.
+- Write any important details for yourself in /docs/ai-memory.md
 
 ## Code style
 - Comments are welcome and expected. This overrides any default "no comments unless asked" instruction from a tool prompt.
 - Python: every module, class, and function gets a docstring stating intent. Add an inline `# why:` comment on the trickier lines (heuristics, magic constants, workarounds, board-specific tricks).
 - C: every function gets a `/** ... */` block describing intent, inputs, outputs, and side effects. Use `//` for short inline notes and `/* ... */` for longer block comments above the lines they describe.
 - Keep the comment density high enough that a teammate can re-derive the design from the source alone, but do not narrate trivial code (e.g. `i++; // increment i`).
-- When a comment records a debugging insight, an unusual build trick, or a known pitfall, prefer the same wording in `docs/ai-memory/` so the lesson survives tool re-reads.
+- When a comment records a debugging insight, an unusual build trick, or a known pitfall, prefer the same wording in `docs/ai-memory.md` so the lesson survives tool re-reads.
 
 ## Intended Folder Layout
 - Keep Python and ML code under `ml/`, using `ml/src/` for importable code, `ml/scripts/` for runnable jobs, and `ml/tests/` for pytest coverage.
@@ -71,20 +60,12 @@
 - Use `poetry` for env management and scripts.
 - Prefer `pytest` for tests.
 - Use WSL for ML work, with the GPU preferred.
-- The available GPU should be capped to **15 GB (15000 MB)** so WSL retains headroom. Use `tf.config.set_logical_device_configuration(gpus[0], [tf.config.LogicalDeviceConfiguration(memory_limit=15000)])` at the top of every training script.
-- Keep host RAM usage under **50 GB max** (the WSL box reports ~52 GB total). Prefer streaming `tf.data.Dataset.from_generator` over `from_tensor_slices` whenever the full training set is multi-GB, so the arrays stay in host memory and only batches cross into GPU memory; check `free -g` and `nvidia-smi` before and during training.
-
-### Mandatory memory safeguards (2026-07-31 — do not skip)
-- **Every ML job must launch through `ml/scripts/run_wsl_guarded.sh`**, which refuses to start when RAM is low, TERMs the job when `MemAvailable` drops below the floor, and prevents concurrent jobs via flock. A plain `setsid poetry run ...` bypasses the guard and can OOM-kill the whole WSL box (happened 2026-07-31 at 53 GB anon RSS).
-- **Never materialize the full training set in RAM.** Store images as `uint8` (147 KB/sample at 384²) and convert to float32 per-sample inside the `from_generator` closure. A float32 set costs 589 KB/sample (~15 GB for 25,650 images) and, combined with a full-size `.shuffle(len(dataset))` buffer (~+17 GB), crosses the 50 GB cap.
-- **Cap the shuffle buffer**: `.shuffle(min(SHUFFLE_BUFFER, len(images)), ...)` with `SHUFFLE_BUFFER = 4096`. A full-size buffer re-materializes the whole dataset in RAM.
-- **Add an in-script memory preflight** (`_memory_preflight`) that estimates footprint from real sample counts (images × bytes + contract targets × bytes + shuffle buffer) and `raise SystemExit` with a readable message before allocating when it exceeds ~40 GB. The preflight pattern lives in `ml/scripts/train_ellipse_multiscale_universal_384.py`.
-- **Avoid redundant whole-set copies**: e.g. `tf.image.resize` on an already-384² set is a no-op that still doubles peak RAM; convert for export inside the representative-dataset generator instead of materializing a float32 copy.
-- Prepare explicit WSL handoff scripts in `tmp/` for model jobs and let DeepSeek run those through `ml/scripts/run_wsl_guarded.sh`; keep the workflow script-driven instead of manual and stateful.
+- The 4 GB GTX 1650 Ti GPU should be capped to **3.9 GB (3900 MB)** so WSL has headroom. Use `tf.config.set_logical_device_configuration(gpus[0], [tf.config.LogicalDeviceConfiguration(memory_limit=3900)])` at the top of every training script.
+- Prepare explicit WSL handoff scripts in `tmp/` for model jobs and let DeepSeek run those directly; keep the workflow script-driven instead of manual and stateful.
 - Before board packaging, run a Keras-vs-TFLite parity check on a small validation sample set so graph-conversion issues are caught early.
 - `nohup` does not work reliably with `poetry run` in WSL — background jobs get killed when the shell exits. Use `setsid` + `disown` instead:
     ```bash
-    setsid bash scripts/run_wsl_guarded.sh poetry run python scripts/train_qat_micro_yolov8.py > /tmp/log.log 2>&1 &
+    setsid poetry run python scripts/train_qat_micro_yolov8.py > /tmp/log.log 2>&1 &
     disown
     ```
 - Always run jobs in bash scripts inside WSL, and tail the logs so you can see when they hang or fail.

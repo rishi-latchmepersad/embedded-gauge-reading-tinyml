@@ -272,10 +272,12 @@ bool CameraPlatform_SeedImx335ExposureGain(void) {
 		return false;
 	}
 
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 	DebugConsole_Printf(
 			"[CAMERA][PROBE]   - Seeded IMX335 exposure to %lu us and gain to %ld mdB (%s).\r\n",
 			(unsigned long) seed_exposure_us, (long) seed_gain_mdb,
 			(camera_cached_exposure_us > 0) ? "cached" : "default");
+#endif
 
 	return true;
 }
@@ -421,12 +423,14 @@ bool CameraPlatform_AdjustImx335ExposureGain(bool brighten,
 	camera_cached_exposure_us = target_exposure_us;
 	camera_cached_gain_mdb = target_gain_mdb;
 
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 	DebugConsole_Printf(
 			"[CAMERA][CAPTURE] Nudged IMX335 %s (%lu%% step): exposure=%ld us gain=%ld mdB.%s%s\r\n",
 			brighten ? "brighter" : "darker", (unsigned long) step_percent,
 			(long) target_exposure_us, (long) target_gain_mdb,
 			apply_exposure ? " exposure" : "",
 			apply_gain ? " gain" : "");
+#endif
 	return true;
 }
 
@@ -444,7 +448,9 @@ bool CameraPlatform_EnableImx335AutoExposure(void) {
 		return false;
 	}
 
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 	(void) CameraPlatform_LogImx335AutoExposureState("probe");
+#endif
 
 	return true;
 }
@@ -463,7 +469,9 @@ bool CameraPlatform_DisableImx335AutoExposure(void) {
 		return false;
 	}
 
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 	(void) CameraPlatform_LogImx335AutoExposureState("capture-lock");
+#endif
 	return true;
 }
 
@@ -499,7 +507,9 @@ static bool CameraPlatform_SelectImx335WhiteBalanceReference(
 		return true;
 	}
 
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 	DebugConsole_Printf("[CAMERA][CAPTURE] IMX335 WB reference modes:");
+#endif
 	for (uint32_t index = 0U; index < ISP_AWB_COLORTEMP_REF; ++index) {
 		const uint32_t candidate_ref_color_temp = supported_refs[index];
 
@@ -508,8 +518,10 @@ static bool CameraPlatform_SelectImx335WhiteBalanceReference(
 		}
 
 		found_supported_ref = true;
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 		DebugConsole_Printf(" %luK",
 				(unsigned long) candidate_ref_color_temp);
+#endif
 
 		if (candidate_ref_color_temp == preferred_ref_color_temp) {
 			best_ref_color_temp = candidate_ref_color_temp;
@@ -531,7 +543,9 @@ static bool CameraPlatform_SelectImx335WhiteBalanceReference(
 			}
 		}
 	}
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 	DebugConsole_Printf("\r\n");
+#endif
 
 	if (!found_supported_ref) {
 		DebugConsole_Printf(
@@ -546,14 +560,18 @@ static bool CameraPlatform_SelectImx335WhiteBalanceReference(
 	}
 
 	if (exact_match) {
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] IMX335 WB preferred reference %luK is supported.\r\n",
 				(unsigned long) preferred_ref_color_temp);
+#endif
 	} else {
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] Using closest supported IMX335 WB ref %luK instead of preferred %luK.\r\n",
 				(unsigned long) best_ref_color_temp,
 				(unsigned long) preferred_ref_color_temp);
+#endif
 	}
 
 	*selected_ref_color_temp = best_ref_color_temp;
@@ -575,7 +593,6 @@ bool CameraPlatform_AeSettleAndLock(void)
         return false;
     }
 
-    DebugConsole_WriteString("[CAMERA][AE] AEC enabled; settling...\r\n");
     DelayMilliseconds_ThreadX(CAMERA_CAPTURE_AE_SETTLE_DELAY_MS);
 
     if (!CameraPlatform_DisableImx335AutoExposure())
@@ -585,7 +602,6 @@ bool CameraPlatform_AeSettleAndLock(void)
     }
 
     CameraPlatform_CacheAcceptedExposureGain();
-    DebugConsole_WriteString("[CAMERA][AE] AEC settled and locked.\r\n");
     return true;
 }
 
@@ -598,12 +614,16 @@ bool CameraPlatform_AeSettleAndLock(void)
  * @retval true when the ISP accepted the manual white-balance preset.
  */
 bool CameraPlatform_LockImx335WhiteBalance(uint32_t ref_color_temp) {
+	static bool white_balance_warning_logged = false;
 	uint32_t selected_ref_color_temp = ref_color_temp;
 
 	if (!CameraPlatform_SelectImx335WhiteBalanceReference(ref_color_temp,
 			&selected_ref_color_temp)) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] IMX335 white balance lock unavailable; leaving ISP defaults in place.\r\n");
+		if (!white_balance_warning_logged) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] IMX335 white balance preset unavailable; continuing with ISP defaults.\r\n");
+			white_balance_warning_logged = true;
+		}
 		return true;
 	}
 
@@ -612,25 +632,31 @@ bool CameraPlatform_LockImx335WhiteBalance(uint32_t ref_color_temp) {
 				ISP_SetWBRefMode(&camera_sensor.hIsp, 0U,
 						selected_ref_color_temp);
 		if (status == ISP_OK) {
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 			DebugConsole_Printf(
 					"[CAMERA][CAPTURE] IMX335 white balance locked to %luK.\r\n",
 					(unsigned long) selected_ref_color_temp);
+#endif
 			return true;
 		}
 
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] WB lock attempt %lu failed for %luK, status=%ld.\r\n",
 				(unsigned long) (attempt + 1U),
 				(unsigned long) selected_ref_color_temp,
 				(long) status);
+#endif
 		if (attempt + 1U < 3U) {
 			CameraPlatform_CmwDelay(25U);
 		}
 	}
 
-	DebugConsole_Printf(
-			"[CAMERA][CAPTURE]   - Failed to lock IMX335 white balance to %luK.\r\n",
-			(unsigned long) ref_color_temp);
+	if (!white_balance_warning_logged) {
+		DebugConsole_Printf(
+			"[CAMERA][CAPTURE] IMX335 white balance preset rejected; continuing with ISP defaults.\r\n");
+		white_balance_warning_logged = true;
+	}
 	return false;
 }
 
@@ -719,6 +745,18 @@ bool CameraPlatform_PrepareDcmippSnapshot(void) {
 				&pitch_bytes) != CMW_ERROR_NONE) {
 			DebugConsole_Printf(
 					"[CAMERA][CAPTURE] DCMIPP MONO_Y8 resize configuration failed.\r\n");
+			return false;
+		}
+		/* The model contract is tightly packed MONO_Y8. Do not allow a future
+		 * middleware change to silently add padding that preprocessing would
+		 * interpret as image rows. */
+		const uint32_t expected_pitch_bytes =
+				CAMERA_CAPTURE_WIDTH_PIXELS * CAMERA_CAPTURE_BYTES_PER_PIXEL;
+		if (pitch_bytes != expected_pitch_bytes) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] MONO_Y8 pitch mismatch: got=%lu expected=%lu.\r\n",
+					(unsigned long)pitch_bytes,
+					(unsigned long)expected_pitch_bytes);
 			return false;
 		}
 
@@ -1002,8 +1040,10 @@ bool CameraPlatform_StartImx335Stream(void) {
 	CameraPlatform_ReapplyImx335TestPattern();
 	CameraPlatform_CmwDelay(100U);
 	if (!CameraPlatform_LockImx335WhiteBalance(CAMERA_IMX335_WB_REF_COLOR_TEMP)) {
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] Warning: failed to lock IMX335 white balance after stream start.\r\n");
+#endif
 	}
 
 	if (CameraPlatform_I2cReadReg(BCAMS_IMX_I2C_ADDRESS_HAL,

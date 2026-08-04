@@ -9,6 +9,7 @@
 
 #include "app_camera_buffers.h"
 #include "main.h"
+#include <stdio.h>
 #include <string.h>
 
 #include "debug_console.h"
@@ -72,9 +73,11 @@ void AppCameraBuffers_InvalidateCaptureRegion(uint32_t captured_bytes) {
 		invalidate_bytes = CAMERA_CAPTURE_BUFFER_SIZE_BYTES;
 	}
 
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 	DebugConsole_Printf(
 			"[CAMERA][CAPTURE] Capture buffer is non-cacheable: ptr=%p bytes=%lu; cache invalidate skipped.\r\n",
 			(void *) camera_capture_result_buffer, (unsigned long) invalidate_bytes);
+#endif
 	/* why: camera_capture_buffers lives in RAM_NC (0x24160000), so a D-cache
 	 * invalidate on this address is unnecessary and can fault on this MPU
 	 * configuration. The barrier still orders the completed DMA writes before
@@ -151,78 +154,39 @@ void AppCameraBuffers_LogFrameSignature(const char *label,
 		(unsigned long)hash);
 }
 
-void AppCameraBuffers_CopyCaptureToSnapshot(const uint8_t *source_ptr,
+bool AppCameraBuffers_CopyCaptureToSnapshot(const uint8_t *source_ptr,
 		uint32_t length_bytes) {
-	/* The AI worker must never read the live DMA buffer: the camera/ISP
-	 * pipeline keeps writing new (and occasionally half-written, top-black)
-	 * frames into it after the snapshot completes, so the two model stages
-	 * of one inference can see different frames (2026-08-02 incident).
-	 * Copy the fresh capture into the private snapshot before the worker
-	 * starts.
-	 *
-	 * why: use a plain 32-bit word loop instead of libc memcpy. The original
-	 * snapshot copy HardFaulted inside memcpy when it targeted a legacy alias
-	 * address; the word loop has no libc runtime or alias dependence. The
-	 * source is the noncacheable DMA window (coherent), the destination is
-	 * cacheable TIP_FOCUS_RAM and is read back by the same CPU. */
-	if ((source_ptr == NULL) || (length_bytes == 0U)
-			|| (length_bytes > CAMERA_CAPTURE_BUFFER_SIZE_BYTES)) {
+	/* The AI worker must never read the live DMA buffer. The sensor and receiver
+	 * are stopped before this function is called, but the private copy is still
+	 * required because the board's camera path previously produced tensors that
+	 * did not match the corresponding gray8 file on the SD card. */
+	if ((source_ptr == NULL)
+			|| (length_bytes != CAMERA_CAPTURE_BUFFER_SIZE_BYTES)) {
 		DebugConsole_Printf(
 			"[CAMERA][FRAME] snapshot-copy rejected src=%p len=%lu\r\n",
 			(const void *)source_ptr, (unsigned long)length_bytes);
-		return;
+		return false;
 	}
-
-	DebugConsole_Printf(
-		"[CAMERA][FRAME] snapshot-copy begin src=%p dst=%p len=%lu\r\n",
-		(const void *)source_ptr, (void *)camera_inference_frame_snapshot,
-		(unsigned long)length_bytes);
-	/* Probe the first and last destination words before the bulk transfer. This
-	 * makes an AXISRAM1 clock/security problem observable instead of making the
-	 * first long store loop look like an unexplained freeze. */
-	volatile uint32_t *snapshot_probe =
-		(volatile uint32_t *)(void *)camera_inference_frame_snapshot;
-	const uint32_t probe_last_word =
-		(length_bytes / sizeof(uint32_t)) - 1U;
-	snapshot_probe[0U] = 0U;
-	snapshot_probe[probe_last_word] = 0U;
-	__DMB();
-	DebugConsole_Printf(
-		"[CAMERA][FRAME] snapshot-copy destination probe passed dst=%p last=%p\r\n",
-		(void *)camera_inference_frame_snapshot,
-		(void *)&snapshot_probe[probe_last_word]);
-	/* why: suppressing all other console traffic during the transfer prevents
-	 * a concurrent logger from interleaving a stale/binary payload with the
-	 * copy diagnostics. Progress remains available in RAM for a fault dump. */
 	camera_snapshot_copy_progress_words = 0U;
-	__DMB();
 	camera_snapshot_copy_active = 1U;
 	__DMB();
-	const uint32_t *source_words = (const uint32_t *)(const void *)source_ptr;
-	volatile uint32_t *dest_words =
-		(volatile uint32_t *)(void *)camera_inference_frame_snapshot;
-	const uint32_t word_count = length_bytes / sizeof(uint32_t);
-	const uint32_t tail_bytes = length_bytes % sizeof(uint32_t);
-
-	for (uint32_t word_index = 0U; word_index < word_count; word_index++) {
-		dest_words[word_index] = source_words[word_index];
-		/* why: update only a scalar so the copy path cannot recursively enter
-		 * the UART driver or race another formatted logger. */
-		camera_snapshot_copy_progress_words = word_index + 1U;
-	}
-	if (tail_bytes != 0U) {
-		const uint8_t *source_tail = source_ptr + (word_count * sizeof(uint32_t));
-		uint8_t *dest_tail = camera_inference_frame_snapshot +
-			(word_count * sizeof(uint32_t));
-		for (uint32_t tail_index = 0U; tail_index < tail_bytes; ++tail_index) {
-			dest_tail[tail_index] = source_tail[tail_index];
-		}
+	/* Do not format strings, print, or take the UART lock in this transfer.
+	 * The old progress-marker path was the source of the binary UART spam and
+	 * could block the camera thread while the copy was in progress. The
+	 * destination is now CPU-cacheable, so copy one image row at a time: this
+	 * avoids a single long AXI burst while retaining libc's fast cache path. */
+	uint8_t *destination_ptr = camera_inference_frame_snapshot;
+	for (uint32_t row = 0U; row < CAMERA_CAPTURE_HEIGHT_PIXELS; ++row) {
+		(void)memcpy(destination_ptr +
+				(row * CAMERA_CAPTURE_WIDTH_PIXELS),
+				source_ptr + (row * CAMERA_CAPTURE_WIDTH_PIXELS),
+				CAMERA_CAPTURE_WIDTH_PIXELS * CAMERA_CAPTURE_BYTES_PER_PIXEL);
+		/* Keep fault-dump progress in RAM only; never emit frame data on UART. */
+		camera_snapshot_copy_progress_words =
+				((row + 1U) * CAMERA_CAPTURE_WIDTH_PIXELS) / sizeof(uint32_t);
 	}
 	__DSB();
 	camera_snapshot_copy_active = 0U;
 	__DMB();
-	DebugConsole_Printf(
-		"[CAMERA][FRAME] snapshot-copy done src=%p dst=%p len=%lu\r\n",
-		(const void *)source_ptr, (void *)camera_inference_frame_snapshot,
-		(unsigned long)length_bytes);
+	return true;
 }

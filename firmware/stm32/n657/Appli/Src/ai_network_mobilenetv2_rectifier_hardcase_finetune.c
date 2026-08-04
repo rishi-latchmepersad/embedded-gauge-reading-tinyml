@@ -23,6 +23,7 @@
 #include "ll_aton_reloc_network.h"
 #include "mcu_cache.h"
 #include "main.h"
+#include "debug_console.h"
 #include <string.h>
 
 extern bool LL_ATON_OSAL_WfeGuardExpired(void);
@@ -109,14 +110,28 @@ bool AppAI_GaugeCenterTip_Run(void)
 	uintptr_t caller_r9 = 0U;
 	uintptr_t runtime_r9 = 0U;
 	const uint32_t start_tick = HAL_GetTick();
-	if (!app_ai_gauge_keypoint_ready || !AppAI_Xspi2EnsureMemoryMappedMode()) return false;
+	const char *failure_stage = "unknown";
+	if (!app_ai_gauge_keypoint_ready) {
+		failure_stage = "not-ready";
+		goto fail;
+	}
+	if (!AppAI_Xspi2EnsureMemoryMappedMode()) {
+		failure_stage = "xspi2-mm";
+		goto fail;
+	}
 	__asm volatile("mov %0, r9" : "=r"(caller_r9));
-	if (!LL_ATON_EC_Network_Init_keypoint_unet_224g_wide_aug_int8()) goto fail;
+	if (!LL_ATON_EC_Network_Init_keypoint_unet_224g_wide_aug_int8()) {
+		failure_stage = "network-init";
+		goto fail;
+	}
 	/* Let LL_ATON_RT_Init_Network use the compile-in network interface. */
 	NN_Instance_keypoint_unet_224g_wide_aug_int8.exec_state.inst_reloc = 0U;
 	LL_ATON_RT_Init_Network(&NN_Instance_keypoint_unet_224g_wide_aug_int8);
 	AppAI_GaugeKeypoint_PrepareRelocContext();
-	if (!LL_ATON_EC_Inference_Init_keypoint_unet_224g_wide_aug_int8()) goto fail;
+	if (!LL_ATON_EC_Inference_Init_keypoint_unet_224g_wide_aug_int8()) {
+		failure_stage = "inference-init";
+		goto fail;
+	}
 	/* Direct generated inference init has done the binary handler's setup.
 	 * Enable the context only now so epoch calls preserve r9 without making the
 	 * runtime interpret this compile-in context as a flashed reloc binary. */
@@ -126,16 +141,33 @@ bool AppAI_GaugeCenterTip_Run(void)
 	runtime_r9 = (uintptr_t)_network_rt_ctx_keypoint_unet_224g_wide_aug_int8.ram_addr;
 	LL_ATON_OSAL_DrainWfeSemaphore();
 	for (;;) {
-		if ((HAL_GetTick() - start_tick) >= 10000U) goto fail;
+		if ((HAL_GetTick() - start_tick) >= 10000U) {
+			failure_stage = "timeout";
+			goto fail;
+		}
 		__asm volatile("mov r9, %0" : : "r"(runtime_r9));
 		status = LL_ATON_RT_RunEpochBlock(&NN_Instance_keypoint_unet_224g_wide_aug_int8);
 		if (status == LL_ATON_RT_DONE) break;
-		if (status == LL_ATON_RT_WFE) { LL_ATON_OSAL_WFE(); if (LL_ATON_OSAL_WfeGuardExpired()) goto fail; continue; }
-		if (status != LL_ATON_RT_NO_WFE) goto fail;
+		if (status == LL_ATON_RT_WFE) {
+			LL_ATON_OSAL_WFE();
+			if (LL_ATON_OSAL_WfeGuardExpired()) {
+				failure_stage = "wfe-guard";
+				goto fail;
+			}
+			continue;
+		}
+		if (status != LL_ATON_RT_NO_WFE) {
+			failure_stage = "epoch-status";
+			goto fail;
+		}
 	}
 	__asm volatile("mov r9, %0" : : "r"(caller_r9) : "r9");
 	return true;
 fail:
 	__asm volatile("mov r9, %0" : : "r"(caller_r9) : "r9");
+	DebugConsole_Printf(
+		"[AI][CENTER_TIP] run failed stage=%s status=%d elapsed_ms=%lu.\r\n",
+		failure_stage, (int)status,
+		(unsigned long)(HAL_GetTick() - start_tick));
 	return false;
 }

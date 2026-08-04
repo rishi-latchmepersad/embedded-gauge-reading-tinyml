@@ -40,4 +40,14 @@
 #undef ISP_MW_TUNING_TOOL_SUPPORT
 #endif
 
+/* The vendor ISP algorithms use raw printf() for diagnostic chatter. That
+ * path bypasses DebugConsole's UART serialization and was interleaving with
+ * application records during capture. Keep the product UART owned by
+ * DebugConsole; a tuning image can omit this header override. stdio is
+ * included first so the macro cannot interfere with its declarations. */
+#ifndef APP_ISP_TUNING_IMAGE
+#include <stdio.h>
+#define printf(...) ((void)0)
+#endif
+
 #endif /* __ISP_CONF_H */

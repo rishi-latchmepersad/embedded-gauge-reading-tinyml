@@ -101,6 +101,27 @@ UINT AppBaselineRuntime_Start(void);
 bool AppBaselineRuntime_RequestEstimate(const uint8_t *frame_ptr,
 		ULONG frame_length);
 
+/** @brief State of the classical baseline worker and its current request. */
+typedef enum
+{
+	APP_BASELINE_WORKER_UNINITIALIZED = 0,
+	APP_BASELINE_WORKER_WAITING,
+	APP_BASELINE_WORKER_QUEUED,
+	APP_BASELINE_WORKER_EXECUTING,
+	APP_BASELINE_WORKER_PUBLISHING,
+	APP_BASELINE_WORKER_FAILED,
+} AppBaselineRuntime_WorkerState_t;
+
+/** @brief Return the baseline worker state for bounded-wait diagnostics. */
+AppBaselineRuntime_WorkerState_t AppBaselineRuntime_GetWorkerState(void);
+
+/** @brief Return the last baseline worker progress tick. */
+ULONG AppBaselineRuntime_GetWorkerProgressTick(void);
+
+/** @brief Convert a baseline worker state to a diagnostic label. */
+const char *AppBaselineRuntime_WorkerStateName(
+		AppBaselineRuntime_WorkerState_t state);
+
 /**
  * @brief Report whether the baseline worker is using the shared snapshot.
  * @retval true while a request is queued or being processed.

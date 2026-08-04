@@ -111,14 +111,28 @@ bool AppAI_GaugeEllipse_Run(void)
 	uintptr_t caller_r9 = 0U;
 	uintptr_t runtime_r9 = 0U;
 	const uint32_t start_tick = HAL_GetTick();
-	if (!app_ai_gauge_ellipse_ready || !AppAI_Xspi2EnsureMemoryMappedMode()) return false;
+	const char *failure_stage = "unknown";
+	if (!app_ai_gauge_ellipse_ready) {
+		failure_stage = "not-ready";
+		goto fail;
+	}
+	if (!AppAI_Xspi2EnsureMemoryMappedMode()) {
+		failure_stage = "xspi2-mm";
+		goto fail;
+	}
 	__asm volatile("mov %0, r9" : "=r"(caller_r9));
-	if (!LL_ATON_EC_Network_Init_ellipse_iter8_universal_wide_deep_int8()) goto fail;
+	if (!LL_ATON_EC_Network_Init_ellipse_iter8_universal_wide_deep_int8()) {
+		failure_stage = "network-init";
+		goto fail;
+	}
 	/* Let LL_ATON_RT_Init_Network use the compile-in network interface. */
 	NN_Instance_ellipse_iter8_universal_wide_deep_int8.exec_state.inst_reloc = 0U;
 	LL_ATON_RT_Init_Network(&NN_Instance_ellipse_iter8_universal_wide_deep_int8);
 	AppAI_GaugeEllipse_PrepareRelocContext();
-	if (!LL_ATON_EC_Inference_Init_ellipse_iter8_universal_wide_deep_int8()) goto fail;
+	if (!LL_ATON_EC_Inference_Init_ellipse_iter8_universal_wide_deep_int8()) {
+		failure_stage = "inference-init";
+		goto fail;
+	}
 	/* The direct generated inference init has completed the work normally done
 	 * by the binary reloc handler. Enable the context now so the stock runtime
 	 * wraps every start/end epoch call and restores r9 around it. */
@@ -141,16 +155,33 @@ bool AppAI_GaugeEllipse_Run(void)
 	}
 	LL_ATON_OSAL_DrainWfeSemaphore();
 	for (;;) {
-		if ((HAL_GetTick() - start_tick) >= 10000U) goto fail;
+		if ((HAL_GetTick() - start_tick) >= 10000U) {
+			failure_stage = "timeout";
+			goto fail;
+		}
 		__asm volatile("mov r9, %0" : : "r"(runtime_r9));
 		status = LL_ATON_RT_RunEpochBlock(&NN_Instance_ellipse_iter8_universal_wide_deep_int8);
 		if (status == LL_ATON_RT_DONE) break;
-		if (status == LL_ATON_RT_WFE) { LL_ATON_OSAL_WFE(); if (LL_ATON_OSAL_WfeGuardExpired()) goto fail; continue; }
-		if (status != LL_ATON_RT_NO_WFE) goto fail;
+		if (status == LL_ATON_RT_WFE) {
+			LL_ATON_OSAL_WFE();
+			if (LL_ATON_OSAL_WfeGuardExpired()) {
+				failure_stage = "wfe-guard";
+				goto fail;
+			}
+			continue;
+		}
+		if (status != LL_ATON_RT_NO_WFE) {
+			failure_stage = "epoch-status";
+			goto fail;
+		}
 	}
 	__asm volatile("mov r9, %0" : : "r"(caller_r9) : "r9");
 	return true;
 fail:
 	__asm volatile("mov r9, %0" : : "r"(caller_r9) : "r9");
+	DebugConsole_Printf(
+		"[AI][ELLIPSE] run failed stage=%s status=%d elapsed_ms=%lu.\r\n",
+		failure_stage, (int)status,
+		(unsigned long)(HAL_GetTick() - start_tick));
 	return false;
 }

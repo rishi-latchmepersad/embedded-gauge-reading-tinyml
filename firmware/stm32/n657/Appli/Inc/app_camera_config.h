@@ -32,10 +32,9 @@ extern "C" {
  * usable live image. Set to 1 only if we need raw Pipe0 diagnostics. */
 #define CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC 0
 #define CAMERA_CAPTURE_TARGET_FRAME_COUNT   4U
-/* Keep an immutable CPU-owned copy for the AI worker. The stopped-sensor
- * buffer is still vulnerable to middleware/capture ownership transitions, and
- * a two-stage pipeline must never preprocess a live DMA buffer. The copy uses
- * a bounded 32-bit loop in app_camera_buffers.c and does not require HyperRAM. */
+/* Keep inference detached from the DCMIPP-owned buffer. The snapshot is
+ * CPU-cacheable and copied row-wise, avoiding the uncached AXISRAM transfer
+ * that stalled the earlier private-snapshot attempt. */
 #define CAMERA_CAPTURE_USE_PRIVATE_SNAPSHOT 1U
 /* Brightness gate: reject frames that are still too dim for the gauge face or
  * genuinely blown out, then nudge the sensor before trying again.
@@ -131,6 +130,8 @@ extern "C" {
 #define CAMERA_CAPTURE_TIMEOUT_MS           8000U
 #define CAMERA_STORAGE_WAIT_TIMEOUT_MS      70000U
 #define CAMERA_CAPTURE_RETRY_DELAY_MS       50U
+#define CAMERA_CAPTURE_INFERENCE_WAIT_TIMEOUT_MS 30000U
+#define CAMERA_CAPTURE_INFERENCE_WAIT_LOG_PERIOD_MS 2000U
 #define CAMERA_FIRST_FRAME_WARMUP_DELAY_MS  1500U
 #define CAMERA_STREAM_WARMUP_DELAY_MS       250U
 #define IMX335_CAPTURE_FRAMERATE_FPS        10
@@ -164,7 +165,9 @@ extern "C" {
  * stuck even when the camera path is fine. Keep them off by default so the
  * capture/save/inference breadcrumbs stay visible.
  */
+#ifndef CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 #define CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS  0U
+#endif
 
 /* ST treats PIPE0 as the raw dump pipe and PIPE1 as the processed/YUV pipe.
  * Use PIPE0 only while the raw diagnostic branch is enabled. */

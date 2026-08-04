@@ -23,11 +23,26 @@
 #define DEBUG_CONSOLE_MAX_TRANSMIT_BYTES (1024U)
 #endif
 
+#ifndef DEBUG_CONSOLE_SNAPSHOT_MARKER_LOCK_TIMEOUT_MS
+#define DEBUG_CONSOLE_SNAPSHOT_MARKER_LOCK_TIMEOUT_MS (250U)
+#endif
+
+/* A complete diagnostic record is more useful than silently dropping one when
+ * the watchdog, camera, and AI tasks reach the UART together. The timeout is
+ * bounded so a dead console cannot stall the capture/NPU pipeline forever. */
+#ifndef DEBUG_CONSOLE_LOCK_TIMEOUT_MS
+#define DEBUG_CONSOLE_LOCK_TIMEOUT_MS (250U)
+#endif
+
 static DebugConsole_Configuration_t g_debug_console_configuration;
 static bool g_debug_console_is_initialized = false;
+static volatile bool g_snapshot_copy_suppressed = false;
 
 static bool DebugConsole_InternalLock(void);
+static bool DebugConsole_InternalLockWithTimeout(uint32_t timeout_ms);
 static void DebugConsole_InternalUnlock(void);
+static bool DebugConsole_IsPrintableText(const uint8_t *byte_array_pointer,
+		size_t byte_array_length);
 static bool DebugConsole_InternalUartTransmitBlocking(
 		const uint8_t *byte_array_pointer, size_t byte_array_length);
 
@@ -125,6 +140,25 @@ bool DebugConsole_IsInitialized(void) {
 }
 
 /**
+ * @brief Changes the console-wide snapshot-copy suppression state.
+ * @param suppressed true to drop ordinary log writes, false to resume them.
+ * @sideeffect Performs an atomic flag store only; it never waits on the UART.
+ */
+void DebugConsole_SetSnapshotCopySuppressed(bool suppressed) {
+	__atomic_store_n(&g_snapshot_copy_suppressed, suppressed, __ATOMIC_RELEASE);
+}
+
+/**
+ * @brief Tests whether normal console traffic must be dropped.
+ * @retval true while either camera-copy guard is active.
+ * @sideeffect Reads RAM-only state; no I/O is performed.
+ */
+static bool DebugConsole_IsSnapshotCopySuppressed(void) {
+	return __atomic_load_n(&g_snapshot_copy_suppressed, __ATOMIC_ACQUIRE)
+			|| AppCameraBuffers_IsSnapshotCopyActive();
+}
+
+/**
  * @brief  Writes raw bytes to the configured debug output.
  * @param  byte_array_pointer Pointer to bytes to send.
  * @param  byte_array_length Number of bytes to send.
@@ -172,7 +206,7 @@ bool DebugConsole_WriteBytes(const uint8_t *byte_array_pointer,
 	 * transfer has already produced its begin/probe record, and allowing other
 	 * threads to log while it monopolizes the memory bus can interleave stale
 	 * frame bytes or leave a half-written diagnostic record on the console. */
-	if (AppCameraBuffers_IsSnapshotCopyActive()) {
+	if (DebugConsole_IsSnapshotCopySuppressed()) {
 		return false;
 	}
 
@@ -183,19 +217,57 @@ bool DebugConsole_WriteBytes(const uint8_t *byte_array_pointer,
 		return false;
 	}
 
-	if (!DebugConsole_InternalLock()) {
+	if (!DebugConsole_InternalLockWithTimeout(DEBUG_CONSOLE_LOCK_TIMEOUT_MS)) {
 		/* Drop contended log messages instead of spinning and starving a lower-
 		 * priority thread already in the transmit path. */
 		return false;
 	}
 	/* why: the copy flag may have changed while this task waited for the
 	 * console mutex; re-check it immediately before touching the UART. */
-	if (AppCameraBuffers_IsSnapshotCopyActive() ||
+	if (DebugConsole_IsSnapshotCopySuppressed() ||
 		DebugConsole_IsCameraBufferRange(byte_array_pointer,
 			byte_array_length)) {
 		DebugConsole_InternalUnlock();
 		return false;
 	}
+	transmit_successful = DebugConsole_InternalUartTransmitBlocking(
+			byte_array_pointer, byte_array_length);
+	DebugConsole_InternalUnlock();
+
+	return transmit_successful;
+}
+
+/**
+ * @brief Serializes one snapshot-copy marker while normal logs are suppressed.
+ * @param byte_array_pointer Pointer to a short, preformatted text marker.
+ * @param byte_array_length Marker length in bytes.
+ * @retval true when the marker was transmitted.
+ * @retval false when validation or the nonblocking console lock fails.
+ * @sideeffect Acquires and releases the UART serialization lock; it does not
+ * alter the camera-copy active flag.
+ * @note This narrow exception lets the camera module announce the copy after
+ * raising its suppression flag without reopening the old interleaving race.
+ */
+bool DebugConsole_WriteSnapshotCopyMarker(
+		const uint8_t *byte_array_pointer, size_t byte_array_length) {
+	bool transmit_successful = false;
+
+	if ((g_debug_console_is_initialized == false)
+			|| (byte_array_pointer == NULL)
+			|| (byte_array_length == 0U)
+			|| (byte_array_length > DEBUG_CONSOLE_MAX_TRANSMIT_BYTES)
+			|| DebugConsole_IsCameraBufferRange(byte_array_pointer,
+					byte_array_length)) {
+		return false;
+	}
+
+	/* The active-copy gate intentionally does not apply here: this function is
+	 * the serialized marker exception, and it still rejects camera memory. */
+	if (!DebugConsole_InternalLockWithTimeout(
+			DEBUG_CONSOLE_SNAPSHOT_MARKER_LOCK_TIMEOUT_MS)) {
+		return false;
+	}
+
 	transmit_successful = DebugConsole_InternalUartTransmitBlocking(
 			byte_array_pointer, byte_array_length);
 	DebugConsole_InternalUnlock();
@@ -220,7 +292,13 @@ bool DebugConsole_WriteString(const char *null_terminated_string_pointer) {
 		return false;
 	}
 
-	string_length = strlen(null_terminated_string_pointer);
+	/* Bound the scan before it reaches adjacent camera/tensor memory if a
+	 * corrupted caller hands us a string without a terminator. */
+	string_length = strnlen(null_terminated_string_pointer,
+			DEBUG_CONSOLE_MAX_TRANSMIT_BYTES + 1U);
+	if (string_length > DEBUG_CONSOLE_MAX_TRANSMIT_BYTES) {
+		return false;
+	}
 	return DebugConsole_WriteBytes(
 			(const uint8_t*) null_terminated_string_pointer, string_length);
 }
@@ -254,11 +332,11 @@ bool DebugConsole_Printf(const char *format_string_pointer, ...) {
 
 	/* Formatted output transmits directly after formatting, so it needs the
 	 * same snapshot-copy boundary as DebugConsole_WriteBytes(). */
-	if (AppCameraBuffers_IsSnapshotCopyActive()) {
+	if (DebugConsole_IsSnapshotCopySuppressed()) {
 		return false;
 	}
 
-	if (!DebugConsole_InternalLock()) {
+	if (!DebugConsole_InternalLockWithTimeout(DEBUG_CONSOLE_LOCK_TIMEOUT_MS)) {
 		return false;
 	}
 
@@ -281,7 +359,7 @@ bool DebugConsole_Printf(const char *format_string_pointer, ...) {
 
 	/* why: another thread may have entered the copy after this formatter took
 	 * its lock; do not begin a UART transaction once the copy owns the bus. */
-	if (AppCameraBuffers_IsSnapshotCopyActive()) {
+	if (DebugConsole_IsSnapshotCopySuppressed()) {
 		DebugConsole_InternalUnlock();
 		return false;
 	}
@@ -321,11 +399,11 @@ bool DebugConsole_VPrintf(const char *format_string_pointer,
 		return false;
 	}
 
-	if (AppCameraBuffers_IsSnapshotCopyActive()) {
+	if (DebugConsole_IsSnapshotCopySuppressed()) {
 		return false;
 	}
 
-	if (!DebugConsole_InternalLock()) {
+	if (!DebugConsole_InternalLockWithTimeout(DEBUG_CONSOLE_LOCK_TIMEOUT_MS)) {
 		return false;
 	}
 
@@ -351,7 +429,7 @@ bool DebugConsole_VPrintf(const char *format_string_pointer,
 		formatted_output_buffer[sizeof(formatted_output_buffer) - 1U] = '\0';
 	}
 
-	if (AppCameraBuffers_IsSnapshotCopyActive()) {
+	if (DebugConsole_IsSnapshotCopySuppressed()) {
 		DebugConsole_InternalUnlock();
 		return false;
 	}
@@ -374,7 +452,7 @@ int DebugConsole_Snprintf(char *destination_pointer, size_t destination_length,
 		return -1;
 	}
 
-	if (!DebugConsole_InternalLock()) {
+	if (!DebugConsole_InternalLockWithTimeout(DEBUG_CONSOLE_LOCK_TIMEOUT_MS)) {
 		return -1;
 	}
 
@@ -393,12 +471,39 @@ int DebugConsole_Snprintf(char *destination_pointer, size_t destination_length,
 static volatile uint32_t g_uart_busy = 0U;
 
 static bool DebugConsole_InternalLock(void) {
+	uint32_t expected = 0U;
+
 	if (g_debug_console_configuration.lock_callback != NULL) {
 		g_debug_console_configuration.lock_callback();
 		return true;
 	}
 
-	return !__atomic_test_and_set(&g_uart_busy, __ATOMIC_ACQUIRE);
+	/* Use a width-matched compare/exchange. __atomic_test_and_set is specified
+	 * for boolean objects and was previously being applied to this uint32_t;
+	 * that can leave concurrent writers observing different lock state on the
+	 * Cortex-M port. */
+	return __atomic_compare_exchange_n(&g_uart_busy, &expected, 1U, false,
+			__ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
+}
+
+/**
+ * @brief Acquires the UART lock while allowing an in-flight log to drain.
+ * @param timeout_ms Maximum wait before abandoning the marker.
+ * @retval true when the lock is held by the caller.
+ * @retval false when the timeout expires.
+ * @sideeffect Spins briefly on the RAM-only lock; no ordinary log is started.
+ */
+static bool DebugConsole_InternalLockWithTimeout(uint32_t timeout_ms) {
+	const uint32_t start_tick = HAL_GetTick();
+
+	while (!DebugConsole_InternalLock()) {
+		if ((HAL_GetTick() - start_tick) >= timeout_ms) {
+			return false;
+		}
+		__NOP();
+	}
+
+	return true;
 }
 
 static void DebugConsole_InternalUnlock(void) {
@@ -407,14 +512,43 @@ static void DebugConsole_InternalUnlock(void) {
 		return;
 	}
 
-	__atomic_clear(&g_uart_busy, __ATOMIC_RELEASE);
+	__atomic_store_n(&g_uart_busy, 0U, __ATOMIC_RELEASE);
+}
+
+/**
+ * @brief Reject non-text payloads at the final UART boundary.
+ * @param byte_array_pointer Candidate payload.
+ * @param byte_array_length Candidate length in bytes.
+ * @retval true when every byte is printable text or an allowed line control.
+ * @sideeffect Reads only the caller-provided payload; performs no I/O.
+ */
+static bool DebugConsole_IsPrintableText(const uint8_t *byte_array_pointer,
+		size_t byte_array_length) {
+	if (byte_array_pointer == NULL) {
+		return false;
+	}
+
+	for (size_t index = 0U; index < byte_array_length; index++) {
+		const uint8_t value = byte_array_pointer[index];
+		if (!((value == '\t') || (value == '\n') || (value == '\r')
+				|| ((value >= 0x20U) && (value <= 0x7EU)))) {
+			return false;
+		}
+	}
+
+	return true;
 }
 
 static bool DebugConsole_InternalUartTransmitBlocking(
 		const uint8_t *byte_array_pointer, size_t byte_array_length) {
 	HAL_StatusTypeDef transmit_status = HAL_ERROR;
 
-	if (g_debug_console_configuration.uart_handle_pointer == NULL) {
+	if ((g_debug_console_configuration.uart_handle_pointer == NULL)
+			|| (byte_array_pointer == NULL)
+			|| (byte_array_length == 0U)
+			|| (byte_array_length > DEBUG_CONSOLE_MAX_TRANSMIT_BYTES)
+			|| !DebugConsole_IsPrintableText(byte_array_pointer,
+					byte_array_length)) {
 		return false;
 	}
 

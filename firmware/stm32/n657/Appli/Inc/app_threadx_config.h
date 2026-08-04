@@ -27,6 +27,9 @@ extern "C" {
 /* Heartbeat timing --------------------------------------------------------- */
 #define CAMERA_HEARTBEAT_PERIOD_MS          5000U
 #define CAMERA_HEARTBEAT_PULSE_MS           1000U
+#ifndef CAMERA_HEARTBEAT_ENABLE_UART_PULSES
+#define CAMERA_HEARTBEAT_ENABLE_UART_PULSES 1U
+#endif
 #define CAMERA_HEARTBEAT_LED_GPIO_PORT      GPIOG
 #define CAMERA_HEARTBEAT_LED_PIN            GPIO_PIN_0
 

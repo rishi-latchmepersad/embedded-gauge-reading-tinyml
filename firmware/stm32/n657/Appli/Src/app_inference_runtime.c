@@ -16,6 +16,8 @@
 #include <string.h>
 
 #include "app_ai.h"
+#include "app_ai_config.h"
+#include "app_baseline_runtime.h"
 #include "app_camera_buffers.h"
 #include "app_camera_capture.h"
 #include "app_camera_platform.h"
@@ -81,6 +83,11 @@ static volatile const uint8_t *camera_ai_request_frame_ptr = NULL;
 static volatile ULONG camera_ai_request_frame_length = 0U;
 static volatile uint64_t camera_ai_request_capture_time_us = 0ULL;
 static volatile bool camera_ai_request_in_flight = false;
+static volatile AppInferenceRuntime_WorkerState_t camera_ai_worker_state =
+	APP_INFERENCE_WORKER_UNINITIALIZED;
+static volatile ULONG camera_ai_request_generation = 0U;
+static volatile ULONG camera_ai_worker_progress_tick = 0U;
+static volatile bool camera_ai_last_request_succeeded = false;
 static bool app_inference_runtime_initialized = false;
 
 /* USER CODE END PV */
@@ -90,6 +97,12 @@ static bool app_inference_runtime_initialized = false;
 
 static VOID CameraAIThread_Entry(ULONG thread_input);
 static VOID InferenceLogThread_Entry(ULONG thread_input);
+
+static void AppInferenceRuntime_SetWorkerState(
+		AppInferenceRuntime_WorkerState_t state) {
+	camera_ai_worker_state = state;
+	camera_ai_worker_progress_tick = tx_time_get();
+}
 /* AppInferenceRuntime_GetFreshBaselineEstimate removed: no hybrid override */
 
 
@@ -132,7 +145,10 @@ UINT AppInferenceRuntime_Init(void) {
 	camera_ai_request_frame_length = 0U;
 	camera_ai_request_capture_time_us = 0ULL;
 	camera_ai_request_in_flight = false;
+	camera_ai_request_generation = 0U;
+	camera_ai_last_request_succeeded = false;
 	TX_RESTORE
+	AppInferenceRuntime_SetWorkerState(APP_INFERENCE_WORKER_WAITING);
 
 	app_inference_runtime_initialized = true;
 	return TX_SUCCESS;
@@ -196,12 +212,26 @@ bool AppInferenceRuntime_IsInferenceInFlight(void) {
 }
 
 /**
+ * @brief Return the result of the most recently completed AI request.
+ * @retval true when the learned ellipse/keypoint pipeline published a value.
+ * @retval false when the request failed or no request has completed yet.
+ */
+bool AppInferenceRuntime_WasLastRequestSuccessful(void) {
+	return camera_ai_last_request_succeeded;
+}
+
+/**
  * @brief Queue a dry inference request for the AI worker thread.
  */
 bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
 		ULONG frame_length) {
 	TX_INTERRUPT_SAVE_AREA
 	bool in_flight = false;
+	AppInferenceRuntime_WorkerState_t worker_state =
+		APP_INFERENCE_WORKER_UNINITIALIZED;
+	const volatile uint8_t *queued_frame_ptr = NULL;
+	ULONG queued_frame_length = 0U;
+	bool repaired_idle_flag = false;
 
 	if (!camera_ai_sync_created) {
 		DebugConsole_Printf(
@@ -224,31 +254,60 @@ bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
 		return false;
 	}
 
-	/* Anchor AI timing before queueing so the latency includes the full
-	 * request-to-result path, not just worker execution. */
+	/* Read the ownership tuple as one critical section. A stale in-flight byte
+	 * must not block the first live capture, but a real queued/executing request
+	 * must never be cleared because that would permit two readers of the same
+	 * snapshot. */
 	TX_DISABLE
 	in_flight = camera_ai_request_in_flight;
+	worker_state = camera_ai_worker_state;
+	queued_frame_ptr = camera_ai_request_frame_ptr;
+	queued_frame_length = camera_ai_request_frame_length;
+	if (in_flight && (worker_state == APP_INFERENCE_WORKER_WAITING)
+			&& (queued_frame_ptr == NULL) && (queued_frame_length == 0U)) {
+		/* The worker is idle and owns no frame; repair only the inconsistent
+		 * flag. This is safe even if a prior camera transaction was interrupted. */
+		camera_ai_request_in_flight = false;
+		in_flight = false;
+		repaired_idle_flag = true;
+	}
 	TX_RESTORE
+	if (repaired_idle_flag) {
+		DebugConsole_Printf(
+			"[AI] Repaired stale idle ownership flag gen=%lu.\r\n",
+			(unsigned long)camera_ai_request_generation);
+	}
 
 	if (in_flight) {
-		(void) DebugConsole_WriteString(
-				"[AI] Dry-run request dropped; worker is still busy.\r\n");
+		DebugConsole_Printf(
+			"[AI] Dry-run request dropped; worker busy state=%s gen=%lu frame=%p len=%lu.\r\n",
+			AppInferenceRuntime_WorkerStateName(worker_state),
+			(unsigned long)camera_ai_request_generation,
+			(const void *)(uintptr_t)queued_frame_ptr,
+			(unsigned long)queued_frame_length);
 		return false;
 	}
+
+	/* Anchor AI timing before queueing so the latency includes the full
+	 * request-to-result path, not just worker execution. */
 
 	TX_DISABLE
 	camera_ai_request_capture_time_us = Metrics_GetMicros();
 	Metrics_StartInference("AI");
+	camera_ai_last_request_succeeded = false;
 	/* The camera stops the sensor before handing this buffer to the worker, so
 	 * the worker owns a stable frame without paying for a second 400 KiB copy.
-	 * A later capture is not allowed until this request clears. */
-	(void) DebugConsole_WriteString(
-		"[AI] Queueing stable stopped-sensor frame.\r\n");
-
+	 * A later capture is not allowed until this request clears. Do not log while
+	 * interrupts are disabled: HAL UART polling can consume the whole timeout
+	 * and prevents the ThreadX/ATON progress machinery from running. */
 	camera_ai_request_in_flight = true;
+	camera_ai_request_generation++;
 	camera_ai_request_frame_ptr = frame_ptr;
 	camera_ai_request_frame_length = frame_length;
+	AppInferenceRuntime_SetWorkerState(APP_INFERENCE_WORKER_QUEUED);
 	TX_RESTORE
+	(void) DebugConsole_WriteString(
+		"[AI] Queueing stable stopped-sensor frame.\r\n");
 
 	if (tx_semaphore_put(&camera_ai_request_semaphore) != TX_SUCCESS) {
 		TX_INTERRUPT_SAVE_AREA
@@ -256,6 +315,7 @@ bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
 		camera_ai_request_in_flight = false;
 		camera_ai_request_frame_ptr = NULL;
 		camera_ai_request_frame_length = 0U;
+		AppInferenceRuntime_SetWorkerState(APP_INFERENCE_WORKER_FAILED);
 		TX_RESTORE
 		Metrics_EndInference("AI", NAN);
 		DebugConsole_Printf(
@@ -275,6 +335,7 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 	(void) thread_input;
 
 	(void) DebugConsole_WriteString("[AI] worker alive\r\n");
+	AppInferenceRuntime_SetWorkerState(APP_INFERENCE_WORKER_WAITING);
 
 	while (1) {
 		const UINT request_status = tx_semaphore_get(&camera_ai_request_semaphore,
@@ -283,8 +344,10 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 		ULONG frame_length = 0U;
 
 		if (request_status != TX_SUCCESS) {
+			AppInferenceRuntime_SetWorkerState(APP_INFERENCE_WORKER_FAILED);
 			continue;
 		}
+		AppInferenceRuntime_SetWorkerState(APP_INFERENCE_WORKER_EXECUTING);
 
 		frame_ptr = (const uint8_t *) camera_ai_request_frame_ptr;
 		frame_length = camera_ai_request_frame_length;
@@ -293,13 +356,16 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 		camera_ai_request_frame_length = 0U;
 		camera_ai_request_capture_time_us = 0ULL;
 
-		(void) DebugConsole_WriteString("[AI] Worker dequeued frame.\r\n");
+		/* Queue failures and published values are the operational events. A
+		 * successful dequeue is intentionally silent in the normal console. */
 
 		if ((frame_ptr == NULL) || (frame_length == 0U)) {
 			DebugConsole_Printf(
 					"[AI] Worker woke without a queued frame; ignoring.\r\n");
 			AppCameraCapture_ReleaseInferenceFrame();
 			camera_ai_request_in_flight = false;
+			camera_ai_last_request_succeeded = false;
+			AppInferenceRuntime_SetWorkerState(APP_INFERENCE_WORKER_FAILED);
 			continue;
 		}
 
@@ -311,14 +377,20 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 		/* Mark the start of worker-side compute so queue wait is visible in the
 		 * metrics while the AI model time stays comparable to the baseline. */
 		Metrics_MarkComputeStart("AI");
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 		AppCameraBuffers_LogFrameSignature("ai-worker-entry", frame_ptr,
 				(uint32_t)frame_length);
+#endif
 
-		if (!App_AI_RunDryInferenceFromGray640(frame_ptr,
-				(size_t) frame_length)) {
+		const bool inference_succeeded = App_AI_RunDryInferenceFromGray640(
+				frame_ptr, (size_t) frame_length);
+		camera_ai_last_request_succeeded = inference_succeeded;
+		if (!inference_succeeded) {
+			AppInferenceRuntime_SetWorkerState(APP_INFERENCE_WORKER_FAILED);
 			DebugConsole_Printf(
 					"[AI] One-shot dry-run inference failed; continuing.\r\n");
 		} else {
+			AppInferenceRuntime_SetWorkerState(APP_INFERENCE_WORKER_PUBLISHING);
 			float result = 0.0f;
 			if (App_AI_GetLastInferenceResult(&result)) {
 				float final_value = result;
@@ -334,9 +406,8 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 						sizeof(inference_line), "[AI] Final AI value logged: ", final_value);
 				(void) DebugConsole_WriteString(inference_line);
 
-				AppInferenceLog_FormatFloatMicros(inference_line,
-						sizeof(inference_line), "[AI] Inference exact: ", final_value);
-				(void) DebugConsole_WriteString(inference_line);
+				/* The exact value is retained in the SD inference log. UART only
+				 * needs the human-readable published value once. */
 				(void) bits;
 				if (inference_log_thread_created) {
 					(void) tx_queue_send(&inference_log_queue, &bits.u,
@@ -348,11 +419,65 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 			}
 		}
 
+#if APP_BASELINE_ENABLE_THREAD && APP_BASELINE_QUEUE_AFTER_AI
+		/* Queue the diagnostic comparator only after the learned pipeline has
+		 * consumed the snapshot.  This keeps the capture thread's handoff single-
+		 * owner and makes the documented AI -> baseline ownership order real. */
+		if (!AppBaselineRuntime_RequestEstimate(frame_ptr, frame_length)) {
+			DebugConsole_Printf(
+				"[BASELINE] Failed to queue post-AI snapshot estimate.\r\n");
+		}
+#endif
+
 		TX_INTERRUPT_SAVE_AREA
 		TX_DISABLE
 		AppCameraCapture_ReleaseInferenceFrame();
 		camera_ai_request_in_flight = false;
+		AppInferenceRuntime_SetWorkerState(APP_INFERENCE_WORKER_WAITING);
 		TX_RESTORE
+	}
+}
+
+/**
+ * @brief Return the current AI worker state.
+ */
+AppInferenceRuntime_WorkerState_t AppInferenceRuntime_GetWorkerState(void) {
+	return camera_ai_worker_state;
+}
+
+/**
+ * @brief Return the generation of the current or most recent AI request.
+ */
+ULONG AppInferenceRuntime_GetRequestGeneration(void) {
+	return camera_ai_request_generation;
+}
+
+/**
+ * @brief Return the last AI worker state-transition tick.
+ */
+ULONG AppInferenceRuntime_GetWorkerProgressTick(void) {
+	return camera_ai_worker_progress_tick;
+}
+
+/**
+ * @brief Convert an AI worker state to a compact diagnostic label.
+ */
+const char *AppInferenceRuntime_WorkerStateName(
+		AppInferenceRuntime_WorkerState_t state) {
+	switch (state) {
+	case APP_INFERENCE_WORKER_WAITING:
+		return "waiting";
+	case APP_INFERENCE_WORKER_QUEUED:
+		return "queued";
+	case APP_INFERENCE_WORKER_EXECUTING:
+		return "executing";
+	case APP_INFERENCE_WORKER_PUBLISHING:
+		return "publishing";
+	case APP_INFERENCE_WORKER_FAILED:
+		return "failed";
+	case APP_INFERENCE_WORKER_UNINITIALIZED:
+	default:
+		return "uninitialized";
 	}
 }
 

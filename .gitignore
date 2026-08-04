@@ -2,6 +2,10 @@
 /.metadata/
 /firmware/stm32/.project
 /firmware/stm32/n657/.metadata/
+# Office/editor lock files (e.g. ~$wordfile.docx).
+~$*
+*.~$*
+*.swp
 
 # Generated firmware and host build outputs.
 /firmware/stm32/n657/Appli/.metadata/
@@ -30,65 +34,3 @@
 /opencode.jsonc
 /docs/int8_drift_decision_report.md
 /docs/phase-13a-tip-focus-firmware-integration-spike.md
-
-# Local ML training artifacts, caches, and downloaded binaries.
-/ml/artifacts/
-/ml/debug/
-/ml/runs/
-/ml/tmp/
-/ml/c/*.so
-/ml/*.pt
-/ml/*.npy
-**/__pycache__/
-*.py[cod]
-
-# Local firmware/export artifacts and vendor checkout.
-/n657_Appli.map
-/nul
-/tmp_repack_err.log
-/st_ai_output/
-/third_party_refs/
-
-# Local-only third-party dataset; retain the source archive locally but do not
-# commit or redistribute the downloaded images and annotations.
-/ml/data/Gauge-Meter-Detection-v2.v7i.yolov8-obb.zip*
-/ml/data/external/gauge_meter_detection_v2_yolov8_obb/
-
-# Locally materialized training datasets. Keep source labels, raw captures,
-# manifests, and input archives visible; these copies are reproducible from
-# the preparation scripts and otherwise add tens of thousands of Git scans.
-/ml/data/gauge_center_tip_v1_160_gray/
-/ml/data/gauge_center_tip_v1_224_gray/
-/ml/data/gauge_face_ellipse_v1/
-/ml/data/gauge_face_ellipse_v1_640_gray/
-/ml/data/initial_temp_gauge_v1/
-
-# Additional reproducible ML dataset materializations. Keep the preparation
-# scripts and manifests tracked; regenerate these image/label trees locally.
-/ml/data/center_tip_adaptive_all_v1/
-/ml/data/center_tip_adaptive_v1/
-/ml/data/center_tip_adaptive_v2/
-/ml/data/center_tip_full_pipeline_v1/
-/ml/data/gauge_keypoint_224/
-/ml/data/gauge_keypoint_224_80/
-/ml/data/gauge_keypoint_224_s15/
-/ml/data/heatmap_cd_320_ax/
-/ml/data/needle_pipeline/
-/ml/data/needle_pipeline_predicted_crop/
-/ml/data/repvgg_ellipse/
-/ml/data/yolo_aabb_labelled_640/
-/ml/data/yolo_obb_labelled_640/
-/ml/data/yolo_obb_labelled_640b/
-/ml/data/yolo_obb_labelled_640c/
-/ml/data/yolo_pose_labelled_640/
-/ml/data/labelled/test_3_pipeline_results.csv
-
-# Large local train/validation/test archives are generated dataset bundles;
-# keep the preparation scripts and labelled source archives under version
-# control without making Git scan or upload hundreds of megabytes of samples.
-/ml/data/labelled/train_*.zip
-/ml/data/labelled/test_*.zip
-/ml/data/labelled/val_*.zip
-
-# Windows download metadata should not become separate repository files.
-**/*:Zone.Identifier

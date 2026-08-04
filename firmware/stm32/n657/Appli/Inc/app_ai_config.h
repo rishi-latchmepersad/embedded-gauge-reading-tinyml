@@ -47,7 +47,7 @@
 /* Epoch/WFE register traces are useful for NPU bring-up but too noisy for the
  * live camera loop. Runtime failures remain logged regardless of this flag. */
 #ifndef APP_AI_ENABLE_EPOCH_DEBUG_LOGS
-#define APP_AI_ENABLE_EPOCH_DEBUG_LOGS 1U
+#define APP_AI_ENABLE_EPOCH_DEBUG_LOGS 0U
 #endif
 /* Heatmap summaries are offline diagnostics; the decoded angle/value remains
  * always-on so normal inference output is still visible. */
@@ -65,10 +65,11 @@
 #ifndef APP_AI_ENABLE_INNER_CELSIUS_MASK
 #define APP_AI_ENABLE_INNER_CELSIUS_MASK 1U
 #endif
-/* Prod v0.8 freeze: keep the 3-frame burst median enabled so the live board
- * path matches the offline recipe and does not jump on glare-heavy captures. */
+/* Publish each accepted angle-to-temperature result immediately.  Smoothing
+ * is disabled during board validation so the UART and inference CSV expose
+ * the exact result from the current frame. */
 #ifndef APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
-#define APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING 1U
+#define APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING 0U
 #endif
 /* The ATON runtime has been faulting immediately after the per-frame reset
  * path, so keep that reset behind a switch while we verify whether the model
@@ -115,17 +116,16 @@
 #define APP_BASELINE_CALIBRATION_PROFILE_NAME "board_celsius_v1"
 #endif
 
-/* The classical detector is a diagnostic comparator and a future fallback,
- * not a hidden second answer authority.  It consumes the same immutable
- * MONO_Y8 snapshot as the learned pipeline and publishes a separately tagged
- * result.  Keeping the switch explicit prevents the old "started but never
- * queued" state from returning. */
+/* The classical detector remains available for offline/replay comparison, but
+ * it is disabled in the live build. The learned ellipse -> keypoint pipeline
+ * is the only board owner of the immutable MONO_Y8 snapshot; this avoids a
+ * second ThreadX worker and semaphore handoff racing the NPU result. */
 #ifndef APP_BASELINE_ENABLE_THREAD
-#define APP_BASELINE_ENABLE_THREAD 1U
+#define APP_BASELINE_ENABLE_THREAD 0U
 #endif
 
-#ifndef APP_BASELINE_QUEUE_WITH_CAPTURE
-#define APP_BASELINE_QUEUE_WITH_CAPTURE 1U
+#ifndef APP_BASELINE_QUEUE_AFTER_AI
+#define APP_BASELINE_QUEUE_AFTER_AI 0U
 #endif
 
 /* OBB reloc runtime base.
@@ -403,12 +403,19 @@
 #define APP_AI_GAUGE_CENTER_TIP_INPUT_WIDTH_PIXELS 224U
 #define APP_AI_GAUGE_CENTER_TIP_INPUT_HEIGHT_PIXELS 224U
 #define APP_AI_GAUGE_CENTER_TIP_HEATMAP_SIDE_PIXELS 56U
+#define APP_AI_GAUGE_CENTER_TIP_CROP_SCALE 1.35f
 #define APP_AI_TIP_FOCUS_CONFIDENCE_FLOOR   0.40f
-/* Match the deployment candidate's offline decoder: values below 0.05 do not
- * contribute, and the remaining heatmap excess is raised to the fourth power.
- * Keep the downstream angle, separation, and calibrated-value gates as the
- * final false-positive guards. */
-#define APP_AI_TIP_FOCUS_AXIS_PEAK_FLOOR    0.05f
+/* This identifier is echoed at runtime so a board log records the exact
+ * center/tip decoder contract used for its published geometry.  The matching
+ * Python implementation lives in ml/src/.../keypoint_contract.py. */
+#define APP_AI_KEYPOINT_DECODER_CONTRACT_ID \
+	"ellipse384_keypoint224_heatmap56_crop135_floor003_sep48_square_side_minus_1"
+/* Match the shared Python keypoint_contract.py exactly: values below 0.03 do
+ * not contribute, and the remaining heatmap excess is squared. Both offline
+ * replay and firmware reject the published result when either peak is below
+ * this floor. */
+#define APP_AI_TIP_FOCUS_AXIS_PEAK_FLOOR    0.03f
+#define APP_AI_GAUGE_CENTER_TIP_MIN_SEPARATION_PIXELS 48.0f
 #define APP_AI_TIP_FOCUS_AXIS_SPREAD_MAX_PX  32.0f
 #define APP_AI_TIP_FOCUS_TEMP_MIN_C         (-35.0f)
 #define APP_AI_TIP_FOCUS_TEMP_MAX_C         55.0f
@@ -418,11 +425,9 @@
 #define APP_AI_TIP_FOCUS_OUTLIER_RESET_STREAK 3U
 #define APP_AI_TIP_FOCUS_MAX_INVALID_FRAMES   10U
 
-/* Keep the first eight exact center/tip input/output tensors on the SD card
- * while the live handoff is being validated. These are binary tensors, not
- * UART frame dumps, and let the WSL TFLite runner prove whether the board saw
- * the same 224x224 crop as the saved gray8 image. Disable after parity is
- * established because FileX writes add latency to each inference. */
-#define APP_AI_DIAG_DUMP_CENTER_TIP_TENSORS 1U
+/* Tensor dumps are an opt-in parity tool, never part of the live capture
+ * loop. They create diag_ct_in_*.bin/diag_ct_out_*.bin files and add a slow
+ * FileX transaction to every inference when enabled. */
+#define APP_AI_DIAG_DUMP_CENTER_TIP_TENSORS 0U
 
 #endif /* __APP_AI_CONFIG_H */

@@ -42,8 +42,6 @@ extern bool camera_cmw_initialized;
 extern bool camera_stream_started;
 extern volatile bool camera_capture_isp_loop_paused;
 extern volatile uint32_t camera_capture_isp_run_count;
-extern TX_SEMAPHORE camera_capture_done_semaphore;
-extern TX_SEMAPHORE camera_capture_isp_semaphore;
 extern volatile bool camera_capture_failed;
 extern volatile uint32_t camera_capture_error_code;
 extern volatile uint32_t camera_capture_byte_count;
@@ -51,6 +49,7 @@ extern volatile bool camera_capture_sof_seen;
 extern volatile bool camera_capture_eof_seen;
 extern volatile bool camera_capture_frame_done;
 extern volatile bool camera_capture_snapshot_armed;
+extern volatile uint32_t camera_capture_done_event_count;
 extern volatile uint32_t camera_capture_frame_event_count;
 extern volatile uint32_t camera_capture_line_error_count;
 extern volatile uint32_t camera_capture_line_error_mask;
@@ -86,6 +85,83 @@ void AppCameraCapture_ReleaseInferenceFrame(void) {
 static bool AppCameraCapture_ShouldRetryDcmippError(uint32_t error_code) {
 	return (error_code == 0x00008100U)
 			&& (camera_capture_reported_byte_count >= CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
+}
+
+/**
+ * @brief Wait for both consumers to release the private snapshot.
+ * @retval true when the next capture may safely reuse the snapshot.
+ * @retval false when ownership remains stuck or the wait budget expires.
+ * @sideeffect Delays cooperatively and emits rate-limited ownership state.
+ * @note Never clears an in-flight flag here: the worker or NPU may still be
+ * reading the snapshot, so forcibly clearing it could create a new DMA/NPU
+ * race and corrupt the next inference.
+ */
+static bool AppCameraCapture_WaitForInferenceOwnershipRelease(void) {
+	static bool ownership_timeout_latched = false;
+	uint32_t elapsed_ms = 0U;
+	uint32_t next_log_ms = 0U;
+
+	if (ownership_timeout_latched) {
+		if (!AppInferenceRuntime_IsInferenceInFlight()
+#if APP_BASELINE_ENABLE_THREAD
+				&& !AppBaselineRuntime_IsEstimateInFlight()
+#endif
+		) {
+			ownership_timeout_latched = false;
+		} else {
+			(void)DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Inference ownership remains latched; capture paused.\r\n");
+			return false;
+		}
+	}
+
+	while (AppInferenceRuntime_IsInferenceInFlight()) {
+		if (elapsed_ms >= next_log_ms) {
+			(void)DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Waiting for AI: elapsed=%lu ms state=%s gen=%lu progress_tick=%lu.\r\n",
+				(unsigned long)elapsed_ms,
+				AppInferenceRuntime_WorkerStateName(
+					AppInferenceRuntime_GetWorkerState()),
+				(unsigned long)AppInferenceRuntime_GetRequestGeneration(),
+				(unsigned long)AppInferenceRuntime_GetWorkerProgressTick());
+			next_log_ms += CAMERA_CAPTURE_INFERENCE_WAIT_LOG_PERIOD_MS;
+		}
+		if (elapsed_ms >= CAMERA_CAPTURE_INFERENCE_WAIT_TIMEOUT_MS) {
+			ownership_timeout_latched = true;
+			(void)DebugConsole_Printf(
+				"[CAMERA][CAPTURE] AI ownership timeout=%lu ms; capture paused without releasing snapshot.\r\n",
+				(unsigned long)CAMERA_CAPTURE_INFERENCE_WAIT_TIMEOUT_MS);
+			return false;
+		}
+		DelayMilliseconds_Cooperative(100U);
+		elapsed_ms += 100U;
+	}
+
+	elapsed_ms = 0U;
+	next_log_ms = 0U;
+	while (AppBaselineRuntime_IsEstimateInFlight()) {
+		if (elapsed_ms >= next_log_ms) {
+			(void)DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Waiting for baseline: elapsed=%lu ms state=%s gen=%lu progress_tick=%lu.\r\n",
+				(unsigned long)elapsed_ms,
+				AppBaselineRuntime_WorkerStateName(
+					AppBaselineRuntime_GetWorkerState()),
+				(unsigned long)AppBaselineRuntime_GetRequestGeneration(),
+				(unsigned long)AppBaselineRuntime_GetWorkerProgressTick());
+			next_log_ms += CAMERA_CAPTURE_INFERENCE_WAIT_LOG_PERIOD_MS;
+		}
+		if (elapsed_ms >= CAMERA_CAPTURE_INFERENCE_WAIT_TIMEOUT_MS) {
+			ownership_timeout_latched = true;
+			(void)DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Baseline ownership timeout=%lu ms; capture paused without releasing snapshot.\r\n",
+				(unsigned long)CAMERA_CAPTURE_INFERENCE_WAIT_TIMEOUT_MS);
+			return false;
+		}
+		DelayMilliseconds_Cooperative(100U);
+		elapsed_ms += 100U;
+	}
+
+	return true;
 }
 
 /**
@@ -273,6 +349,7 @@ static AppCameraCapture_BrightnessGate_t AppCameraCapture_ClassifyBrightness(
 /**
  * @brief Print the brightness gate result so we can see why a frame was retried.
  */
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 static void AppCameraCapture_LogBrightnessGateDecision(
 		const AppCameraCapture_BrightnessStats_t *stats,
 		AppCameraCapture_BrightnessGate_t decision) {
@@ -307,6 +384,7 @@ static void AppCameraCapture_LogBrightnessGateDecision(
 			(unsigned int) CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_SOLID_MEAN_THRESHOLD,
 			(unsigned int) CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MIN_THRESHOLD);
 }
+#endif
 /* USER CODE END PV */
 
 /**
@@ -548,17 +626,16 @@ static void AppCameraCapture_LogSavePathState(const uint8_t *image_ptr,
 }
 #endif
 /**
- * @brief Capture a single frame, save it to the SD card, and queue inference.
- * @retval true when the frame reaches storage successfully.
+ * @brief Capture one frame from the configured DCMIPP pipeline.
+ * @retval true when a valid frame reaches the caller's buffer.
  */
 bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	const ULONG wait_ticks = CameraPlatform_MillisecondsToTicks(
 	CAMERA_CAPTURE_TIMEOUT_MS);
-	const ULONG poll_ticks = CameraPlatform_MillisecondsToTicks(20U);
 	ULONG next_wait_log_tick = 0U;
 	ULONG deadline_tick = 0U;
-	UINT semaphore_status = TX_SUCCESS;
 	bool should_reset_sensor_stream = false;
+	uint32_t completion_event_baseline = 0U;
 	DCMIPP_HandleTypeDef *capture_dcmipp =
 			CameraPlatform_GetCaptureDcmippHandle();
 
@@ -607,14 +684,12 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	camera_capture_result_buffer = camera_capture_buffers[0];
 	AppCameraBuffers_PrepareForDma();
 
-	/* Drain any stale semaphore token before arming the next snapshot. */
-	while (tx_semaphore_get(&camera_capture_done_semaphore, TX_NO_WAIT)
-			== TX_SUCCESS) {
-	}
-
 	/* Match ST's CMW_CAMERA_Start() ordering: arm the CSI/DCMIPP receiver first,
 	 * then start the ISP + sensor stream. This avoids missing the first valid
 	 * frame while the middleware is bringing the stream up. */
+	/* Capture the counter before arming.  The ISR only increments this aligned
+	 * word; the thread later treats any change as a completion/error event. */
+	completion_event_baseline = camera_capture_done_event_count;
 	if (!CameraPlatform_StartDcmippSnapshot()) {
 		DelayMilliseconds_ThreadX(CAMERA_CAPTURE_RETRY_DELAY_MS);
 		if (!CameraPlatform_StartDcmippSnapshot()) {
@@ -649,16 +724,16 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 		DebugConsole_WriteString(
 				"[CAMERA][CAPTURE] Warning: could not lock AEC at capture boundary; continuing with current ISP state.\r\n");
 	}
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 	(void) CameraPlatform_LogImx335AutoExposureState("capture-start");
+#endif
 	App_ThreadX_UnlockCameraMiddleware();
 
 	deadline_tick = tx_time_get() + wait_ticks;
 	next_wait_log_tick = tx_time_get()
 			+ CameraPlatform_MillisecondsToTicks(1000U);
 	while (true) {
-		semaphore_status = tx_semaphore_get(&camera_capture_done_semaphore,
-				poll_ticks);
-		if (semaphore_status == TX_SUCCESS) {
+		if (camera_capture_done_event_count != completion_event_baseline) {
 			if (!camera_capture_failed) {
 				const uint32_t completed_buffer_index =
 						camera_capture_active_buffer_index;
@@ -736,6 +811,10 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 			next_wait_log_tick = tx_time_get()
 					+ CameraPlatform_MillisecondsToTicks(1000U);
 		}
+
+		/* No kernel object is touched by a DCMIPP ISR.  A short cooperative
+		 * sleep preserves the old polling cadence without a semaphore wakeup. */
+		DelayMilliseconds_ThreadX(20U);
 	}
 
 	(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp, CAMERA_CAPTURE_PIPE,
@@ -752,10 +831,15 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 }
 
 /**
- * @brief Capture a single frame, save it to the SD card, and queue inference.
- * @retval true when the frame reaches storage successfully.
+ * @brief Capture a single frame, best-effort save it, and queue learned inference.
+ * @retval true when the learned AI request is accepted. SD storage is a durable
+ *         diagnostic side effect and must not prevent a live inference.
  */
 bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
+	/* This marker is intentionally on the capture path as well as boot: it
+	 * proves the running application contains the synchronous AI handoff even
+	 * when log collection starts after the boot banner. */
+	static bool capture_build_marker_logged = false;
 	uint32_t captured_bytes = 0U;
 	UINT filex_status = FX_SUCCESS;
 	CHAR capture_file_name[CAMERA_CAPTURE_FILE_NAME_LENGTH] = { 0 };
@@ -773,7 +857,11 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	uint32_t dcmipp_retry_count = 0U;
 	bool capture_ok = false;
 	bool capture_saved = !camera_capture_use_cmw_pipeline;
+	bool ai_handoff_accepted = !camera_capture_use_cmw_pipeline;
 	bool discard_next_successful_frame = false;
+	/* Keep one compact failure reason so a truncated UART line still identifies
+	 * the transaction stage without dumping the frame or adding a log burst. */
+	const char *failure_stage = "capture";
 	AppCameraCapture_BrightnessGate_t previous_brightness_gate =
 	APP_CAMERA_CAPTURE_BRIGHTNESS_OK;
 	AppCameraCapture_BrightnessStats_t brightness_stats = { 0 };
@@ -782,23 +870,18 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 
 	(void) DebugConsole_WriteString(
 			"[CAMERA][CAPTURE] Begin capture-and-store request.\r\n");
-	/* The AI path owns a private snapshot. Do not arm DCMIPP again until the
-	 * queued inference has released the capture ownership boundary. */
-	while (AppInferenceRuntime_IsInferenceInFlight()) {
+	if (!capture_build_marker_logged) {
+		capture_build_marker_logged = true;
 		(void) DebugConsole_WriteString(
-				"[CAMERA][CAPTURE] Waiting for AI to release the capture buffer.\r\n");
-		DelayMilliseconds_Cooperative(100U);
+			"[CAMERA][BUILD] capture-owner-v17-isr-safe-capture-events\r\n");
 	}
-	#if APP_BASELINE_ENABLE_THREAD
-	/* The baseline reads the same immutable snapshot as AI.  It does not write
-	 * the buffer, but the next capture must still wait until its read pass is
-	 * complete before reusing the snapshot storage. */
-	while (AppBaselineRuntime_IsEstimateInFlight()) {
-		(void) DebugConsole_WriteString(
-			"[CAMERA][CAPTURE] Waiting for baseline to release the snapshot.\r\n");
-		DelayMilliseconds_Cooperative(100U);
+	/* Do not arm DCMIPP again until the queued inference has released the
+	 * completed non-cacheable capture buffer. Never force-clear ownership while
+	 * the worker may still be reading it. */
+	if (!AppCameraCapture_WaitForInferenceOwnershipRelease()) {
+		failure_stage = "ownership-wait";
+		goto cleanup;
 	}
-	#endif
 	if (!storage_ready) {
 		(void) DebugConsole_WriteString(
 				"[CAMERA][CAPTURE] FileX media not ready yet; this capture will skip SD save.\r\n");
@@ -816,9 +899,6 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 				DebugConsole_Printf(
 						"[CAMERA][CAPTURE] Retrying capture after DCMIPP error 0x%08lX.\r\n",
 						(unsigned long) camera_capture_error_code);
-			} else {
-				(void) DebugConsole_WriteString(
-						"[CAMERA][CAPTURE] Retrying capture after brightness gate.\r\n");
 			}
 			DelayMilliseconds_ThreadX(CAMERA_CAPTURE_RETRY_DELAY_MS);
 		}
@@ -838,8 +918,6 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 			capture_ok = true;
 			image_ptr = camera_capture_result_buffer;
 			if (camera_capture_use_cmw_pipeline) {
-				DebugConsole_WriteString(
-						"[CAMERA][CAPTURE] Frame complete; evaluating brightness.\r\n");
 				if (!AppCameraCapture_ComputeBrightnessStats(image_ptr,
 						captured_bytes, &brightness_stats)) {
 					DebugConsole_Printf(
@@ -850,17 +928,23 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 					capture_ok = true;
 					break;
 				}
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
+				/* One line per capture attempt; gated so a steady-state loop
+				 * does not spam the console with per-cycle stats. */
 				DebugConsole_Printf(
 						"[CAMERA][CAPTURE] Brightness stats complete mean=%lu min=%u max=%u.\r\n",
 						(unsigned long) brightness_stats.mean_y,
 						(unsigned int) brightness_stats.min_y,
 						(unsigned int) brightness_stats.max_y);
+#endif
 
 				brightness_gate =
 				AppCameraCapture_ClassifyBrightness(&brightness_stats);
 				if (brightness_gate != APP_CAMERA_CAPTURE_BRIGHTNESS_OK) {
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 					AppCameraCapture_LogBrightnessGateDecision(&brightness_stats,
 							brightness_gate);
+#endif
 					if (brightness_adjustment_count
 							>= max_brightness_adjustments) {
 						DebugConsole_Printf(
@@ -895,10 +979,12 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 					}
 					previous_brightness_gate = brightness_gate;
 					brightness_adjustment_count++;
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 					DebugConsole_Printf(
 							"[CAMERA][CAPTURE] Brightness gate triggered; retrying capture after exposure/gain nudge (%lu/%lu).\r\n",
 							(unsigned long) brightness_adjustment_count,
 							(unsigned long) max_brightness_adjustments);
+#endif
 					capture_ok = false;
 					continue;
 				}
@@ -924,7 +1010,14 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	}
 
 	if (!capture_ok) {
-		return false;
+		failure_stage = "capture";
+		goto cleanup;
+	}
+	if (brightness_adjustment_count > 0U) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Brightness settled after %lu adjustment(s); final mean=%lu.\r\n",
+				(unsigned long)brightness_adjustment_count,
+				(unsigned long)brightness_stats.mean_y);
 	}
 
 	image_length = captured_bytes;
@@ -932,13 +1025,28 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	if (image_ptr == NULL) {
 		DebugConsole_Printf(
 				"[CAMERA][CAPTURE] Capture buffer pointer is NULL after frame completion.\r\n");
+		failure_stage = "frame-pointer";
 		goto cleanup;
 	}
-	/* Record the exact DMA payload before FileX or the AI worker can acquire
-	 * ownership. The signature is compact and cannot flood the UART with a raw
-	 * image stream. */
+	/* Snapshot before FileX or any later camera activity. The SD file and AI
+	 * request now have one immutable source frame, which is the firmware-side
+	 * equivalent of the offline evaluator's single-image contract. */
+#if CAMERA_CAPTURE_USE_PRIVATE_SNAPSHOT
+	if (camera_capture_use_cmw_pipeline
+			&& !AppCameraBuffers_CopyCaptureToSnapshot(image_ptr,
+					(uint32_t)image_length)) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Immutable AI snapshot failed; frame rejected.\r\n");
+		failure_stage = "snapshot-copy";
+		goto cleanup;
+	}
+#endif
+	/* Frame signatures are an opt-in parity diagnostic. The saved gray8 frame
+	 * remains the durable artifact when that diagnosis is needed. */
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 	AppCameraBuffers_LogFrameSignature("capture-ready", image_ptr,
 			(uint32_t)image_length);
+#endif
 
 #if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 	(void) DebugConsole_WriteString("[CAMERA][CAPTURE] step: frame-ready\r\n");
@@ -960,10 +1068,12 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	/* The completed sensor frame is saved before the ownership handoff. The AI
 	 * worker receives the private snapshot below so both model stages see the
 	 * same immutable 640x640 image. */
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 	DebugConsole_Printf(
 			"[CAMERA][CAPTURE] Snapshot handoff source: ptr=%p bytes=%lu\r\n",
 			(const void *) image_ptr,
 			(unsigned long) image_length);
+#endif
 
 	if (camera_capture_use_cmw_pipeline) {
 		/*
@@ -981,8 +1091,8 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 				sizeof(capture_file_name), file_extension)) {
 			DebugConsole_Printf(
 					"[CAMERA][CAPTURE] Failed to build capture filename.\r\n");
-			goto cleanup;
-		}
+			failure_stage = "filename";
+		} else {
 #if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 		(void) DebugConsole_WriteString(
 				"[CAMERA][CAPTURE] step: build-name-done\r\n");
@@ -1004,11 +1114,15 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 			DebugConsole_Printf(
 					"[CAMERA][CAPTURE] Failed to write image to SD card, status=%lu.\r\n",
 					(unsigned long) filex_status);
-			goto cleanup;
+			failure_stage = "filex-save";
+		} else {
+			capture_saved = true;
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
+			AppCameraBuffers_LogFrameSignature("after-filex-save", image_ptr,
+					(uint32_t)image_length);
+#endif
 		}
-		capture_saved = true;
-		AppCameraBuffers_LogFrameSignature("after-filex-save", image_ptr,
-				(uint32_t)image_length);
+		}
 		} else {
 			(void) DebugConsole_WriteString(
 					"[CAMERA][CAPTURE] FileX media unavailable at save point; SD write skipped.\r\n");
@@ -1019,43 +1133,58 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	}
 
 	if (camera_capture_use_cmw_pipeline) {
-		/* Copy before queueing so the worker never reads the DMA-owned buffer. */
+		/* Capture stopped both DCMIPP and IMX335 before returning, so this
+		 * non-cacheable buffer is immutable until the AI worker releases it. */
 #if CAMERA_CAPTURE_USE_PRIVATE_SNAPSHOT
-		AppCameraBuffers_CopyCaptureToSnapshot(image_ptr,
-				(uint32_t)image_length);
+	#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 		AppCameraBuffers_LogFrameSignature("snapshot-ready",
 				camera_inference_frame_snapshot, (uint32_t)image_length);
-		if (!AppInferenceRuntime_RequestDryInference(
+	#endif
+		ai_handoff_accepted = AppInferenceRuntime_RequestDryInference(
 				(const uint8_t *) camera_inference_frame_snapshot,
-				(ULONG) image_length)) {
+				(ULONG) image_length);
+		if (!ai_handoff_accepted) {
 				DebugConsole_Printf(
 					"[AI] Failed to queue one-shot dry-run inference.\r\n");
-		}
-		#if APP_BASELINE_ENABLE_THREAD && APP_BASELINE_QUEUE_WITH_CAPTURE
-		if (!AppBaselineRuntime_RequestEstimate(
-			(const uint8_t *)camera_inference_frame_snapshot,
-			(ULONG)image_length)) {
+				failure_stage = "ai-queue";
+		} else if (!AppCameraCapture_WaitForInferenceOwnershipRelease()) {
 			DebugConsole_Printf(
-				"[BASELINE] Failed to queue shared-snapshot estimate.\r\n");
+				"[AI] Inference ownership did not complete within the wait budget.\r\n");
+			ai_handoff_accepted = false;
+			failure_stage = "ai-ownership";
+		} else if (!AppInferenceRuntime_WasLastRequestSuccessful()) {
+			DebugConsole_Printf(
+				"[AI] Learned pipeline completed but did not publish a valid result.\r\n");
+			ai_handoff_accepted = false;
+			failure_stage = "ai-result";
 		}
-		#endif
 #else
-		/* why: keep the live board off the lower-AXISRAM copy path. The completed
-		 * frame has already been written to SD when storage is available, which
-		 * preserves the exact input for offline overlay/debug analysis. */
+		/* The stopped DMA buffer is the intentional no-copy ownership handoff on
+		 * this board. It is also the exact source passed to FileX and AI. */
+#if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
 		(void) DebugConsole_WriteString(
-				"[CAMERA][FRAME] private snapshot disabled; handing off stopped DMA buffer.\r\n");
-		if (!AppInferenceRuntime_RequestDryInference(
-				(const uint8_t *) image_ptr, (ULONG) image_length)) {
+				"[CAMERA][FRAME] handing off stopped non-cacheable DMA buffer.\r\n");
+#endif
+		/* The live path is asynchronous: a successful queue operation is the
+		 * handoff result here, while the AI worker later reports the model result.
+		 * Keep this boolean synchronized with the actual request status so the
+		 * camera thread does not falsely report a failed capture after the worker
+		 * has already dequeued and executed it. */
+		ai_handoff_accepted = AppInferenceRuntime_RequestDryInference(
+				(const uint8_t *) image_ptr, (ULONG) image_length);
+		if (!ai_handoff_accepted) {
 			DebugConsole_Printf(
 					"[AI] Failed to queue one-shot dry-run inference.\r\n");
+			failure_stage = "ai-queue";
 		}
 #endif
 	}
 
 	}
-	/* Do not report a successful capture when the frame never reached FileX. */
-	result = capture_saved;
+	/* FileX is best-effort: a slow/unavailable SD card must not suppress the AI
+	 * request or make the camera thread restart a valid capture forever. */
+	result = camera_capture_use_cmw_pipeline ? ai_handoff_accepted
+			: capture_saved && ai_handoff_accepted;
 
 cleanup:
 	/* Keep the ISP background loop paused while the AI worker still owns the
@@ -1068,6 +1197,15 @@ cleanup:
 	 * snapshot is actually in flight. */
 	if (!AppInferenceRuntime_IsInferenceInFlight()) {
 		camera_capture_isp_loop_paused = false;
+	}
+	if (!result) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] transaction failed stage=%s saved=%u filex=%lu ai=%u media=%u.\r\n",
+				failure_stage,
+				(unsigned int)capture_saved,
+				(unsigned long)filex_status,
+				(unsigned int)ai_handoff_accepted,
+				(unsigned int)AppFileX_IsMediaReady());
 	}
 	return result;
 }

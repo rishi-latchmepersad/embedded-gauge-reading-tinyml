@@ -186,7 +186,7 @@ uint8_t _mem_pool_xSPI2_obb_box_board_bbox_deploy_candidate[32U] = { 0U, };
  *
  * IMPORTANT: The actual weights data is NOT stored in this 32-byte array.
  * The data lives in xSPI2 flash at 0x70400000 and must be flashed via
- * flash_boot.bat before inference. */
+ * flash_boot.ps1 before inference. */
 __attribute__((section(".xspi2_tip_focus_pool"), aligned(APP_AI_CACHE_LINE_BYTES)))
 uint8_t _mem_pool_xSPI2_tip_focus_v18_int8[32U] = { 0U, };
 
@@ -609,6 +609,9 @@ bool __attribute__((noinline)) AppAI_PreprocessYuv422FrameToFloatInput(
 	{
 		crop_height = source_height - crop_y_min;
 	}
+	/* Keep the crop label useful in verbose diagnostics without warning when
+	 * console logging is compiled out for the production board image. */
+	(void)crop_label;
 
 #if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 	DebugConsole_Printf("[AI] Crop %s: x=%lu y=%lu w=%lu h=%lu\r\n",

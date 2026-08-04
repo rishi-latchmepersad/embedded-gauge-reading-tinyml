@@ -52,6 +52,28 @@ bool DebugConsole_IsCameraBufferRange(const uint8_t *byte_array_pointer,
 bool DebugConsole_WriteBytes(const uint8_t *byte_array_pointer,
 		size_t byte_array_length);
 
+/**
+ * @brief Enables or disables the console-wide snapshot-copy suppression gate.
+ * @param suppressed true while a camera snapshot owns the UART boundary.
+ * @sideeffect Causes ordinary log writes to return without touching the UART.
+ * @note Snapshot boundary markers use the dedicated exception API below.
+ */
+void DebugConsole_SetSnapshotCopySuppressed(bool suppressed);
+
+/**
+ * @brief Writes one already-formatted snapshot boundary marker.
+ * @param byte_array_pointer Pointer to the short text marker.
+ * @param byte_array_length Marker length in bytes.
+ * @retval true when the marker was serialized to the UART.
+ * @retval false when the console is unavailable or currently occupied.
+ * @sideeffect Temporarily owns the console transport; this API is the only
+ * exception to the snapshot-copy UART-suppression gate.
+ * @note The caller must have raised the snapshot-copy active flag before
+ * calling this function. It never transmits camera-buffer memory.
+ */
+bool DebugConsole_WriteSnapshotCopyMarker(
+		const uint8_t *byte_array_pointer, size_t byte_array_length);
+
 bool DebugConsole_Printf(const char *format_string_pointer, ...)
 		DEBUG_CONSOLE_PRINTF_LIKE(1, 2);
 

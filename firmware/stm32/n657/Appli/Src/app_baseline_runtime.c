@@ -35,6 +35,9 @@
  * disabled in production so they do not drown out the AI and camera logs. */
 #define DEBUG_CONSOLE_ENABLE_LOGS 0
 #include "debug_console.h"
+#ifndef APP_BASELINE_ENABLE_DIRECT_CONSOLE_LOGS
+#define APP_BASELINE_ENABLE_DIRECT_CONSOLE_LOGS 0U
+#endif
 #include "ina219_power.h"
 #include "inference_metrics.h"
 #include "threadx_utils.h"
@@ -275,6 +278,9 @@ static volatile const uint8_t *camera_baseline_request_frame_ptr = NULL;
  * the camera from beginning a new DMA capture while the classical worker is
  * still reading that snapshot after the AI worker has finished. */
 static volatile bool camera_baseline_request_in_flight = false;
+static volatile AppBaselineRuntime_WorkerState_t camera_baseline_worker_state =
+	APP_BASELINE_WORKER_UNINITIALIZED;
+static volatile ULONG camera_baseline_worker_progress_tick = 0U;
 
 static volatile ULONG camera_baseline_request_frame_length = 0U;
 
@@ -308,6 +314,8 @@ static const AppBaselineRuntime_CalibrationProfile_t
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
 static VOID CameraBaselineThread_Entry(ULONG thread_input);
+static void AppBaselineRuntime_SetWorkerState(
+		AppBaselineRuntime_WorkerState_t state);
 static void AppBaselineRuntime_WriteDirectStatus(const char *text);
 static void AppBaselineRuntime_WriteDirectQueueStatus(const char *event,
 										  ULONG generation,
@@ -434,6 +442,18 @@ static void AppBaselineRuntime_LogEstimate(
 /* USER CODE BEGIN 0 */
 
 /**
+ * @brief Publish a baseline worker state and its progress timestamp.
+ * @param state New worker state.
+ * @sideeffect Updates RAM-only diagnostics read by the camera coordinator.
+ */
+static void AppBaselineRuntime_SetWorkerState(
+		AppBaselineRuntime_WorkerState_t state)
+{
+	camera_baseline_worker_state = state;
+	camera_baseline_worker_progress_tick = tx_time_get();
+}
+
+/**
  * @brief Store the most recent accepted baseline estimate and bump its version.
  */
 static void AppBaselineRuntime_StoreLastEstimate(
@@ -506,6 +526,7 @@ UINT AppBaselineRuntime_Init(void)
 
 	camera_baseline_sync_created = true;
 	app_baseline_runtime_initialized = true;
+	AppBaselineRuntime_SetWorkerState(APP_BASELINE_WORKER_WAITING);
 	AppBaselineRuntime_ResetEstimateHistory();
 	return TX_SUCCESS;
 }
@@ -517,10 +538,14 @@ UINT AppBaselineRuntime_Init(void)
  */
 static void AppBaselineRuntime_WriteDirectStatus(const char *text)
 {
+#if APP_BASELINE_ENABLE_DIRECT_CONSOLE_LOGS
 	if (text != NULL)
 	{
 		(void)DebugConsole_WriteBytes((const uint8_t *)text, strlen(text));
 	}
+#else
+	(void)text;
+#endif
 }
 
 /**
@@ -531,9 +556,10 @@ static void AppBaselineRuntime_WriteDirectStatus(const char *text)
  * @sideeffects Formats and transmits one compact lifecycle marker.
  */
 static void AppBaselineRuntime_WriteDirectQueueStatus(const char *event,
-											  ULONG generation,
-											  ULONG frame_length)
+													  ULONG generation,
+													  ULONG frame_length)
 {
+#if APP_BASELINE_ENABLE_DIRECT_CONSOLE_LOGS
 	char line[96];
 	const int written = DebugConsole_Snprintf(
 		line, sizeof(line), "[BASELINE][QUEUE] %s gen=%lu len=%lu\r\n",
@@ -547,6 +573,11 @@ static void AppBaselineRuntime_WriteDirectQueueStatus(const char *event,
 			: (sizeof(line) - 1U);
 		(void)DebugConsole_WriteBytes((const uint8_t *)line, line_length);
 	}
+#else
+	(void)event;
+	(void)generation;
+	(void)frame_length;
+#endif
 }
 
 /**
@@ -558,6 +589,7 @@ static void AppBaselineRuntime_WriteDirectQueueStatus(const char *event,
 static void AppBaselineRuntime_WriteDirectGateStatus(
 	const char *reason, const AppBaselineRuntime_Estimate_t *estimate)
 {
+#if APP_BASELINE_ENABLE_DIRECT_CONSOLE_LOGS
 	char line[192];
 	const float peak_ratio =
 		((estimate != NULL) && (estimate->runner_up_score > 0.0f))
@@ -585,6 +617,10 @@ static void AppBaselineRuntime_WriteDirectGateStatus(
 			? (size_t)written : (sizeof(line) - 1U);
 		(void)DebugConsole_WriteBytes((const uint8_t *)line, line_length);
 	}
+#else
+	(void)reason;
+	(void)estimate;
+#endif
 }
 
 /**
@@ -683,11 +719,13 @@ bool AppBaselineRuntime_RequestEstimate(const uint8_t *frame_ptr,
 	camera_baseline_request_frame_length = frame_length;
 	camera_baseline_request_generation++;
 	camera_baseline_request_in_flight = true;
+	AppBaselineRuntime_SetWorkerState(APP_BASELINE_WORKER_QUEUED);
 
 	if (tx_semaphore_put(&camera_baseline_request_semaphore) != TX_SUCCESS)
 	{
 		Metrics_EndInference("BASELINE", NAN);
 		camera_baseline_request_in_flight = false;
+		AppBaselineRuntime_SetWorkerState(APP_BASELINE_WORKER_FAILED);
 		DebugConsole_Printf(
 			"[BASELINE] Failed to signal baseline request semaphore.\r\n");
 		return false;
@@ -716,6 +754,7 @@ bool AppBaselineRuntime_IsEstimateInFlight(void)
 static VOID CameraBaselineThread_Entry(ULONG thread_input)
 {
 	(void)thread_input;
+	AppBaselineRuntime_SetWorkerState(APP_BASELINE_WORKER_WAITING);
 
 	AppBaselineRuntime_WriteDirectStatus(
 		"[BASELINE][THREAD] worker-entered\r\n");
@@ -731,8 +770,10 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 
 		if (request_status != TX_SUCCESS)
 		{
+			AppBaselineRuntime_SetWorkerState(APP_BASELINE_WORKER_FAILED);
 			continue;
 		}
+		AppBaselineRuntime_SetWorkerState(APP_BASELINE_WORKER_EXECUTING);
 
 		AppBaselineRuntime_WriteDirectQueueStatus(
 			"dequeued", camera_baseline_request_generation,
@@ -756,6 +797,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 			DebugConsole_Printf(
 				"[BASELINE] Worker woke without a queued frame; ignoring.\r\n");
 			camera_baseline_request_in_flight = false;
+			AppBaselineRuntime_SetWorkerState(APP_BASELINE_WORKER_FAILED);
 			continue;
 		}
 
@@ -783,11 +825,13 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 				"[BASELINE] Classical baseline failed to estimate a temperature.\r\n");
 			Metrics_EndInference("BASELINE", NAN);
 			camera_baseline_request_in_flight = false;
+			AppBaselineRuntime_SetWorkerState(APP_BASELINE_WORKER_FAILED);
 			continue;
 		}
 
 		/* Preserve the unsmoothed selector result in the direct UART trace so
 		 * history labels cannot hide which geometry hypothesis actually won. */
+		#if APP_BASELINE_ENABLE_DIRECT_CONSOLE_LOGS
 		{
 			char raw_geometry_line[192] = {0};
 			const long raw_angle_tenths = AppBaselineRuntime_RoundToLong(
@@ -821,6 +865,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 					(const uint8_t *)raw_geometry_line, bytes_to_write);
 			}
 		}
+		#endif
 		AppBaselineRuntime_WriteDirectQueueStatus(
 			"estimate-ok", request_generation, frame_length);
 
@@ -836,6 +881,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 				"[BASELINE] Current estimate was not stable; no history value published.\r\n");
 			Metrics_EndInference("BASELINE", NAN);
 			camera_baseline_request_in_flight = false;
+			AppBaselineRuntime_SetWorkerState(APP_BASELINE_WORKER_FAILED);
 			continue;
 		}
 		if (!AppBaselineRuntime_SelectSmoothedEstimate(&estimate))
@@ -845,6 +891,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 			DebugConsole_Printf(
 				"[BASELINE] Classical baseline produced an invalid raw estimate.\r\n");
 			camera_baseline_request_in_flight = false;
+			AppBaselineRuntime_SetWorkerState(APP_BASELINE_WORKER_FAILED);
 			continue;
 		}
 
@@ -853,6 +900,7 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 			AppBaselineRuntime_WriteDirectQueueStatus(
 				"estimate-invalid", request_generation, frame_length);
 			camera_baseline_request_in_flight = false;
+			AppBaselineRuntime_SetWorkerState(APP_BASELINE_WORKER_FAILED);
 			continue;
 		}
 
@@ -886,12 +934,56 @@ static VOID CameraBaselineThread_Entry(ULONG thread_input)
 				AppBaselineRuntime_RoundToLong(estimate.runner_up_score));
 		}
 
+		AppBaselineRuntime_SetWorkerState(APP_BASELINE_WORKER_PUBLISHING);
 		AppBaselineRuntime_StoreLastEstimate(&estimate);
 		Metrics_OverrideStartTime("BASELINE", frame_capture_time_us);
+		#if APP_BASELINE_ENABLE_DIRECT_CONSOLE_LOGS
 		AppBaselineRuntime_LogEstimate(&estimate);
+		#endif
 		AppBaselineRuntime_WriteDirectQueueStatus(
 			"published", request_generation, frame_length);
 		camera_baseline_request_in_flight = false;
+		AppBaselineRuntime_SetWorkerState(APP_BASELINE_WORKER_WAITING);
+	}
+}
+
+/**
+ * @brief Return the current baseline worker state.
+ */
+AppBaselineRuntime_WorkerState_t AppBaselineRuntime_GetWorkerState(void)
+{
+	return camera_baseline_worker_state;
+}
+
+/**
+ * @brief Return the last baseline worker state-transition tick.
+ */
+ULONG AppBaselineRuntime_GetWorkerProgressTick(void)
+{
+	return camera_baseline_worker_progress_tick;
+}
+
+/**
+ * @brief Convert a baseline worker state to a compact diagnostic label.
+ */
+const char *AppBaselineRuntime_WorkerStateName(
+		AppBaselineRuntime_WorkerState_t state)
+{
+	switch (state)
+	{
+	case APP_BASELINE_WORKER_WAITING:
+		return "waiting";
+	case APP_BASELINE_WORKER_QUEUED:
+		return "queued";
+	case APP_BASELINE_WORKER_EXECUTING:
+		return "executing";
+	case APP_BASELINE_WORKER_PUBLISHING:
+		return "publishing";
+	case APP_BASELINE_WORKER_FAILED:
+		return "failed";
+	case APP_BASELINE_WORKER_UNINITIALIZED:
+	default:
+		return "uninitialized";
 	}
 }
 

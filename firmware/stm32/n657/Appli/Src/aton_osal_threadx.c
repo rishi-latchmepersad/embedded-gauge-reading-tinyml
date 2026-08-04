@@ -35,12 +35,13 @@
 extern void ATON_STD_IRQHandler(void);
 
 static TX_MUTEX g_cache_mutex;
-static TX_SEMAPHORE g_wfe_sem;
+/* The no-HyperRAM product has one ATON owner.  Object creation can still fail
+ * when the shared ThreadX byte pool is nearly exhausted, so remember which
+ * primitives are actually live before any callback touches them. */
+static bool g_cache_mutex_ready = false;
 static volatile ULONG g_wfe_pending_count = 0UL;
 static volatile ULONG g_wfe_signal_count = 0UL;
 static volatile bool g_wfe_guard_expired = false;
-static bool g_wfe_semaphore_ready = false;
-static bool g_wfe_use_semaphore_wait = true;
 static bool g_osal_initialized = false;
 
 /**
@@ -77,23 +78,21 @@ void aton_osal_threadx_init(void)
 {
 	UINT ret;
 
+	/* Re-initialization must start from a conservative state.  The NPU
+	 * interrupt handler only updates the event counter; it never calls a
+	 * ThreadX synchronization API from interrupt context. */
+	g_cache_mutex_ready = false;
+
 	ret = tx_mutex_create(&g_cache_mutex, (CHAR *)"aton_cache", TX_INHERIT);
 	if (ret != TX_SUCCESS)
 	{
 		DebugConsole_Printf("[AI][OSAL] cache mutex create failed: %lu\r\n",
 							(unsigned long)ret);
-	}
-
-	ret = tx_semaphore_create(&g_wfe_sem, (CHAR *)"aton_wfe", 0U);
-	if (ret != TX_SUCCESS)
-	{
-		DebugConsole_Printf("[AI][OSAL] wfe semaphore create failed: %lu\r\n",
-							(unsigned long)ret);
-		g_wfe_use_semaphore_wait = false;
+		g_cache_mutex_ready = false;
 	}
 	else
 	{
-		g_wfe_semaphore_ready = true;
+		g_cache_mutex_ready = true;
 	}
 
 	TX_INTERRUPT_SAVE_AREA
@@ -116,14 +115,12 @@ void aton_osal_threadx_deinit(void)
 		return;
 	}
 
-	if (g_wfe_semaphore_ready)
+	if (g_cache_mutex_ready)
 	{
-		(void)tx_semaphore_delete(&g_wfe_sem);
+		(void)tx_mutex_delete(&g_cache_mutex);
 	}
-	(void)tx_mutex_delete(&g_cache_mutex);
 	g_osal_initialized = false;
-	g_wfe_semaphore_ready = false;
-	g_wfe_use_semaphore_wait = true;
+	g_cache_mutex_ready = false;
 }
 
 /**
@@ -148,6 +145,14 @@ void aton_osal_threadx_dao_unlock(void)
  */
 void aton_osal_threadx_lock(void)
 {
+	/* No parallel ATON networks are enabled in this product.  If the optional
+	 * mutex could not be allocated, the single worker remains safe without
+	 * touching an uninitialized ThreadX object. */
+	if (!g_cache_mutex_ready)
+	{
+		return;
+	}
+
 	UINT ret = tx_mutex_get(&g_cache_mutex, TX_WAIT_FOREVER);
 	if (ret != TX_SUCCESS)
 	{
@@ -161,6 +166,11 @@ void aton_osal_threadx_lock(void)
  */
 void aton_osal_threadx_unlock(void)
 {
+	if (!g_cache_mutex_ready)
+	{
+		return;
+	}
+
 	UINT ret = tx_mutex_put(&g_cache_mutex);
 	if (ret != TX_SUCCESS)
 	{
@@ -172,8 +182,10 @@ void aton_osal_threadx_unlock(void)
 /**
  * @brief Wait for the next ATON event.
  *
- * The ATON runtime expects a real wait primitive here. We still keep the
- * counters for diagnostics, but the semaphore is the canonical wakeup path.
+ * The NPU ISR records completion in an interrupt-safe counter. The worker
+ * consumes that counter here and sleeps in one-tick increments when the NPU
+ * has not signalled yet. This deliberately avoids calling ThreadX semaphore
+ * APIs from the NPU ISR, which can corrupt ThreadX timer state on this port.
  */
 void aton_osal_threadx_wfe(void)
 {
@@ -183,33 +195,6 @@ void aton_osal_threadx_wfe(void)
 	{
 		TX_INTERRUPT_SAVE_AREA
 		ULONG pending = 0UL;
-		UINT ret = TX_SUCCESS;
-
-		/* First preference: consume a real IRQ delivery from the ThreadX
-		 * semaphore path without blocking forever. */
-		if (g_wfe_use_semaphore_wait && g_wfe_semaphore_ready)
-		{
-			ret = tx_semaphore_get(&g_wfe_sem, TX_NO_WAIT);
-			if (ret == TX_SUCCESS)
-			{
-				TX_DISABLE
-				if (g_wfe_pending_count != 0UL)
-				{
-					g_wfe_pending_count--;
-				}
-				TX_RESTORE
-				return;
-			}
-
-			if ((ret == TX_SEMAPHORE_ERROR) || (ret == TX_WAIT_ERROR))
-			{
-				DebugConsole_Printf("[AI][OSAL] wfe wait failed: %lu\r\n",
-									(unsigned long)ret);
-				g_wfe_use_semaphore_wait = false;
-				DebugConsole_WriteString(
-					"[AI][OSAL] wfe semaphore unavailable; using event counter fallback.\r\n");
-			}
-		}
 
 		TX_DISABLE
 		pending = g_wfe_pending_count;
@@ -265,16 +250,10 @@ void aton_osal_threadx_signal_event(void)
 	g_wfe_signal_count++;
 	TX_RESTORE
 
-	if (g_wfe_use_semaphore_wait && g_wfe_semaphore_ready)
-	{
-		UINT ret = tx_semaphore_put(&g_wfe_sem);
-		if (ret != TX_SUCCESS)
-		{
-			g_wfe_use_semaphore_wait = false;
-			DebugConsole_Printf("[AI][OSAL] wfe signal semaphore put failed: %lu\r\n",
-								(unsigned long)ret);
-		}
-	}
+	/* The worker polls at one ThreadX tick while waiting.  SEV is harmless on
+	 * Cortex-M and provides an additional wake hint without entering ThreadX
+	 * from interrupt context; it is not used as the correctness mechanism. */
+	__SEV();
 }
 
 /**
@@ -282,10 +261,6 @@ void aton_osal_threadx_signal_event(void)
  */
 void LL_ATON_OSAL_DrainWfeSemaphore(void)
 {
-	while (tx_semaphore_get(&g_wfe_sem, TX_NO_WAIT) == TX_SUCCESS)
-	{
-	}
-
 	TX_INTERRUPT_SAVE_AREA
 	TX_DISABLE
 	g_wfe_pending_count = 0UL;

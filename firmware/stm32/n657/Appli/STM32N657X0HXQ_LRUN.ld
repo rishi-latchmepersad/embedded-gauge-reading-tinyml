@@ -50,9 +50,9 @@ MEMORY
      12 KiB of the CPU stack with OBB activations and causing late-epoch return
      address corruption.  ROM grew to 600K for the DS-CNN v4 heatmap .rodata. */
   RAM    (xrw)    : ORIGIN = 0x34099400,   LENGTH = 410K
-  /* Scalar model blob at 0x70200000 (matches FLASH_SCALAR in flash_boot.bat). */
+  /* Legacy scalar model blob slot retained for linker compatibility. */
   EXTRAM (rw)           : ORIGIN = 0x70200000,   LENGTH = 3200K
-  /* Rectifier model blob at 0x70600000 (matches FLASH_RECTIFIER in flash_boot.bat).
+  /* Legacy rectifier model blob slot retained for linker compatibility.
    * The rectifier pool symbol must live here so the NPU reads weights from the
    * correct flash region. */
   EXTRAM_RECTIFIER (rw) : ORIGIN = 0x70600000,   LENGTH = 256K
@@ -62,7 +62,7 @@ MEMORY
    * for linker resolution only.  NPU access to 0x90000000 will
    * bus-fault at runtime. */
   XSPI1_RAM (rw)         : ORIGIN = 0x90000000,   LENGTH = 32M
-  /* Source-crop-box model blob at 0x70B00000 (matches FLASH_SOURCE_CROP_BOX in flash_boot.bat). */
+  /* Legacy source-crop-box model slot retained for linker compatibility. */
   EXTRAM_SOURCE_CROP_BOX (rw) : ORIGIN = 0x70B00000,   LENGTH = 512K
   /* Non-secure alias A/B test — DCMIPP with MSEC=1 writes to 0x24xxxxxx.
    * Placed at top of AXISRAM1 non-secure alias, away from code/data. */
@@ -84,11 +84,14 @@ MEMORY
     * so legacy symbols remain link-compatible while the live path migrates. */
    GAUGE_ELLIPSE_WEIGHTS (rw) : ORIGIN = 0x70400000, LENGTH = 4096K
    GAUGE_CENTER_TIP_WEIGHTS (rw) : ORIGIN = 0x70800000, LENGTH = 4096K
-  /* Legacy camera snapshot and compatibility scratch. The live generated
-   * models now occupy AXISRAM2..5 from 0x34100000 through 0x3434E000, so
-   * this section must not remain in the former 0x34200000 vpool window.
-   * AXISRAM1's lower alias is separate from the DMA window at 0x24160000. */
-  TIP_FOCUS_RAM (xrw) : ORIGIN = 0x24000000,   LENGTH = 1408K
+  /* CPU snapshot + legacy scratch. 0x24000000 is the 1:1 non-secure alias of
+   * the 0x34000000 AXISRAM window, so the old TIP_FOCUS_RAM at 0x24000000
+   * aliased the app's own code (0x34000400) and .data/.bss (0x34099400):
+   * every 400 KiB snapshot copy overwrote all globals with frame bytes.
+   * This window uses AXISRAM5 (0x34200000 alias), which is free: the
+   * compile-in model pools sit at 0x34100000 (AXISRAM3) and the tip-focus
+   * reloc pool at 0x342E0000 (AXISRAM6). Keep the length below 0x342E0000. */
+  AXISRAM_NS (xrw) : ORIGIN = 0x24200000,   LENGTH = 0xA0000
 }
 
 PHDRS
@@ -324,21 +327,20 @@ SECTIONS
     __bss_end__ = _ebss;
   } >RAM :data
 
-  /* Legacy CPU scratch is kept in the dedicated AXISRAM1 alias above, away
-   * from the generated ellipse/keypoint activation ranges. */
+  /* CPU snapshot + legacy scratch in AXISRAM5 (see AXISRAM_NS above). The
+   * snapshot goes first at the 512 KiB-aligned region base so its dedicated
+   * MPU region (base = symbol, 512 KiB-aligned) covers only the snapshot,
+   * never the scratch buffers that follow. */
   .tip_focus_activations (NOLOAD) :
   {
     . = ALIGN(32);
     __stip_focus_activations = .;
-    KEEP(*(.tip_focus_activations))
-    /* The snapshot is protected by a 512 KiB MPU region. Align its start to
-     * that region size so the MPU descriptor cannot expose adjacent runtime
-     * activations or create an invalid subregion boundary. */
-    . = ALIGN(0x80000);
     KEEP(*(.tip_focus_activations_snapshot))
+    . = ALIGN(32);
+    KEEP(*(.tip_focus_activations))
     KEEP(*(.tip_focus_activations*))
     . = ALIGN(32);
-  } >TIP_FOCUS_RAM
+  } >AXISRAM_NS
 
   /* AXISRAM6 section — AI thread stack lives here, after polar_luma (below)
    * and the OBB activation region (which both share the same 304K below). */

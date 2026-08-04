@@ -3718,3 +3718,74 @@ sha256[:16] = f7065e4f6b3a98f6
   slots when they are available. That lets `AppFileX_WriteCapturedImage()`
   reuse the open FileX handles instead of creating a brand-new timestamped file
   on every frame, which is much faster on the SD card.
+
+## Garbled UART tail diagnosis + console fixes (2026-08-03)
+
+- The "garbage" capture tail (`[CAMER[AI] Dry-ru[AI] Failed[CAMERA][CA...`) is
+  NOT byte-interleaving from two writers. `DebugConsole` serializes every
+  record with an atomic lock, so a contended writer simply drops its record.
+  The fragments are complete lines truncated mid-payload and concatenated,
+  because they died before their `\r\n` was sent.
+- Root mechanism: `HAL_UART_Transmit` measures its whole `Timeout` from the
+  start of the call. With `Timeout=100ms` and `DEBUG_CONSOLE_MAX_TRANSMIT_BYTES
+  =1024` (89 ms at 115200), any concurrent CPU stall (400 KiB snapshot copy,
+  FileX SD write, ATON/NPU activity) pushes the line over budget → HAL_TIMEOUT
+  → the rest of the line (including `\r\n`) is lost. This is why it correlated
+  with image-buffer copies.
+- Second mechanism: the HardFault handler writes with `IT_RawUartWrite()` (raw
+  LL pushes, no console lock, IRQs off). If the fault preempts a thread inside
+  `HAL_UART_Transmit`, the dump splices itself into the interrupted line (seen
+  as `[CAMERA][TH[FAULT] HardFault ...`), and the line's tail is never sent
+  because the handler loops forever.
+- Fixes applied:
+  - `main.c`: `uart_transmit_timeout_milliseconds` 100 → 1000 ms so a full
+    payload plus real stalls fits the budget.
+  - `stm32n6xx_it.c` `IT_LogFaultSnapshot()`: emit `\r\n` before the dump so
+    it cannot splice into a mid-transmit line.
+  - `app_camera_capture.c`: gated the per-cycle `Brightness stats complete`
+    line behind `CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS` so a steady-state
+    loop does not spam the console.
+  - `debug_console.c` already carried the v14 bounded lock wait
+    (`DEBUG_CONSOLE_LOCK_TIMEOUT_MS=250`) in the working tree; keep it.
+- The fault itself that drove the failure flood (`PC=0x340237BA`, r9=0xFFFFFFFD,
+  BFAR=0x0E127022, `last_scalar_row` holding pixel data) is still open: the AI
+  worker crashes in a generated SW op of the compile-in ellipse/keypoint reloc
+  models. The register evidence matches the documented "[r9 + ...]" SW-op crash
+  class. Symbolicate `0x340237BA` from the CubeIDE map and check the
+  `0x34099400` RAM region (GOT/.network_rt_ctx) for overlap with the model
+  mempools before changing crop code.
+
+## ROOT CAUSE FOUND: snapshot aliases .data/.bss (2026-08-03, v17)
+
+- **The real bug is a physical alias collision in the linker script, not the
+  model runtime.** `0x24000000` is the 1:1 non-secure alias of the `0x34000000`
+  AXISRAM window. `TIP_FOCUS_RAM` was redefined from its original physical
+  `0x342E0000` (AXISRAM6) to `0x24000000`, which aliases:
+  - `0x24000000` -> physical `0x34000000` = the app's CODE region (0x34000400),
+    where `center_det_input_buf` (150 KiB) sat — latent code corruption.
+  - `0x24080000` -> physical `0x34080000` = AXISRAM2 = the app's `.data`/`.bss`
+    (0x34099400..0x340E9568), where `camera_inference_frame_snapshot` (400 KiB)
+    sat. **Every snapshot copy overwrote ALL of .data and most of .bss with
+    frame bytes.**
+- That one bug produced every symptom in the last three sessions:
+  - `app_ai_scalar_preprocess_last_row`, `g_sd_fx_media` (FX_MEDIA), `in_flight`,
+    `worker_state` all held pixel data (0xC3B2B4C5 / 0x2325232F / 0x56595C6C).
+  - Corrupted FX_MEDIA driver pointer -> bus fault at `fx_media_flush.c:343` /
+    `fx_media_open.c:241` (PC 0x340236EE / 0x340237BA).
+  - Corrupted `_network_rt_ctx.ram_addr` -> r9=0xFFFFFFFD -> SW-op crashes.
+  - Corrupted `in_flight` -> "Dry-run request dropped; worker busy" -> ownership
+    latch -> board freeze on the second capture.
+  - Corrupted `g_filex_media_ready`/capture slots -> "FileX media unavailable",
+    "Failed to build capture filename".
+- **Fix applied (v17):** `STM32N657X0HXQ_LRUN.ld` now places
+  `.tip_focus_activations*` (snapshot + scratch) in a new `AXISRAM_NS` window at
+  `0x24200000` (AXISRAM5 alias, LENGTH 0xA0000, kept below the tip-focus reloc
+  pool at 0x342E0000). Snapshot goes FIRST at the 512 KiB-aligned region base so
+  the MPU region 1 in `Setup_Mpu` (symbol-based, 512 KiB-aligned) still covers
+  only the snapshot. `main.c` MEMENR already enables all six AXISRAM banks.
+- **Verification on the next flash:** boot -> first capture -> check that
+  `camera_ai_worker_state` transitions (queued/executing/waiting), FileX stays
+  ready, no pixel-valued globals, and the second capture no longer freezes.
+- Lesson: never use the `0x24000000` window in the linker for app data — it is
+  an alias of `0x34000000`, not separate memory. Only DMA/CPU buffers that are
+  deliberately NS-aliased belong there (e.g. RAM_NC for DCMIPP with MSEC=1).

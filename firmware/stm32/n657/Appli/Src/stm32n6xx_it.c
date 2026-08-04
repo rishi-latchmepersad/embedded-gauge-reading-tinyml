@@ -121,6 +121,12 @@ static void IT_LogFaultSnapshot(const char *fault_name, uint32_t stacked_pc, uin
 
   __disable_irq();
 
+  /* why: the fault can preempt a thread in the middle of a HAL_UART_Transmit
+   * polling loop (which cannot resume, since this handler never returns).
+   * Emit a line terminator first so the dump does not splice itself into the
+   * middle of an interrupted log line. */
+  IT_RawUartWrite("\r\n");
+
   fault_cfsr = SCB->CFSR;
   fault_hfsr = SCB->HFSR;
   fault_dfsr = SCB->DFSR;

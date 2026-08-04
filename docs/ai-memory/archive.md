@@ -1266,7 +1266,7 @@ Takeaway:
 
 ## 2026-05-18 to 2026-05-29: Moved From Live Memory
 
-The detailed daily notes that used to live in the monolithic memory file were moved to `docs/ai-memory/archive/legacy-ai-memory-2026-07-22.md` during the cleanup pass because they are no longer the current state of the project.
+The detailed daily notes that used to live in `docs/ai-memory.md` were moved out of the live file during the cleanup pass because they are no longer the current state of the project.
 
 ### Model Experiments
 - 2026-05-29: `direct_v2` remained the best board reader at 8.01 C MAE. Sweep-logits and polar-evidence variants underperformed, mainly because classification was harder than regression at the sample sizes available.

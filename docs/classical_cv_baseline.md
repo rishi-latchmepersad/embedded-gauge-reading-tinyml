@@ -108,3 +108,33 @@ wsl -d Ubuntu-24.04 -e bash /mnt/d/Projects/embedded-gauge-reading-tinyml/ml/scr
 
 Results are written to `ml/artifacts/baseline/classical_cv_<timestamp>/`.
 
+## Firmware classical-template baseline (2026-07-11)
+
+The normalized-template matcher is now a guarded classical first pass in the
+live publishing path. A match must clear a stricter template score/separation
+gate; ambiguous board frames are exposed to the polar fallback for diagnostics
+but cannot seed history unless the current estimate itself is stable.
+
+The live firmware path is therefore: brightness profiling, guarded 8x8
+normalized-luma matching, then (when the match is weak) dynamic rim-center
+radial Hough voting. The older five-center polar selector remains behind that
+fallback for diagnostics. Invalid frames are rejected rather than publishing a
+stale held value.
+
+The reproducible evaluator is
+`tmp/evaluate_classical_template_baseline.py`. On the deterministic grouped
+held-out split it reports:
+
+| Metric | Result |
+|--------|--------|
+| Held-out captures | 44 |
+| Template bank | 60 templates / 3.84 KB |
+| Within 5°C | **38 / 44 (86.4%)** |
+| MAE | **3.36°C** |
+
+This is a board-capture result, not a claim that arbitrary unseen gauges are
+solved; the template bank is specific to the current gauge and camera framing.
+
+The current firmware build identifies the deployed path as
+`gauge-angle-v15-editable-diagram`.
+

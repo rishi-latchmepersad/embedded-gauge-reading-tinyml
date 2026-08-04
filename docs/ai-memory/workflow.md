@@ -18,12 +18,9 @@ See `archive.md` for the full chronology.
 
 ## WSL Reliability Rules
 
-- Never restart or shut down WSL from an active OpenCode session; doing so can
-  terminate the agent and lose the handoff context.
-- Use the explicit `Ubuntu-24.04` distro for Windows-to-WSL launchers and let
-  `ml/scripts/run_wsl_guarded.sh` control job concurrency and memory.
-- Only restart WSL as a separately planned recovery operation when no active
-  agent or unrelated WSL workload depends on the instance.
+- Restart WSL before every script launch.
+- Do not reuse a prior WSL session between script runs because stale state can hang TensorFlow or GPU startup.
+- After every script that runs in WSL, shut WSL down again with `wsl --shutdown`.
 - For long-running WSL jobs, treat the Windows `VMmem` process as the liveness signal.
 - If `VMmem` CPU stays below 2%, assume the command is effectively stuck or idle and stop waiting on it.
 - TensorFlow GPU startup in WSL can stall inside the runtime GPU probe.

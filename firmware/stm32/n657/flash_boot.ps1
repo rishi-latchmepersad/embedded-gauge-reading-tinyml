@@ -96,21 +96,29 @@ function Check-No-Overlap ($aName, [uint64]$aStart, [uint64]$aLength, $bName, [u
     }
 }
 function Assert-ConsoleSafeApplication ($bin) {
-    # Refuse to flash an image that predates the UART/raw-frame fix.  This is
-    # deliberately checked before signing so a stale Debug artifact cannot be
-    # wrapped in a valid SSBL signature and look like a successful deployment.
+    # Refuse to flash an image that predates the UART/raw-frame fix or does not
+    # contain the deployed model contract. These checks run before signing so
+    # a stale Debug artifact cannot look like a successful deployment.
     $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $bin))
     $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
-    $requiredMarker = "[BOOT] firmware=2026-08-02-baseline-redesign-console-safe"
-    $removedMarker = "snapshot-copy progress +64KiB"
+	$requiredMarker = "[BOOT] firmware="
+	$requiredCaptureMarker = "[CAMERA][BUILD] capture-owner-v17-isr-safe-capture-events"
+	$requiredContractMarker = "ellipse384_keypoint224_heatmap56_crop135_floor003_sep48_square_side_minus_1"
+	$removedMarker = "snapshot-copy progress +64KiB"
     if (-not $ascii.Contains($requiredMarker)) {
         Die "Application is not the console-safe build: missing boot marker '$requiredMarker'"
     }
+	if (-not $ascii.Contains($requiredCaptureMarker)) {
+	    Die "Application is stale: missing capture-owner marker '$requiredCaptureMarker'"
+	}
+	if (-not $ascii.Contains($requiredContractMarker)) {
+	    Die "Application is stale: missing deployed model contract '$requiredContractMarker'"
+	}
     if ($ascii.Contains($removedMarker)) {
         Die "Application is stale: found removed raw-copy progress marker '$removedMarker'"
     }
     $hash = (Get-FileHash -LiteralPath $bin -Algorithm SHA256).Hash
-    Write-Host "Console-safe application verified: marker present, stale raw-copy marker absent"
+	Write-Host "Console-safe application verified: snapshot, model-contract, and UART markers present"
     Write-Host "Application SHA256: $hash"
 }
 
