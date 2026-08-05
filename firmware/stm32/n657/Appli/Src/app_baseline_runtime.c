@@ -712,7 +712,9 @@ bool AppBaselineRuntime_RequestEstimate(const uint8_t *frame_ptr,
 	camera_baseline_request_capture_time_us = Metrics_GetMicros();
 	Metrics_StartInference("BASELINE");
 
-	camera_baseline_request_frame_ptr = camera_inference_frame_snapshot;
+	/* Hand the stopped DMA buffer directly (the AI worker's frame); the
+	 * private snapshot no longer exists and must not be used here. */
+	camera_baseline_request_frame_ptr = frame_ptr;
 	camera_baseline_request_frame_length = frame_length;
 	camera_baseline_request_generation++;
 	camera_baseline_request_in_flight = true;
@@ -1024,6 +1026,11 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 	{
 		AppBaselineRuntime_WriteDirectStatus(
 			"[BASELINE][CV] low-light-reject\r\n");
+		DebugConsole_Printf(
+			"[BASELINE][CV] low-light details: mean=%ld.%01ld bright=%ld%% (crop region)\r\n",
+			(long)(camera_baseline_current_frame_mean_luma * 10.0f) / 10L,
+			(long)labs((long)(camera_baseline_current_frame_mean_luma * 10.0f)) % 10L,
+			(long)(camera_baseline_current_frame_bright_ratio * 100.0f));
 		return false;
 	}
 
@@ -3516,17 +3523,72 @@ static void AppBaselineRuntime_UpdateFrameBrightnessProfile(
 		return;
 	}
 
-	for (size_t y = crop.y_min; y < (crop.y_min + crop.height); y += 2U)
+	/* The fixed training crop can drift off the dial when the framing moves,
+	 * making the low-light gate reject healthy frames. Measure the profile
+	 * over the bright-centroid dial circle instead (the "bright circle" the
+	 * classical path was designed around); fall back to the training crop
+	 * only when no bright dial region is found, so genuinely dark frames
+	 * still fail closed (2026-08-05). */
+	size_t bright_center_x = 0U;
+	size_t bright_center_y = 0U;
+	size_t bright_centroid_count = 0U;
+	const float dial_radius_px =
+		AppBaselineRuntime_EstimateDialRadiusPixels(width_pixels, height_pixels);
+	const bool use_dial_circle =
+		AppBaselineRuntime_EstimateCenterFromBrightPixels(
+			frame_bytes, frame_size, &bright_center_x, &bright_center_y,
+			&bright_centroid_count);
+
+	if (use_dial_circle)
 	{
-		for (size_t x = crop.x_min; x < (crop.x_min + crop.width); x += 2U)
+		const long radius_long = (long)dial_radius_px;
+		const float radius_sq = dial_radius_px * dial_radius_px;
+		const long center_x = (long)bright_center_x;
+		const long center_y = (long)bright_center_y;
+		const long scan_x_min = (center_x - radius_long > 0L)
+			? (center_x - radius_long) : 0L;
+		const long scan_y_min = (center_y - radius_long > 0L)
+			? (center_y - radius_long) : 0L;
+		const long scan_x_max = (center_x + radius_long < (long)width_pixels)
+			? (center_x + radius_long) : (long)(width_pixels - 1U);
+		const long scan_y_max = (center_y + radius_long < (long)height_pixels)
+			? (center_y + radius_long) : (long)(height_pixels - 1U);
+
+		for (long y = scan_y_min; y <= scan_y_max; y += 2L)
 		{
-			const float luma =
-				AppBaselineRuntime_ReadLuma(frame_bytes, width_pixels, x, y);
-			luma_sum += (uint64_t)AppBaselineRuntime_RoundToLong(luma);
-			sample_count++;
-			if (luma >= 180.0f)
+			for (long x = scan_x_min; x <= scan_x_max; x += 2L)
 			{
-				bright_count++;
+				const long dx = x - center_x;
+				const long dy = y - center_y;
+				if (((float)(dx * dx + dy * dy)) > radius_sq)
+				{
+					continue;
+				}
+				const float luma = AppBaselineRuntime_ReadLuma(frame_bytes,
+					width_pixels, (size_t)x, (size_t)y);
+				luma_sum += (uint64_t)AppBaselineRuntime_RoundToLong(luma);
+				sample_count++;
+				if (luma >= 180.0f)
+				{
+					bright_count++;
+				}
+			}
+		}
+	}
+	else
+	{
+		for (size_t y = crop.y_min; y < (crop.y_min + crop.height); y += 2U)
+		{
+			for (size_t x = crop.x_min; x < (crop.x_min + crop.width); x += 2U)
+			{
+				const float luma =
+					AppBaselineRuntime_ReadLuma(frame_bytes, width_pixels, x, y);
+				luma_sum += (uint64_t)AppBaselineRuntime_RoundToLong(luma);
+				sample_count++;
+				if (luma >= 180.0f)
+				{
+					bright_count++;
+				}
 			}
 		}
 	}
