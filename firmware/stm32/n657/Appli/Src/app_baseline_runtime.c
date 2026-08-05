@@ -3035,6 +3035,90 @@ void AppBaselineRuntime_SetCalibrationProfileByName(const char *profile_name)
 }
 
 /**
+ * @brief Map a north-zero signed needle angle to a temperature using the
+ * active calibration profile.
+ *
+ * The learned AI path and the classical baseline share this conversion so a
+ * gauge swap is a single profile registry change. Anchor points are ordered
+ * hot-to-cold in north-zero signed degrees (e.g. +135 -> 50C, -135 -> -30C),
+ * which is the same domain the AI decoder produces. The default two-point
+ * profile therefore reproduces the linear gauge-1 sweep exactly.
+ *
+ * This deliberately does NOT reuse AppBaselineRuntime_ConvertAngleToFraction:
+ * that helper works in the baseline's raw east-zero sweep window, while the
+ * AI path and the profile anchors are north-zero signed. Mixing the two
+ * domains silently shifts every reading by the angle offset.
+ */
+float AppBaselineRuntime_MapAngleToTemperature(float angle_deg)
+{
+	const AppBaselineRuntime_CalibrationProfile_t *profile =
+		AppBaselineRuntime_GetCalibrationProfile();
+	const size_t point_count =
+		(profile != NULL) ? profile->calibration_point_count : 0U;
+	const AppBaselineRuntime_CalibrationPoint_t *points =
+		(profile != NULL) ? profile->calibration_points : NULL;
+
+	if ((points != NULL) && (point_count >= 2U))
+	{
+		for (size_t index = 1U; index < point_count; ++index)
+		{
+			const float a_prev = points[index - 1U].angle_deg;
+			const float a_curr = points[index].angle_deg;
+			const float t_prev = points[index - 1U].temperature_c;
+			const float t_curr = points[index].temperature_c;
+			const float denominator = a_curr - a_prev;
+
+			if (fabsf(denominator) <= 1.0e-6f)
+			{
+				continue;
+			}
+
+			/* Outside the hot-side anchor: extrapolate the first segment. */
+			if ((index == 1U) &&
+				(((a_curr > a_prev) && (angle_deg < a_prev)) ||
+				 ((a_curr < a_prev) && (angle_deg > a_prev))))
+			{
+				return t_prev + ((t_curr - t_prev) *
+					((angle_deg - a_prev) / denominator));
+			}
+
+			/* Inside the segment: interpolate. */
+			if (((a_curr > a_prev) && (angle_deg >= a_prev) && (angle_deg <= a_curr)) ||
+				((a_curr < a_prev) && (angle_deg <= a_prev) && (angle_deg >= a_curr)))
+			{
+				return t_prev + ((t_curr - t_prev) *
+					((angle_deg - a_prev) / denominator));
+			}
+		}
+
+		/* Outside the cold-side anchor: extrapolate the last segment. */
+		{
+			const float a_prev = points[point_count - 2U].angle_deg;
+			const float a_curr = points[point_count - 1U].angle_deg;
+			const float t_prev = points[point_count - 2U].temperature_c;
+			const float t_curr = points[point_count - 1U].temperature_c;
+			const float denominator = a_curr - a_prev;
+
+			if (fabsf(denominator) > 1.0e-6f)
+			{
+				return t_curr + ((t_curr - t_prev) *
+					((angle_deg - a_curr) / denominator));
+			}
+		}
+	}
+
+	/* Affine fallback: the linear gauge-1 sweep in north-zero degrees. */
+	{
+		const float fraction =
+			(angle_deg - APP_BASELINE_PROFILE_GAUGE_MIN_ANGLE_DEG) /
+			(APP_BASELINE_PROFILE_GAUGE_MAX_ANGLE_DEG -
+				APP_BASELINE_PROFILE_GAUGE_MIN_ANGLE_DEG);
+		return APP_BASELINE_MIN_VALUE_C +
+			(fraction * (APP_BASELINE_MAX_VALUE_C - APP_BASELINE_MIN_VALUE_C));
+	}
+}
+
+/**
  * @brief Try to convert an angle using explicit calibration anchors.
  *
  * The runtime expects anchors to be ordered in sweep-fraction order from the

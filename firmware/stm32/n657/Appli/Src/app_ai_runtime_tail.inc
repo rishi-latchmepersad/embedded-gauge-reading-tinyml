@@ -754,7 +754,7 @@ static bool AppAI_RunGaugeModelsFromGray640(const uint8_t *frame_bytes,
 			angle_deg = APP_GAUGE_CALIBRATION_MIN_DEG;
 		if (angle_deg > APP_GAUGE_CALIBRATION_MAX_DEG)
 			angle_deg = APP_GAUGE_CALIBRATION_MAX_DEG;
-		value = AppGaugeGeometry_AngleToGauge1Value(angle_deg);
+		value = AppBaselineRuntime_MapAngleToTemperature(angle_deg);
 		if (!AppAI_IsPlausibleInferenceValue(value)) {
 			DebugConsole_Printf("[AI][GAUGE] mapped value rejected: angle_milli=%ld value_milli=%ld\r\n",
 				(long)lroundf(angle_deg * 1000.0f),

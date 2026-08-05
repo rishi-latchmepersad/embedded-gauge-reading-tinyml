@@ -116,16 +116,16 @@
 #define APP_BASELINE_CALIBRATION_PROFILE_NAME "board_celsius_v1"
 #endif
 
-/* The classical detector remains available for offline/replay comparison, but
- * it is disabled in the live build. The learned ellipse -> keypoint pipeline
- * is the only board owner of the immutable MONO_Y8 snapshot; this avoids a
- * second ThreadX worker and semaphore handoff racing the NPU result. */
+/* The classical detector runs as a diagnostic comparator after the learned
+ * pipeline on the same stopped DMA frame. Its thread + post-AI queue were
+ * re-enabled (2026-08-05) once the frame ownership handoff and memory layout
+ * became stable; the camera thread waits for BOTH workers before re-arming. */
 #ifndef APP_BASELINE_ENABLE_THREAD
-#define APP_BASELINE_ENABLE_THREAD 0U
+#define APP_BASELINE_ENABLE_THREAD 1U
 #endif
 
 #ifndef APP_BASELINE_QUEUE_AFTER_AI
-#define APP_BASELINE_QUEUE_AFTER_AI 0U
+#define APP_BASELINE_QUEUE_AFTER_AI 1U
 #endif
 
 /* OBB reloc runtime base.

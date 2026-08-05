@@ -180,6 +180,19 @@ void AppBaselineRuntime_SetCalibrationProfile(
 void AppBaselineRuntime_SetCalibrationProfileByName(const char *profile_name);
 
 /**
+ * @brief Map a north-zero signed needle angle to a temperature using the
+ * active calibration profile.
+ *
+ * Shared by the classical baseline and the learned AI path so a gauge swap
+ * is a single profile registry change. Anchor points are ordered hot-to-cold
+ * in north-zero signed degrees (the default two-point profile reproduces the
+ * linear gauge-1 sweep exactly).
+ * @param angle_deg North-zero signed needle angle in degrees.
+ * @retval The mapped temperature in Celsius.
+ */
+float AppBaselineRuntime_MapAngleToTemperature(float angle_deg);
+
+/**
  * @brief Map angle to temperature using the active gauge calibration profile.
  */
 float AppBaselineRuntime_ConvertAngleToTemperature(float angle_rad);

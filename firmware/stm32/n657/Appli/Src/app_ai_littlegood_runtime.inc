@@ -296,7 +296,7 @@ static bool __attribute__((unused)) AppAI_LittleGood_RunGaugeModelsFromGray640(c
 			return false;
 		angle_deg = AppAI_LittleGood_Clamp(angle_deg,
 			APP_GAUGE_CALIBRATION_MIN_DEG, APP_GAUGE_CALIBRATION_MAX_DEG);
-		value = AppGaugeGeometry_AngleToGauge1Value(angle_deg);
+		value = AppBaselineRuntime_MapAngleToTemperature(angle_deg);
 		if (!AppAI_IsPlausibleInferenceValue(value))
 			return false;
 		app_ai_last_inference_value = value;
