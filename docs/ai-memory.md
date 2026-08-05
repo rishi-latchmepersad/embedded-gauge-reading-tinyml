@@ -4020,6 +4020,21 @@ Concrete mapping (the real artifact/package names behind the friendly names):
   step is a classical INNER-dial rim fit (band-limited to ~1.0x the true
   dial radius) to recover the pivot, which needs one BRIGHT frame
   (capture_42-23.gray8 from the 14:41 session, still on the board) to tune.
+- Follow-up (same day): the inner-dial rim fit was tried on every 05/08
+  capture and FAILS: the strongest luma steps in the 0.5R-0.9R band are the
+  tick/scale arcs, not the dial rim (the rim has ~no contrast in these
+  frames), so the fitted center lands ~70 px off the true (307,297) -
+  worse than the board-prior.  The dark-hub centroid also fails (the subdial
+  dominates the darkest pixels).  Conclusion: on the current framing the
+  board-prior (314,285) stays the best classical pivot; the hub-darkness
+  reading carries its ~17 px (few-C) bias and is a stable cross-check, not a
+  primary reading.
+- The 07-25 original-framing batch was also replayed: it is a needle sweep
+  (8.9C / -25.4C / -28.4C / 9.2C) and the hub-darkness cue fails there when
+  the needle points INTO the subdial-mask band (low readings, image angles
+  ~140-266 deg) - the mask protects the subdial's own needle, at the cost of
+  blinding the cue for low-temperature needles.  The current framing does
+  not hit that band for normal readings.
 - Known limitation: on low-contrast frames the needle is physically invisible
   to luma-based methods; the baseline fails closed there by design, and only
   the learned path reads those frames.
