@@ -6,27 +6,38 @@ It is the reference floor that any ML model must beat to justify its complexity.
 ## Pipeline
 
 The live STM32 baseline is a deterministic multi-hypothesis polar-vote
-pipeline over the 224x224 preview frame:
+pipeline over the 640x640 Y8 stopped-DMA frame (2026-08-05 state):
 
-1. Capture a YUV422 preview snapshot and profile luma/brightness. If the
-   frame is bright, the baseline switches to the more permissive
-   `bright-relaxed` thresholds.
-2. Build five center hypotheses: bright centroid, fixed training crop, board
-   prior, rim geometry, and the inner image center.
-3. For each accepted seed, vote over 360 polar bins for the darkest
-   needle-like spoke. Saturated pixels and the subdial mask are rejected, the
-   middle shaft is weighted more heavily, and the vote score is boosted by hub
-   continuity, tip extension, and radial/tangential alignment. A hot-zone
-   wrap-around rescue handles needles near the sweep boundary.
-4. When the local geometry sweep is enabled, each accepted seed is refined
+1. Profile luma/brightness on the shared Y8 frame. If the frame is bright,
+   the baseline switches to the more permissive `bright-relaxed` thresholds;
+   low-light frames reject early.
+2. Guarded normalized-template first pass: build an 8x8 luma descriptor and
+   compare it against the board template bank. Strong matches publish
+   directly after the generic acceptance gate; weak matches log
+   `template-match-rejected-weak` and continue to the polar fallback.
+3. Build five center hypotheses: bright centroid, fixed training crop, board
+   prior, rim geometry, and the inner image center. A Kasa least-squares
+   circle fit on the bright-dial rim anchors the fixed-crop polar pivot.
+4. Vote over 360 polar bins with two channels:
+   - a hub-attached radial-run vote: polarity-agnostic discontinuity runs
+     (|line - perpendicular background|) that start within 0.35R of the hub
+     and span at least 45% of the dial radius;
+   - a hub-darkness channel: mean darkness over the 0.18R..0.33R inner
+     shaft, voting only for bins at least 3x the median darkness.
+   Saturated pixels and the subdial mask are rejected, and ray bands are
+   anchored to the dial radius. Low-contrast frames fail closed instead of
+   voting for tick or subdial clutter.
+5. When the local geometry sweep is enabled, each accepted seed is refined
    over a tiny 5x5 offset grid and the best-quality estimate is kept.
-   Remaining candidates are collapsed with a consensus selector.
-5. Apply the confidence and peak-separation gate, then either publish the new
+   Remaining candidates are collapsed with a consensus selector. Only if all
+   primary hypotheses fail does the dynamic rim-center Hough detector run.
+6. Apply the confidence and peak-separation gate, then either publish the new
    estimate or hold/smooth the small 3-frame history buffer if the frame is
    ambiguous or unstable.
-6. Convert the accepted angle to temperature with the calibrated 135° / 270°
-   sweep map spanning -30°C to +50°C. A small angle offset is applied before
-   the final value is logged.
+7. Convert the accepted angle to temperature with the shared
+   `AppBaselineRuntime_MapAngleToTemperature` calibration profile (130..400
+   degree sweep spanning -30°C to +50°C, same map the AI path uses). A small
+   angle offset is applied before the final value is logged.
 
 This is the firmware flow implemented in
 [firmware/stm32/n657/Appli/Src/app_baseline_runtime.c](../firmware/stm32/n657/Appli/Src/app_baseline_runtime.c).
