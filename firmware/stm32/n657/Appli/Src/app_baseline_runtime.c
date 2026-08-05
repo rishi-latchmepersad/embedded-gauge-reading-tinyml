@@ -31,12 +31,15 @@
 #include "app_inference_log_utils.h"
 #include "app_memory_budget.h"
 #include "app_threadx_config.h"
-/* The baseline detector remains enabled, but its verbose UART diagnostics are
- * disabled in production so they do not drown out the AI and camera logs. */
-#define DEBUG_CONSOLE_ENABLE_LOGS 0
+/* The baseline detector runs as the diagnostic comparator alongside the AI
+ * path. Its UART diagnostics are enabled so the worker lifecycle and gate
+ * results are visible on the console; if a later build needs a quieter
+ * baseline, gate the noisy candidate lines individually instead of silencing
+ * the whole translation unit (2026-08-05). */
+#define DEBUG_CONSOLE_ENABLE_LOGS 1
 #include "debug_console.h"
 #ifndef APP_BASELINE_ENABLE_DIRECT_CONSOLE_LOGS
-#define APP_BASELINE_ENABLE_DIRECT_CONSOLE_LOGS 0U
+#define APP_BASELINE_ENABLE_DIRECT_CONSOLE_LOGS 1U
 #endif
 #include "ina219_power.h"
 #include "inference_metrics.h"
@@ -691,18 +694,12 @@ bool AppBaselineRuntime_RequestEstimate(const uint8_t *frame_ptr,
 		return false;
 	}
 
-	/* The camera stage already copied the completed MONO_Y8 frame into the
-	 * private snapshot.  A second 400 KiB copy here was both wasteful and a
-	 * second ownership boundary.  Reject non-snapshot pointers instead of
-	 * silently reviving the old live-DMA handoff. */
-	if (frame_ptr != camera_inference_frame_snapshot)
-	{
-		DebugConsole_Printf(
-			"[BASELINE] Request dropped; only the immutable snapshot is accepted ptr=%p expected=%p.\r\n",
-			(const void *)frame_ptr, (void *)camera_inference_frame_snapshot);
-		return false;
-	}
-
+	/* The AI worker hands the stopped DMA buffer to the baseline after the
+	 * learned pipeline finishes. The camera thread waits for BOTH workers
+	 * (AppCameraCapture_WaitForInferenceOwnershipRelease) before re-arming
+	 * DCMIPP, so the buffer stays valid for the classical pass. The private
+	 * snapshot no longer exists (CAMERA_CAPTURE_USE_PRIVATE_SNAPSHOT=0), so
+	 * there is no pointer-equality gate here anymore (2026-08-05). */
 	if (camera_baseline_request_in_flight)
 	{
 		DebugConsole_WriteString(
