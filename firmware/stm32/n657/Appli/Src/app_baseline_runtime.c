@@ -25,6 +25,7 @@
 
 #include "app_camera_buffers.h"
 #include "app_ai_config.h"
+#include "app_ai_state.h"
 #include "app_baseline_hough.h"
 #include "app_baseline_template.h"
 #include "app_gauge_geometry.h"
@@ -1155,11 +1156,21 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 	(void)bright_count;
 
 	DebugConsole_WriteString("[BASELINE] probe fixed-crop start\r\n");
-	if (bright_ok)
+	if (app_ai_last_pivot_source_valid)
 	{
-		/* The framing has drifted from the fixed training crop: pivot the
-		 * primary polar scan at the bright centroid (the true dial) so the
-		 * needle vote is anchored correctly (2026-08-05). */
+		/* Anchor the primary polar vote at the learned path's last published
+		 * needle pivot (source pixels): the classical bright-centroid and
+		 * fixed-crop heuristics drift on the current framing, while the AI
+		 * decodes the true pivot every 60 s cycle (2026-08-05). */
+		fixed_crop_ok = AppBaselineRuntime_EstimateFromCenterHypothesis(
+			frame_bytes, frame_size,
+			(size_t)app_ai_last_pivot_source_x,
+			(size_t)app_ai_last_pivot_source_y, dial_radius_px,
+			"fixed-crop-polar", &fixed_crop_hypothesis);
+	}
+	else if (bright_ok)
+	{
+		/* No learned pivot yet (first cycle): use the bright centroid. */
 		fixed_crop_ok = AppBaselineRuntime_EstimateFromCenterHypothesis(
 			frame_bytes, frame_size, center_x, center_y, dial_radius_px,
 			"fixed-crop-polar", &fixed_crop_hypothesis);

@@ -91,6 +91,12 @@ extern size_t app_ai_tip_focus_median_count;
 extern size_t app_ai_tip_focus_median_index;
 extern float  app_ai_tip_focus_last_published;
 extern bool   app_ai_tip_focus_last_published_valid;
+/* Needle pivot decoded by the learned path, in source pixels. Published with
+ * every valid inference so the classical baseline can anchor its polar vote
+ * on the same geometry (the gauge is static between 60 s cycles). */
+extern float app_ai_last_pivot_source_x;
+extern float app_ai_last_pivot_source_y;
+extern bool app_ai_last_pivot_source_valid;
 extern uint32_t app_ai_tip_focus_consecutive_invalid;
 extern uint32_t app_ai_tip_focus_outlier_streak;
 
