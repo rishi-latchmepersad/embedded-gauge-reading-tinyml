@@ -100,9 +100,12 @@ static const AppBaselineRuntime_CalibrationProfile_t
 		&AppBaselineRuntime_DefaultCalibrationProfile,
 };
 #define APP_BASELINE_BRIGHT_THRESHOLD 150U
-/* Bright centroid adapts to gauge position. Use a wide threshold so the
- * baseline works when the gauge moves in the frame. */
-#define APP_BASELINE_BRIGHT_CENTER_MAX_DRIFT_PIXELS 50.0f
+/* Bright centroid adapts to gauge position. The 50 px limit was tuned to the
+ * original framing and rejected the true dial once the camera/gauge drifted
+ * ~140 px, leaving the fixed-crop polar vote pivoting on a static dial
+ * feature (stuck reading). 200 px accepts the drifted dial while still
+ * rejecting glare boxes like (126,86), which sit ~350 px away (2026-08-05). */
+#define APP_BASELINE_BRIGHT_CENTER_MAX_DRIFT_PIXELS 200.0f
 /* The classical contrast scorer is not trustworthy on the dark frames seen
  * after the camera's final exposure retry. Fail closed instead of publishing
  * a boundary peak or replaying stale history. */
@@ -1152,8 +1155,20 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 	(void)bright_count;
 
 	DebugConsole_WriteString("[BASELINE] probe fixed-crop start\r\n");
-	fixed_crop_ok = AppBaselineRuntime_EstimateFromTrainingCropHypothesis(
-		frame_bytes, frame_size, &fixed_crop_hypothesis);
+	if (bright_ok)
+	{
+		/* The framing has drifted from the fixed training crop: pivot the
+		 * primary polar scan at the bright centroid (the true dial) so the
+		 * needle vote is anchored correctly (2026-08-05). */
+		fixed_crop_ok = AppBaselineRuntime_EstimateFromCenterHypothesis(
+			frame_bytes, frame_size, center_x, center_y, dial_radius_px,
+			"fixed-crop-polar", &fixed_crop_hypothesis);
+	}
+	else
+	{
+		fixed_crop_ok = AppBaselineRuntime_EstimateFromTrainingCropHypothesis(
+			frame_bytes, frame_size, &fixed_crop_hypothesis);
+	}
 	DebugConsole_Printf(
 		"[BASELINE] probe fixed-crop done ok=%u\r\n",
 		fixed_crop_ok ? 1U : 0U);
