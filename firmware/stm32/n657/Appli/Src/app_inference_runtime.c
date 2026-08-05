@@ -419,16 +419,6 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 			}
 		}
 
-#if APP_BASELINE_ENABLE_THREAD && APP_BASELINE_QUEUE_AFTER_AI
-		/* Queue the diagnostic comparator only after the learned pipeline has
-		 * consumed the snapshot.  This keeps the capture thread's handoff single-
-		 * owner and makes the documented AI -> baseline ownership order real. */
-		if (!AppBaselineRuntime_RequestEstimate(frame_ptr, frame_length)) {
-			DebugConsole_Printf(
-				"[BASELINE] Failed to queue post-AI snapshot estimate.\r\n");
-		}
-#endif
-
 		TX_INTERRUPT_SAVE_AREA
 		TX_DISABLE
 		AppCameraCapture_ReleaseInferenceFrame();

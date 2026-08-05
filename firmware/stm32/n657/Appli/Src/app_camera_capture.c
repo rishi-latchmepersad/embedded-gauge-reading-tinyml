@@ -1133,6 +1133,18 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	}
 
 	if (camera_capture_use_cmw_pipeline) {
+#if APP_BASELINE_ENABLE_THREAD && APP_BASELINE_QUEUE_WITH_CAPTURE
+		/* Queue the classical comparator BEFORE the learned pipeline so both
+		 * workers read the same stopped DMA frame while it is pristine. The
+		 * baseline is CPU-only (~30 ms) and finishes long before the AI's NPU
+		 * runs clobber the buffer rows; the camera thread waits for BOTH
+		 * workers before re-arming (2026-08-05). */
+		if (!AppBaselineRuntime_RequestEstimate(image_ptr,
+				(ULONG) image_length)) {
+			DebugConsole_Printf(
+				"[BASELINE] Failed to queue pre-AI snapshot estimate.\r\n");
+		}
+#endif
 		/* Capture stopped both DCMIPP and IMX335 before returning, so this
 		 * non-cacheable buffer is immutable until the AI worker releases it. */
 #if CAMERA_CAPTURE_USE_PRIVATE_SNAPSHOT

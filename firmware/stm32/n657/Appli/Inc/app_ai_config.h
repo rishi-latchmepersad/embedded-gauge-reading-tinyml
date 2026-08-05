@@ -124,8 +124,13 @@
 #define APP_BASELINE_ENABLE_THREAD 1U
 #endif
 
-#ifndef APP_BASELINE_QUEUE_AFTER_AI
-#define APP_BASELINE_QUEUE_AFTER_AI 1U
+#ifndef APP_BASELINE_QUEUE_WITH_CAPTURE
+/* Queue the classical comparator with the capture, BEFORE the learned
+ * pipeline (2026-08-05): the baseline is CPU-only and reads the stopped DMA
+ * frame while it is still pristine, because the NPU clobbers the buffer rows
+ * during the AI runs. The camera thread waits for both workers before
+ * re-arming DCMIPP. */
+#define APP_BASELINE_QUEUE_WITH_CAPTURE 1U
 #endif
 
 /* OBB reloc runtime base.
