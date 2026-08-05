@@ -775,12 +775,6 @@ static bool AppAI_RunGaugeModelsFromGray640(const uint8_t *frame_bytes,
 		app_ai_last_inference_valid = true;
 		app_ai_tip_focus_last_published = value;
 		app_ai_tip_focus_last_published_valid = true;
-		/* Publish the decoded needle pivot in source pixels so the classical
-		 * baseline can anchor its polar vote on the same geometry (the gauge
-		 * is static between the 60 s cycles) (2026-08-05). */
-		app_ai_last_pivot_source_x = center_source_x;
-		app_ai_last_pivot_source_y = center_source_y;
-		app_ai_last_pivot_source_valid = true;
 		/* DebugConsole intentionally has no floating-point formatter. Keep the
 		 * geometry visible as milli-units so this line cannot silently collapse
 		 * to blanks while the exact value path remains fully numeric. */
