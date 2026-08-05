@@ -3847,3 +3847,30 @@ sha256[:16] = f7065e4f6b3a98f6
   addresses - re-verify the .map symbols after every such change
   (arm-none-eabi-nm on the new ELF for camera_capture_buffers, the shadow,
   and the pools).
+
+## RESOLVED: production build verified, stall explained (2026-08-05)
+
+- The production build (APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS=0,
+  APP_AI_DIAG_DUMP_CENTER_TIP_TENSORS=0) reads the 40C needle correctly and
+  stably (board logs 38.5-39.6C, matching the offline evaluator). The live
+  path is: stopped DMA buffer (0x2419C000) -> staged crop -> ellipse ->
+  keypoint, with the crop staged before any NPU activity.
+- The earlier 30-70s per-inference wall time was NOT an ATON/WFE fault: it
+  was dominated by the diagnostic FileX/SD writes inside the worker
+  (diag_ct_in/out dumps contending for the media lock with the capture
+  saves, CSV logging, and the 120s flush). The production build is fast
+  enough for the 60s capture cadence.
+- Known, measured inefficiencies (acceptable at 60s cadence, revisit only if
+  the cadence tightens):
+  - ThreadX tick is 100 Hz (TX_TIMER_TICKS_PER_SECOND=100, tx_user.h), so
+    each aton_osal_threadx_wfe() tx_thread_sleep(1) costs 10ms; the ~240+
+    epochs per inference add ~2-4s of sleep time. A bounded busy-poll
+    (~1-2ms checking ATON_INTCTRL_INTREG_GET(0) before yielding) would cut
+    that, but is not needed at 60s cadence.
+  - The ellipse/crop fills read the non-cacheable DMA buffer (~200K uncached
+    bilinear samples, ~1-2s). Accept it or use a cacheable staging copy if
+    the cadence ever tightens.
+- Offline replay tooling that stays useful: scripts/pipeline_ellipse_keypoint_
+  temperature.py (takes a directory of PNGs, uses the ellipse model for the
+  crop) and the fill-repro/where-dark/window-match scripts used to locate the
+  clobbered regions (recreate as needed under tmp/).
