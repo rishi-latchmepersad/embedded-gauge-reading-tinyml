@@ -359,6 +359,23 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 		/* Queue failures and published values are the operational events. A
 		 * successful dequeue is intentionally silent in the normal console. */
 
+#if APP_BASELINE_ENABLE_THREAD && APP_BASELINE_QUEUE_WITH_CAPTURE
+		/* The classical comparator was queued with the capture (before this
+		 * worker) and reads the same stopped DMA frame. Its priority is lower
+		 * than this worker, so without this wait it only gets CPU during our
+		 * WFE sleeps - by which time the NPU has clobbered the buffer rows and
+		 * the baseline reads garbage (2026-08-05). Yield until it finishes
+		 * (bounded) before starting any model work. */
+		{
+			uint32_t baseline_wait_ms = 0U;
+			while (AppBaselineRuntime_IsEstimateInFlight() &&
+					(baseline_wait_ms < 3000U)) {
+				DelayMilliseconds_Cooperative(10U);
+				baseline_wait_ms += 10U;
+			}
+		}
+#endif
+
 		if ((frame_ptr == NULL) || (frame_length == 0U)) {
 			DebugConsole_Printf(
 					"[AI] Worker woke without a queued frame; ignoring.\r\n");
