@@ -131,6 +131,17 @@ static const AppBaselineRuntime_CalibrationProfile_t
 #define APP_BASELINE_SUBDIAL_Y_MAX_FRACTION 0.58f
 #define APP_BASELINE_LOCAL_BACKGROUND_OFFSETS 2U
 #define APP_BASELINE_MIN_RADIUS_PIXELS 16U
+/* Circle-fit dial-center estimator (classical only, 2026-08-05): the bright
+ * dial face is an approximately circular region, so fitting a circle to its
+ * rim boundary yields the true needle pivot. Unlike the bright-pixel
+ * centroid, the fit is not biased by asymmetric dial content (tick labels,
+ * glare, needle) that shifted the pivot by ~90 px on the drifted framing. */
+#define APP_BASELINE_CIRCLE_FIT_SCAN_RADIUS_SCALE 1.6f
+#define APP_BASELINE_CIRCLE_FIT_MAX_POINTS 1024U
+#define APP_BASELINE_CIRCLE_FIT_MIN_INLIERS 32U
+#define APP_BASELINE_CIRCLE_FIT_OUTLIER_TOLERANCE_FRACTION 0.12f
+#define APP_BASELINE_CIRCLE_FIT_RADIUS_MIN_FRACTION 0.50f
+#define APP_BASELINE_CIRCLE_FIT_RADIUS_MAX_FRACTION 1.50f
 /* The dial ring extends beyond the crop's inscribed radius, so use the crop
  * height as a cheap proxy for the real gauge radius. */
 #define APP_BASELINE_DIAL_RADIUS_FROM_CROP_HEIGHT_RATIO 0.56f
@@ -334,6 +345,11 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 static bool AppBaselineRuntime_EstimateCenterFromBrightPixels(
 	const uint8_t *frame_bytes, size_t frame_size, size_t *center_x_out,
 	size_t *center_y_out, size_t *bright_count_out);
+static bool AppBaselineRuntime_EstimateDialCenterByCircleFit(
+	const uint8_t *frame_bytes, size_t frame_size,
+	size_t seed_center_x, size_t seed_center_y,
+	float expected_radius_px, float *center_x_out, float *center_y_out,
+	float *radius_px_out, size_t *inlier_count_out);
 static bool AppBaselineRuntime_EstimateFromTrainingCropHypothesis(
 	const uint8_t *frame_bytes, size_t frame_size,
 	AppBaselineRuntime_Estimate_t *estimate_out);
@@ -1155,19 +1171,79 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 	(void)bright_count;
 
 	DebugConsole_WriteString("[BASELINE] probe fixed-crop start\r\n");
-	if (bright_ok)
 	{
-		/* The framing has drifted from the fixed training crop: pivot the
-		 * primary polar scan at the bright centroid (the true dial) so the
-		 * needle vote is anchored correctly (2026-08-05). */
-		fixed_crop_ok = AppBaselineRuntime_EstimateFromCenterHypothesis(
-			frame_bytes, frame_size, center_x, center_y, dial_radius_px,
-			"fixed-crop-polar", &fixed_crop_hypothesis);
-	}
-	else
-	{
-		fixed_crop_ok = AppBaselineRuntime_EstimateFromTrainingCropHypothesis(
-			frame_bytes, frame_size, &fixed_crop_hypothesis);
+		size_t pivot_x = 0U;
+		size_t pivot_y = 0U;
+		bool pivot_ok = false;
+		size_t inner_center_x = 0U;
+		size_t inner_center_y = 0U;
+		AppGaugeGeometry_TrainingCropCenter(CAMERA_CAPTURE_WIDTH_PIXELS,
+											CAMERA_CAPTURE_HEIGHT_PIXELS,
+											&inner_center_x, &inner_center_y);
+
+		/* Classical rim-circle fit first: the fitted dial circle center is
+		 * the true pivot, while the bright centroid is biased by asymmetric
+		 * dial content (tick labels, glare, needle) (2026-08-05). */
+		{
+			float fit_center_x = 0.0f;
+			float fit_center_y = 0.0f;
+			float fit_radius = 0.0f;
+			size_t fit_inliers = 0U;
+			if (AppBaselineRuntime_EstimateDialCenterByCircleFit(
+					frame_bytes, frame_size, inner_center_x, inner_center_y,
+					dial_radius_px, &fit_center_x, &fit_center_y, &fit_radius,
+					&fit_inliers))
+			{
+				/* Drift gate mirrors the bright-centroid gate: the fitted
+				 * dial must stay near the training center. */
+				const float fit_dx = fit_center_x - (float)inner_center_x;
+				const float fit_dy = fit_center_y - (float)inner_center_y;
+				const float fit_drift =
+					sqrtf((fit_dx * fit_dx) + (fit_dy * fit_dy));
+				if (fit_drift <= APP_BASELINE_BRIGHT_CENTER_MAX_DRIFT_PIXELS)
+				{
+					pivot_x = (size_t)fit_center_x;
+					pivot_y = (size_t)fit_center_y;
+					pivot_ok = true;
+					DebugConsole_Printf(
+						"[BASELINE] circle-fit center=(%lu,%lu) r=%ld.%01ld inliers=%lu ok=1\r\n",
+						(unsigned long)pivot_x, (unsigned long)pivot_y,
+						(long)(fit_radius * 10.0f) / 10L,
+						(long)labs((long)(fit_radius * 10.0f)) % 10L,
+						(unsigned long)fit_inliers);
+				}
+				else
+				{
+					DebugConsole_Printf(
+						"[BASELINE] circle-fit rejected drift=%ld.%01ld px\r\n",
+						(long)(fit_drift * 10.0f) / 10L,
+						(long)labs((long)(fit_drift * 10.0f)) % 10L);
+				}
+			}
+			else
+			{
+				DebugConsole_WriteString("[BASELINE] circle-fit missing\r\n");
+			}
+		}
+
+		/* Fall back to the bright centroid, then the training center. */
+		if (!pivot_ok && bright_ok)
+		{
+			pivot_x = center_x;
+			pivot_y = center_y;
+			pivot_ok = true;
+		}
+		if (pivot_ok)
+		{
+			fixed_crop_ok = AppBaselineRuntime_EstimateFromCenterHypothesis(
+				frame_bytes, frame_size, pivot_x, pivot_y, dial_radius_px,
+				"fixed-crop-polar", &fixed_crop_hypothesis);
+		}
+		else
+		{
+			fixed_crop_ok = AppBaselineRuntime_EstimateFromTrainingCropHypothesis(
+				frame_bytes, frame_size, &fixed_crop_hypothesis);
+		}
 	}
 	DebugConsole_Printf(
 		"[BASELINE] probe fixed-crop done ok=%u\r\n",
@@ -2242,6 +2318,252 @@ static bool AppBaselineRuntime_EstimateCenterFromBrightPixels(
 	*center_x_out = (size_t)(bright_sum_x / (uint64_t)bright_count);
 	*center_y_out = (size_t)(bright_sum_y / (uint64_t)bright_count);
 	*bright_count_out = bright_count;
+	return true;
+}
+
+/**
+ * @brief Fit a circle to the bright dial boundary using Kasa least squares.
+ *
+ * The dial face is an approximately circular bright region; fitting its rim
+ * gives the true needle pivot even when the bright region is asymmetric
+ * (tick labels, glare, needle) - unlike the bright-pixel centroid. The
+ * boundary is sampled as the first and last non-saturated bright pixel in
+ * each scanned row and column, then a mean-centered algebraic circle fit
+ * runs twice: once over all samples and once over the inliers only.
+ *
+ * @param[in] frame_bytes       Y8 frame bytes.
+ * @param[in] frame_size        Byte length of the frame.
+ * @param[in] seed_center_x     Scan-window center x (training crop center).
+ * @param[in] seed_center_y     Scan-window center y.
+ * @param[in] expected_radius_px Ratio-based dial radius used for the window
+ *                               size and the radius gates.
+ * @param[out] center_x_out     Fitted dial center x.
+ * @param[out] center_y_out     Fitted dial center y.
+ * @param[out] radius_px_out    Fitted dial radius.
+ * @param[out] inlier_count_out Boundary points kept after the outlier pass.
+ * @retval true when the fit passes the radius and inlier gates.
+ */
+static bool AppBaselineRuntime_EstimateDialCenterByCircleFit(
+	const uint8_t *frame_bytes, size_t frame_size,
+	size_t seed_center_x, size_t seed_center_y,
+	float expected_radius_px, float *center_x_out, float *center_y_out,
+	float *radius_px_out, size_t *inlier_count_out)
+{
+	const size_t width_pixels = CAMERA_CAPTURE_WIDTH_PIXELS;
+	const size_t height_pixels = CAMERA_CAPTURE_HEIGHT_PIXELS;
+	const size_t stride_bytes = width_pixels * CAMERA_CAPTURE_BYTES_PER_PIXEL;
+	/* Static so the boundary stack does not pressure the worker stack; the
+	 * baseline thread is the only caller and requests are serialized. */
+	static float boundary_x[APP_BASELINE_CIRCLE_FIT_MAX_POINTS];
+	static float boundary_y[APP_BASELINE_CIRCLE_FIT_MAX_POINTS];
+
+	if ((frame_bytes == NULL) || (center_x_out == NULL) ||
+		(center_y_out == NULL) || (radius_px_out == NULL) ||
+		(inlier_count_out == NULL) ||
+		(frame_size < (stride_bytes * height_pixels)) ||
+		(expected_radius_px <= 0.0f))
+	{
+		return false;
+	}
+
+	/* Scan window: 1.6x the expected radius around the seed center covers
+	 * the dial rim even after the ~140 px framing drift. */
+	const size_t scan_radius_px = (size_t)(
+		expected_radius_px * APP_BASELINE_CIRCLE_FIT_SCAN_RADIUS_SCALE);
+	const size_t window_x_min = (seed_center_x > scan_radius_px) ?
+		(seed_center_x - scan_radius_px) : 0U;
+	const size_t window_x_max = (seed_center_x + scan_radius_px < width_pixels) ?
+		(seed_center_x + scan_radius_px) : width_pixels;
+	const size_t window_y_min = (seed_center_y > scan_radius_px) ?
+		(seed_center_y - scan_radius_px) : 0U;
+	const size_t window_y_max = (seed_center_y + scan_radius_px < height_pixels) ?
+		(seed_center_y + scan_radius_px) : height_pixels;
+
+	size_t boundary_count = 0U;
+
+	/* Row pass: first and last non-saturated bright pixel in every second
+	 * row. Saturated glare pixels are skipped so the rim, not the blown-out
+	 * reflection spot, defines the boundary. */
+	for (size_t y = window_y_min; y < window_y_max; y += 2U)
+	{
+		size_t first_x = (size_t)-1;
+		size_t last_x = (size_t)-1;
+		for (size_t x = window_x_min; x < window_x_max; ++x)
+		{
+			const float luma = AppBaselineRuntime_ReadLuma(frame_bytes,
+														   width_pixels, x, y);
+			if ((luma < (float)APP_BASELINE_BRIGHT_THRESHOLD) ||
+				(luma > (float)APP_BASELINE_SATURATION_THRESHOLD))
+			{
+				continue;
+			}
+			if (first_x == (size_t)-1)
+			{
+				first_x = x;
+			}
+			last_x = x;
+		}
+		if (first_x != (size_t)-1)
+		{
+			boundary_x[boundary_count] = (float)first_x;
+			boundary_y[boundary_count] = (float)y;
+			++boundary_count;
+			if ((last_x != first_x) &&
+				(boundary_count < APP_BASELINE_CIRCLE_FIT_MAX_POINTS))
+			{
+				boundary_x[boundary_count] = (float)last_x;
+				boundary_y[boundary_count] = (float)y;
+				++boundary_count;
+			}
+		}
+		if (boundary_count >= APP_BASELINE_CIRCLE_FIT_MAX_POINTS)
+		{
+			break;
+		}
+	}
+
+	/* Column pass: same boundary scan along every second column. */
+	for (size_t x = window_x_min;
+		 (x < window_x_max) &&
+		 (boundary_count < APP_BASELINE_CIRCLE_FIT_MAX_POINTS);
+		 x += 2U)
+	{
+		size_t first_y = (size_t)-1;
+		size_t last_y = (size_t)-1;
+		for (size_t y = window_y_min; y < window_y_max; ++y)
+		{
+			const float luma = AppBaselineRuntime_ReadLuma(frame_bytes,
+														   width_pixels, x, y);
+			if ((luma < (float)APP_BASELINE_BRIGHT_THRESHOLD) ||
+				(luma > (float)APP_BASELINE_SATURATION_THRESHOLD))
+			{
+				continue;
+			}
+			if (first_y == (size_t)-1)
+			{
+				first_y = y;
+			}
+			last_y = y;
+		}
+		if (first_y != (size_t)-1)
+		{
+			boundary_x[boundary_count] = (float)x;
+			boundary_y[boundary_count] = (float)first_y;
+			++boundary_count;
+			if ((last_y != first_y) &&
+				(boundary_count < APP_BASELINE_CIRCLE_FIT_MAX_POINTS))
+			{
+				boundary_x[boundary_count] = (float)x;
+				boundary_y[boundary_count] = (float)last_y;
+				++boundary_count;
+			}
+		}
+	}
+
+	if (boundary_count < APP_BASELINE_CIRCLE_FIT_MIN_INLIERS)
+	{
+		return false;
+	}
+
+	/* Mean-centered Kasa fit. Two iterations: fit on all boundary samples,
+	 * then refit on the inliers only (points within the tolerance band of
+	 * the first circle). The mean-centering keeps the normal equations well
+	 * conditioned. */
+	float center_x = 0.0f;
+	float center_y = 0.0f;
+	float radius = 0.0f;
+	size_t fit_count = boundary_count;
+	for (size_t iteration = 0U; iteration < 2U; ++iteration)
+	{
+		float mean_x = 0.0f;
+		float mean_y = 0.0f;
+		for (size_t i = 0U; i < fit_count; ++i)
+		{
+			mean_x += boundary_x[i];
+			mean_y += boundary_y[i];
+		}
+		mean_x /= (float)fit_count;
+		mean_y /= (float)fit_count;
+
+		float suu = 0.0f;
+		float svv = 0.0f;
+		float suv = 0.0f;
+		float sau = 0.0f;
+		float sav = 0.0f;
+		for (size_t i = 0U; i < fit_count; ++i)
+		{
+			const float u = boundary_x[i] - mean_x;
+			const float v = boundary_y[i] - mean_y;
+			const float alpha = (u * u) + (v * v);
+			suu += u * u;
+			svv += v * v;
+			suv += u * v;
+			sau += alpha * u;
+			sav += alpha * v;
+		}
+
+		/* Solve the 2x2 normal equations with Cramer's rule. */
+		const float det = (suu * svv) - (suv * suv);
+		if (fabsf(det) < 1e-9f)
+		{
+			return false;
+		}
+		const float uc = ((sau * svv) - (suv * sav)) / det;
+		const float vc = ((suu * sav) - (suv * sau)) / det;
+		center_x = mean_x + uc;
+		center_y = mean_y + vc;
+
+		float radius_sum = 0.0f;
+		for (size_t i = 0U; i < fit_count; ++i)
+		{
+			const float dx = boundary_x[i] - center_x;
+			const float dy = boundary_y[i] - center_y;
+			radius_sum += sqrtf((dx * dx) + (dy * dy));
+		}
+		radius = radius_sum / (float)fit_count;
+
+		if (iteration == 0U)
+		{
+			/* Outlier pass: keep only samples near the first fitted circle. */
+			const float tolerance = fmaxf(
+				expected_radius_px *
+					APP_BASELINE_CIRCLE_FIT_OUTLIER_TOLERANCE_FRACTION,
+				4.0f);
+			size_t kept = 0U;
+			for (size_t i = 0U; i < fit_count; ++i)
+			{
+				const float dx = boundary_x[i] - center_x;
+				const float dy = boundary_y[i] - center_y;
+				const float dist = sqrtf((dx * dx) + (dy * dy));
+				if (fabsf(dist - radius) <= tolerance)
+				{
+					boundary_x[kept] = boundary_x[i];
+					boundary_y[kept] = boundary_y[i];
+					++kept;
+				}
+			}
+			fit_count = kept;
+			if (fit_count < APP_BASELINE_CIRCLE_FIT_MIN_INLIERS)
+			{
+				return false;
+			}
+		}
+	}
+
+	/* Radius gate: the fitted circle must look like the expected inner dial,
+	 * not the outer bezel or a glare box. */
+	if ((radius < (expected_radius_px *
+				   APP_BASELINE_CIRCLE_FIT_RADIUS_MIN_FRACTION)) ||
+		(radius > (expected_radius_px *
+				   APP_BASELINE_CIRCLE_FIT_RADIUS_MAX_FRACTION)))
+	{
+		return false;
+	}
+
+	*center_x_out = center_x;
+	*center_y_out = center_y;
+	*radius_px_out = radius;
+	*inlier_count_out = fit_count;
 	return true;
 }
 

@@ -3962,3 +3962,59 @@ Concrete mapping (the real artifact/package names behind the friendly names):
    (registry + APP_BASELINE_CALIBRATION_PROFILE_NAME) - both the AI and
    baseline paths use AppBaselineRuntime_MapAngleToTemperature, so a gauge
    change is a profile entry, not a code change.
+
+# Baseline independence decision + classical rim-circle-fit pivot (2026-08-05)
+
+- Decision: the classical baseline comparator must be classical-CV only. The
+  experiment that anchored the baseline polar vote at the learned path's
+  decoded needle pivot (commit 77aca880) was reverted (commit 3d7bcd1e): a
+  baseline that reuses the AI pivot is a semi-independent check, not an
+  independent one.
+- Root cause of the baseline failures on the drifted framing: the bright-pixel
+  centroid is the dial face's center of mass, not the needle pivot. On the
+  current framing it sat ~90 px away from the true pivot (271-333, 223-263 vs
+  ~316, 290), so the polar vote measured spokes around the wrong point and
+  produced 50C / -190C garbage.
+- New classical pivot estimator (app_baseline_runtime.c,
+  AppBaselineRuntime_EstimateDialCenterByCircleFit): the bright dial face is
+  an approximately circular region, so fit a circle to its rim. Boundary
+  samples = first/last non-saturated bright pixel per scanned row and column
+  (step 2, window = 1.6x expected radius around the training center). Then a
+  mean-centered Kasa algebraic least-squares circle fit, two iterations:
+  fit all samples, keep inliers within 12% of the fitted radius (min 4 px),
+  refit. Gates: >= 32 inliers, fitted radius within [0.5x, 1.5x] the
+  ratio-based dial radius, center drift <= 200 px from the training center.
+- Wiring: the circle-fit center is now the pivot of the primary fixed-crop
+  polar scan; fallback order = circle fit, bright centroid, training crop.
+- Why Kasa over the existing rim-vote search: the rim-vote center
+  (ScoreDialCenterCandidate / EstimateDialCenterFromRimVotes) is guarded to
+  stay within 14 px of the training center, which the drifted framing
+  violates, and it locked onto the outer bezel at (124,111) once loosened.
+  The circle fit estimates the center freely and then applies its own
+  drift gate.
+- Board expectations: on the 640x640 Y8 frames (dial radius ~125 px), the
+  fitted center should land near the true pivot. If the polar READING is
+  still wrong with a correct pivot, the remaining classical-CV problem is the
+  dark-spoke scoring itself (ray fraction, background offsets, subdial mask)
+  - see ScoreAngle / ScoreNeedleCandidate.
+
+# Windows git pitfall: sparse checkout + Zone.Identifier file (2026-08-05)
+
+- The Windows firmware tree uses a sparse checkout (cone: firmware/, docs/,
+  AGENTS.md, README.md, LICENSE, .gitignore, opencode.jsonc) so the WSL-side
+  ml/ and scripts/ content stays off the Windows disk.
+- A committed ml/ capture carries an NTFS ADS name ("capture_....png:
+  Zone.Identifier"), which Windows git rejects during any full-tree index
+  read: "error: invalid path ... Zone.Identifier". Symptoms: git revert /
+  read-tree / sparse-checkout reapply fail or corrupt the cache-tree, then
+  status reports phantom staged deletions ("DD") for out-of-cone paths.
+- Working fixes: "git -c core.protectNTFS=false read-tree HEAD" repopulates
+  the index (the ADS entry is then skipped from the working tree), and
+  plumbing ("update-index --cacheinfo", "commit-tree" with an explicit
+  parent/tree) bypasses the pathspec machinery that the sparse index breaks.
+- NEVER delete .git/index in this repo: the sparse index cannot be rebuilt on
+  Windows because of the Zone.Identifier entry, and "git add -A" would stage
+  ~19k deletions.
+- When a commit must contain only specific files, prefer "git commit -- paths"
+  with a single-line -m (PowerShell mangles multi-line -m into pathspecs and
+  git then reports the tail of the message as an unmatched path).
