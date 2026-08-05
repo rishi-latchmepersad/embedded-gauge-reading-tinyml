@@ -156,9 +156,10 @@ static const AppBaselineRuntime_CalibrationProfile_t
  * best peak still wins even when runner_up > best_score. Board log at -30C
  * shows pr=582-617 being rejected, so we need this well below 0.58. */
 #define APP_BASELINE_MIN_PEAK_RATIO 0.35f
-/* Extra trace for classical selector debugging. Keep enabled while we chase
- * center drift so we can see which gate or comparison is steering the read. */
-#define APP_BASELINE_DEBUG_SELECTION 1U
+/* Per-candidate trace for classical selector debugging. OFF in the live
+ * build (2026-08-05): the candidate/detail lines are visible without the
+ * per-bin top-peak flood. */
+#define APP_BASELINE_DEBUG_SELECTION 0U
 /* Strong fixed-crop or image-center reads can still be promoted when they stay
  * close to the last stable temperature, even if the peak ratio is a little
  * soft. This keeps a good continuation frame from getting stuck behind stale
@@ -1164,31 +1165,46 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 		"[BASELINE] probe board-prior done ok=%u\r\n",
 		board_prior_ok ? 1U : 0U);
 
-	DebugConsole_WriteString("[BASELINE] probe rim-geometry start\r\n");
-	rim_geometry_ok = AppBaselineRuntime_EstimateFromRimGeometryHypothesis(
-		frame_bytes, frame_size, &rim_geometry_hypothesis);
-	DebugConsole_Printf(
-		"[BASELINE] probe rim-geometry done ok=%u\r\n",
-		rim_geometry_ok ? 1U : 0U);
-
-	/* Use the inner dial center for the image-center hypothesis too, so the
-	 * polar vote pivots around the correct point for the Celsius scale. */
+	/* The rim-geometry and image-center probes run the same heavy polar vote
+	 * and only matter when the earlier hypotheses fail. When the fixed-crop
+	 * hypothesis already produced a decisive winner, skip them entirely -
+	 * this cut the per-cycle baseline compute from ~8.8s to ~1-2s
+	 * (2026-08-05). */
+	if (fixed_crop_ok && (fixed_crop_hypothesis.confidence >= 50.0f))
 	{
-		size_t inner_center_x = 0U;
-		size_t inner_center_y = 0U;
-		DebugConsole_WriteString("[BASELINE] probe image-center start\r\n");
-		AppGaugeGeometry_TrainingCropCenter(CAMERA_CAPTURE_WIDTH_PIXELS,
-											CAMERA_CAPTURE_HEIGHT_PIXELS,
-											&inner_center_x, &inner_center_y);
-		center_ok = AppBaselineRuntime_EstimateFromCenterHypothesis(frame_bytes,
-																	frame_size, inner_center_x,
-																	inner_center_y, dial_radius_px,
-																	"image-center-polar",
-																	&center_hypothesis);
+		DebugConsole_WriteString(
+			"[BASELINE] probe rim-geometry + image-center skipped (fixed-crop decisive)\r\n");
+		rim_geometry_ok = false;
+		center_ok = false;
+	}
+	else
+	{
+		DebugConsole_WriteString("[BASELINE] probe rim-geometry start\r\n");
+		rim_geometry_ok = AppBaselineRuntime_EstimateFromRimGeometryHypothesis(
+			frame_bytes, frame_size, &rim_geometry_hypothesis);
 		DebugConsole_Printf(
-			"[BASELINE] probe image-center done ok=%u center=(%lu,%lu)\r\n",
-			center_ok ? 1U : 0U,
-			(unsigned long)inner_center_x, (unsigned long)inner_center_y);
+			"[BASELINE] probe rim-geometry done ok=%u\r\n",
+			rim_geometry_ok ? 1U : 0U);
+
+		/* Use the inner dial center for the image-center hypothesis too, so the
+		 * polar vote pivots around the correct point for the Celsius scale. */
+		{
+			size_t inner_center_x = 0U;
+			size_t inner_center_y = 0U;
+			DebugConsole_WriteString("[BASELINE] probe image-center start\r\n");
+			AppGaugeGeometry_TrainingCropCenter(CAMERA_CAPTURE_WIDTH_PIXELS,
+												CAMERA_CAPTURE_HEIGHT_PIXELS,
+												&inner_center_x, &inner_center_y);
+			center_ok = AppBaselineRuntime_EstimateFromCenterHypothesis(frame_bytes,
+																		frame_size, inner_center_x,
+																		inner_center_y, dial_radius_px,
+																		"image-center-polar",
+																		&center_hypothesis);
+			DebugConsole_Printf(
+				"[BASELINE] probe image-center done ok=%u center=(%lu,%lu)\r\n",
+				center_ok ? 1U : 0U,
+				(unsigned long)inner_center_x, (unsigned long)inner_center_y);
+		}
 	}
 
 	if (!bright_ok && !fixed_crop_ok && !board_prior_ok && !rim_geometry_ok &&
