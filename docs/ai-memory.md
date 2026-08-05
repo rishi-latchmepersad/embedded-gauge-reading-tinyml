@@ -3970,6 +3970,61 @@ Concrete mapping (the real artifact/package names behind the friendly names):
   decoded needle pivot (commit 77aca880) was reverted (commit 3d7bcd1e): a
   baseline that reuses the AI pivot is a semi-independent check, not an
   independent one.
+
+# Baseline scoring rework: what the offline replay proved (2026-08-05)
+
+- The old darkness-based polar cascade (edge-mag x tangential x darkness x
+  hub/tip/width boosts) had ~30 tuned thresholds from the ORIGINAL framing
+  and produced razor-sharp false peaks on the current one (score=68444 vs
+  runner_up=240, angles 43-225 deg vs the true ~53-60 deg, and 1000x score
+  swings between near-identical frames).
+- Offline replay tooling now exists in tmp/ (git-ignored scratch):
+  - analyze_baseline_polar.py - faithful numpy port of the on-target vote
+    (reproduced the board's 139-148 deg false peaks on real captures).
+  - batch_run_vote.py / test_band_compare.py / test_hub_darkness.py -
+    candidate-cue validators over every captured frame.
+  - gray8_to_png.py, check_keypoint_parity.py - offline AI parity checks.
+- What the frames proved:
+  1. The needle on the current framing is dark only 0.08-0.35R from the hub,
+     then a SATURATED GLARE streak (luma 254 = the needle's own reflection),
+     then mid-tone invisible.  NO long-run luma cue can see it; the old
+     cascade's garbage came from locking onto tick/subdial structures.
+  2. The dial radius the baseline assumed (0.56 x crop height = 197 px) is
+     1.57x the true dial radius (~125 px, from the ellipse model).  The old
+     ray bands (frame-edge-relative in ScoreAngle, 0.20-0.78R elsewhere)
+     therefore sampled the tick ring instead of the needle.
+  3. The circle-fit pivot finds the OUTER bezel (r=264-271), not the dial;
+     the bright centroid and training center are also off by 40-140 px.
+     The best classical pivot is the board-prior (314,285), ~17 px from the
+     true dial center (307,297).
+  4. The ONE robust classical cue on these frames: hub-anchored inner-shaft
+     darkness over 0.18R-0.33R (past the hub cap, above the subdial mask):
+     65-100x darker than the median at the needle direction, stable to ~1 deg
+     across 18 live captures, and it agrees with the offline AI (needle at
+     ~93-106 deg north = ~38-41 C that morning).
+- Implemented in EstimatePolarNeedle (app_baseline_runtime.c):
+  1. The darkness/edge vote was REPLACED by a hub-attached radial-run vote:
+     per bin, walk 0.10R-0.90R, mark |line - perpendicular bg| >= 25-30,
+     keep only runs that start within 0.35R and span >= 45% of the dial
+     radius.  Polarity-agnostic.  Fails closed on low-contrast frames.
+  2. ScoreAngle's ray band was re-anchored from the frame-edge distance to
+     the dial radius (0.20R-0.78R), so the middle-shaft weight sits on the
+     needle, not in the tick ring.
+  3. A hub-darkness channel adds (darkness - floor)^2 votes only for bins
+     that are >= 3x the median darkness AND >= 40: the cue that reads the
+     needle on the current framing.
+- Board expectations: the baseline should now fail closed on low-contrast
+  frames (no more 50C / -190C garbage) and, when the needle is visible, read
+  the needle direction via the hub-darkness channel.  With the board-prior
+  pivot the angle carries ~17 px of pivot error (~up to 8 deg); the next
+  step is a classical INNER-dial rim fit (band-limited to ~1.0x the true
+  dial radius) to recover the pivot, which needs one BRIGHT frame
+  (capture_42-23.gray8 from the 14:41 session, still on the board) to tune.
+- Known limitation: on low-contrast frames the needle is physically invisible
+  to luma-based methods; the baseline fails closed there by design, and only
+  the learned path reads those frames.
+
+# Windows git pitfall: sparse checkout + Zone.Identifier file (2026-08-05)
 - Root cause of the baseline failures on the drifted framing: the bright-pixel
   centroid is the dial face's center of mass, not the needle pivot. On the
   current framing it sat ~90 px away from the true pivot (271-333, 223-263 vs

@@ -145,6 +145,36 @@ static const AppBaselineRuntime_CalibrationProfile_t
 /* The dial ring extends beyond the crop's inscribed radius, so use the crop
  * height as a cheap proxy for the real gauge radius. */
 #define APP_BASELINE_DIAL_RADIUS_FROM_CROP_HEIGHT_RATIO 0.56f
+/* Hub-attached radial-run vote (2026-08-05): the needle is a LONG spoke
+ * leaving the hub; tick marks are short isolated spokes.  The vote walks
+ * each angle bin as a ray from 0.10R to 0.90R, marks |line - perpendicular
+ * background| discontinuities (polarity-agnostic: the needle can be darker
+ * OR brighter than the dial face), and keeps only runs that start within
+ * 0.35R of the hub and span at least 45% of the dial radius.  The offline
+ * replay on board captures showed the darkness-only cascade locking onto
+ * tick artwork and subdial edges while the needle was invisible to it on
+ * low-contrast frames. */
+#define APP_BASELINE_RUN_RAY_STEPS 48U
+#define APP_BASELINE_RUN_START_FRACTION 0.10f
+#define APP_BASELINE_RUN_END_FRACTION 0.90f
+#define APP_BASELINE_RUN_HUB_MAX_START_FRACTION 0.35f
+#define APP_BASELINE_RUN_MIN_FRACTION 0.45f
+#define APP_BASELINE_RUN_DISC_THRESHOLD_BRIGHT 30.0f
+#define APP_BASELINE_RUN_DISC_THRESHOLD_NORMAL 25.0f
+#define APP_BASELINE_RUN_BACKGROUND_OFFSET_PIXELS 3U
+#define APP_BASELINE_RUN_BACKGROUND_MAX_OFFSET_PX 6.0f
+/* Hub-darkness channel (2026-08-05): the needle's inner shaft between 0.18R
+ * and 0.33R from the pivot stays dark even when glare or low contrast hides
+ * the rest of the needle; tick rays are not dark there.  The band sits past
+ * the hub cap (0.08R) so the cap edge cannot fake a peak.  Validated offline
+ * on 18 live captures: the needle direction was 65-100x darker than the
+ * median, stable to ~1 deg, while the long-run channel correctly fails
+ * closed on low-contrast frames. */
+#define APP_BASELINE_HUB_SHAFT_START_FRACTION 0.18f
+#define APP_BASELINE_HUB_SHAFT_END_FRACTION 0.33f
+#define APP_BASELINE_HUB_SHAFT_STEPS 24U
+#define APP_BASELINE_HUB_DARKNESS_FLOOR 40.0f
+#define APP_BASELINE_HUB_DARKNESS_MEDIAN_RATIO 3.0f
 /* The board capture has a slightly off-center inner dial with a smaller
  * effective radius than the full crop. This fixed prior is still classical;
  * it just encodes the framing we already observed on the board. */
@@ -4167,7 +4197,7 @@ static float AppBaselineRuntime_MiddleShaftWeight(float sample_progress)
  */
 static float AppBaselineRuntime_ScoreAngle(const uint8_t *frame_bytes,
 										   size_t frame_width_pixels, size_t frame_height_pixels, size_t center_x,
-										   size_t center_y, float angle_rad)
+										   size_t center_y, float dial_radius_px, float angle_rad)
 {
 	/* Angular Mask: Only score angles within the calibrated gauge sweep.
 	 * This prevents the baseline from locking onto the dial bezel or
@@ -4210,16 +4240,13 @@ static float AppBaselineRuntime_ScoreAngle(const uint8_t *frame_bytes,
 	const float perp_dy = unit_dx;
 	const float center_x_f = (float)center_x;
 	const float center_y_f = (float)center_y;
-	const float max_radius_x =
-		(float)((center_x < (frame_width_pixels - 1U - center_x)) ? center_x
-																  : (frame_width_pixels - 1U - center_x));
-	const float max_radius_y =
-		(float)((center_y < (frame_height_pixels - 1U - center_y)) ? center_y
-																   : (frame_height_pixels - 1U - center_y));
-	const float max_radius = (max_radius_x < max_radius_y) ? max_radius_x
-														   : max_radius_y;
-	const float start_radius = max_radius * APP_BASELINE_RAY_START_FRACTION;
-	const float end_radius = max_radius * APP_BASELINE_RAY_END_FRACTION;
+	/* Ray band anchored to the dial radius, not the frame edge: the old
+	 * frame-edge band (0.20-0.78 of the distance to the nearest border)
+	 * pushed the middle-shaft weight past the dial rim into the tick ring,
+	 * which is exactly the clutter the needle vote must reject
+	 * (2026-08-05). */
+	const float start_radius = dial_radius_px * APP_BASELINE_RAY_START_FRACTION;
+	const float end_radius = dial_radius_px * APP_BASELINE_RAY_END_FRACTION;
 	const float radius_step =
 		(APP_BASELINE_RAY_SAMPLES > 1U) ? ((end_radius - start_radius) / (float)(APP_BASELINE_RAY_SAMPLES - 1U)) : 0.0f;
 	float score = 0.0f;
@@ -4253,7 +4280,7 @@ static float AppBaselineRuntime_ScoreAngle(const uint8_t *frame_bytes,
 		}
 
 		if (AppBaselineRuntime_IsInSubdialMask(center_x, center_y,
-											   (size_t)sample_x, (size_t)sample_y, max_radius))
+											   (size_t)sample_x, (size_t)sample_y, dial_radius_px))
 		{
 			continue;
 		}
@@ -4289,7 +4316,7 @@ static float AppBaselineRuntime_ScoreAngle(const uint8_t *frame_bytes,
 			const bool right_in_bounds = (right_x >= 0L) && (right_y >= 0L) && ((size_t)right_x < frame_width_pixels) && ((size_t)right_y < frame_height_pixels);
 
 			if (left_in_bounds && !AppBaselineRuntime_IsInSubdialMask(center_x, center_y,
-																	  (size_t)left_x, (size_t)left_y, max_radius))
+																	  (size_t)left_x, (size_t)left_y, dial_radius_px))
 			{
 				const float bg_luma = AppBaselineRuntime_ReadLuma(frame_bytes,
 																  frame_width_pixels, (size_t)left_x, (size_t)left_y);
@@ -4303,7 +4330,7 @@ static float AppBaselineRuntime_ScoreAngle(const uint8_t *frame_bytes,
 			}
 
 			if (right_in_bounds && !AppBaselineRuntime_IsInSubdialMask(center_x, center_y,
-																	   (size_t)right_x, (size_t)right_y, max_radius))
+																	   (size_t)right_x, (size_t)right_y, dial_radius_px))
 			{
 				const float bg_luma_r = AppBaselineRuntime_ReadLuma(frame_bytes,
 																	frame_width_pixels, (size_t)right_x, (size_t)right_y);
@@ -4387,7 +4414,7 @@ static float AppBaselineRuntime_ScoreNeedleCandidate(
 {
 	const float ray_score = AppBaselineRuntime_ScoreAngle(
 		frame_bytes, frame_width_pixels, frame_height_pixels,
-		center_x, center_y, angle_rad);
+		center_x, center_y, dial_radius_px, angle_rad);
 	const float cos_a = cosf(angle_rad);
 	const float sin_a = -sinf(angle_rad);  /* Negate for image Y convention */
 	float continuity = 0.0f;
@@ -4504,9 +4531,6 @@ bool AppBaselineRuntime_EstimatePolarNeedle(
 	 * valid needle angles on captures where the needle sits near the sweep
 	 * boundaries (e.g. -30°C or 50°C). The spoke-continuity check below is
 	 * sufficient to reject dial markings. */
-	const float angle_margin_rad = 10.0f * (APP_BASELINE_PI / 180.0f);
-	const size_t scan_x_max_inclusive = scan_x_max - 1U;
-	const size_t scan_y_max_inclusive = scan_y_max - 1U;
 	float angle_votes[APP_BASELINE_ANGLE_BINS] = {0.0f};
 	float smoothed_votes[APP_BASELINE_ANGLE_BINS] = {0.0f};
 	float selection_votes[APP_BASELINE_ANGLE_BINS] = {0.0f};
@@ -4515,7 +4539,6 @@ bool AppBaselineRuntime_EstimatePolarNeedle(
 	size_t best_bin = 0U;
 	bool full_sweep_selected = false;
 	const bool bright_relaxed = camera_baseline_current_frame_is_bright;
-	const float edge_threshold = bright_relaxed ? 4.0f : 8.0f;
 	const float main_continuity_threshold = bright_relaxed ? 0.14f : 0.35f;
 	const float main_hub_threshold = bright_relaxed ? 0.10f : 0.25f;
 	const float hot_continuity_threshold = bright_relaxed ? 0.14f : 0.28f;
@@ -4543,185 +4566,260 @@ bool AppBaselineRuntime_EstimatePolarNeedle(
 	}
 
 	{
-		/* Focus on middle shaft (30%-70%) where needle is most distinct from
-		 * dial markings. The Python reference uses this tighter range. */
-		const float search_radius_min = AppBaselineRuntime_ClampFloat(
-			dial_radius_px * 0.30f, (float)APP_BASELINE_MIN_RADIUS_PIXELS,
-			dial_radius_px);
-		const float search_radius_max = dial_radius_px * 0.70f;
-		if (search_radius_max <= search_radius_min)
-		{
-			return false;
-		}
+		/* Hub-attached radial-run vote (2026-08-05).  Walk every angle bin as
+		 * a ray from 0.10R to 0.90R and find the longest contiguous run of
+		 * |line - perpendicular background| discontinuities.  The needle is a
+		 * long spoke that leaves the hub; tick marks are short, isolated
+		 * spokes.  Polarity-agnostic: the needle can be darker OR brighter
+		 * than the dial face, so a lit needle on a dark dial still votes.
+		 * Offline replay on board captures showed the previous darkness-only
+		 * cascade locking onto tick artwork while the needle was invisible
+		 * on low-contrast frames; this vote fails closed there instead. */
+		const float disc_threshold =
+			camera_baseline_current_frame_is_bright
+				? APP_BASELINE_RUN_DISC_THRESHOLD_BRIGHT
+				: APP_BASELINE_RUN_DISC_THRESHOLD_NORMAL;
+		const float run_min_start_radius_px =
+			dial_radius_px * APP_BASELINE_RUN_START_FRACTION;
+		const float run_radius_step_px =
+			(dial_radius_px *
+			 (APP_BASELINE_RUN_END_FRACTION - APP_BASELINE_RUN_START_FRACTION)) /
+			(float)(APP_BASELINE_RUN_RAY_STEPS - 1U);
 
-		for (size_t y = scan_y_min + 1U; y < scan_y_max_inclusive; ++y)
+		for (size_t bin_index = 0U; bin_index < APP_BASELINE_ANGLE_BINS;
+			 ++bin_index)
 		{
-			for (size_t x = scan_x_min + 1U; x < scan_x_max_inclusive; ++x)
+			const float angle_rad = min_angle_rad +
+				(sweep_rad * (float)bin_index /
+				 (float)(APP_BASELINE_ANGLE_BINS - 1U));
+			const float unit_dx = cosf(angle_rad);
+			/* Image y increases downward: negate sin to match the gauge
+			 * convention used by the rest of the polar path. */
+			const float unit_dy = -sinf(angle_rad);
+			const float perp_dx = -unit_dy;
+			const float perp_dy = unit_dx;
+
+			size_t best_run_len = 0U;
+			size_t best_run_start = 0U;
+			size_t current_run_len = 0U;
+			size_t current_run_start = 0U;
+			float run_disc_sum = 0.0f;
+			size_t run_mark_count = 0U;
+
+			for (size_t step = 0U; step < APP_BASELINE_RUN_RAY_STEPS;
+				 ++step)
 			{
-				const float dx = (float)x - (float)center_x;
-				const float dy = (float)y - (float)center_y;
-				const float radius = sqrtf((dx * dx) + (dy * dy));
-				const float luma = AppBaselineRuntime_ReadLuma(frame_bytes,
-															   frame_width_pixels, x, y);
-				float gradient_x = 0.0f;
-				float gradient_y = 0.0f;
-				float fraction = 0.0f;
+				const float radius =
+					run_min_start_radius_px + (run_radius_step_px * (float)step);
+				const long sample_x = AppBaselineRuntime_RoundToLong(
+					(float)center_x + (unit_dx * radius));
+				const long sample_y = AppBaselineRuntime_RoundToLong(
+					(float)center_y + (unit_dy * radius));
+				bool mark = false;
 
-				if ((radius < search_radius_min) || (radius > search_radius_max))
+				if ((sample_x >= 0L) && (sample_y >= 0L) &&
+					((size_t)sample_x < frame_width_pixels) &&
+					((size_t)sample_y < frame_height_pixels) &&
+					!AppBaselineRuntime_IsInSubdialMask(
+						center_x, center_y, (size_t)sample_x,
+						(size_t)sample_y, dial_radius_px))
 				{
-					continue;
-				}
-
-				if ((luma > (float)APP_BASELINE_SATURATION_THRESHOLD) || AppBaselineRuntime_IsInSubdialMask(center_x, center_y, x,
-																											y, dial_radius_px))
-				{
-					continue;
-				}
-
-				{
-					const float edge_mag = AppBaselineRuntime_ReadEdgeMagnitude(
-						frame_bytes, frame_width_pixels, frame_height_pixels, x,
-						y, &gradient_x, &gradient_y, NULL);
-
-					/* Bright frames reduce apparent edge magnitude. Use a relaxed
-					 * edge floor only when the frame brightness profile indicates
-					 * heavy overexposure; otherwise keep the nominal threshold. */
-					if (edge_mag <= edge_threshold)
+					const float line_luma = AppBaselineRuntime_ReadLuma(
+						frame_bytes, frame_width_pixels,
+						(size_t)sample_x, (size_t)sample_y);
+					float background_sum = 0.0f;
+					size_t background_count = 0U;
+					for (size_t offset_index = 0U;
+						 offset_index <
+							 APP_BASELINE_RUN_BACKGROUND_OFFSET_PIXELS;
+						 ++offset_index)
 					{
-						continue;
-					}
-
-					if (!AppBaselineRuntime_AngleToSweepFractionWithMargin(
-							atan2f(dy, dx), angle_margin_rad, &fraction))
-					{
-						continue;
-					}
-
-					{
-						const float grad_mag_safe = (edge_mag > 1.0f) ? edge_mag : 1.0f;
-						const float radial_x = dx / radius;
-						const float radial_y = dy / radius;
-						const float grad_x = gradient_x / grad_mag_safe;
-						const float grad_y = gradient_y / grad_mag_safe;
-						/* Tangential component: measures how well the edge aligns with
-						 * a radial spoke. */
-						const float tangential = (grad_x * radial_y) - (grad_y * radial_x);
-						/* Darkness weight: the needle is dark on a light background. */
-						const float darkness = (255.0f - luma) / 255.0f;
-						const float sample_progress =
-							(radius - search_radius_min) /
-							(search_radius_max - search_radius_min + 1e-6f);
-						const float shaft_focus =
-							AppBaselineRuntime_MiddleShaftWeight(sample_progress);
-						const float shaft_weight = 0.10f +
-												   (0.90f * shaft_focus * shaft_focus);
-
-						const float vote =
-							edge_mag * fabsf(tangential) * darkness * shaft_weight;
-						const size_t bin_index = (size_t)AppBaselineRuntime_RoundToLong(
-							fraction * (float)(APP_BASELINE_ANGLE_BINS - 1U));
-
-						if (bin_index < APP_BASELINE_ANGLE_BINS)
+						const float offset_px = 2.0f + (2.0f * (float)offset_index);
+						if (offset_px > APP_BASELINE_RUN_BACKGROUND_MAX_OFFSET_PX)
 						{
-							/* Hub-connection boost: the needle is a long spoke that connects
-							 * to the center. Dial markings are short edges that don't reach
-							 * the center. Check if there's a dark path toward the center. */
-							float hub_connection = 0.0f;
-							const size_t steps = 7U;
-							for (size_t step = 1U; step <= steps; ++step)
-							{
-								const float t = (float)step / (float)(steps + 1U);
-								const long hx = AppBaselineRuntime_RoundToLong(
-									(float)center_x + (dx * t * 0.6f));
-								const long hy = AppBaselineRuntime_RoundToLong(
-									(float)center_y + (dy * t * 0.6f));
-								if (hx >= 0 && (size_t)hx < frame_width_pixels &&
-									hy >= 0 && (size_t)hy < frame_height_pixels)
-								{
-									const float hub_luma = AppBaselineRuntime_ReadLuma(
-										frame_bytes, frame_width_pixels, (size_t)hx, (size_t)hy);
-									hub_connection += ((255.0f - hub_luma) / 255.0f);
-								}
-							}
-							hub_connection /= (float)steps;
-
-							/* Tip-extension check: the needle extends beyond the middle shaft
-							 * toward the outer dial edge. Dial markings are isolated.
-							 * Sample points from 70% to 95% of dial radius. */
-							float tip_extension = 0.0f;
-							const size_t tip_steps = 5U;
-							for (size_t step = 0U; step < tip_steps; ++step)
-							{
-								const float r_frac = 0.70f + (0.25f * (float)step / (float)(tip_steps - 1U));
-								const long tx = AppBaselineRuntime_RoundToLong(
-									(float)center_x + (dx / radius) * r_frac * dial_radius_px);
-								const long ty = AppBaselineRuntime_RoundToLong(
-									(float)center_y + (dy / radius) * r_frac * dial_radius_px);
-								if (tx >= 0 && (size_t)tx < frame_width_pixels &&
-									ty >= 0 && (size_t)ty < frame_height_pixels)
-								{
-									const float tip_luma = AppBaselineRuntime_ReadLuma(
-										frame_bytes, frame_width_pixels, (size_t)tx, (size_t)ty);
-									tip_extension += ((255.0f - tip_luma) / 255.0f);
-								}
-							}
-							tip_extension /= (float)tip_steps;
-
-							/* Width check: the needle is a thin spoke. Sample perpendicular
-							 * to the spoke direction and check if dark region is narrow.
-							 * Dial markings are typically wider edges. */
-							float width_score = 1.0f;
-							{
-								const float perp_x = -dy / radius;
-								const float perp_y = dx / radius;
-								float perp_darkness = 0.0f;
-								const size_t width_samples = 5U;
-								for (size_t w = 0U; w < width_samples; ++w)
-								{
-									const float offset = (float)(w - width_samples / 2) * 1.5f;
-									const long wx = AppBaselineRuntime_RoundToLong((float)x + perp_x * offset);
-									const long wy = AppBaselineRuntime_RoundToLong((float)y + perp_y * offset);
-									if (wx >= 0 && (size_t)wx < frame_width_pixels &&
-										wy >= 0 && (size_t)wy < frame_height_pixels)
-									{
-										const float w_luma = AppBaselineRuntime_ReadLuma(
-											frame_bytes, frame_width_pixels, (size_t)wx, (size_t)wy);
-										perp_darkness += ((255.0f - w_luma) / 255.0f);
-									}
-								}
-								/* Thin spoke: darkness concentrated in center samples.
-								 * Wide marking: darkness spread across all samples. */
-								const float center_darkness = ((255.0f - luma) / 255.0f);
-								const float avg_perp_darkness = perp_darkness / (float)width_samples;
-								/* High score if center is much darker than average (thin). */
-								width_score = 0.3f + (0.7f * (center_darkness / (avg_perp_darkness + 0.01f)));
-								if (width_score > 1.0f)
-									width_score = 1.0f;
-							}
-
-							/* Combined boost: hub connection AND tip extension AND thin width.
-							 * Needle: hub~0.9, tip~0.8, width~0.9 → boost ~18x
-							 * Dial marking: hub~0.1, tip~0.2, width~0.5 → boost ~0.03x */
-							const float spoke_score = ((hub_connection * 0.55f) +
-													   (tip_extension * 0.30f) +
-													   (width_score * 0.15f));
-
-							/* HARD GATE: reject angles without hub connection.
-							 * The needle must connect to the center hub.
-							 * Dial markings don't reach the center. */
-							if (hub_connection < 0.15f)
+							continue;
+						}
+						for (size_t side = 0U; side < 2U; ++side)
+						{
+							const float side_sign = (side == 0U) ? 1.0f : -1.0f;
+							const long bg_x = AppBaselineRuntime_RoundToLong(
+								((float)sample_x) + (perp_dx * offset_px * side_sign));
+							const long bg_y = AppBaselineRuntime_RoundToLong(
+								((float)sample_y) + (perp_dy * offset_px * side_sign));
+							if ((bg_x < 0L) || (bg_y < 0L) ||
+								((size_t)bg_x >= frame_width_pixels) ||
+								((size_t)bg_y >= frame_height_pixels))
 							{
 								continue;
 							}
-
-							const float connection_boost =
-								0.05f + (29.95f * spoke_score * spoke_score);
-
-							/* No center-of-sweep bias - the needle can be at any angle
-							 * across the full -30°C to 50°C range. The angle validation
-							 * (130°-320°) is sufficient to reject outliers. */
-							angle_votes[bin_index] += (vote * connection_boost);
+							background_sum += AppBaselineRuntime_ReadLuma(
+								frame_bytes, frame_width_pixels,
+								(size_t)bg_x, (size_t)bg_y);
+							++background_count;
 						}
+					}
+					if (background_count > 0U)
+					{
+						const float background_luma =
+							background_sum / (float)background_count;
+						const float discontinuity =
+							fabsf(background_luma - line_luma);
+						mark = discontinuity >= disc_threshold;
+						if (mark)
+						{
+							run_disc_sum += discontinuity;
+							++run_mark_count;
+						}
+					}
+				}
+
+				if (mark)
+				{
+					if (current_run_len == 0U)
+					{
+						current_run_start = step;
+					}
+					++current_run_len;
+				}
+				else
+				{
+					if (current_run_len > best_run_len)
+					{
+						best_run_len = current_run_len;
+						best_run_start = current_run_start;
+					}
+					current_run_len = 0U;
+				}
+			}
+			if (current_run_len > best_run_len)
+			{
+				best_run_len = current_run_len;
+				best_run_start = current_run_start;
+			}
+
+			/* Hub-attachment + length gates: the run must start near the hub
+			 * (within 0.35R) and span a meaningful share of the dial radius,
+			 * otherwise it is tick or subdial clutter, not a needle. */
+			const float run_start_fraction =
+				APP_BASELINE_RUN_START_FRACTION +
+				((APP_BASELINE_RUN_END_FRACTION - APP_BASELINE_RUN_START_FRACTION) *
+				 (float)best_run_start / (float)(APP_BASELINE_RUN_RAY_STEPS - 1U));
+			const float run_length_fraction =
+				(float)best_run_len / (float)APP_BASELINE_RUN_RAY_STEPS;
+			if ((best_run_len > 0U) &&
+				(run_start_fraction <= APP_BASELINE_RUN_HUB_MAX_START_FRACTION) &&
+				(run_length_fraction >= APP_BASELINE_RUN_MIN_FRACTION) &&
+				(run_mark_count > 0U))
+			{
+				const float mean_discontinuity =
+					run_disc_sum / (float)run_mark_count;
+				/* Vote = length x mean contrast; the quadratic contrast term
+				 * rewards genuinely strong needle edges over faint scratches. */
+				angle_votes[bin_index] +=
+					run_length_fraction * mean_discontinuity * mean_discontinuity;
+			}
+		}
+	}
+
+	/* Hub-darkness channel: average darkness over the inner shaft band
+	 * (0.18R..0.33R) for every bin.  This is the one cue that stays strong on
+	 * the current framing, where glare hides the needle's outer half.  The
+	 * vote is added only for bins that are decisively darker than the median
+	 * so a flat dial (no needle contrast) contributes nothing and the whole
+	 * cascade fails closed instead of reporting a false spoke. */
+	{
+		float shaft_darkness[APP_BASELINE_ANGLE_BINS];
+		size_t shaft_counts[APP_BASELINE_ANGLE_BINS] = {0U};
+		const float shaft_start_radius_px =
+			dial_radius_px * APP_BASELINE_HUB_SHAFT_START_FRACTION;
+		const float shaft_radius_step_px =
+			(dial_radius_px *
+			 (APP_BASELINE_HUB_SHAFT_END_FRACTION -
+			  APP_BASELINE_HUB_SHAFT_START_FRACTION)) /
+			(float)(APP_BASELINE_HUB_SHAFT_STEPS - 1U);
+
+		for (size_t bin_index = 0U; bin_index < APP_BASELINE_ANGLE_BINS;
+			 ++bin_index)
+		{
+			const float angle_rad = min_angle_rad +
+				(sweep_rad * (float)bin_index /
+				 (float)(APP_BASELINE_ANGLE_BINS - 1U));
+			const float unit_dx = cosf(angle_rad);
+			const float unit_dy = -sinf(angle_rad);
+			float darkness_sum = 0.0f;
+			for (size_t step = 0U; step < APP_BASELINE_HUB_SHAFT_STEPS;
+				 ++step)
+			{
+				const float radius =
+					shaft_start_radius_px + (shaft_radius_step_px * (float)step);
+				const long sample_x = AppBaselineRuntime_RoundToLong(
+					(float)center_x + (unit_dx * radius));
+				const long sample_y = AppBaselineRuntime_RoundToLong(
+					(float)center_y + (unit_dy * radius));
+				if ((sample_x < 0L) || (sample_y < 0L) ||
+					((size_t)sample_x >= frame_width_pixels) ||
+					((size_t)sample_y >= frame_height_pixels) ||
+					AppBaselineRuntime_IsInSubdialMask(
+						center_x, center_y, (size_t)sample_x,
+						(size_t)sample_y, dial_radius_px))
+				{
+					continue;
+				}
+				darkness_sum +=
+					(255.0f - AppBaselineRuntime_ReadLuma(
+								  frame_bytes, frame_width_pixels,
+								  (size_t)sample_x, (size_t)sample_y));
+				++shaft_counts[bin_index];
+			}
+			shaft_darkness[bin_index] =
+				(shaft_counts[bin_index] > 0U)
+					? (darkness_sum / (float)shaft_counts[bin_index])
+					: 0.0f;
+		}
+
+		/* Median darkness over the valid bins. */
+		{
+			float median_values[APP_BASELINE_ANGLE_BINS];
+			size_t median_count = 0U;
+			for (size_t bin_index = 0U; bin_index < APP_BASELINE_ANGLE_BINS;
+				 ++bin_index)
+			{
+				if (shaft_counts[bin_index] > 0U)
+				{
+					median_values[median_count++] = shaft_darkness[bin_index];
+				}
+			}
+			if (median_count > 0U)
+			{
+				/* Simple insertion sort; 360 values, far below any real cost
+				 * budget, keeps the median computation dependency-free. */
+				for (size_t i = 1U; i < median_count; ++i)
+				{
+					const float key = median_values[i];
+					size_t j = i;
+					while ((j > 0U) && (median_values[j - 1U] > key))
+					{
+						median_values[j] = median_values[j - 1U];
+						--j;
+					}
+					median_values[j] = key;
+				}
+				const float median_darkness =
+					median_values[median_count / 2U];
+				const float darkness_floor =
+					APP_BASELINE_HUB_DARKNESS_FLOOR;
+				for (size_t bin_index = 0U; bin_index < APP_BASELINE_ANGLE_BINS;
+					 ++bin_index)
+				{
+					const float darkness = shaft_darkness[bin_index];
+					if ((darkness >= darkness_floor) &&
+						(darkness >=
+						 (APP_BASELINE_HUB_DARKNESS_MEDIAN_RATIO *
+						  median_darkness)))
+					{
+						const float excess = darkness - (0.75f * darkness_floor);
+						angle_votes[bin_index] +=
+							excess * excess;
 					}
 				}
 			}
@@ -5111,6 +5209,7 @@ bool AppBaselineRuntime_EstimatePolarNeedle(
 							frame_height_pixels,
 							center_x,
 							center_y,
+							dial_radius_px,
 							candidate_angle);
 						const float ray_score_boost =
 							AppBaselineRuntime_ClampFloat(
@@ -6091,20 +6190,24 @@ static void AppBaselineRuntime_LogEstimate(
 			(long)(angle_abs_tenths % 10L),
 			(long)(temperature_tenths / 10L),
 			(long)(temperature_abs_tenths % 10L),
-			AppBaselineRuntime_RoundToLong(
-				AppBaselineRuntime_ScoreAngle(
-					camera_inference_frame_snapshot,
-					CAMERA_CAPTURE_WIDTH_PIXELS,
-					CAMERA_CAPTURE_HEIGHT_PIXELS,
-					estimate->center_x, estimate->center_y,
-					30.0f * (APP_BASELINE_PI / 180.0f)) * 1000.0f),
-			AppBaselineRuntime_RoundToLong(
-				AppBaselineRuntime_ScoreAngle(
-					camera_inference_frame_snapshot,
-					CAMERA_CAPTURE_WIDTH_PIXELS,
-					CAMERA_CAPTURE_HEIGHT_PIXELS,
-					estimate->center_x, estimate->center_y,
-					150.0f * (APP_BASELINE_PI / 180.0f)) * 1000.0f));
+		AppBaselineRuntime_RoundToLong(
+			AppBaselineRuntime_ScoreAngle(
+				camera_inference_frame_snapshot,
+				CAMERA_CAPTURE_WIDTH_PIXELS,
+				CAMERA_CAPTURE_HEIGHT_PIXELS,
+				estimate->center_x, estimate->center_y,
+				AppBaselineRuntime_EstimateDialRadiusPixels(
+					CAMERA_CAPTURE_WIDTH_PIXELS, CAMERA_CAPTURE_HEIGHT_PIXELS),
+				30.0f * (APP_BASELINE_PI / 180.0f)) * 1000.0f),
+		AppBaselineRuntime_RoundToLong(
+			AppBaselineRuntime_ScoreAngle(
+				camera_inference_frame_snapshot,
+				CAMERA_CAPTURE_WIDTH_PIXELS,
+				CAMERA_CAPTURE_HEIGHT_PIXELS,
+				estimate->center_x, estimate->center_y,
+				AppBaselineRuntime_EstimateDialRadiusPixels(
+					CAMERA_CAPTURE_WIDTH_PIXELS, CAMERA_CAPTURE_HEIGHT_PIXELS),
+				150.0f * (APP_BASELINE_PI / 180.0f)) * 1000.0f));
 		if (compact_geometry_length > 0)
 		{
 			const size_t bytes_to_write =
