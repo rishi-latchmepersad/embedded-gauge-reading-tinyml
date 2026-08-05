@@ -65,8 +65,10 @@ MEMORY
   /* Legacy source-crop-box model slot retained for linker compatibility. */
   EXTRAM_SOURCE_CROP_BOX (rw) : ORIGIN = 0x70B00000,   LENGTH = 512K
   /* Non-secure alias A/B test — DCMIPP with MSEC=1 writes to 0x24xxxxxx.
-   * Placed at top of AXISRAM1 non-secure alias, away from code/data. */
-  RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 512K
+   * The DMA buffer sits at 0x2419C000..0x24200000 (see app_camera_buffers.c)
+   * so it avoids the NPU pools' written range (0x34100000..~0x3419A800) and
+   * ends exactly at the npuRAM5 pool base (0x34200000). */
+  RAM_NC (xrw)    : ORIGIN = 0x24160000,   LENGTH = 0xA0000
   /* AXISRAM6 — polar_luma (100K, CD stage only) is overlaid on the bottom
    * of the OBB activation region (0x34350000).  Both use the same memory but
    * at different times: OBB runs first (writes scratch here), then the CD
@@ -291,6 +293,16 @@ SECTIONS
     _edata = .;        /* define a global symbol at data end */
 
   } >RAM AT> ROM :data
+
+  /* DMA buffer base pad: keeps camera_capture_buffers at 0x2416C400 (see
+   * app_camera_buffers.c). Must precede .noncacheable in the script so the
+   * linker places it before the buffers. */
+  .camera_buffer_pad (NOLOAD) :
+  {
+    . = ALIGN(32);
+    KEEP(*(.camera_buffer_pad))
+    . = ALIGN(32);
+  } > RAM_NC
 
   .noncacheable (NOLOAD) :
   {

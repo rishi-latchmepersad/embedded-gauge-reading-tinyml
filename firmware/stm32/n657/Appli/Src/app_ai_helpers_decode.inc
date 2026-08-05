@@ -179,11 +179,12 @@ void AppAI_LogTensorRowSamples(const char *label,
 }
 
 void AppAI_LogSourcePatch(const char *label, const uint8_t *frame_bytes,
-								 size_t frame_width_pixels, size_t center_x, size_t center_y,
+								 size_t frame_size, size_t frame_width_pixels, size_t center_x, size_t center_y,
 								 size_t radius_pixels)
 {
 	(void)label;
 	(void)frame_bytes;
+	(void)frame_size;
 	(void)frame_width_pixels;
 	(void)center_x;
 	(void)center_y;

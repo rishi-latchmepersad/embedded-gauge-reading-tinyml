@@ -472,7 +472,7 @@ void AppAI_LogTensorRowSamples(const char *label,
  * @brief Print a compact luma patch from the source YUV422 frame.
  */
 void AppAI_LogSourcePatch(const char *label, const uint8_t *frame_bytes,
-								 size_t frame_width_pixels, size_t center_x, size_t center_y,
+								 size_t frame_size, size_t frame_width_pixels, size_t center_x, size_t center_y,
 								 size_t radius_pixels)
 {
 	const size_t x_min = (center_x > radius_pixels) ? (center_x - radius_pixels)
@@ -630,7 +630,7 @@ void AppAI_LogSourceCropWindow(const uint8_t *frame_bytes,
 	}
 
 	center_luma = AppAI_ReadYuv422Luma(frame_bytes, frame_size,
-									   center_x, center_y);
+									   frame_width_pixels, center_x, center_y);
 
 	if (sample_count == 0U)
 	{
@@ -648,8 +648,8 @@ void AppAI_LogSourceCropWindow(const uint8_t *frame_bytes,
 		(unsigned long)y_max, center_luma_milli, mean_luma_milli,
 		min_luma_milli, max_luma_milli);
 
-	AppAI_LogSourcePatch("Source crop center", frame_bytes, frame_width_pixels,
-						 center_x, center_y, 2U);
+	AppAI_LogSourcePatch("Source crop center", frame_bytes, frame_size,
+						 frame_width_pixels, center_x, center_y, 2U);
 
 	for (size_t index = 0U; index < 3U; ++index)
 	{

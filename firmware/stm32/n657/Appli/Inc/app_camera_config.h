@@ -34,8 +34,16 @@ extern "C" {
 #define CAMERA_CAPTURE_TARGET_FRAME_COUNT   4U
 /* Keep inference detached from the DCMIPP-owned buffer. The snapshot is
  * CPU-cacheable and copied row-wise, avoiding the uncached AXISRAM transfer
- * that stalled the earlier private-snapshot attempt. */
-#define CAMERA_CAPTURE_USE_PRIVATE_SNAPSHOT 1U
+ * that stalled the earlier private-snapshot attempt.
+ *
+ * 2026-08-05: private snapshot is OFF again. The snapshot buffer lived at
+ * 0x24200000, which is npuRAM5 (0x34200000) - the keypoint package's main
+ * activation pool. Every NPU run overwrote the snapshot, so the crop fill
+ * (which reads the frame after the ellipse run) saw garbage. There is no
+ * free 400 KiB window outside the NPU pools (0x34100000..0x3434C3FF), so
+ * the stopped DMA buffer is handed to the AI directly; the sensor stays
+ * stopped until the worker releases ownership. */
+#define CAMERA_CAPTURE_USE_PRIVATE_SNAPSHOT 0U
 /* Brightness gate: reject frames that are still too dim for the gauge face or
  * genuinely blown out, then nudge the sensor before trying again.
  *

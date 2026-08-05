@@ -200,8 +200,15 @@ volatile size_t app_ai_scalar_preprocess_last_row = (size_t)SIZE_MAX;
 /* Stage the keypoint tensor outside the shared NPU activation window. The
  * ellipse and keypoint packages both expose 0x342e0000 as their public input
  * address; staging here prevents the second model's CPU fill from aliasing
- * stale bytes left by the first model's in-place output. */
-__attribute__((section(".noncacheable"), aligned(APP_AI_CACHE_LINE_BYTES)))
+ * stale bytes left by the first model's in-place output.
+ *
+ * 2026-08-05: this buffer must NOT live in the .noncacheable window
+ * (0x24160000 = physical 0x34160000) - that address is inside the ellipse
+ * package's npuRAM3 pool (0x34100000..0x3416FFFF), so the ellipse NPU run
+ * overwrote the freshly filled shadow with activation data and the keypoint
+ * stage saw a dark garbage tensor. .npusram6 (0x3439C000) is beyond every
+ * package tensor address (last is 0x3434bf40) and is CPU-only. */
+__attribute__((section(".npusram6"), aligned(APP_AI_CACHE_LINE_BYTES)))
 uint8_t app_ai_center_tip_input_shadow[GAUGE_CENTER_TIP_INPUT_SIZE_BYTES];
 /* Trace the scalar resize loop only every so often so we can tell whether it
  * is progressing without flooding UART in the hot path. */

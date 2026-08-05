@@ -49,6 +49,7 @@ extern void AppAI_LogTensorRowSamples(const char *label,
 
 extern void AppAI_LogSourcePatch(const char *label,
                                  const uint8_t *frame_bytes,
+                                 size_t frame_size,
                                  size_t frame_width_pixels,
                                  size_t center_x, size_t center_y,
                                  size_t radius_pixels);

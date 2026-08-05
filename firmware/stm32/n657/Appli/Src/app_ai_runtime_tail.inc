@@ -276,6 +276,14 @@ float AppAI_FilterInferenceValue(float value)
 
 #include "app_ai_littlegood_runtime.inc"
 
+/* Keypoint crop staged from the fresh DMA frame before any NPU activity.
+ * The ellipse package's npuRAM4 usage overlaps the DMA buffer's crop rows,
+ * so a crop fill after the ellipse run reads NPU-clobbered pixels. The crop
+ * geometry is stable frame-to-frame, so the previous frame's crop is reused
+ * and the first frame falls back to the fixed training crop. */
+static AppAI_SourceCrop s_staged_keypoint_crop = {0U, 0U, 0U, 0U};
+static bool s_staged_keypoint_crop_valid = false;
+
 static bool AppAI_RunGaugeModelsFromGray640(const uint8_t *frame_bytes,
 	size_t frame_size)
 {
@@ -343,6 +351,46 @@ static bool AppAI_RunGaugeModelsFromGray640(const uint8_t *frame_bytes,
 	if ((ellipse_tensor == NULL) || (ellipse_contract == NULL) ||
 		(center_tip_tensor == NULL) || (center_tip_shadow == NULL))
 		return false;
+
+	/* Stage the keypoint crop BEFORE any NPU activity. The ellipse package's
+	 * npuRAM4 activation usage reaches ~0x341E8000, which overlaps the DMA
+	 * buffer rows the crop fill samples, so a fill performed after the
+	 * ellipse run reads clobbered pixels (2026-08-05). The crop geometry is
+	 * stable to ~2% frame-to-frame, so stage with the previous frame's crop
+	 * and fall back to the fixed training crop on the first frame. */
+	{
+		AppAI_SourceCrop stage_crop = s_staged_keypoint_crop;
+		if (!s_staged_keypoint_crop_valid) {
+			const AppGaugeGeometry_Crop_t training =
+				AppGaugeGeometry_TrainingCrop(
+					(size_t)APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
+					(size_t)APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS);
+			stage_crop.x_min = training.x_min;
+			stage_crop.y_min = training.y_min;
+			stage_crop.width = training.width;
+			stage_crop.height = training.height;
+		}
+		if ((stage_crop.width == 0U) || (stage_crop.height == 0U)) {
+			return false;
+		}
+		for (size_t y = 0U; y < GAUGE_CENTER_TIP_INPUT_HEIGHT_PIXELS; ++y) {
+			for (size_t x = 0U; x < GAUGE_CENTER_TIP_INPUT_WIDTH_PIXELS; ++x) {
+				/* Pillow resize uses pixel-center mapping: (out + 0.5) * in/out - 0.5. */
+				const float sx = (float)stage_crop.x_min +
+					(((float)x + 0.5f) * (float)stage_crop.width /
+						(float)GAUGE_CENTER_TIP_INPUT_WIDTH_PIXELS) - 0.5f;
+				const float sy = (float)stage_crop.y_min +
+					(((float)y + 0.5f) * (float)stage_crop.height /
+						(float)GAUGE_CENTER_TIP_INPUT_HEIGHT_PIXELS) - 0.5f;
+				const float gray = AppAI_ReadNormalizedGrayFromDcmippGray8Bilinear(
+					frame_bytes, frame_size, APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
+					APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS, sx, sy);
+				const int32_t image_q = (int32_t)lroundf(gray * 255.0f) - 128;
+				center_tip_shadow[y * GAUGE_CENTER_TIP_INPUT_WIDTH_PIXELS + x] =
+					(int8_t)((image_q < -128) ? -128 : (image_q > 127) ? 127 : image_q);
+			}
+		}
+	}
 
 	/* The ellipse input is uint8 luma normalized to [0,1], quantized with
 	 * scale 1/255 and zero-point -128. */
@@ -515,25 +563,15 @@ static bool AppAI_RunGaugeModelsFromGray640(const uint8_t *frame_bytes,
 	}
 	#endif
 
-	/* The wide-augmentation keypoint U-Net consumes one normalized grayscale plane. The ellipse mask used
-	 * by the retired center/tip model is deliberately not part of this input. */
-	for (size_t y = 0U; y < GAUGE_CENTER_TIP_INPUT_HEIGHT_PIXELS; ++y) {
-		for (size_t x = 0U; x < GAUGE_CENTER_TIP_INPUT_WIDTH_PIXELS; ++x) {
-			/* Pillow resize uses pixel-center mapping: (out + 0.5) * in/out - 0.5. */
-			const float sx = (float)crop_left_px +
-				(((float)x + 0.5f) * (float)(crop_right_px - crop_left_px) /
-					(float)GAUGE_CENTER_TIP_INPUT_WIDTH_PIXELS) - 0.5f;
-			const float sy = (float)crop_top_px +
-				(((float)y + 0.5f) * (float)(crop_bottom_px - crop_top_px) /
-					(float)GAUGE_CENTER_TIP_INPUT_HEIGHT_PIXELS) - 0.5f;
-			const float gray = AppAI_ReadNormalizedGrayFromDcmippGray8Bilinear(
-				frame_bytes, frame_size, APP_AI_CAPTURE_FRAME_WIDTH_PIXELS,
-				APP_AI_CAPTURE_FRAME_HEIGHT_PIXELS, sx, sy);
-			const int32_t image_q = (int32_t)lroundf(gray * 255.0f) - 128;
-			center_tip_shadow[y * GAUGE_CENTER_TIP_INPUT_WIDTH_PIXELS + x] =
-				(int8_t)((image_q < -128) ? -128 : (image_q > 127) ? 127 : image_q);
-		}
-	}
+	/* The keypoint shadow was staged before the ellipse run (previous frame's
+	 * crop). Keep the ellipse-derived crop for the next frame's staging; the
+	 * angle mapping below still uses the current crop, which differs from the
+	 * staged crop by at most a couple of pixels frame-to-frame. */
+	s_staged_keypoint_crop.x_min = crop_left_px;
+	s_staged_keypoint_crop.y_min = crop_top_px;
+	s_staged_keypoint_crop.width = crop_right_px - crop_left_px;
+	s_staged_keypoint_crop.height = crop_bottom_px - crop_top_px;
+	s_staged_keypoint_crop_valid = true;
 #if APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS
 	for (size_t i = 0U; i < GAUGE_CENTER_TIP_INPUT_SIZE_BYTES; ++i) {
 		const int32_t sample = (int32_t)center_tip_shadow[i];

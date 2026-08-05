@@ -18,6 +18,15 @@
  * access stay coherent without extra cache maintenance on the write path. */
 uint32_t camera_capture_active_buffer_index = 0U;
 uint8_t *camera_capture_result_buffer = NULL;
+/* Why the pad: the DMA buffer base MUST stay at 0x2419C000 (physical
+ * 0x3419C000). The ellipse and keypoint packages' npuRAM3/npuRAM4 pools are
+ * written by the NPU from 0x34100000 up to ~0x3419A800, so a buffer based at
+ * 0x24160000/0x2416C400 gets its crop rows overwritten between the ellipse
+ * fill and the crop fill (both stages read the frame after the ellipse NPU
+ * run). 0x3419C000 sits past that usage and the buffer ends exactly at the
+ * npuRAM5 pool base (0x34200000), which is never written below its base. */
+__attribute__((section(".camera_buffer_pad"), aligned(__SCB_DCACHE_LINE_SIZE)))
+uint8_t camera_capture_noncacheable_pad[0x3C000U];
 uint8_t camera_capture_buffers[CAMERA_CAPTURE_BUFFER_COUNT][CAMERA_CAPTURE_BUFFER_SIZE_BYTES]
 		__attribute__((section(".noncacheable"), aligned(__SCB_DCACHE_LINE_SIZE)));
 

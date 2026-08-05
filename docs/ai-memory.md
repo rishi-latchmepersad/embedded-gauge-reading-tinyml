@@ -3789,3 +3789,61 @@ sha256[:16] = f7065e4f6b3a98f6
 - Lesson: never use the `0x24000000` window in the linker for app data — it is
   an alias of `0x34000000`, not separate memory. Only DMA/CPU buffers that are
   deliberately NS-aliased belong there (e.g. RAM_NC for DCMIPP with MSEC=1).
+
+## WRONG-READINGS ROOT CAUSES ALL FIXED: NPU pools vs CPU/DMA buffers (2026-08-05)
+
+- After the alias fix, the board still read -12..-18C for a 40C needle while
+  the offline replay of the identical saved gray8 read 38-39C. Four memory
+  collisions between CPU/DMA buffers and the NPU packages' activation pools
+  were found and fixed (each verified with the diag tensor dumps):
+  1. Snapshot @ 0x24200000 = physical npuRAM5 (0x34200000), the keypoint
+     package's main pool -> NPU overwrote it every run. No free 400 KiB window
+     exists (pools tile 0x34100000..0x3434C400), so the private snapshot was
+     dropped: the AI reads the stopped DMA buffer directly
+     (CAMERA_CAPTURE_USE_PRIVATE_SNAPSHOT=0).
+  2. Keypoint input shadow @ 0x24160000 = inside the ellipse's npuRAM3 used
+     range (0x34100000..~0x34162000) -> moved to .npusram6 (0x3439C000,
+     beyond every package tensor address).
+  3. DMA buffer slid to 0x24160000 when the shadow left .noncacheable ->
+     pinned back with a .camera_buffer_pad section; later moved to
+     0x2419C000..0x24200000 (ends exactly at the npuRAM5 pool base).
+  4. The ellipse NPU run overwrites the DMA buffer's crop rows (its npuRAM4
+     usage reaches ~0x341E8000), so a crop fill after the ellipse run reads
+     clobbered pixels. FIX: stage the keypoint crop BEFORE any NPU activity
+     using the previous frame's crop geometry (stable to ~2%); the first
+     frame falls back to the fixed training crop
+     (AppGaugeGeometry_TrainingCrop).
+- Result: onboard reads 38.5-39.6C for a 40C needle, matching the offline
+  evaluator on identical pixels. The keypoint heatmap peaks now match the
+  offline TFLite (center ~(0.5,0.5), tip ~(0.73,0.51)).
+- Diagnostics used: APP_AI_ENABLE_VERBOSE_CONSOLE_LOGS + the
+  APP_AI_DIAG_DUMP_CENTER_TIP_TENSORS diag_ct_in/out_*.bin SD dumps. Both are
+  OFF in the production build.
+- Remaining open item: inference wall time is ~30-70s (compute ~4s with the
+  diag/verbose on) - the ATON WFE wait path needs investigation when the
+  readings are confirmed stable.
+
+### How to prevent this class of bug (memory-layout checklists)
+
+- **NPU pool map first, then place buffers.** Before moving/adding any
+  CPU/DMA buffer, dump the package pool bases from the reloc .c files
+  (`grep 0x34/0x24 addresses in st_ai_output/packages/*/reloc.c`) and the
+  pool sizes from `c_info.json` (`memory_pools`). The models' WRITTEN range
+  is the tensor addresses + sizes, NOT just the pool allocations.
+- **Verify empirically with the diag dumps.** The `diag_ct_in_*.bin` files
+  are the exact keypoint input tensor. Compare byte-wise against an offline
+  repro of the same saved `.gray8` (scripts/pipeline_ellipse_keypoint_
+  temperature.py + a fill-repro script in WSL). If they differ, the fill is
+  reading clobbered memory - find out which NPU run wrote the overlap.
+- **Order of operations inside one inference matters.** The ellipse NPU run
+  can clobber the DMA buffer; anything that reads the frame AFTER an NPU run
+  must use data staged BEFORE it (or live outside the pools). The crop fill
+  now stages before any NPU activity using the previous frame's geometry.
+- **The 0x24000000 alias is 1:1 with 0x34000000** - same physical SRAM. A
+  buffer "in RAM_NC at 0x24160000" is physically inside the NPU pool region
+  (0x34100000..0x3434C400) unless proven otherwise.
+- **Watch for silent section shifts.** Removing/moving a section (e.g., the
+  shadow leaving .noncacheable) slides the remaining content to new
+  addresses - re-verify the .map symbols after every such change
+  (arm-none-eabi-nm on the new ELF for camera_capture_buffers, the shadow,
+  and the pools).
