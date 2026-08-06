@@ -34,3 +34,8 @@
 /opencode.jsonc
 /docs/int8_drift_decision_report.md
 /docs/phase-13a-tip-focus-firmware-integration-spike.md
+
+# NTFS alternate-data-stream copies that Windows writes next to downloaded
+# files; if they are copied to a non-NTFS filesystem they become real files
+# with a colon in the name, which breaks Windows git full-tree reads.
+*:Zone.Identifier
