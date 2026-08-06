@@ -1089,10 +1089,6 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 		return false;
 	}
 
-	DebugConsole_Printf(
-		"[BASELINE] estimate frame begin len=%lu\r\n",
-		(unsigned long)frame_size);
-
 	AppBaselineRuntime_UpdateFrameBrightnessProfile(frame_bytes, frame_size);
 	{
 		const long mean_luma_x10 = AppBaselineRuntime_RoundToLong(
@@ -1159,7 +1155,6 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 	 * wins when they all fail. */
 	/* Hough detector moved to after other hypotheses - see fallback below */
 
-	DebugConsole_WriteString("[BASELINE] probe bright-center start\r\n");
 	bright_ok = AppBaselineRuntime_EstimateCenterFromBrightPixels(frame_bytes,
 														  frame_size, &center_x, &center_y, &bright_count);
 	if (bright_ok)
@@ -1185,9 +1180,6 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 				"[BASELINE][CV] bright-center-outlier\r\n");
 		}
 	}
-	AppBaselineRuntime_WriteDirectStatus(
-		bright_ok ? "[BASELINE][CV] bright-center-valid\r\n"
-				  : "[BASELINE][CV] bright-center-missing\r\n");
 	if (bright_ok)
 	{
 			bright_ok = AppBaselineRuntime_EstimateFromCenterHypothesis(
@@ -1195,12 +1187,10 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 				"bright-center-polar", &bright_hypothesis);
 	}
 	DebugConsole_Printf(
-		"[BASELINE] probe bright-center done ok=%u center=(%lu,%lu) count=%lu\r\n",
-		bright_ok ? 1U : 0U, (unsigned long)center_x, (unsigned long)center_y,
-		(unsigned long)bright_count);
+		"[BASELINE] bright-center ok=%u center=(%lu,%lu)\r\n",
+		bright_ok ? 1U : 0U, (unsigned long)center_x, (unsigned long)center_y);
 	(void)bright_count;
 
-	DebugConsole_WriteString("[BASELINE] probe fixed-crop start\r\n");
 	{
 		size_t pivot_x = 0U;
 		size_t pivot_y = 0U;
@@ -1287,16 +1277,9 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 				frame_bytes, frame_size, &fixed_crop_hypothesis);
 		}
 	}
-	DebugConsole_Printf(
-		"[BASELINE] probe fixed-crop done ok=%u\r\n",
-		fixed_crop_ok ? 1U : 0U);
 
-	DebugConsole_WriteString("[BASELINE] probe board-prior start\r\n");
 	board_prior_ok = AppBaselineRuntime_EstimateFromBoardPriorHypothesis(
 		frame_bytes, frame_size, &board_prior_hypothesis);
-	DebugConsole_Printf(
-		"[BASELINE] probe board-prior done ok=%u\r\n",
-		board_prior_ok ? 1U : 0U);
 
 	/* The rim-geometry and image-center probes run the same heavy polar vote
 	 * and only matter when the earlier hypotheses fail. When the fixed-crop
@@ -1305,26 +1288,19 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 	 * (2026-08-05). */
 	if (fixed_crop_ok && (fixed_crop_hypothesis.confidence >= 50.0f))
 	{
-		DebugConsole_WriteString(
-			"[BASELINE] probe rim-geometry + image-center skipped (fixed-crop decisive)\r\n");
 		rim_geometry_ok = false;
 		center_ok = false;
 	}
 	else
 	{
-		DebugConsole_WriteString("[BASELINE] probe rim-geometry start\r\n");
 		rim_geometry_ok = AppBaselineRuntime_EstimateFromRimGeometryHypothesis(
 			frame_bytes, frame_size, &rim_geometry_hypothesis);
-		DebugConsole_Printf(
-			"[BASELINE] probe rim-geometry done ok=%u\r\n",
-			rim_geometry_ok ? 1U : 0U);
 
 		/* Use the inner dial center for the image-center hypothesis too, so the
 		 * polar vote pivots around the correct point for the Celsius scale. */
 		{
 			size_t inner_center_x = 0U;
 			size_t inner_center_y = 0U;
-			DebugConsole_WriteString("[BASELINE] probe image-center start\r\n");
 			AppGaugeGeometry_TrainingCropCenter(CAMERA_CAPTURE_WIDTH_PIXELS,
 												CAMERA_CAPTURE_HEIGHT_PIXELS,
 												&inner_center_x, &inner_center_y);
@@ -1333,10 +1309,6 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 																		inner_center_y, dial_radius_px,
 																		"image-center-polar",
 																		&center_hypothesis);
-			DebugConsole_Printf(
-				"[BASELINE] probe image-center done ok=%u center=(%lu,%lu)\r\n",
-				center_ok ? 1U : 0U,
-				(unsigned long)inner_center_x, (unsigned long)inner_center_y);
 		}
 	}
 
