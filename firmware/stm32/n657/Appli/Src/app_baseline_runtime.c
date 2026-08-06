@@ -69,11 +69,6 @@
  * TOML-equivalent endpoints directly. There is no board-fit offset or gain
  * left in this profile. */
 #define APP_BASELINE_ANGLE_TO_NORTH_ZERO_DEG (-90.0f)
-/* The littlegood gauge reads ~+2 C high against the reference thermometer.
- * The scale range stays -30..+50 C; instead the calibration ANCHOR ANGLES
- * shift by 6.75 deg (2 C at the 80 C / 270 deg slope), so the same two-point
- * piecewise mapping reads 2 C lower everywhere (2026-08-06). */
-#define APP_BASELINE_PROFILE_ANGLE_TEMP_SHIFT_DEG 6.75f
 #define APP_BASELINE_TEMPERATURE_CALIBRATION_PIVOT_C 0.0f
 #define APP_BASELINE_TEMPERATURE_CALIBRATION_GAIN 1.0f
 /* These are gauge_calibration_parameters.toml gauge 1 endpoints. */
@@ -88,13 +83,11 @@ const AppBaselineRuntime_CalibrationProfile_t AppBaselineRuntime_DefaultCalibrat
 	.calibration_point_count = 2U,
 	.calibration_points = {
 		{
-			.angle_deg = APP_BASELINE_PROFILE_GAUGE_MAX_ANGLE_DEG +
-				APP_BASELINE_PROFILE_ANGLE_TEMP_SHIFT_DEG,
+			.angle_deg = APP_BASELINE_PROFILE_GAUGE_MAX_ANGLE_DEG,
 			.temperature_c = 50.0f,
 		},
 		{
-			.angle_deg = APP_BASELINE_PROFILE_GAUGE_MIN_ANGLE_DEG +
-				APP_BASELINE_PROFILE_ANGLE_TEMP_SHIFT_DEG,
+			.angle_deg = APP_BASELINE_PROFILE_GAUGE_MIN_ANGLE_DEG,
 			.temperature_c = -30.0f,
 		},
 	},
