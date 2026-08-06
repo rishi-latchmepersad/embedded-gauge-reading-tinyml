@@ -62,17 +62,19 @@
  * Using 180° here caused every temperature to be read ~80 % too high
  * (e.g. -30 °C read as +50 °C). */
 #define APP_BASELINE_SWEEP_DEG 270.0f
-#define APP_BASELINE_MIN_VALUE_C -32.0f
-#define APP_BASELINE_MAX_VALUE_C 48.0f
+#define APP_BASELINE_MIN_VALUE_C -30.0f
+#define APP_BASELINE_MAX_VALUE_C 50.0f
 /* The classical detector's internal angle is east-zero. Convert that
  * coordinate to the shared north-zero TOML convention once, then use the
  * TOML-equivalent endpoints directly. There is no board-fit offset or gain
  * left in this profile. */
 #define APP_BASELINE_ANGLE_TO_NORTH_ZERO_DEG (-90.0f)
-/* The whole littlegood mapping sits ~+2 C high against the reference
- * thermometer, so the pivot shifts by -2 C here and the profile anchors and
- * value endpoints below shift with it (2026-08-06). */
-#define APP_BASELINE_TEMPERATURE_CALIBRATION_PIVOT_C (-2.0f)
+/* The littlegood gauge reads ~+2 C high against the reference thermometer.
+ * The scale range stays -30..+50 C; instead the calibration ANCHOR ANGLES
+ * shift by 6.75 deg (2 C at the 80 C / 270 deg slope), so the same two-point
+ * piecewise mapping reads 2 C lower everywhere (2026-08-06). */
+#define APP_BASELINE_PROFILE_ANGLE_TEMP_SHIFT_DEG 6.75f
+#define APP_BASELINE_TEMPERATURE_CALIBRATION_PIVOT_C 0.0f
 #define APP_BASELINE_TEMPERATURE_CALIBRATION_GAIN 1.0f
 /* These are gauge_calibration_parameters.toml gauge 1 endpoints. */
 #define APP_BASELINE_PROFILE_GAUGE_MIN_ANGLE_DEG APP_GAUGE_CALIBRATION_MIN_DEG
@@ -86,12 +88,14 @@ const AppBaselineRuntime_CalibrationProfile_t AppBaselineRuntime_DefaultCalibrat
 	.calibration_point_count = 2U,
 	.calibration_points = {
 		{
-			.angle_deg = APP_BASELINE_PROFILE_GAUGE_MAX_ANGLE_DEG,
-			.temperature_c = 48.0f,
+			.angle_deg = APP_BASELINE_PROFILE_GAUGE_MAX_ANGLE_DEG +
+				APP_BASELINE_PROFILE_ANGLE_TEMP_SHIFT_DEG,
+			.temperature_c = 50.0f,
 		},
 		{
-			.angle_deg = APP_BASELINE_PROFILE_GAUGE_MIN_ANGLE_DEG,
-			.temperature_c = -32.0f,
+			.angle_deg = APP_BASELINE_PROFILE_GAUGE_MIN_ANGLE_DEG +
+				APP_BASELINE_PROFILE_ANGLE_TEMP_SHIFT_DEG,
+			.temperature_c = -30.0f,
 		},
 	},
 };
