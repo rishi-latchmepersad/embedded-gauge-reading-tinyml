@@ -36,11 +36,12 @@
 /* 3-reading spike filter (2026-08-06): a new reading that differs from the
  * last ACCEPTED reading by more than MAX_DELTA is treated as a spike.  The
  * spike is suppressed (the last accepted value keeps publishing) until the
- * SAME value has been seen REQUIRED_COUNT times in a row; a different spike
- * value restarts the count.  TOLERANCE is how close two readings must be to
- * count as "the same" spike value. */
+ * same spike has been seen REQUIRED_COUNT times in a row; a different spike
+ * value restarts the count.  TOLERANCE is how close two spike readings must
+ * be to count as the same spike (5 C: a noisy spike can jitter by a few
+ * degrees between captures and still be the same event). */
 #define APP_AI_SPIKE_MAX_DELTA_C          5.0f
-#define APP_AI_SPIKE_VALUE_TOLERANCE_C    1.0f
+#define APP_AI_SPIKE_VALUE_TOLERANCE_C    5.0f
 #define APP_AI_SPIKE_REQUIRED_COUNT       3U
 #define APP_AI_TIP_FOCUS_MAX_INVALID_FRAMES  10U
 #define APP_AI_TIP_FOCUS_HEATMAP_SIDE_PIXELS 56U
