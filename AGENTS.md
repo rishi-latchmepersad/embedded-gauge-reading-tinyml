@@ -76,6 +76,29 @@
 - For the OBB stage, install the reloc context before `LL_ATON_RT_Init_Network()` and then reinstall it again afterward if the runtime clears the live pointer. A `PC=0x00000000` fault at `Stage network init start` is usually an init-order bug, not a crop bug.
 - Keep the AI worker stack out of the OBB reloc window. Putting `camera_ai_thread_stack` into `.npusram6` collides with the OBB runtime image; keep it in normal RAM and size it to fit.
 
+## Git workflow rules (2026-08-06)
+
+- The two clones share one origin. BEFORE pushing from either clone, pull
+  `--rebase` first — pushes without a pull are what keep breaking history.
+- Run every STRUCTURAL git operation from the WSL clone (full clone, no
+  sparse checkout): `pull --rebase`, `revert`, `cherry-pick`, `rebase`,
+  `reset --hard`, merges, anything that touches many paths.
+- The Windows clone is a sparse checkout (firmware/, docs/ only) and may only
+  do `git add <specific firmware/docs path>` + `git commit` + `git push`.
+  Any full-tree index write on Windows (cherry-pick/revert/read-tree) can
+  corrupt the sparse cache-tree and sweep phantom deletions of out-of-cone
+  files (scripts/, ml/, tmp/) into commits.
+- Windows clone already has `core.protectNTFS false` set locally; keep it
+  that way while old trees containing `:Zone.Identifier` paths are reachable
+  in history.
+- NEVER delete `.git/index` on the Windows clone — the sparse index cannot
+  be rebuilt on Windows.
+- Use single-line `-m` messages on Windows; PowerShell mangles multi-line
+  messages into pathspecs.
+- The 25 `:Zone.Identifier` ADS-copy files are purged from HEAD and blocked
+  by a `.gitignore` rule (`*:Zone.Identifier`) — do not re-add any file with
+  a colon in its name.
+
 ## Notes
 - The live board path is the flashed OBB localizer followed by the flashed
   UNet v18 tip-focus model (`tip_focus_v18_int8_n6_npu`, `224x224` float
