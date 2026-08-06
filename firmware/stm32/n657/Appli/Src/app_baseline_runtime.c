@@ -1211,10 +1211,24 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 											CAMERA_CAPTURE_HEIGHT_PIXELS,
 											&inner_center_x, &inner_center_y);
 
-		/* Classical rim-circle fit first: the fitted dial circle center is
-		 * the true pivot, while the bright centroid is biased by asymmetric
-		 * dial content (tick labels, glare, needle) (2026-08-05). */
+		/* Pivot for the primary polar scan.  The board-prior is the best
+		 * classical dial-center estimate: offline replay on live captures
+		 * shows the Kasa bright-boundary fit converges on the outer bezel
+		 * (r~260-290) or the scale ring (r~185-195), 40-110 px from the true
+		 * hub, while the board-prior sits ~17 px off.  The circle-fit may
+		 * only REFINE the board-prior when it agrees within 25 px
+		 * (2026-08-06). */
 		{
+			const float board_prior_cx =
+				(float)CAMERA_CAPTURE_WIDTH_PIXELS *
+				APP_BASELINE_BOARD_PRIOR_CENTER_X_RATIO;
+			const float board_prior_cy =
+				(float)CAMERA_CAPTURE_HEIGHT_PIXELS *
+				APP_BASELINE_BOARD_PRIOR_CENTER_Y_RATIO;
+			pivot_x = (size_t)board_prior_cx;
+			pivot_y = (size_t)board_prior_cy;
+			pivot_ok = true;
+
 			float fit_center_x = 0.0f;
 			float fit_center_y = 0.0f;
 			float fit_radius = 0.0f;
@@ -1224,19 +1238,17 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 					dial_radius_px, &fit_center_x, &fit_center_y, &fit_radius,
 					&fit_inliers))
 			{
-				/* Drift gate mirrors the bright-centroid gate: the fitted
-				 * dial must stay near the training center. */
-				const float fit_dx = fit_center_x - (float)inner_center_x;
-				const float fit_dy = fit_center_y - (float)inner_center_y;
+				const float fit_dx = fit_center_x - board_prior_cx;
+				const float fit_dy = fit_center_y - board_prior_cy;
 				const float fit_drift =
 					sqrtf((fit_dx * fit_dx) + (fit_dy * fit_dy));
-				if (fit_drift <= APP_BASELINE_BRIGHT_CENTER_MAX_DRIFT_PIXELS)
+				if (fit_drift <= 25.0f)
 				{
+					/* The fit agrees with the board-prior: refine it. */
 					pivot_x = (size_t)fit_center_x;
 					pivot_y = (size_t)fit_center_y;
-					pivot_ok = true;
 					DebugConsole_Printf(
-						"[BASELINE] circle-fit center=(%lu,%lu) r=%ld.%01ld inliers=%lu ok=1\r\n",
+						"[BASELINE] circle-fit refine center=(%lu,%lu) r=%ld.%01ld inliers=%lu ok=1\r\n",
 						(unsigned long)pivot_x, (unsigned long)pivot_y,
 						(long)(fit_radius * 10.0f) / 10L,
 						(long)labs((long)(fit_radius * 10.0f)) % 10L,
@@ -1245,7 +1257,7 @@ static bool AppBaselineRuntime_EstimateFromFrame(const uint8_t *frame_bytes,
 				else
 				{
 					DebugConsole_Printf(
-						"[BASELINE] circle-fit rejected drift=%ld.%01ld px\r\n",
+						"[BASELINE] circle-fit rejected drift=%ld.%01ld px (bezel fit)\r\n",
 						(long)(fit_drift * 10.0f) / 10L,
 						(long)labs((long)(fit_drift * 10.0f)) % 10L);
 				}
@@ -4746,6 +4758,8 @@ bool AppBaselineRuntime_EstimatePolarNeedle(
 				 (float)(APP_BASELINE_ANGLE_BINS - 1U));
 			const float unit_dx = cosf(angle_rad);
 			const float unit_dy = -sinf(angle_rad);
+			const float perp_dx = -unit_dy;
+			const float perp_dy = unit_dx;
 			float darkness_sum = 0.0f;
 			for (size_t step = 0U; step < APP_BASELINE_HUB_SHAFT_STEPS;
 				 ++step)
@@ -4765,10 +4779,56 @@ bool AppBaselineRuntime_EstimatePolarNeedle(
 				{
 					continue;
 				}
-				darkness_sum +=
-					(255.0f - AppBaselineRuntime_ReadLuma(
-								  frame_bytes, frame_width_pixels,
-								  (size_t)sample_x, (size_t)sample_y));
+				/* Polarity-agnostic hub score (2026-08-06): the needle can be
+				 * darker OR brighter than the dial face - on bright frames
+				 * the reflective needle saturates to 254 against a ~200 dial
+				 * and only the |line - background| discontinuity remains.
+				 * Score each sample with the stronger of the two cues. */
+				const float line_luma = AppBaselineRuntime_ReadLuma(
+					frame_bytes, frame_width_pixels,
+					(size_t)sample_x, (size_t)sample_y);
+				float background_sum = 0.0f;
+				size_t background_count = 0U;
+				for (size_t offset_index = 0U;
+					 offset_index < APP_BASELINE_RUN_BACKGROUND_OFFSET_PIXELS;
+					 ++offset_index)
+				{
+					const float offset_px =
+						2.0f + (2.0f * (float)offset_index);
+					if (offset_px >
+						APP_BASELINE_RUN_BACKGROUND_MAX_OFFSET_PX)
+					{
+						continue;
+					}
+					for (size_t side = 0U; side < 2U; ++side)
+					{
+						const float side_sign =
+							(side == 0U) ? 1.0f : -1.0f;
+						const long bg_x = AppBaselineRuntime_RoundToLong(
+							((float)sample_x) +
+							(perp_dx * offset_px * side_sign));
+						const long bg_y = AppBaselineRuntime_RoundToLong(
+							((float)sample_y) +
+							(perp_dy * offset_px * side_sign));
+						if ((bg_x < 0L) || (bg_y < 0L) ||
+							((size_t)bg_x >= frame_width_pixels) ||
+							((size_t)bg_y >= frame_height_pixels))
+						{
+							continue;
+						}
+						background_sum += AppBaselineRuntime_ReadLuma(
+							frame_bytes, frame_width_pixels,
+							(size_t)bg_x, (size_t)bg_y);
+						++background_count;
+					}
+				}
+				const float darkness = 255.0f - line_luma;
+				const float discontinuity =
+					(background_count > 0U)
+						? fabsf((background_sum / (float)background_count) -
+								line_luma)
+						: 0.0f;
+				darkness_sum += fmaxf(darkness, discontinuity);
 				++shaft_counts[bin_index];
 			}
 			shaft_darkness[bin_index] =
