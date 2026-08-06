@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """End-to-end gauge temperature pipeline: ellipse -> crop -> center/tip -> temp.
 
-Runs the two deployed int8 models in sequence on board-capture images:
+Runs the two deployed int8 models in sequence on 640x640 board-capture images:
 
 1. ``ellipse_iter8_universal_wide_deep`` (384x384 input) finds the gauge
    face ellipse (cx, cy, rx, ry).
 2. A 1.35x square crop around the ellipse is resized to 224x224.
-3. ``keypoint_unet_224g_stride2`` (224x224 -> 112x112 heatmaps) predicts the
+3. ``keypoint_unet_224g_wide_aug`` (224x224 -> 56x56x2 heatmap) predicts the
    needle center and tip.
 4. The tip-center vector is converted to an angle, then to a temperature via
    the LittleGood gauge calibration (min_deg=135, sweep_deg=270,
@@ -19,7 +19,7 @@ skipped for the error report but still decoded.
 Usage:
     python scripts/pipeline_ellipse_keypoint_temperature.py \
         --ellipse artifacts/ellipse_iter8_universal_wide_deep/model_int8.tflite \
-        --keypoint artifacts/keypoint_unet_224g_stride2/model_int8.tflite \
+        --keypoint artifacts/keypoint_unet_224g_wide_aug/model_int8.tflite \
         --images data/labelled/test_3.zip
 """
 
@@ -52,20 +52,84 @@ from train_ellipse_multiscale_universal_384 import (  # noqa: E402
     SIZES,
     predict_int8 as ellipse_predict_int8,
 )
+from embedded_gauge_reading_tinyml.keypoint_contract import (  # noqa: E402
+    KEYPOINT_CROP_SCALE,
+    KEYPOINT_HEATMAP_SIZE,
+    KEYPOINT_INPUT_SIZE,
+    KEYPOINT_MIN_SEPARATION_PIXELS,
+    KEYPOINT_PEAK_FLOOR,
+    decode_heatmap_peak,
+)
 
-ELLIPSE_CROP_SCALE = 1.35  # must match the keypoint data prep
-KEYPOINT_INPUT = 224
-HEATMAP_SIZE = 112  # stride-2 output
+CAPTURE_SIZE = 640
+ELLIPSE_CROP_SCALE = KEYPOINT_CROP_SCALE
+ELLIPSE_INPUT = 384
+KEYPOINT_INPUT = KEYPOINT_INPUT_SIZE
+HEATMAP_SIZE = KEYPOINT_HEATMAP_SIZE  # wide-augmentation model output side
 
 # LittleGood home temp gauge calibration (from git history of the
 # gauge_calibration_parameters.toml; the current file was overwritten by a
 # firmware-specific spec).
-LITTLEGOOD_MIN_DEG = 135.0
-LITTLEGOOD_SWEEP_DEG = 270.0
-LITTLEGOOD_MIN_VALUE = -30.0
-LITTLEGOOD_MAX_VALUE = 50.0
+# Firmware uses a north-zero signed angle: cold is -135 degrees and hot is
+# +135 degrees.  Keeping these values here prevents the old east-zero decoder
+# from silently producing a different temperature on the laptop.
+LITTLEGOOD_MIN_DEG = -135.0
+LITTLEGOOD_MAX_DEG = 135.0
+LITTLEGOOD_MIN_VALUE = -32.0
+LITTLEGOOD_MAX_VALUE = 48.0
 
 _TEMP_RE = re.compile(r"capture_([mp])(\d+)c")
+
+
+def _resize_gray_endpoint(gray: np.ndarray, output_size: int) -> np.ndarray:
+    """Resize square uint8 luma with the firmware's endpoint mapping.
+
+    The C path maps output coordinate ``i`` to ``i * (N - 1) / (M - 1)``.
+    Pillow's default resize uses pixel centers instead, which changes the
+    high-contrast needle edge and makes input hashes differ.
+    """
+    if gray.ndim != 2 or gray.shape[0] < 1 or gray.shape[1] < 1:
+        raise ValueError("gray input must be a non-empty 2D array")
+    source_height, source_width = gray.shape
+    if output_size < 2:
+        raise ValueError("output_size must be at least two pixels")
+
+    x = np.arange(output_size, dtype=np.float32)
+    y = np.arange(output_size, dtype=np.float32)
+    source_x = x * float(source_width - 1) / float(output_size - 1)
+    source_y = y * float(source_height - 1) / float(output_size - 1)
+    x0 = np.floor(source_x).astype(np.int32)
+    y0 = np.floor(source_y).astype(np.int32)
+    x1 = np.minimum(x0 + 1, source_width - 1)
+    y1 = np.minimum(y0 + 1, source_height - 1)
+    fx = source_x - x0.astype(np.float32)
+    fy = source_y - y0.astype(np.float32)
+
+    p00 = gray[y0[:, None], x0[None, :]].astype(np.float32)
+    p10 = gray[y0[:, None], x1[None, :]].astype(np.float32)
+    p01 = gray[y1[:, None], x0[None, :]].astype(np.float32)
+    p11 = gray[y1[:, None], x1[None, :]].astype(np.float32)
+    top = p00 + (p10 - p00) * fx[None, :]
+    bottom = p01 + (p11 - p01) * fx[None, :]
+    sampled = top + (bottom - top) * fy[:, None]
+    # why: firmware lroundf(gray * 255) is nearest integer for non-negative
+    # luma; floor(value + 0.5) makes the quantized tensor comparison explicit.
+    return np.clip(np.floor(sampled + 0.5), 0.0, 255.0).astype(np.uint8)
+
+
+def _to_board_gray(image: Image.Image) -> Image.Image:
+    """Convert one input image to the board's square 640x640 MONO_Y8 frame."""
+    gray = np.asarray(image.convert("L"), dtype=np.uint8)
+    if gray.shape != (CAPTURE_SIZE, CAPTURE_SIZE):
+        # Board captures are already 640x640; this fallback only keeps the
+        # replay utility usable on ordinary photographs.
+        gray = np.asarray(
+            Image.fromarray(gray).resize(
+                (CAPTURE_SIZE, CAPTURE_SIZE), Image.Resampling.BILINEAR
+            ),
+            dtype=np.uint8,
+        )
+    return Image.fromarray(gray, mode="L")
 
 
 def _temperature_from_name(name: str) -> float | None:
@@ -112,20 +176,11 @@ class EllipseModel:
 
     def detect(self, image: Image.Image) -> tuple[float, float, float, float, float]:
         """Return (cx, cy, rx, ry, confidence) in normalized [0,1] coords."""
-        # letterbox to 384x384 like the ellipse training pipeline
-        gray = np.asarray(image, dtype=np.float32)
-        h, w = gray.shape
-        scale = min(ELLIPSE_SIZE / w, ELLIPSE_SIZE / h)
-        new_w, new_h = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
-        resized = np.asarray(
-            Image.fromarray(gray.astype(np.uint8)).resize((new_w, new_h), Image.Resampling.BILINEAR),
-            dtype=np.float32,
-        )
-        canvas = np.full((ELLIPSE_SIZE, ELLIPSE_SIZE), float(gray.mean()), dtype=np.float32)
-        pad_x = (ELLIPSE_SIZE - new_w) // 2
-        pad_y = (ELLIPSE_SIZE - new_h) // 2
-        canvas[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = resized
-        image_tensor = (canvas / 255.0)[None, ..., None].astype(np.float32)
+        # This is deliberately the same 640->384 endpoint resize as firmware;
+        # the board path has no letterbox because DCMIPP supplies a square frame.
+        gray = np.asarray(image.convert("L"), dtype=np.uint8)
+        resized = _resize_gray_endpoint(gray, ELLIPSE_INPUT)
+        image_tensor = (resized.astype(np.float32) / 255.0)[None, ..., None]
 
         contract = ellipse_predict_int8(self.model_path, image_tensor)[0]
         confidence = contract[CONFIDENCE_OFFSET : CONFIDENCE_OFFSET + 3]
@@ -142,19 +197,11 @@ class EllipseModel:
         cy = float((weights * yy).sum() / total)
         geo = contract[GEOMETRY_OFFSET + 4 * selected : GEOMETRY_OFFSET + 4 * selected + 4]
         rx, ry = float(geo[2]), float(geo[3])
-        # why: the ellipse contract predicts normalized coords in the
-        # letterboxed 384 canvas; undo the letterbox padding.
-        x_norm = (ELLIPSE_SIZE - 2 * pad_x) / ELLIPSE_SIZE
-        y_norm = (ELLIPSE_SIZE - 2 * pad_y) / ELLIPSE_SIZE
-        cx = (cx - pad_x / ELLIPSE_SIZE) / x_norm
-        cy = (cy - pad_y / ELLIPSE_SIZE) / y_norm
-        rx = rx / x_norm
-        ry = ry / y_norm
         return cx, cy, rx, ry, float(confidence[selected])
 
 
 class KeypointModel:
-    """Wrapper around the int8 stride-2 center/tip model (112x112 heatmaps)."""
+    """Wrapper around the int8 wide-augmentation center/tip model."""
 
     def __init__(self, model_path: Path) -> None:
         self.interp = tf.lite.Interpreter(model_path=str(model_path))
@@ -171,7 +218,17 @@ class KeypointModel:
         self.interp.set_tensor(self.in_det["index"], xq)
         self.interp.invoke()
         raw = self.interp.get_tensor(self.out_det["index"]).astype(np.float32)
-        heatmaps = ((raw[0] - self.out_zero) * self.out_scale)
+        heatmaps = (raw[0] - self.out_zero) * self.out_scale
+        if heatmaps.ndim != 3:
+            raise ValueError(f"unexpected keypoint output shape: {heatmaps.shape}")
+        if heatmaps.shape[-1] == 2:
+            # Current generated output is [56,56,2], matching Transpose_98.
+            pass
+        elif heatmaps.shape[0] == 2:
+            # Accept the pre-transpose [2,56,56] form during package audits.
+            heatmaps = np.moveaxis(heatmaps, 0, -1)
+        else:
+            raise ValueError(f"keypoint output has no two-channel axis: {heatmaps.shape}")
         size = heatmaps.shape[0]
         center = self._decode(heatmaps[..., 0])
         tip = self._decode(heatmaps[..., 1])
@@ -179,14 +236,9 @@ class KeypointModel:
 
     @staticmethod
     def _decode(heatmap: np.ndarray) -> tuple[float, float]:
-        """Soft-argmax decode to (x, y) in 224-crop pixels."""
-        size = heatmap.shape[0]
-        yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
-        weights = np.maximum(heatmap - 0.05, 0.0) ** 4.0
-        total = max(float(weights.sum()), 1e-6)
-        x = float((weights * xx).sum() / total)
-        y = float((weights * yy).sum() / total)
-        return x * (KEYPOINT_INPUT / size), y * (KEYPOINT_INPUT / size)
+        """Decode one heatmap to crop pixels using the board contract."""
+        normalized_x, normalized_y, _ = decode_heatmap_peak(heatmap)
+        return normalized_x * KEYPOINT_INPUT, normalized_y * KEYPOINT_INPUT
 
 
 def crop_ellipse(
@@ -217,11 +269,12 @@ def crop_ellipse(
 
 def angle_to_temperature(angle_deg: float) -> float:
     """Map a needle angle (degrees, image coords) to Celsius for LittleGood."""
-    # Normalize into the gauge sweep starting at min_deg (clockwise).
-    shifted = (angle_deg - LITTLEGOOD_MIN_DEG) % 360.0
-    if shifted > LITTLEGOOD_SWEEP_DEG:
-        shifted = LITTLEGOOD_SWEEP_DEG
-    fraction = shifted / LITTLEGOOD_SWEEP_DEG
+    # Match AppGaugeGeometry_AngleToGauge1Value: clamp the signed north-zero
+    # angle to the calibrated endpoints before applying the linear mapping.
+    angle_deg = min(max(angle_deg, LITTLEGOOD_MIN_DEG), LITTLEGOOD_MAX_DEG)
+    fraction = (angle_deg - LITTLEGOOD_MIN_DEG) / (
+        LITTLEGOOD_MAX_DEG - LITTLEGOOD_MIN_DEG
+    )
     return LITTLEGOOD_MIN_VALUE + fraction * (LITTLEGOOD_MAX_VALUE - LITTLEGOOD_MIN_VALUE)
 
 
@@ -230,9 +283,12 @@ def run_pipeline(
     keypoint_model: KeypointModel,
     image: Image.Image,
 ) -> dict[str, float]:
-    """Run both models on one image and return geometry + temperature."""
-    cx, cy, rx, ry, ellipse_conf = ellipse_model.detect(image)
-    crop, (crop_left, crop_top, actual_side) = crop_ellipse(image, cx, cy, rx, ry)
+    """Run both models on one board-contract frame and return the result."""
+    board_image = _to_board_gray(image)
+    cx, cy, rx, ry, ellipse_conf = ellipse_model.detect(board_image)
+    crop, (crop_left, crop_top, actual_side) = crop_ellipse(
+        board_image, cx, cy, rx, ry
+    )
     (pcx, pcy), (ptx, pty), center_conf, tip_conf = keypoint_model.predict(crop)
 
     # Map crop pixels back to source pixels.
@@ -240,12 +296,20 @@ def run_pipeline(
     center_src = (crop_left + pcx * scale, crop_top + pcy * scale)
     tip_src = (crop_left + ptx * scale, crop_top + pty * scale)
 
-    # Needle angle in image coords (atan2 with image y-down; clockwise positive
-    # in image coords matches the gauge calibration).
+    # Firmware uses north-zero signed angle: dx is east and -dy is north.
     dx = tip_src[0] - center_src[0]
     dy = tip_src[1] - center_src[1]
-    angle_deg = math.degrees(math.atan2(dy, dx))
-    temperature = angle_to_temperature(angle_deg)
+    angle_deg = math.degrees(math.atan2(dx, -dy))
+    # Firmware refuses to publish geometry when either heatmap peak is below
+    # the shared floor. Keep the diagnostic angle, but make the temperature
+    # explicitly invalid so offline replay cannot claim a board result that
+    # the live path would reject.
+    keypoint_valid = (
+        center_conf >= KEYPOINT_PEAK_FLOOR
+        and tip_conf >= KEYPOINT_PEAK_FLOOR
+        and math.hypot(dx, dy) >= KEYPOINT_MIN_SEPARATION_PIXELS
+    )
+    temperature = angle_to_temperature(angle_deg) if keypoint_valid else float("nan")
 
     return {
         "ellipse_cx": cx,
@@ -259,6 +323,7 @@ def run_pipeline(
         "tip_y": tip_src[1],
         "center_conf": center_conf,
         "tip_conf": tip_conf,
+        "keypoint_valid": float(keypoint_valid),
         "angle_deg": angle_deg,
         "temperature_c": temperature,
     }
@@ -290,20 +355,23 @@ def main() -> None:
     fieldnames: set[str] = {
         "image", "gt_temp_c", "ellipse_cx", "ellipse_cy", "ellipse_rx",
         "ellipse_ry", "ellipse_conf", "center_x", "center_y", "tip_x",
-        "tip_y", "center_conf", "tip_conf", "angle_deg", "temperature_c",
-        "abs_error_c",
+        "tip_y", "center_conf", "tip_conf", "keypoint_valid", "angle_deg",
+        "temperature_c", "abs_error_c",
     }
     for name, image, gt_temp in items:
         result = run_pipeline(ellipse_model, keypoint_model, image)
         row = {"image": name, "gt_temp_c": gt_temp, **result}
         rows.append(row)
-        if gt_temp is not None:
+        if gt_temp is not None and result["keypoint_valid"]:
             error = result["temperature_c"] - gt_temp
             errors.append(abs(error))
             row["abs_error_c"] = abs(error)
+        elif gt_temp is not None:
+            row["abs_error_c"] = float("nan")
         print(
             f"{name:38s} ellipse_conf={result['ellipse_conf']:.2f} "
-            f"angle={result['angle_deg']:6.1f}deg -> temp={result['temperature_c']:6.1f}C"
+            f"angle={result['angle_deg']:6.1f}deg -> "
+            + (f"temp={result['temperature_c']:6.1f}C" if result["keypoint_valid"] else "REJECTED")
             + (f"  GT={gt_temp:+.0f}C  err={row.get('abs_error_c', float('nan')):5.1f}" if gt_temp is not None else "")
         )
 
