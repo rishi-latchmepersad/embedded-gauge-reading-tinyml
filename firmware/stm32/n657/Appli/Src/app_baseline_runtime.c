@@ -2938,7 +2938,13 @@ static bool AppBaselineRuntime_HasAcceptablePeakSeparation(
 
 	if (estimate->runner_up_score <= 0.0f)
 	{
-		return true;
+		/* A zero runner-up means a razor-single-bin spike (subdial ring,
+		 * tick or glare artifacts), NOT a needle: a real needle spans a few
+		 * adjacent bins, so its runner-up is always nonzero.  The old code
+		 * treated ru=0 as an infinite dominance ratio and let these
+		 * artifacts win with clamped confidence (conf=300.000 on the live
+		 * board) - reject them instead (2026-08-06). */
+		return false;
 	}
 
 	if ((estimate->best_score / estimate->runner_up_score) >=
