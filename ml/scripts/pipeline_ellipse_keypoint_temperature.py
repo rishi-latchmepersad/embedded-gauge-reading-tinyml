@@ -75,8 +75,8 @@ HEATMAP_SIZE = KEYPOINT_HEATMAP_SIZE  # wide-augmentation model output side
 # from silently producing a different temperature on the laptop.
 LITTLEGOOD_MIN_DEG = -135.0
 LITTLEGOOD_MAX_DEG = 135.0
-LITTLEGOOD_MIN_VALUE = -32.0
-LITTLEGOOD_MAX_VALUE = 48.0
+LITTLEGOOD_MIN_VALUE = -30.0
+LITTLEGOOD_MAX_VALUE = 50.0
 
 _TEMP_RE = re.compile(r"capture_([mp])(\d+)c")
 
