@@ -33,6 +33,15 @@
 #define APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE 3U
 #define APP_AI_TIP_FOCUS_MAX_OUTLIER_DELTA_C 5.0f
 #define APP_AI_TIP_FOCUS_OUTLIER_RESET_STREAK 3U
+/* 3-reading spike filter (2026-08-06): a new reading that differs from the
+ * last ACCEPTED reading by more than MAX_DELTA is treated as a spike.  The
+ * spike is suppressed (the last accepted value keeps publishing) until the
+ * SAME value has been seen REQUIRED_COUNT times in a row; a different spike
+ * value restarts the count.  TOLERANCE is how close two readings must be to
+ * count as "the same" spike value. */
+#define APP_AI_SPIKE_MAX_DELTA_C          5.0f
+#define APP_AI_SPIKE_VALUE_TOLERANCE_C    1.0f
+#define APP_AI_SPIKE_REQUIRED_COUNT       3U
 #define APP_AI_TIP_FOCUS_MAX_INVALID_FRAMES  10U
 #define APP_AI_TIP_FOCUS_HEATMAP_SIDE_PIXELS 56U
 #define APP_AI_XSPI2_PROBE_BYTES            16U
@@ -93,6 +102,12 @@ extern float  app_ai_tip_focus_last_published;
 extern bool   app_ai_tip_focus_last_published_valid;
 extern uint32_t app_ai_tip_focus_consecutive_invalid;
 extern uint32_t app_ai_tip_focus_outlier_streak;
+
+/* ------------------------------------------------------------------ */
+/* 3-reading spike filter state                                       */
+/* ------------------------------------------------------------------ */
+extern float app_ai_spike_candidate_value;
+extern uint32_t app_ai_spike_candidate_count;
 
 /* ------------------------------------------------------------------ */
 /* Forced (debug) crop override                                       */

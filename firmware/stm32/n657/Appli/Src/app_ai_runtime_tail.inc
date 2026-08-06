@@ -175,6 +175,72 @@ static uint32_t AppAI_HashInt8Tensor(const int8_t *tensor_pointer,
 }
 #endif
 
+/**
+ * @brief 3-reading spike filter for the live inference value.
+ *
+ * A new reading that differs from the last ACCEPTED reading by more than
+ * APP_AI_SPIKE_MAX_DELTA_C is a spike: it is suppressed (the last accepted
+ * value keeps publishing) until the SAME value has been seen
+ * APP_AI_SPIKE_REQUIRED_COUNT times in a row, then it registers as the new
+ * accepted reading.  A different spike value restarts the count.  This is
+ * the user-facing guard against single-cycle glitches on a gauge that is
+ * otherwise static between 60 s captures (2026-08-06).
+ *
+ * @param[in] raw_value The freshly decoded inference value.
+ * @return The value to publish: the raw value when accepted, otherwise the
+ *         last accepted reading (suppression).
+ */
+float AppAI_SpikeFilterInferenceValue(float raw_value)
+{
+	if (!app_ai_tip_focus_last_published_valid)
+	{
+		/* No previous reading yet: nothing to compare against. */
+		app_ai_spike_candidate_count = 0U;
+		return raw_value;
+	}
+
+	const float delta = fabsf(raw_value - app_ai_tip_focus_last_published);
+	if (delta <= APP_AI_SPIKE_MAX_DELTA_C)
+	{
+		/* Normal reading: accept and clear any pending spike candidate. */
+		app_ai_spike_candidate_count = 0U;
+		return raw_value;
+	}
+
+	/* Spike candidate: count consecutive occurrences of the same value. */
+	if ((app_ai_spike_candidate_count == 0U) ||
+		(fabsf(raw_value - app_ai_spike_candidate_value) <=
+		 APP_AI_SPIKE_VALUE_TOLERANCE_C))
+	{
+		app_ai_spike_candidate_value = raw_value;
+		++app_ai_spike_candidate_count;
+	}
+	else
+	{
+		app_ai_spike_candidate_value = raw_value;
+		app_ai_spike_candidate_count = 1U;
+	}
+
+	if (app_ai_spike_candidate_count >= APP_AI_SPIKE_REQUIRED_COUNT)
+	{
+		/* The spike value has been seen the required number of times:
+		 * register it as the new accepted reading. */
+		app_ai_spike_candidate_count = 0U;
+		DebugConsole_Printf(
+			"[AI][SPIKE] accepted after %lu readings value_milli=%ld\r\n",
+			(unsigned long)APP_AI_SPIKE_REQUIRED_COUNT,
+			(long)lroundf(raw_value * 1000.0f));
+		return raw_value;
+	}
+
+	DebugConsole_Printf(
+		"[AI][SPIKE] suppressed value_milli=%ld last_milli=%ld count=%lu\r\n",
+		(long)lroundf(raw_value * 1000.0f),
+		(long)lroundf(app_ai_tip_focus_last_published * 1000.0f),
+		(unsigned long)app_ai_spike_candidate_count);
+	return app_ai_tip_focus_last_published;
+}
+
 #if APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
 /**
  * @brief Smooth the user-facing inference value across captures.
@@ -771,6 +837,10 @@ static bool AppAI_RunGaugeModelsFromGray640(const uint8_t *frame_bytes,
 			(void)raw_value;
 		}
 #endif
+		/* 3-reading spike filter: a value that jumps more than 5 C from the
+		 * last ACCEPTED reading is suppressed until the same value has been
+		 * seen three times in a row (2026-08-06). */
+		value = AppAI_SpikeFilterInferenceValue(value);
 		app_ai_last_inference_value = value;
 		app_ai_last_inference_valid = true;
 		app_ai_tip_focus_last_published = value;
