@@ -3971,6 +3971,40 @@ Concrete mapping (the real artifact/package names behind the friendly names):
   baseline that reuses the AI pivot is a semi-independent check, not an
   independent one.
 
+# Template bank rebuilt for the current framing: the classical reader that works on glare frames (2026-08-06)
+
+- The 9-10 C needle points straight UP, into the camera's blow-out region on
+  the bright frames (the whole upper dial saturates at 254 - the needle's own
+  reflection).  EVERY luma cue fails there, proven on real captures:
+  - hub-darkness: the needle is BRIGHT (254), not dark -> channel went
+    polarity-agnostic (max(darkness, |line - bg|)) but the shaft still has no
+    discontinuity vs the saturated dial.
+  - min-background shadow cue (the needle's only remnant, a ~2 px dark edge):
+    too weak, subdial ring wins.
+  - Kasa bright-boundary circle fit: converges on the OUTER BEZEL (r~260-290)
+    or the scale ring (r~185-195), centers 40-110 px off the true hub - the
+    fixed-crop polar now pivots at the board-prior and lets the fit refine it
+    only within 25 px.
+  - temporal frame-difference: the inter-frame exposure drift dominates the
+    needle motion; the radial diff peaks don't match the needle angles.
+- The readability map (hub channel, board-prior pivot, vs offline AI truth):
+  only a small arc reads within 15 deg; most frames fail closed.
+- THE method that works: the normalized-template matcher
+  (app_baseline_template.c).  Its 8x8 full-frame mean-luma descriptor
+  captures the needle's complete appearance - glare included - so it reads
+  positions that polar scoring physically cannot.  The old 60-template bank
+  was built from the 07-25-era framing and rejected every current frame.
+- Rebuilt the bank (45 templates) from AI-labelled captures of the CURRENT
+  framing (01/08..05/08 sessions, 8.6..46.6 C), using the firmware's own
+  descriptor math ported to numpy (tmp/build_template_bank.py + the pipeline
+  CSV).  Leave-one-out replay: 43/45 within 5 C (96%); the 2 failures are
+  exposure-transition frames mid-sweep.
+- Firmware bank regenerated into app_baseline_template_bank.inc (count 45U).
+- Lessons: the template bank is framing-specific (re-bank after any remount);
+  the labels come from the offline AI, which is self-consistent and matched
+  the board's own readings.  The polar cascade stays as the fallback for
+  frames the matcher rejects (weak template score / low peak ratio).
+
 # Baseline scoring rework: what the offline replay proved (2026-08-05)
 
 - The old darkness-based polar cascade (edge-mag x tangential x darkness x
