@@ -87,6 +87,12 @@ extern "C" {
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_RATIO_PERCENT     35U
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_SOLID_MEAN_THRESHOLD 200U
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MIN_THRESHOLD     45U
+/* The gauge is normally near the center of the 640x640 contract.  Measuring
+ * this central window prevents a bright table or dark background from hiding
+ * an unusable gauge exposure in the whole-frame average. */
+#define CAMERA_CAPTURE_BRIGHTNESS_ROI_SIZE_PIXELS          384U
+#define CAMERA_CAPTURE_BRIGHTNESS_VERY_DARK_PIXEL_LEVEL   32U
+#define CAMERA_CAPTURE_BRIGHTNESS_VERY_DARK_RATIO_PERCENT 25U
 /* Keep brightness nudges centered around the usable band instead of using a
  * single fixed step that can bounce between too-dark and too-bright frames.
  * The runtime scales the step from this target mean and damps it when the

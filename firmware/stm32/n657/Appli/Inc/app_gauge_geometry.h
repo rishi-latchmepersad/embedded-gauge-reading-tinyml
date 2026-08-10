@@ -12,6 +12,8 @@
 
 #include <stddef.h>
 
+#include "app_ai_config.h"
+
 /* Shared crop ratios for the stable gauge framing used during training. */
 #define APP_GAUGE_TRAINING_CROP_X_MIN_RATIO 0.1027f
 #define APP_GAUGE_TRAINING_CROP_Y_MIN_RATIO 0.2573f
@@ -49,15 +51,30 @@
 #define APP_GAUGE_OBB_PIVOT_X_OFFSET_RATIO (-0.0089f)  /* ≈ −2 px */
 #define APP_GAUGE_OBB_PIVOT_Y_OFFSET_RATIO  0.0625f    /* ≈ +14 px */
 
-/* Gauge 1 calibration mirrors gauge_calibration_parameters.toml:
- * min_deg=135 and sweep_deg=270 in the physical clockwise dial convention.
- * Re-expressing that sweep around a north-zero signed axis gives the cold
- * endpoint at about -135 degrees (7:30) and the hot endpoint at +135 degrees
- * (4:30). */
+/* The active gauge profile mirrors the matching TOML section.  Both current
+ * profiles use the same signed north-zero endpoint angles; the thermometer
+ * changes only the physical value range. */
+#if APP_GAUGE_ACTIVE_PROFILE == APP_GAUGE_PROFILE_COMPASS_HYGROMETER_SILVER
+#define APP_GAUGE_CALIBRATION_MIN_DEG       (-135.0f)
+#define APP_GAUGE_CALIBRATION_MAX_DEG       (135.0f)
+#define APP_GAUGE_CALIBRATION_MIN_VALUE     (0.0f)
+#define APP_GAUGE_CALIBRATION_MAX_VALUE     (100.0f)
+#elif APP_GAUGE_ACTIVE_PROFILE == APP_GAUGE_PROFILE_COMPASS_BAROMETER_SILVER
+#define APP_GAUGE_CALIBRATION_MIN_DEG       (-157.5f)
+#define APP_GAUGE_CALIBRATION_MAX_DEG       (157.5f)
+#define APP_GAUGE_CALIBRATION_MIN_VALUE     (940.0f)
+#define APP_GAUGE_CALIBRATION_MAX_VALUE     (1080.0f)
+#elif APP_GAUGE_ACTIVE_PROFILE == APP_GAUGE_PROFILE_COMPASS_THERMOMETER_SILVER
+#define APP_GAUGE_CALIBRATION_MIN_DEG       (-135.0f)
+#define APP_GAUGE_CALIBRATION_MAX_DEG       (135.0f)
+#define APP_GAUGE_CALIBRATION_MIN_VALUE     (-35.0f)
+#define APP_GAUGE_CALIBRATION_MAX_VALUE     (55.0f)
+#else
 #define APP_GAUGE_CALIBRATION_MIN_DEG       (-135.0f)
 #define APP_GAUGE_CALIBRATION_MAX_DEG       (135.0f)
 #define APP_GAUGE_CALIBRATION_MIN_VALUE     (-30.0f)
 #define APP_GAUGE_CALIBRATION_MAX_VALUE     (50.0f)
+#endif
 
 /* Keep the legacy per-module names so the existing call sites stay readable. */
 #define APP_AI_TRAINING_CROP_X_MIN_RATIO \

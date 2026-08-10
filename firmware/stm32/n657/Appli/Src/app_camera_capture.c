@@ -179,6 +179,7 @@ typedef enum {
 typedef struct {
 	uint32_t sample_count;
 	uint32_t bright_sample_count;
+	uint32_t very_dark_sample_count;
 	uint8_t min_y;
 	uint8_t max_y;
 	uint32_t mean_y;
@@ -251,11 +252,12 @@ static uint32_t AppCameraCapture_ComputeBrightnessStepPercent(
 }
 
 /**
- * @brief Measure luma over the full training crop region of a MONO_Y8 frame.
+ * @brief Measure luma over the central gauge ROI of a MONO_Y8 frame.
  *
- * Sampling the entire DCMIPP frame avoids being fooled by specular reflections
- * on the gauge glass. The live ellipse model sees this complete resized
- * frame, so the mean directly predicts whether its input will be well-exposed.
+ * Sampling the central gauge ROI keeps unrelated table, wall, and equipment
+ * pixels from dominating the exposure decision. The live ellipse model still
+ * receives the complete resized frame; this gate is deliberately a quality
+ * check for the expected gauge region rather than a model-input transform.
  */
 static bool AppCameraCapture_ComputeBrightnessStats(const uint8_t *buffer_ptr,
 		uint32_t length_bytes, AppCameraCapture_BrightnessStats_t *stats) {
@@ -266,21 +268,25 @@ static bool AppCameraCapture_ComputeBrightnessStats(const uint8_t *buffer_ptr,
 	uint64_t sum_y = 0U;
 	uint32_t sample_count = 0U;
 	uint32_t bright_sample_count = 0U;
+	uint32_t very_dark_sample_count = 0U;
 	uint8_t min_y = 0xFFU;
 	uint8_t max_y = 0U;
+	const uint32_t roi_size = CAMERA_CAPTURE_BRIGHTNESS_ROI_SIZE_PIXELS;
+	const uint32_t roi_start = (frame_width_pixels - roi_size) / 2U;
+	const uint32_t roi_end = roi_start + roi_size;
 
 	if ((buffer_ptr == NULL) || (stats == NULL) || (length_bytes < stride_bytes)) {
 		return false;
 	}
 
-	for (uint32_t row = 0U; row < frame_height_lines; row++) {
+	for (uint32_t row = roi_start; row < roi_end && row < frame_height_lines; row++) {
 		const uint32_t row_base = row * stride_bytes;
 
 		if ((row_base + (frame_width_pixels * bytes_per_pixel)) > length_bytes) {
 			return false;
 		}
 
-		for (uint32_t col = 0U; col < frame_width_pixels; col++) {
+		for (uint32_t col = roi_start; col < roi_end && col < frame_width_pixels; col++) {
 			const uint8_t y_sample = buffer_ptr[row_base + (col * bytes_per_pixel)];
 
 			if (y_sample < min_y) {
@@ -291,6 +297,9 @@ static bool AppCameraCapture_ComputeBrightnessStats(const uint8_t *buffer_ptr,
 			}
 			if (y_sample >= CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_PIXEL_LEVEL_THRESHOLD) {
 				bright_sample_count++;
+			}
+			if (y_sample <= CAMERA_CAPTURE_BRIGHTNESS_VERY_DARK_PIXEL_LEVEL) {
+				very_dark_sample_count++;
 			}
 			sum_y += y_sample;
 			sample_count++;
@@ -304,6 +313,7 @@ static bool AppCameraCapture_ComputeBrightnessStats(const uint8_t *buffer_ptr,
 
 	stats->sample_count = sample_count;
 	stats->bright_sample_count = bright_sample_count;
+	stats->very_dark_sample_count = very_dark_sample_count;
 	stats->min_y = min_y;
 	stats->max_y = max_y;
 	stats->mean_y = (uint32_t) (sum_y / sample_count);
@@ -325,9 +335,12 @@ static AppCameraCapture_BrightnessGate_t AppCameraCapture_ClassifyBrightness(
 	 * The previous max-pixel condition accepted frames with mean luma near 80
 	 * as soon as one highlight reached 255, which starved both detectors. */
 	if ((stats->mean_y < CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD)
-			&& ((stats->bright_sample_count * 100U)
+			&& (((stats->bright_sample_count * 100U)
 					< (stats->sample_count *
-						CAMERA_CAPTURE_BRIGHTNESS_DARK_BRIGHT_RATIO_MAX_PERCENT))) {
+						CAMERA_CAPTURE_BRIGHTNESS_DARK_BRIGHT_RATIO_MAX_PERCENT))
+				|| ((stats->very_dark_sample_count * 100U)
+					>= (stats->sample_count *
+						CAMERA_CAPTURE_BRIGHTNESS_VERY_DARK_RATIO_PERCENT)))) {
 		return APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_DARK;
 	}
 
@@ -948,13 +961,12 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 					if (brightness_adjustment_count
 							>= max_brightness_adjustments) {
 						DebugConsole_Printf(
-								"[CAMERA][CAPTURE] Brightness gate exhausted its %lu manual nudges; accepting the last valid frame.\r\n",
+								"[CAMERA][CAPTURE] Brightness gate exhausted its %lu manual nudges; rejecting frame.\r\n",
 								(unsigned long) max_brightness_adjustments);
-						/* A dark/bright frame is still a complete camera frame and is
-						 * preferable to restarting the whole capture operation forever.
-						 * The AI stage can report low confidence while the board remains
-						 * responsive and the frame is preserved for diagnosis. */
-						capture_ok = true;
+						/* A complete DMA frame is not necessarily a useful inference
+						 * frame.  Do not poison the AI or spike-filter baseline with a
+						 * frame that failed the exposure gate. */
+						capture_ok = false;
 						break;
 					}
 					const uint32_t brightness_step_percent =
@@ -970,13 +982,16 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 							APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_DARK,
 							brightness_step_percent)) {
 						DebugConsole_WriteString(
-								"[CAMERA][CAPTURE] IMX335 exposure/gain reached its adjustment limit; accepting the last valid frame.\r\n");
-						/* A completed frame must not be discarded solely because the
-						 * sensor has no remaining exposure headroom.  Returning false here
-						 * would make the caller restart the same capture indefinitely. */
-						capture_ok = true;
+								"[CAMERA][CAPTURE] IMX335 exposure/gain reached its adjustment limit; rejecting frame.\r\n");
+						/* Exposure headroom exhaustion is a capture-quality failure.
+						 * Skipping this cycle is safer than publishing bad geometry. */
+						capture_ok = false;
 						break;
 					}
+					/* The first frame after a sensor exposure/gain update can still
+					 * contain the previous integration state.  Discard it before the
+					 * brightness gate evaluates a candidate frame. */
+					discard_next_successful_frame = true;
 					previous_brightness_gate = brightness_gate;
 					brightness_adjustment_count++;
 #if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS

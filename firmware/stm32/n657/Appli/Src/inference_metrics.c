@@ -18,6 +18,7 @@
 #include "ina219_power.h"
 #include "ds3231_clock.h"
 #include "sd_debug_log_service.h"
+#include "app_baseline_runtime.h"
 
 /* Private defines -----------------------------------------------------------*/
 #define METRICS_TIMER_FREQ_HZ 1000000U /* 1 MHz = 1us resolution */
@@ -332,6 +333,19 @@ void Metrics_EndInference(const char *label, float temperature_c)
 			METRICS_LABEL_MAX_LEN - 1);
 	record->label[METRICS_LABEL_MAX_LEN - 1] = '\0';
 	record->timestamp_ms = HAL_GetTick();
+	{
+		const AppBaselineRuntime_CalibrationProfile_t *profile =
+			AppBaselineRuntime_GetCalibrationProfile();
+		const char *quantity = ((profile != NULL) &&
+			(profile->quantity != NULL)) ? profile->quantity : "value";
+		const char *unit = ((profile != NULL) && (profile->unit != NULL)) ?
+			profile->unit : "unknown";
+		(void)strncpy(record->quantity, quantity,
+			sizeof(record->quantity) - 1U);
+		record->quantity[sizeof(record->quantity) - 1U] = '\0';
+		(void)strncpy(record->unit, unit, sizeof(record->unit) - 1U);
+		record->unit[sizeof(record->unit) - 1U] = '\0';
+	}
 	record->latency_us = latency_us;
 	record->compute_us = compute_us;
 	record->power_pre_w = s_active_slots[(size_t)slot].power_pre_w;
@@ -376,7 +390,7 @@ void Metrics_EndInference(const char *label, float temperature_c)
 	DebugConsole_Printf(
 		"[METRICS] %s: total=%ld.%01ld ms, queue=%ld.%01ld ms, compute=%ld.%01ld ms, "
 		"power_pre=%ld.%01ld W, power_mid=%ld.%01ld W, power_post=%ld.%01ld W, "
-		"delta=%ld.%01ld W, temp=%sC\r\n",
+		"delta=%ld.%01ld W, %s=%s %s\r\n",
 		record->label,
 		total_latency_tenth / 10L, labs(total_latency_tenth % 10L),
 		queue_wait_tenth / 10L, labs(queue_wait_tenth % 10L),
@@ -385,7 +399,7 @@ void Metrics_EndInference(const char *label, float temperature_c)
 		power_mid_tenth / 10L, labs(power_mid_tenth % 10L),
 		power_post_tenth / 10L, labs(power_post_tenth % 10L),
 		power_delta_tenth / 10L, labs(power_delta_tenth % 10L),
-		temp_field);
+		record->quantity, temp_field, record->unit);
 
 	/* Log to SD card in CSV format with ISO 8601 timestamp. */
 	char datetime_str[32];
@@ -394,7 +408,7 @@ void Metrics_EndInference(const char *label, float temperature_c)
 	{
 		/* Format: 2024-01-15 14:30:25 */
 		DebugConsole_Snprintf(csv_line, sizeof(csv_line),
-				 "%s,%s,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%s\r\n",
+				 "%s,%s,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%s,%s,%s\r\n",
 				 datetime_str,
 				 record->label,
 				 total_latency_tenth / 10L, labs(total_latency_tenth % 10L),
@@ -404,13 +418,13 @@ void Metrics_EndInference(const char *label, float temperature_c)
 				 power_mid_tenth / 10L, labs(power_mid_tenth % 10L),
 				 power_post_tenth / 10L, labs(power_post_tenth % 10L),
 				 power_delta_tenth / 10L, labs(power_delta_tenth % 10L),
-				 temp_field);
+				 record->quantity, temp_field, record->unit);
 	}
 	else
 	{
 		/* Fallback to tick timestamp if RTC unavailable. */
 		DebugConsole_Snprintf(csv_line, sizeof(csv_line),
-				 "%lu,%s,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%s\r\n",
+				 "%lu,%s,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%s,%s,%s\r\n",
 				 (unsigned long)record->timestamp_ms,
 				 record->label,
 				 total_latency_tenth / 10L, labs(total_latency_tenth % 10L),
@@ -420,7 +434,7 @@ void Metrics_EndInference(const char *label, float temperature_c)
 				 power_mid_tenth / 10L, labs(power_mid_tenth % 10L),
 				 power_post_tenth / 10L, labs(power_post_tenth % 10L),
 				 power_delta_tenth / 10L, labs(power_delta_tenth % 10L),
-				 temp_field);
+				 record->quantity, temp_field, record->unit);
 	}
 	SdDebugLogService_EnqueueLine(csv_line);
 
@@ -607,7 +621,7 @@ bool Metrics_GetSummary(MetricsSummary_t *summary)
 void Metrics_LogAll(void)
 {
     DebugConsole_Printf("\r\n[METRICS] CSV Export:\r\n");
-    DebugConsole_Printf("timestamp_ms,label,total_latency_ms,queue_wait_ms,compute_ms,power_pre_W,power_mid_W,power_post_W,power_delta_W,temp_c\r\n");
+    DebugConsole_Printf("timestamp_ms,label,total_latency_ms,queue_wait_ms,compute_ms,power_pre_W,power_mid_W,power_post_W,power_delta_W,quantity,value,unit\r\n");
 
     for (uint32_t i = 0; i < s_metrics_count; i++)
     {
@@ -640,7 +654,7 @@ void Metrics_LogAll(void)
             DebugConsole_Snprintf(temp_field, sizeof(temp_field), "nan");
         }
         DebugConsole_Printf(
-            "%lu,%s,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%s\r\n",
+            "%lu,%s,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%ld.%01ld,%s,%s,%s\r\n",
             (unsigned long)r->timestamp_ms,
             r->label,
             total_latency_tenth / 10L, labs(total_latency_tenth % 10L),
@@ -650,7 +664,7 @@ void Metrics_LogAll(void)
             power_mid_tenth / 10L, labs(power_mid_tenth % 10L),
             power_post_tenth / 10L, labs(power_post_tenth % 10L),
             power_delta_tenth / 10L, labs(power_delta_tenth % 10L),
-            temp_field);
+            r->quantity, temp_field, r->unit);
     }
 
     /* Log summary */

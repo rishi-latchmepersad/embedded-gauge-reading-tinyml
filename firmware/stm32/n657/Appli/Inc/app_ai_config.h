@@ -111,9 +111,28 @@
 #endif
 /* Name of the baseline calibration profile to activate at boot.
  * Add new named profiles in app_baseline_runtime.c and point this macro at
- * the matching gauge family when the board is flashed for a different dial. */
+ * the matching gauge family when the board is flashed for a different dial.
+ * Prefer changing APP_GAUGE_ACTIVE_PROFILE below so the AI angle limits and
+ * the baseline registry always select the same gauge contract. */
+#define APP_GAUGE_PROFILE_BOARD_CELSIUS_V1 1U
+#define APP_GAUGE_PROFILE_COMPASS_THERMOMETER_SILVER 29U
+#define APP_GAUGE_PROFILE_COMPASS_HYGROMETER_SILVER 30U
+#define APP_GAUGE_PROFILE_COMPASS_BAROMETER_SILVER 31U
+
+#ifndef APP_GAUGE_ACTIVE_PROFILE
+#define APP_GAUGE_ACTIVE_PROFILE APP_GAUGE_PROFILE_COMPASS_BAROMETER_SILVER
+#endif
+
 #ifndef APP_BASELINE_CALIBRATION_PROFILE_NAME
+#if APP_GAUGE_ACTIVE_PROFILE == APP_GAUGE_PROFILE_COMPASS_THERMOMETER_SILVER
+#define APP_BASELINE_CALIBRATION_PROFILE_NAME "compass_thermometer_silver"
+#elif APP_GAUGE_ACTIVE_PROFILE == APP_GAUGE_PROFILE_COMPASS_HYGROMETER_SILVER
+#define APP_BASELINE_CALIBRATION_PROFILE_NAME "compass_hygrometer_silver"
+#elif APP_GAUGE_ACTIVE_PROFILE == APP_GAUGE_PROFILE_COMPASS_BAROMETER_SILVER
+#define APP_BASELINE_CALIBRATION_PROFILE_NAME "compass_barometer_silver"
+#else
 #define APP_BASELINE_CALIBRATION_PROFILE_NAME "board_celsius_v1"
+#endif
 #endif
 
 /* The classical detector runs as a diagnostic comparator after the learned
@@ -231,8 +250,16 @@
  * tip-focus path and the legacy fallback path. */
 #define APP_AI_INFERENCE_BURST_HISTORY_SIZE 3U
 #define APP_AI_INFERENCE_BURST_RESET_DELTA_C 12.0f
+#if APP_GAUGE_ACTIVE_PROFILE == APP_GAUGE_PROFILE_COMPASS_HYGROMETER_SILVER
+#define APP_AI_INFERENCE_VALUE_MIN_C (0.0f)
+#define APP_AI_INFERENCE_VALUE_MAX_C (100.0f)
+#elif APP_GAUGE_ACTIVE_PROFILE == APP_GAUGE_PROFILE_COMPASS_BAROMETER_SILVER
+#define APP_AI_INFERENCE_VALUE_MIN_C (900.0f)
+#define APP_AI_INFERENCE_VALUE_MAX_C (1100.0f)
+#else
 #define APP_AI_INFERENCE_VALUE_MIN_C (-80.0f)
 #define APP_AI_INFERENCE_VALUE_MAX_C (180.0f)
+#endif
 /* Legacy model constants are compiled only when the tip-focus path is off. */
 #if !APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE
 /* Scalar model image path (deprecated — retained for the scalar stage spec). */

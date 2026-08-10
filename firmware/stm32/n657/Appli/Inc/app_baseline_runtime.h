@@ -45,6 +45,8 @@ typedef struct
 typedef struct
 {
 	const char *profile_name;
+	const char *quantity;
+	const char *unit;
 	float angle_offset_deg;
 	float temperature_pivot_c;
 	float temperature_gain;
