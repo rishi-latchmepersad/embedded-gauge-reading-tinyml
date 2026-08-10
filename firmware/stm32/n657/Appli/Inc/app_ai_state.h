@@ -21,27 +21,19 @@
 #include "tx_api.h"
 #include "app_ai_types.h"
 #include "app_memory_budget.h"
+#include "app_ai_config.h"
 
 /* ------------------------------------------------------------------ */
 /* Macros kept here so referencing TUs can use them                   */
 /* ------------------------------------------------------------------ */
 #define APP_AI_OBB_CENTER_EMA_ALPHA        0.20f
-#define APP_AI_INFERENCE_BURST_HISTORY_SIZE 3U
-#define APP_AI_INFERENCE_BURST_RESET_DELTA_C 12.0f
-#define APP_AI_INFERENCE_VALUE_MIN_C (-80.0f)
-#define APP_AI_INFERENCE_VALUE_MAX_C (180.0f)
 #define APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE 3U
 #define APP_AI_TIP_FOCUS_MAX_OUTLIER_DELTA_C 5.0f
 #define APP_AI_TIP_FOCUS_OUTLIER_RESET_STREAK 3U
-/* 3-reading spike filter (2026-08-06): a new reading that differs from the
- * last ACCEPTED reading by more than MAX_DELTA is treated as a spike.  The
- * spike is suppressed (the last accepted value keeps publishing) until the
- * same spike has been seen REQUIRED_COUNT times in a row; a different spike
- * value restarts the count.  TOLERANCE is how close two spike readings must
- * be to count as the same spike (5 C: a noisy spike can jitter by a few
- * degrees between captures and still be the same event). */
-#define APP_AI_SPIKE_MAX_DELTA_C          5.0f
-#define APP_AI_SPIKE_VALUE_TOLERANCE_C    5.0f
+/* Simple 3-reading spike filter: an out-of-band reading starts the counter;
+ * each later out-of-band reading increments it, while an in-band reading
+ * resets it. */
+#define APP_AI_SPIKE_RANGE_FRACTION       0.10f
 #define APP_AI_SPIKE_REQUIRED_COUNT       3U
 #define APP_AI_TIP_FOCUS_MAX_INVALID_FRAMES  10U
 #define APP_AI_TIP_FOCUS_HEATMAP_SIDE_PIXELS 56U
@@ -107,7 +99,6 @@ extern uint32_t app_ai_tip_focus_outlier_streak;
 /* ------------------------------------------------------------------ */
 /* 3-reading spike filter state                                       */
 /* ------------------------------------------------------------------ */
-extern float app_ai_spike_candidate_value;
 extern uint32_t app_ai_spike_candidate_count;
 
 /* ------------------------------------------------------------------ */

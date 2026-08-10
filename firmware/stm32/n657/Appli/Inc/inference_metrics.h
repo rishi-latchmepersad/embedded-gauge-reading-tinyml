@@ -32,6 +32,8 @@ extern "C"
     typedef struct
     {
         char label[METRICS_LABEL_MAX_LEN]; /* "CNN", "BASELINE", etc. */
+        char quantity[METRICS_LABEL_MAX_LEN]; /* temperature, pressure, etc. */
+        char unit[METRICS_LABEL_MAX_LEN];  /* Active gauge profile unit */
         uint32_t timestamp_ms;             /* When sample was taken */
         uint32_t latency_us;               /* End-to-end latency from capture to result */
         uint32_t compute_us;               /* Worker compute time, excluding queue wait */

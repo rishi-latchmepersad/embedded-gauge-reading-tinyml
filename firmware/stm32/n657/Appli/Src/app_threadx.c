@@ -234,6 +234,18 @@ UINT App_ThreadX_Start(void) {
 		AppBaselineRuntime_SetCalibrationProfileByName(
 			APP_BASELINE_CALIBRATION_PROFILE_NAME);
 
+		/* Print the resolved profile after lookup so a fallback is visible in
+		 * the boot log before any baseline inference begins. */
+		{
+			const AppBaselineRuntime_CalibrationProfile_t *active_profile =
+				AppBaselineRuntime_GetCalibrationProfile();
+			DebugConsole_Printf(
+				"[GAUGE] Active profile: %s\r\n",
+				(active_profile != NULL) &&
+				(active_profile->profile_name != NULL) ?
+				active_profile->profile_name : "unknown");
+		}
+
 		const UINT baseline_runtime_status = AppBaselineRuntime_Start();
 		if (baseline_runtime_status != TX_SUCCESS) {
 			DebugConsole_Printf(

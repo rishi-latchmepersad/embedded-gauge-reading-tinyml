@@ -77,6 +77,8 @@
 /* Default profile for the current board-gauge pairing. */
 const AppBaselineRuntime_CalibrationProfile_t AppBaselineRuntime_DefaultCalibrationProfile = {
 	.profile_name = "board_celsius_v1",
+	.quantity = "temperature",
+	.unit = "degree celcius",
 	.angle_offset_deg = APP_BASELINE_ANGLE_TO_NORTH_ZERO_DEG,
 	.temperature_pivot_c = APP_BASELINE_TEMPERATURE_CALIBRATION_PIVOT_C,
 	.temperature_gain = APP_BASELINE_TEMPERATURE_CALIBRATION_GAIN,
@@ -92,12 +94,68 @@ const AppBaselineRuntime_CalibrationProfile_t AppBaselineRuntime_DefaultCalibrat
 		},
 	},
 };
+/* TOML gauge_29: the dual-scale thermometer uses the same signed north-zero
+ * angle endpoints as gauge 1, but its physical Celsius range is -35..55. */
+static const AppBaselineRuntime_CalibrationProfile_t
+	AppBaselineRuntime_CompassThermometerSilverCalibrationProfile = {
+	.profile_name = "compass_thermometer_silver",
+	.quantity = "temperature",
+	.unit = "degree celcius",
+	.angle_offset_deg = APP_BASELINE_ANGLE_TO_NORTH_ZERO_DEG,
+	.temperature_pivot_c = 0.0f,
+	.temperature_gain = 1.0f,
+	.calibration_point_count = 2U,
+	.calibration_points = {
+		{
+			.angle_deg = 135.0f,
+			.temperature_c = 55.0f,
+		},
+		{
+			.angle_deg = -135.0f,
+			.temperature_c = -35.0f,
+		},
+	},
+};
+/* TOML gauge_30: the silver compass-face hygrometer reads relative humidity. */
+static const AppBaselineRuntime_CalibrationProfile_t
+	AppBaselineRuntime_CompassHygrometerSilverCalibrationProfile = {
+	.profile_name = "compass_hygrometer_silver",
+	.quantity = "humidity",
+	.unit = "percent",
+	.angle_offset_deg = APP_BASELINE_ANGLE_TO_NORTH_ZERO_DEG,
+	.temperature_pivot_c = 0.0f,
+	.temperature_gain = 1.0f,
+	.calibration_point_count = 2U,
+	.calibration_points = {
+		{ .angle_deg = 135.0f, .temperature_c = 100.0f },
+		{ .angle_deg = -135.0f, .temperature_c = 0.0f },
+	},
+};
+/* TOML gauge_31: the silver compass-face barometer uses the outer hPa scale;
+ * the terminal ticks extend beyond 950..1070 to 940..1080. */
+static const AppBaselineRuntime_CalibrationProfile_t
+	AppBaselineRuntime_CompassBarometerSilverCalibrationProfile = {
+	.profile_name = "compass_barometer_silver",
+	.quantity = "pressure",
+	.unit = "hPa",
+	.angle_offset_deg = APP_BASELINE_ANGLE_TO_NORTH_ZERO_DEG,
+	.temperature_pivot_c = 0.0f,
+	.temperature_gain = 1.0f,
+	.calibration_point_count = 2U,
+	.calibration_points = {
+		{ .angle_deg = 157.5f, .temperature_c = 1080.0f },
+		{ .angle_deg = -157.5f, .temperature_c = 940.0f },
+	},
+};
 /* Profile registry used for named selection at boot.
  * Add one entry per gauge family so the conversion layer can scale without
  * re-compiling the shared needle-angle math. */
 static const AppBaselineRuntime_CalibrationProfile_t
 	*const camera_baseline_calibration_profiles[] = {
 		&AppBaselineRuntime_DefaultCalibrationProfile,
+		&AppBaselineRuntime_CompassThermometerSilverCalibrationProfile,
+		&AppBaselineRuntime_CompassHygrometerSilverCalibrationProfile,
+		&AppBaselineRuntime_CompassBarometerSilverCalibrationProfile,
 };
 #define APP_BASELINE_BRIGHT_THRESHOLD 150U
 /* Bright centroid adapts to gauge position. The 50 px limit was tuned to the

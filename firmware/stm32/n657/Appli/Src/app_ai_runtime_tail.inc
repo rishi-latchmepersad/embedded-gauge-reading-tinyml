@@ -178,18 +178,62 @@ static uint32_t AppAI_HashInt8Tensor(const int8_t *tensor_pointer,
 /**
  * @brief 3-reading spike filter for the live inference value.
  *
- * A new reading that differs from the last ACCEPTED reading by more than
- * APP_AI_SPIKE_MAX_DELTA_C is a spike: it is suppressed (the last accepted
- * value keeps publishing) until the SAME value has been seen
- * APP_AI_SPIKE_REQUIRED_COUNT times in a row, then it registers as the new
- * accepted reading.  A different spike value restarts the count.  This is
- * the user-facing guard against single-cycle glitches on a gauge that is
- * otherwise static between 60 s captures (2026-08-06).
+ * A new reading that differs from the last accepted reading by more than
+ * ten percent of the active profile's full calibration range starts a
+ * consecutive-reading counter. Each later
+ * out-of-band reading increments it; an in-band reading resets it. On
+ * APP_AI_SPIKE_REQUIRED_COUNT, the new raw reading is accepted and the
+ * counter restarts. This is intentionally simple for 60-second captures.
  *
  * @param[in] raw_value The freshly decoded inference value.
  * @return The value to publish: the raw value when accepted, otherwise the
  *         last accepted reading (suppression).
  */
+static float AppAI_GetSpikeDeltaThreshold(void)
+{
+	const AppBaselineRuntime_CalibrationProfile_t *profile =
+		AppBaselineRuntime_GetCalibrationProfile();
+	float minimum = 0.0f;
+	float maximum = 0.0f;
+	bool have_point = false;
+
+	if (profile != NULL)
+	{
+		for (size_t i = 0U;
+			i < profile->calibration_point_count &&
+				i < APP_BASELINE_CALIBRATION_MAX_POINTS;
+			++i)
+		{
+			const float value = profile->calibration_points[i].temperature_c;
+
+			if (!isfinite(value))
+			{
+				continue;
+			}
+
+			if (!have_point)
+			{
+				minimum = value;
+				maximum = value;
+				have_point = true;
+			}
+			else
+			{
+				if (value < minimum) minimum = value;
+				if (value > maximum) maximum = value;
+			}
+		}
+	}
+
+	if (!have_point || maximum <= minimum)
+	{
+		/* Keep a safe fallback for an incomplete or malformed profile. */
+		return 5.0f;
+	}
+
+	return (maximum - minimum) * APP_AI_SPIKE_RANGE_FRACTION;
+}
+
 float AppAI_SpikeFilterInferenceValue(float raw_value)
 {
 	if (!app_ai_tip_focus_last_published_valid)
@@ -200,26 +244,16 @@ float AppAI_SpikeFilterInferenceValue(float raw_value)
 	}
 
 	const float delta = fabsf(raw_value - app_ai_tip_focus_last_published);
-	if (delta <= APP_AI_SPIKE_MAX_DELTA_C)
+	const float threshold = AppAI_GetSpikeDeltaThreshold();
+	if (delta <= threshold)
 	{
 		/* Normal reading: accept and clear any pending spike candidate. */
 		app_ai_spike_candidate_count = 0U;
 		return raw_value;
 	}
 
-	/* Spike candidate: count consecutive occurrences of the same value. */
-	if ((app_ai_spike_candidate_count == 0U) ||
-		(fabsf(raw_value - app_ai_spike_candidate_value) <=
-		 APP_AI_SPIKE_VALUE_TOLERANCE_C))
-	{
-		app_ai_spike_candidate_value = raw_value;
-		++app_ai_spike_candidate_count;
-	}
-	else
-	{
-		app_ai_spike_candidate_value = raw_value;
-		app_ai_spike_candidate_count = 1U;
-	}
+	/* Every out-of-band reading advances the simple consecutive counter. */
+	++app_ai_spike_candidate_count;
 
 	if (app_ai_spike_candidate_count >= APP_AI_SPIKE_REQUIRED_COUNT)
 	{
@@ -837,9 +871,8 @@ static bool AppAI_RunGaugeModelsFromGray640(const uint8_t *frame_bytes,
 			(void)raw_value;
 		}
 #endif
-		/* 3-reading spike filter: a value that jumps more than 5 C from the
-		 * last ACCEPTED reading is suppressed until the same value has been
-		 * seen three times in a row (2026-08-06). */
+		/* 3-reading spike filter: the profile-scaled out-of-band value is
+		 * suppressed until three consecutive readings confirm the change. */
 		value = AppAI_SpikeFilterInferenceValue(value);
 		app_ai_last_inference_value = value;
 		app_ai_last_inference_valid = true;
