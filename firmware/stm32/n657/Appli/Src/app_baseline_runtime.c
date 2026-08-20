@@ -132,7 +132,7 @@ static const AppBaselineRuntime_CalibrationProfile_t
 	},
 };
 /* TOML gauge_31: the silver compass-face barometer uses the outer hPa scale;
- * the terminal ticks extend beyond 950..1070 to 940..1080. */
+ * the terminal ticks span 945..1075 hPa. */
 static const AppBaselineRuntime_CalibrationProfile_t
 	AppBaselineRuntime_CompassBarometerSilverCalibrationProfile = {
 	.profile_name = "compass_barometer_silver",
@@ -143,8 +143,8 @@ static const AppBaselineRuntime_CalibrationProfile_t
 	.temperature_gain = 1.0f,
 	.calibration_point_count = 2U,
 	.calibration_points = {
-		{ .angle_deg = 157.5f, .temperature_c = 1080.0f },
-		{ .angle_deg = -157.5f, .temperature_c = 940.0f },
+		{ .angle_deg = 157.5f, .temperature_c = 1075.0f },
+		{ .angle_deg = -157.5f, .temperature_c = 945.0f },
 	},
 };
 /* Profile registry used for named selection at boot.

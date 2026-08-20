@@ -51,6 +51,7 @@
 #include "cmw_utils.h"
 #include "imx335.h"
 #include "imx335_reg.h"
+#include "ina219_power.h"
 
 /* USER CODE END Includes */
 
@@ -169,6 +170,12 @@ UINT App_ThreadX_Start(void) {
 	BSP_LED_Off(LED_BLUE);
 	BSP_LED_Off(LED_GREEN);
 	(void) AppImageCleanup_SetBootTick(tx_time_get());
+	/* ThreadX is running here, so the INA219 worker can safely create its
+	 * semaphore/thread objects and begin periodic voltage sampling. */
+	if (!INA219_StartMonitoringThread()) {
+		DebugConsole_Printf(
+			"[INA219] Monitoring thread start failed after ThreadX startup.\r\n");
+	}
 	if (camera_init_thread_created && camera_isp_thread_created
 			&& camera_heartbeat_thread_created) {
 		DebugConsole_Printf(

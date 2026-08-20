@@ -18,6 +18,7 @@
 #include "inference_metrics.h"
 #include "main.h"
 #include "tx_api.h"
+#include "threadx_utils.h"
 
 /* Private defines -----------------------------------------------------------*/
 #define INA219_TIMEOUT_MS           100U
@@ -32,6 +33,7 @@
 #define INA219_THREAD_STACK_SIZE    1024U
 #define INA219_THREAD_PRIORITY      10U      /* Must outrank the pipeline workers */
 #define INA219_SAMPLE_PERIOD_MS     250U     /* Sample every 250 ms for power stats */
+#define INA219_VOLTAGE_LOG_PERIOD_SAMPLES 240U /* 240 x 250 ms = 60 s */
 
 /* Private variables ---------------------------------------------------------*/
 static I2C_HandleTypeDef *g_hi2c = NULL;
@@ -229,16 +231,32 @@ static void INA219_ThreadEntry(ULONG thread_input)
     (void)thread_input;
     
     INA219_Measurement_t measurement;
+    uint32_t samples_since_voltage_log = 0U;
     DebugConsole_Printf("[INA219] Monitoring thread started\r\n");
     
     while (g_thread_running) {
-        /* Wait for semaphore or timeout (1 second) */
-        (void) tx_semaphore_get(&g_ina219_semaphore, INA219_SAMPLE_PERIOD_MS);
+        /* Wait for semaphore or a 250 ms sampling timeout. */
+        (void) tx_semaphore_get(
+            &g_ina219_semaphore,
+            ThreadxUtils_MillisecondsToTicks(INA219_SAMPLE_PERIOD_MS));
 
         /* Read sensor and feed power (mW) to the metrics subsystem so
          * min/avg/max can be reported per-pipeline after latency ends. */
         if (INA219_ReadMeasurement(&measurement)) {
             Metrics_PowerSample(measurement.power_w * 1000.0f);
+
+            /* Report the bus voltage periodically while keeping the high-rate
+             * sampler quiet enough for the shared UART console. */
+            samples_since_voltage_log++;
+            if (samples_since_voltage_log >= INA219_VOLTAGE_LOG_PERIOD_SAMPLES) {
+                const long voltage_mv = lroundf(
+                    measurement.bus_voltage_v * 1000.0f);
+                DebugConsole_Printf(
+                    "[INA219] bus_voltage=%ld.%03ld V\r\n",
+                    voltage_mv / 1000L,
+                    labs(voltage_mv % 1000L));
+                samples_since_voltage_log = 0U;
+            }
         }
     }
     

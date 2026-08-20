@@ -25,7 +25,7 @@ extern "C" {
 #define IMAGE_CLEANUP_THREAD_PRIORITY       16U
 
 /* Heartbeat timing --------------------------------------------------------- */
-#define CAMERA_HEARTBEAT_PERIOD_MS          5000U
+#define CAMERA_HEARTBEAT_PERIOD_MS          30000U
 #define CAMERA_HEARTBEAT_PULSE_MS           1000U
 #ifndef CAMERA_HEARTBEAT_ENABLE_UART_PULSES
 #define CAMERA_HEARTBEAT_ENABLE_UART_PULSES 1U

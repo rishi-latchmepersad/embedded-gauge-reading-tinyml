@@ -395,7 +395,7 @@ int main(void) {
 	 * baseline redesign image rather than an older image that still emitted
 	 * snapshot bytes through a tuning transport. */
 	DebugConsole_Printf(
-			"[BOOT] firmware=2026-08-03-capture-owner-v17-isr-safe-capture-events\r\n");
+			"[BOOT] firmware=2026-08-20-ina219-threadx-voltage-monitor-v1\r\n");
 	DebugConsole_Printf("[BOOT] UART console initialized.\r\n");
 	App_LogResetCause();
 	DS3231_LogI2c1LineState();
@@ -403,7 +403,6 @@ int main(void) {
 
 	/* Initialize INA219 power monitor on I2C1 */
 	(void) INA219_Init(&hi2c1);
-	(void) INA219_StartMonitoringThread();
 
 	/* Initialize inference metrics tracking */
 	Metrics_Init();
