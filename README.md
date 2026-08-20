@@ -14,6 +14,22 @@ This enables remote deployments (rural or offshore) using solar power, creating 
 
 ![STM32N657 system block diagram](docs/system_diagrams-STM32N657%20System%20Block%20Diagram.drawio.png)
 
+Each camera pod is built around an STM32N657 Nucleo board with a Cortex-M55
+running at 800 MHz and an integrated NPU. The board connects to:
+
+- An IMX335 camera over CSI-2 and I2C2 for periodic gauge-image capture
+- On-board xSPI2 flash for the signed application and deployed neural-network assets
+- A MicroSD card over SPI for captured images and inference logs
+- A DS3231 real-time clock over I2C1 for timestamped readings
+- An INA219 current-shunt module for power and bus-voltage monitoring
+- A debug UART at 115200 8N1 for bring-up and diagnostics
+
+The deployed reading path runs on the board: the ellipse/OBB localizer finds the
+gauge face, the tip-focus geometry model estimates the center and needle tip,
+and firmware converts the needle angle through the active gauge profile. A
+camera pod can then forward its reading through LoRaWAN to a gateway and backend
+service for sites with multiple gauges.
+
 ## Project Demo
 
 [![Project Demo Video](https://img.youtube.com/vi/EDLs6GXLhhM/maxresdefault.jpg)](https://youtu.be/EDLs6GXLhhM)
@@ -40,9 +56,9 @@ This project aims to deliver affordable, low-power, on-device gauge digitization
 ## What I’m building
 A deployable TinyML pipeline for gauge reading on microcontrollers:
 1. Data: a labeled dataset of gauge images captured in realistic conditions (glare, distance, angle, dirt, low light)
-2. Model: a compact CNN for gauge type detection plus needle angle or value estimation
-3. Deployment: int8 quantized inference on STM32 NPU hardware with measured latency, memory, power, and accuracy
-4. System: camera → on-device inference → confidence checks / no-read → local logging, optional wireless telemetry
+2. Model: a compact ellipse/OBB localizer followed by a geometry model that estimates the gauge center and needle tip
+3. Deployment: int8 quantized inference on STM32 NPU hardware with measured latency, memory, power, voltage, and accuracy
+4. System: IMX335 camera → image-quality gate → on-device gauge localization and geometry inference → angle-to-profile decode → SD/UART logging → optional LoRaWAN telemetry
 
 ## Risks identified
 - Primary risk: domain shift and image quality variability (lighting changes, glare, reflections, oblique viewing angles, blur, dirt, distance), which can degrade model accuracy.
