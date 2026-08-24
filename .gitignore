@@ -9,6 +9,7 @@
 
 # Generated firmware and host build outputs.
 /firmware/stm32/n657/Appli/.metadata/
+/firmware/stm32/n657/Appli/.settings/
 /firmware/stm32/n657/Appli/Debug/
 /firmware/stm32/n657/Appli/Release/
 /firmware/stm32/n657/Appli/Lib/
@@ -18,6 +19,7 @@
 /firmware/stm32/n657/Appli/Src/*.su
 /firmware/stm32/n657/Appli/Src/*.cyclo
 /firmware/stm32/n657/FSBL/Debug/
+/firmware/stm32/n657/FSBL/.settings/
 /firmware/stm32/n657/FSBL/ai_fsbl.hex
 /firmware/stm32/n657/host_tests/build/
 /firmware/stm32/n657/n657_Appli/
@@ -34,6 +36,8 @@
 /opencode.jsonc
 /docs/int8_drift_decision_report.md
 /docs/phase-13a-tip-focus-firmware-integration-spike.md
+# Draw.io temporary recovery files are local editor state, not source diagrams.
+/docs/.$*.dtmp
 
 # NTFS alternate-data-stream copies that Windows writes next to downloaded
 # files; if they are copied to a non-NTFS filesystem they become real files

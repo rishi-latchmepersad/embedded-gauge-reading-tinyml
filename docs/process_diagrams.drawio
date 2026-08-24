@@ -4,44 +4,23 @@
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="cnn_title_why" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=16;" value="Why each step is performed" vertex="1">
-          <mxGeometry height="30" width="360" y="680" as="geometry" />
+        <mxCell id="cnn_tech_1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#dae8fc;strokeColor=#6c8ebf;image=process_diagrams_assets/cnn_01_capture.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" value="&lt;b&gt;Capture a usable gauge image&lt;/b&gt;&lt;br&gt;- Capture a new image of the gauge every 1 min using the IMX sensor&lt;div&gt;- The sensor is 5MP, but we downscale it to 640x640 for easier processing&lt;br&gt;- We also discard the colour data and only keep grayscale information to keep processing light&lt;/div&gt;" vertex="1">
+          <mxGeometry height="190" width="270" x="40" y="90" as="geometry" />
         </mxCell>
-        <mxCell id="cnn_tech_1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#dae8fc;strokeColor=#6c8ebf;image=process_diagrams_assets/cnn_01_capture.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" value="&lt;b&gt;Capture a usable gauge image&lt;/b&gt;&lt;br&gt;- Capture a new image of the gauge every 1 min&lt;br&gt;- We check that the gauge area is bright and clear enough to read (by measuring average lumens)&lt;br&gt;- If the image is too dark, too bright, or unstable, we discard it&lt;br&gt;- Only a usable image moves into the reading pipeline" vertex="1">
-          <mxGeometry height="170" width="270" x="40" y="90" as="geometry" />
+        <mxCell id="cnn_tech_2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#d5e8d4;strokeColor=#82b366;image=process_diagrams_assets/cnn_02_brightness.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" value="&lt;b&gt;Apply a confidence gate&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Check that the gauge area is bright and clear enough to read (by measuring average lumens)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- If the image is too dark, too bright, or unstable, discard it&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Only a usable image moves into the reading pipeline&amp;nbsp;&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Store the accepted image on the SD card for later diagnosis and testing&lt;/span&gt;" vertex="1">
+          <mxGeometry height="190" width="280" x="350" y="90" as="geometry" />
         </mxCell>
-        <mxCell id="cnn_tech_2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#d5e8d4;strokeColor=#82b366;image=process_diagrams_assets/cnn_02_brightness.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" value="&lt;b&gt;Use the same image for both paths&lt;/b&gt;&lt;br&gt;- We keep the accepted image for diagnosis and testing&lt;br&gt;- We send that same image to the AI reader and the classical comparator&lt;br&gt;- This lets us tell whether a problem came from the image, the model, or the calibration" vertex="1">
-          <mxGeometry height="170" width="280" x="350" y="90" as="geometry" />
+        <mxCell id="cnn_tech_3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#a0522d;strokeColor=#6D1F00;image=process_diagrams_assets/cnn_03_ellipse_localizer_v2.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;fontColor=#ffffff;" value="&lt;b&gt;Find the gauge face&lt;/b&gt;&lt;br&gt;- Locate the circular gauge face in the image&lt;br&gt;- Estimate its center, shape, and our confidence in it&lt;br&gt;- If the location is uncertain, we use the known training view/position as a fallback" vertex="1">
+          <mxGeometry height="190" width="300" x="670" y="90" as="geometry" />
         </mxCell>
-        <mxCell id="cnn_tech_3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#a0522d;strokeColor=#6D1F00;image=process_diagrams_assets/cnn_03_ellipse_localizer_v2.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;fontColor=#ffffff;" value="&lt;b&gt;Find the gauge face&lt;/b&gt;&lt;br&gt;- We first locate the circular gauge face in the image&lt;br&gt;- We estimate its center, shape, and our confidence in it&lt;br&gt;- If the location is uncertain, we use the known training view/position as a fallback" vertex="1">
-          <mxGeometry height="170" width="300" x="670" y="90" as="geometry" />
+        <mxCell id="cnn_tech_4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#0050ef;strokeColor=#001DBC;image=process_diagrams_assets/cnn_04_crop_selection.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;fontColor=#ffffff;" value="&lt;b&gt;Prepare a standard view of the gauge&lt;/b&gt;&lt;br&gt;- Crop and resize the gauge face into view using the ellipse model, and discard the rest of the image composition&lt;br&gt;- Use the located face when the model is confident in its detection&lt;br&gt;- Otherwise, we use the fixed view used during training" vertex="1">
+          <mxGeometry height="190" width="290" x="1010" y="90" as="geometry" />
         </mxCell>
-        <mxCell id="cnn_tech_4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#0050ef;strokeColor=#001DBC;image=process_diagrams_assets/cnn_04_crop_selection.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;fontColor=#ffffff;" value="&lt;b&gt;Prepare a standard view of the gauge&lt;/b&gt;&lt;br&gt;- We crop and resize the face into one consistent view&lt;br&gt;- We use the located face when it is reliable&lt;br&gt;- Otherwise, we use the fixed view used during training" vertex="1">
-          <mxGeometry height="170" width="290" x="1010" y="90" as="geometry" />
-        </mxCell>
-        <mxCell id="cnn_tech_5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#d5e8d4;strokeColor=#82b366;image=process_diagrams_assets/cnn_05_geometry_keypoints.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" value="&lt;b&gt;Find the center and the needle tip&lt;/b&gt;&lt;br&gt;- We use the geometry model to identify the gauge center&lt;br&gt;- We identify the end of the needle, not the counterweight&lt;br&gt;- The model also gives us confidence so we can reject uncertain readings" vertex="1">
-          <mxGeometry height="170" width="300" x="1340" y="90" as="geometry" />
+        <mxCell id="cnn_tech_5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#d5e8d4;strokeColor=#82b366;image=process_diagrams_assets/cnn_05_geometry_keypoints.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" value="&lt;b&gt;Find the center and the needle tip&lt;/b&gt;&lt;br&gt;- Use the geometry model to identify the needle center&lt;br&gt;- Identify the end of the needle, and try to not accidently identify the counterweight&lt;br&gt;- The model also gives us confidence so we can reject uncertain readings" vertex="1">
+          <mxGeometry height="190" width="300" x="1340" y="90" as="geometry" />
         </mxCell>
         <mxCell id="cnn_tech_6" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#e1d5e7;strokeColor=#9673a6;image=process_diagrams_assets/cnn_06_angle_to_temperature.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" value="&lt;b&gt;Turn the angle into a measurement&lt;/b&gt;&lt;br&gt;- We measure the needle angle using north as 0 degrees&lt;br&gt;- The active gauge profile maps that angle to the right quantity and unit&lt;br&gt;- We wait for three consistent readings before accepting a large change&lt;br&gt;- We record the profile, angle, value, unit, and confidence so we can explain the result" vertex="1">
-          <mxGeometry height="170" width="280" x="1680" y="90" as="geometry" />
-        </mxCell>
-        <mxCell id="cnn_why_1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="We do not want the model to explain a bad photograph. We check the gauge area first and stop unusable images before they can create a misleading measurement." vertex="1">
-          <mxGeometry height="190" width="270" x="40" y="480" as="geometry" />
-        </mxCell>
-        <mxCell id="cnn_why_2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="Using one accepted image for both readers gives us a fair comparison. If they disagree, we can investigate the model or calibration without wondering whether they saw different images." vertex="1">
-          <mxGeometry height="190" width="280" x="350" y="480" as="geometry" />
-        </mxCell>
-        <mxCell id="cnn_why_3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="Finding the face first makes the next step easier. We can distinguish a bad face location from a model that found the face but missed the needle." vertex="1">
-          <mxGeometry height="190" width="300" x="670" y="480" as="geometry" />
-        </mxCell>
-        <mxCell id="cnn_why_4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="The model always sees the gauge in a familiar layout. That makes training and debugging more consistent, while still giving us a safe fallback when the face detector is unsure." vertex="1">
-          <mxGeometry height="190" width="290" x="1010" y="480" as="geometry" />
-        </mxCell>
-        <mxCell id="cnn_why_5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="The center and tip are the information we need for the measurement. We keep confidence visible so a difficult image can be rejected instead of turned into a precise-looking guess." vertex="1">
-          <mxGeometry height="190" width="300" x="1340" y="480" as="geometry" />
-        </mxCell>
-        <mxCell id="cnn_why_6" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="The profile is what lets the same vision pipeline read a thermometer, hygrometer, or barometer. We keep the profile name, quantity, unit, angle, and value in the logs so the result is explainable." vertex="1">
-          <mxGeometry height="190" width="280" x="1680" y="480" as="geometry" />
+          <mxGeometry height="190" width="280" x="1680" y="90" as="geometry" />
         </mxCell>
         <mxCell id="cnn_e1" edge="1" parent="1" source="cnn_tech_1" style="endArrow=block;html=1;strokeColor=#000000;" target="cnn_tech_2">
           <mxGeometry relative="1" as="geometry" />
@@ -57,30 +36,6 @@
         </mxCell>
         <mxCell id="cnn_e5" edge="1" parent="1" source="cnn_tech_5" style="endArrow=block;html=1;strokeColor=#000000;" target="cnn_tech_6">
           <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="cnn_w1" edge="1" parent="1" source="zElmDHNvidVek9H3AHMp-1" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" target="cnn_why_1">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="cnn_w2" edge="1" parent="1" source="zElmDHNvidVek9H3AHMp-3" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" target="cnn_why_2">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="cnn_w3" edge="1" parent="1" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" target="cnn_why_3">
-          <mxGeometry relative="1" as="geometry">
-            <mxPoint x="820" y="434" as="sourcePoint" />
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="cnn_w4" edge="1" parent="1" source="zElmDHNvidVek9H3AHMp-7" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" target="cnn_why_4">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="cnn_w5" edge="1" parent="1" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" target="cnn_why_5">
-          <mxGeometry relative="1" as="geometry">
-            <mxPoint x="1490" y="436" as="sourcePoint" />
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="cnn_w6" edge="1" parent="1" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" target="cnn_why_6">
-          <mxGeometry relative="1" as="geometry">
-            <mxPoint x="1820" y="435.5" as="sourcePoint" />
-          </mxGeometry>
         </mxCell>
         <mxCell id="zElmDHNvidVek9H3AHMp-2" edge="1" parent="1" source="cnn_tech_1" style="dashed=1;endArrow=none;html=1;strokeColor=#d79b00;" target="zElmDHNvidVek9H3AHMp-1" value="">
           <mxGeometry relative="1" as="geometry">
