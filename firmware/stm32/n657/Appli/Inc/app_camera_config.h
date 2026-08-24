@@ -28,9 +28,10 @@ extern "C" {
 #define CAMERA_INIT_STARTUP_DELAY_MS        200U
 
 /* Capture and timing knobs ------------------------------------------------- */
-/* Use the processed CMW/ISP path so AE/AWB and demosaicing can converge on a
- * usable live image. Set to 1 only if we need raw Pipe0 diagnostics. */
-#define CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC 0
+/* Use the raw Pipe0 path for one controlled transport diagnostic. This keeps
+ * the battery and AI ownership changes intact while separating CSI/D-PHY
+ * reception from the processed CMW/ISP Pipe1 path. */
+#define CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC 1
 #define CAMERA_CAPTURE_TARGET_FRAME_COUNT   4U
 /* Keep inference detached from the DCMIPP-owned buffer. The snapshot is
  * CPU-cacheable and copied row-wise, avoiding the uncached AXISRAM transfer
