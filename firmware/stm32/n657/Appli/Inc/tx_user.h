@@ -248,6 +248,9 @@
 
 #define TX_TIMER_TICKS_PER_SECOND                100
 
+/* Put the Cortex-M55 into WFI whenever ThreadX has no runnable thread. */
+#define TX_ENABLE_WFI
+
 /* Determine if there is a FileX pointer in the thread control block.
    By default, the pointer is there for legacy/backwards compatibility.
    The pointer must also be there for applications using FileX.

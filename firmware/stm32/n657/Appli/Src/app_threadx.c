@@ -463,7 +463,7 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 
 		BSP_LED_Off(LED_BLUE);
 		DebugConsole_Printf(
-				"[CAMERA][THREAD] Entering capture/inference loop (period=60s)...\r\n");
+				"[CAMERA][THREAD] Entering capture/inference loop (period=900s)...\r\n");
 		while (1) {
 			bool storage_ready = AppFileX_IsMediaReady();
 			uint32_t next_delay_ms = CAMERA_CAPTURE_PERIOD_MS;
@@ -518,8 +518,8 @@ static VOID CameraHeartbeatThread_Entry(ULONG thread_input) {
 
 	while (1) {
 		BSP_LED_Toggle(LED_GREEN);
-		/* The LED remains the liveness indicator. UART pulses are opt-in because
-		 * a five-second heartbeat obscures capture and inference failures. */
+		/* The LED remains the liveness indicator. UART pulses are disabled in the
+		 * battery profile, while this two-minute pulse remains easy to observe. */
 #if CAMERA_HEARTBEAT_ENABLE_UART_PULSES
 		/* Read the external RTC only for this low-rate diagnostic line.  Keeping
 		 * the capture and inference logs free of per-line I2C reads avoids adding
