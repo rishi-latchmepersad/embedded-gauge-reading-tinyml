@@ -34,8 +34,8 @@ extern "C" {
 #define CAMERA_HEARTBEAT_LED_PIN            GPIO_PIN_0
 
 /* Camera capture cadence --------------------------------------------------- */
-/* Keep diagnostic captures to one frame every fifteen minutes. */
-#define CAMERA_CAPTURE_PERIOD_MS           900000U
+/* Restore the capture/inference cycle to one frame every minute. */
+#define CAMERA_CAPTURE_PERIOD_MS           60000U
 
 /* Storage maintenance timing ---------------------------------------------- */
 #define IMAGE_CLEANUP_PERIOD_MS            600000U

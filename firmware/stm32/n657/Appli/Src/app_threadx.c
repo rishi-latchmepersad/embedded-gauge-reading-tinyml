@@ -463,7 +463,7 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 
 		BSP_LED_Off(LED_BLUE);
 		DebugConsole_Printf(
-				"[CAMERA][THREAD] Entering capture/inference loop (period=900s)...\r\n");
+				"[CAMERA][THREAD] Entering capture/inference loop (period=60s)...\r\n");
 		while (1) {
 			bool storage_ready = AppFileX_IsMediaReady();
 			uint32_t next_delay_ms = CAMERA_CAPTURE_PERIOD_MS;
