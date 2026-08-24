@@ -75,16 +75,46 @@ void AppCameraCapture_ReleaseInferenceFrame(void) {
 }
 
 /**
+ * @brief Check whether raw Pipe0 completed before a late CSI status error.
+ *
+ * The IMX335 can report a short-packet/DPHY status after Pipe0 has already
+ * delivered the complete diagnostic buffer.  The frame is valid for this raw
+ * transport test when SOF, a frame event, and the full byte count are present.
+ * @retval true when the raw buffer can be handed to storage and AI.
+ */
+static bool AppCameraCapture_HasCompleteRawFrame(void) {
+	return !camera_capture_use_cmw_pipeline && camera_capture_sof_seen
+			&& (camera_capture_frame_event_count != 0U)
+			&& (camera_capture_reported_byte_count
+					>= CAMERA_CAPTURE_BUFFER_SIZE_BYTES)
+			&& (camera_capture_byte_count >= CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
+}
+
+/**
  * @brief Decide whether a DCMIPP error is worth retrying once.
  *
- * We treat the CSI sync plus DPHY control combo as a transient link issue when
- * the capture buffer already filled, because the frame itself usually made it
- * through before the late error surfaced.
+ * A raw Pipe0 error with no SOF and no newly reported bytes indicates that the
+ * receiver missed the restarted sensor boundary.  Retry that transport fault
+ * once after the cleanup path has stopped the sensor.  A complete raw frame is
+ * accepted separately by AppCameraCapture_HasCompleteRawFrame().
  * @retval true when one more capture attempt is reasonable.
  */
 static bool AppCameraCapture_ShouldRetryDcmippError(uint32_t error_code) {
-	return (error_code == 0x00008100U)
-			&& (camera_capture_reported_byte_count >= CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
+	const uint32_t raw_transport_errors = HAL_DCMIPP_ERROR_PIPE0_OVR
+			| HAL_DCMIPP_CSI_ERROR_SYNC | HAL_DCMIPP_CSI_ERROR_SPKT
+			| HAL_DCMIPP_CSI_ERROR_DPHY_CTRL | HAL_DCMIPP_CSI_ERROR_SOT_SYNC
+			| HAL_DCMIPP_CSI_ERROR_SOT;
+
+	if (camera_capture_use_cmw_pipeline) {
+		return (error_code == 0x00008100U)
+				&& (camera_capture_reported_byte_count
+						>= CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
+	}
+
+	return ((error_code & raw_transport_errors) != 0U)
+			&& !camera_capture_sof_seen
+			&& (camera_capture_frame_event_count == 0U)
+			&& (camera_capture_reported_byte_count == 0U);
 }
 
 /**
@@ -820,6 +850,29 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 					(unsigned long) camera_capture_error_code);
 			AppCameraDiagnostics_LogDcmippErrorCode(camera_capture_error_code);
 			AppCameraCapture_LogCaptureState("capture-error");
+			if (AppCameraCapture_HasCompleteRawFrame()) {
+				/* Treat the CSI report as late metadata when the raw Pipe0 frame is
+				 * already complete.  Rejecting this case loses a valid diagnostic
+				 * image and falsely turns a successful transport transaction into a
+				 * battery-period capture failure. */
+				DebugConsole_WriteString(
+						"[CAMERA][CAPTURE] Complete raw frame accepted despite late CSI status.\r\n");
+				camera_capture_result_buffer =
+						camera_capture_buffers[camera_capture_active_buffer_index];
+				(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp,
+				CAMERA_CAPTURE_PIPE, DCMIPP_VIRTUAL_CHANNEL0);
+				if (camera_stream_started
+						&& !CameraPlatform_StopImx335Stream()) {
+					DebugConsole_WriteString(
+							"[CAMERA][CAPTURE] Could not stop IMX335 after complete raw frame; rejecting handoff.\r\n");
+					camera_capture_snapshot_armed = false;
+					camera_capture_isp_loop_paused = false;
+					return false;
+				}
+				camera_capture_snapshot_armed = false;
+				*captured_bytes_ptr = camera_capture_byte_count;
+				return true;
+			}
 			should_reset_sensor_stream =
 			AppCameraCapture_ShouldRetryDcmippError(camera_capture_error_code);
 			break;
