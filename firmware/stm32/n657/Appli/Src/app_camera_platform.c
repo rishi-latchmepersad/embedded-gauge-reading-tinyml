@@ -123,6 +123,60 @@ bool CameraPlatform_ConfigureCsiLineByteProbe(void) {
 }
 
 /**
+ * @brief Clear stale DCMIPP/CSI status before a raw Pipe0 transaction.
+ *
+ * The raw diagnostic deliberately bypasses CMW's processed Pipe1 path, but
+ * the shared DCMIPP status registers can retain Pipe1/Pipe2 and CSI events
+ * from middleware initialization.  Clear those write-one-to-clear flags and
+ * mask the unused pipe interrupts while the diagnostic owns the receiver.
+ * @param capture_dcmipp Active DCMIPP handle.
+ */
+static void CameraPlatform_ResetRawDcmippStatus(
+		DCMIPP_HandleTypeDef *capture_dcmipp) {
+	const uint32_t dcmipp_flags = DCMIPP_FLAG_AXI_TRANSFER_ERROR
+			| DCMIPP_FLAG_PARALLEL_SYNC_ERROR | DCMIPP_FLAG_PIPE0_FRAME
+			| DCMIPP_FLAG_PIPE0_VSYNC | DCMIPP_FLAG_PIPE0_LINE
+			| DCMIPP_FLAG_PIPE0_LIMIT | DCMIPP_FLAG_PIPE0_OVR
+			| DCMIPP_FLAG_PIPE1_LINE | DCMIPP_FLAG_PIPE1_FRAME
+			| DCMIPP_FLAG_PIPE1_VSYNC | DCMIPP_FLAG_PIPE1_OVR
+			| DCMIPP_FLAG_PIPE2_LINE | DCMIPP_FLAG_PIPE2_FRAME
+			| DCMIPP_FLAG_PIPE2_VSYNC | DCMIPP_FLAG_PIPE2_OVR;
+	const uint32_t csi_flags = DCMIPP_CSI_FLAG_SYNCERR
+			| DCMIPP_CSI_FLAG_WDERR | DCMIPP_CSI_FLAG_SPKTERR
+			| DCMIPP_CSI_FLAG_IDERR | DCMIPP_CSI_FLAG_CECCERR
+			| DCMIPP_CSI_FLAG_ECCERR | DCMIPP_CSI_FLAG_CRCERR
+			| DCMIPP_CSI_FLAG_CCFIFO | DCMIPP_CSI_FLAG_SPKT
+			| DCMIPP_CSI_FLAG_EOF0 | DCMIPP_CSI_FLAG_EOF1
+			| DCMIPP_CSI_FLAG_EOF2 | DCMIPP_CSI_FLAG_EOF3
+			| DCMIPP_CSI_FLAG_SOF0 | DCMIPP_CSI_FLAG_SOF1
+			| DCMIPP_CSI_FLAG_SOF2 | DCMIPP_CSI_FLAG_SOF3
+			| DCMIPP_CSI_FLAG_LB0 | DCMIPP_CSI_FLAG_LB1
+			| DCMIPP_CSI_FLAG_LB2 | DCMIPP_CSI_FLAG_LB3;
+	const uint32_t csi_dphy_flags = DCMIPP_CSI_FLAG_ECTRLDL1
+			| DCMIPP_CSI_FLAG_ESYNCESCDL1 | DCMIPP_CSI_FLAG_EESCDL1
+			| DCMIPP_CSI_FLAG_ESOTSYNCDL1 | DCMIPP_CSI_FLAG_ESOTDL1
+			| DCMIPP_CSI_FLAG_ECTRLDL0 | DCMIPP_CSI_FLAG_ESYNCESCDL0
+			| DCMIPP_CSI_FLAG_EESCDL0 | DCMIPP_CSI_FLAG_ESOTSYNCDL0
+			| DCMIPP_CSI_FLAG_ESOTDL0;
+
+	if (capture_dcmipp == NULL) {
+		return;
+	}
+
+	__HAL_DCMIPP_CLEAR_FLAG(capture_dcmipp, dcmipp_flags);
+	__HAL_DCMIPP_CSI_CLEAR_FLAG(CSI, csi_flags);
+	__HAL_DCMIPP_CSI_CLEAR_DPHY_FLAG(CSI, csi_dphy_flags);
+
+	/* CMW owns these interrupts in processed mode; raw mode must keep them
+	 * from turning an unrelated pipe event into a Pipe0 capture failure. */
+	__HAL_DCMIPP_DISABLE_IT(capture_dcmipp, DCMIPP_IT_PIPE1_LINE
+			| DCMIPP_IT_PIPE1_FRAME | DCMIPP_IT_PIPE1_VSYNC
+			| DCMIPP_IT_PIPE1_OVR | DCMIPP_IT_PIPE2_LINE
+			| DCMIPP_IT_PIPE2_FRAME | DCMIPP_IT_PIPE2_VSYNC
+			| DCMIPP_IT_PIPE2_OVR);
+}
+
+/**
  * @brief Initialize the IMX335 through ST's public camera middleware path.
  * @retval true when the middleware-owned camera stack accepts the sensor setup.
  */
@@ -767,6 +821,10 @@ bool CameraPlatform_PrepareDcmippSnapshot(void) {
 		DCMIPP_CSI_PIPE_ConfTypeDef csi_pipe_config = { 0 };
 		DCMIPP_PipeConfTypeDef pipe_config = { 0 };
 		DCMIPP_CropConfTypeDef crop_config = { 0 };
+
+		/* Raw mode owns Pipe0 exclusively.  Remove stale status from the prior
+		 * CMW setup before configuring the next snapshot transaction. */
+		CameraPlatform_ResetRawDcmippStatus(capture_dcmipp);
 
 		csi_pipe_config.DataTypeMode = DCMIPP_DTMODE_DTIDA;
 		csi_pipe_config.DataTypeIDA = DCMIPP_DT_RAW10;

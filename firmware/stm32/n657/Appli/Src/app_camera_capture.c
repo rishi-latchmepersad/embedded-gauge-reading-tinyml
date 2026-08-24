@@ -101,7 +101,8 @@ static bool AppCameraCapture_HasCompleteRawFrame(void) {
  */
 static bool AppCameraCapture_ShouldRetryDcmippError(uint32_t error_code) {
 	const uint32_t raw_transport_errors = HAL_DCMIPP_ERROR_PIPE0_OVR
-			| HAL_DCMIPP_CSI_ERROR_SYNC | HAL_DCMIPP_CSI_ERROR_SPKT
+			| HAL_DCMIPP_ERROR_PARALLEL_SYNC | HAL_DCMIPP_CSI_ERROR_SYNC
+			| HAL_DCMIPP_CSI_ERROR_SPKT
 			| HAL_DCMIPP_CSI_ERROR_DPHY_CTRL | HAL_DCMIPP_CSI_ERROR_SOT_SYNC
 			| HAL_DCMIPP_CSI_ERROR_SOT;
 
