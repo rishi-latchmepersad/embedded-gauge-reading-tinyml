@@ -704,6 +704,15 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	 * word; the thread later treats any change as a completion/error event. */
 	completion_event_baseline = camera_capture_done_event_count;
 	if (!CameraPlatform_StartDcmippSnapshot()) {
+		/* The raw diagnostic path deliberately stops the receiver between
+		 * snapshots.  If a re-arm fails while the sensor is still streaming,
+		 * leave the sensor in standby before retrying so the next SOT begins at a
+		 * fresh frame boundary instead of inheriting a stale CSI state. */
+		if (!camera_capture_use_cmw_pipeline && camera_stream_started
+				&& !CameraPlatform_StopImx335Stream()) {
+			DebugConsole_WriteString(
+					"[CAMERA][CAPTURE] Could not stop raw IMX335 stream before DCMIPP re-arm retry.\r\n");
+		}
 		DelayMilliseconds_ThreadX(CAMERA_CAPTURE_RETRY_DELAY_MS);
 		if (!CameraPlatform_StartDcmippSnapshot()) {
 			App_ThreadX_UnlockCameraMiddleware();
@@ -783,7 +792,13 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 				/* Freeze the completed DMA buffer at the source. The board has no
 				 * HyperRAM, and the lower AXISRAM1 alias used by the former snapshot
 				 * copy can stall the CPU. The next capture waits for AI completion. */
-				if (camera_capture_use_cmw_pipeline && camera_stream_started
+				/* Both capture modes stop the sensor before handing the buffer to
+				 * storage/AI.  The processed path already required this for immutable
+				 * ownership; raw Pipe0 also needs it because the receiver is stopped
+				 * after each diagnostic frame.  Leaving the sensor running here causes
+				 * the next one-minute snapshot to begin mid-frame and report
+				 * CSI_SHORT_PACKET/SOT errors with zero captured bytes. */
+				if (camera_stream_started
 						&& !CameraPlatform_StopImx335Stream()) {
 					DebugConsole_WriteString(
 							"[CAMERA][CAPTURE] Could not stop IMX335 after frame completion; refusing live-buffer handoff.\r\n");
@@ -832,7 +847,11 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 
 	(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp, CAMERA_CAPTURE_PIPE,
 	DCMIPP_VIRTUAL_CHANNEL0);
-	if (should_reset_sensor_stream) {
+	/* Raw Pipe0 is intentionally a stop-and-capture diagnostic path, so always
+	 * reset the sensor after an error.  The processed path keeps its existing
+	 * conditional recovery behavior. */
+	if (camera_stream_started
+			&& (!camera_capture_use_cmw_pipeline || should_reset_sensor_stream)) {
 		if (!CameraPlatform_StopImx335Stream()) {
 			DebugConsole_WriteString(
 					"[CAMERA][CAPTURE] IMX335 stream stop failed during DCMIPP recovery.\r\n");
