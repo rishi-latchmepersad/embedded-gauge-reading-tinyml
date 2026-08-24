@@ -1124,10 +1124,22 @@ bool CameraPlatform_StartImx335Stream(void) {
  */
 bool CameraPlatform_StopImx335Stream(void) {
 	uint8_t mode_select = IMX335_MODE_STANDBY;
+	uint8_t xmsta_master_stop_value = IMX335_MODE_STANDBY;
 
 	if (!camera_stream_started) {
 		return true;
 	}
+
+	/* Stop the IMX335 master clock before putting the sensor into standby.
+	 * MODE_SELECT alone can leave the CSI link without a clean stop boundary,
+	 * which makes the following one-minute restart arm successfully but emit no
+	 * SOF or pixel bytes. */
+	if (CameraPlatform_I2cWriteReg(BCAMS_IMX_I2C_ADDRESS_HAL,
+	IMX335_REG_XMSTA, &xmsta_master_stop_value, 1U) != IMX335_OK) {
+		DebugConsole_WriteString(
+				"[CAMERA][CAPTURE] Warning: XMSTA stop write failed before IMX335 standby.\r\n");
+	}
+	DelayMilliseconds_ThreadX(5U);
 
 	if (CameraPlatform_I2cWriteReg(BCAMS_IMX_I2C_ADDRESS_HAL,
 	IMX335_REG_MODE_SELECT, &mode_select, 1U) != IMX335_OK) {
