@@ -31,7 +31,7 @@ extern "C" {
 /* Use the raw Pipe0 path for one controlled transport diagnostic. This keeps
  * the battery and AI ownership changes intact while separating CSI/D-PHY
  * reception from the processed CMW/ISP Pipe1 path. */
-#define CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC 1
+#define CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC 0
 #define CAMERA_CAPTURE_TARGET_FRAME_COUNT   4U
 /* Keep inference detached from the DCMIPP-owned buffer. The snapshot is
  * CPU-cacheable and copied row-wise, avoiding the uncached AXISRAM transfer
