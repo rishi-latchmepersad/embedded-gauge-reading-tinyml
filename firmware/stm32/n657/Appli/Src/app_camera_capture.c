@@ -915,6 +915,10 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 					(void) AppCameraBuffers_InvalidateCaptureRegion(
 							camera_capture_byte_count);
 				}
+				/* The late status has been consumed as metadata.  Clear the
+				 * transaction-level error so the caller does not mistake a valid
+				 * accepted frame for another transport retry. */
+				camera_capture_error_code = 0U;
 				return true;
 			}
 			should_reset_sensor_stream =
@@ -995,7 +999,7 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	bool capture_ok = false;
 	bool capture_saved = !camera_capture_use_cmw_pipeline;
 	bool ai_handoff_accepted = !camera_capture_use_cmw_pipeline;
-	bool discard_next_successful_frame = false;
+	bool discard_next_exposure_frame = false;
 	/* Keep one compact failure reason so a truncated UART line still identifies
 	 * the transaction stage without dumping the frame or adding a log burst. */
 	const char *failure_stage = "capture";
@@ -1041,13 +1045,18 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 		}
 
 		if (AppCameraCapture_CaptureSingleFrame(&captured_bytes)) {
-			if (discard_next_successful_frame) {
-				/* A DCMIPP retry can recover a usable buffer, but the preceding
-				 * transport error means this frame is less trustworthy than a clean
-				 * first-pass capture. Skip it and wait for the next clean frame. */
+			if (discard_next_exposure_frame) {
+				/* The first frame after an exposure/gain update can still contain
+				 * the previous integration state. A transport error does not make
+				 * a later complete buffer unusable, so only the exposure-settle
+				 * condition discards here. */
 				(void) DebugConsole_WriteString(
-						"[CAMERA][CAPTURE] Discarding frame after DCMIPP retry; requesting another capture.\r\n");
-				discard_next_successful_frame = false;
+						"[CAMERA][CAPTURE] Discarding frame after exposure/gain update; requesting another capture.\r\n");
+				discard_next_exposure_frame = false;
+				/* Start a fresh transport-retry budget for the next quality
+				 * candidate. The prior budget belonged to the frame discarded
+				 * during exposure settling. */
+				dcmipp_retry_count = 0U;
 				capture_ok = false;
 				continue;
 			}
@@ -1115,7 +1124,7 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 					/* The first frame after a sensor exposure/gain update can still
 					 * contain the previous integration state.  Discard it before the
 					 * brightness gate evaluates a candidate frame. */
-					discard_next_successful_frame = true;
+					discard_next_exposure_frame = true;
 					previous_brightness_gate = brightness_gate;
 					brightness_adjustment_count++;
 #if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
@@ -1145,7 +1154,6 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 		}
 
 		dcmipp_retry_count++;
-		discard_next_successful_frame = true;
 	}
 
 	if (!capture_ok) {
