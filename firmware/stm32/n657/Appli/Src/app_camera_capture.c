@@ -63,6 +63,12 @@ extern volatile uint32_t camera_capture_counter_status;
 extern uint8_t *camera_capture_result_buffer;
 extern uint32_t camera_capture_active_buffer_index;
 
+/* Preserve the retry decision across processed-camera rebuilds. The rebuild
+ * clears the HAL error state, so the outer transaction loop cannot safely
+ * recompute retryability from the live handle after recovery. */
+static bool camera_capture_last_failure_retryable = false;
+static uint32_t camera_capture_last_failure_error_code = 0U;
+
 /**
  * @brief Resume the camera ISP service after AI releases the stable snapshot.
  *
@@ -711,6 +717,8 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	if (captured_bytes_ptr == NULL) {
 		return false;
 	}
+	camera_capture_last_failure_retryable = false;
+	camera_capture_last_failure_error_code = 0U;
 
 	camera_capture_isp_loop_paused = true;
 
@@ -923,6 +931,8 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 			}
 			should_reset_sensor_stream =
 			AppCameraCapture_ShouldRetryDcmippError(camera_capture_error_code);
+			camera_capture_last_failure_retryable = should_reset_sensor_stream;
+			camera_capture_last_failure_error_code = camera_capture_error_code;
 			break;
 		}
 
@@ -1036,10 +1046,10 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 
 	for (capture_attempt = 0U;; capture_attempt++) {
 		if (capture_attempt > 0U) {
-			if (camera_capture_error_code != 0U) {
+			if (camera_capture_last_failure_error_code != 0U) {
 				DebugConsole_Printf(
 						"[CAMERA][CAPTURE] Retrying capture after DCMIPP error 0x%08lX.\r\n",
-						(unsigned long) camera_capture_error_code);
+						(unsigned long) camera_capture_last_failure_error_code);
 			}
 			DelayMilliseconds_ThreadX(CAMERA_CAPTURE_RETRY_DELAY_MS);
 		}
@@ -1142,7 +1152,7 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 			break;
 		}
 
-		if (!AppCameraCapture_ShouldRetryDcmippError(camera_capture_error_code)) {
+		if (!camera_capture_last_failure_retryable) {
 			break;
 		}
 
