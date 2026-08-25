@@ -789,7 +789,15 @@ bool CameraPlatform_PrepareDcmippSnapshot(void) {
 	DCMIPP_HandleTypeDef *capture_dcmipp =
 			CameraPlatform_GetCaptureDcmippHandle();
 
-	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
+	if (camera_capture_use_cmw_pipeline) {
+		if (!camera_cmw_initialized) {
+			/* Never reinterpret a failed processed-camera recovery as permission
+			 * to arm the raw Pipe0 diagnostic path. */
+			DebugConsole_WriteString(
+					"[CAMERA][CAPTURE] Processed CMW stack is unavailable; refusing raw fallback.\r\n");
+			return false;
+		}
+
 		CMW_DCMIPP_Conf_t pipe_request = { 0 };
 		uint32_t pitch_bytes = 0U;
 
@@ -972,29 +980,27 @@ void CameraPlatform_RecoverProcessedSnapshot(void) {
  * @retval true when the CMW/ISP stack was rebuilt successfully.
  */
 bool CameraPlatform_ReinitializeProcessedCamera(void) {
-	int32_t cmw_status = CMW_ERROR_NONE;
+	DCMIPP_HandleTypeDef *cmw_handle = NULL;
 
 	if (!camera_capture_use_cmw_pipeline || !camera_cmw_initialized) {
 		return true;
 	}
 
-	/* CMW_CAMERA_DeInit() owns the private ISP object.  Unlike the raw path,
-	 * processed capture has called Camera_Drv.Start(), so ISP teardown is valid. */
-	if (is_camera_started <= 0) {
-		is_camera_started = 1;
-	}
-	if (is_pipe1_2_shared <= 0) {
-		is_pipe1_2_shared = 1;
-	}
-	cmw_status = CMW_CAMERA_DeInit();
-	if (cmw_status != CMW_ERROR_NONE) {
+	/* A transport fault can leave the ISP object's private state inconsistent.
+	 * CMW_CAMERA_DeInit() then returns -4 while tearing that state down, so do
+	 * the same DCMIPP-only reset that is proven safe for the raw path. */
+	cmw_handle = CMW_CAMERA_GetDCMIPPHandle();
+	if ((cmw_handle == NULL) || (HAL_DCMIPP_DeInit(cmw_handle) != HAL_OK)) {
 		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] Processed CMW restart deinit failed, status=%ld.\r\n",
-				(long) cmw_status);
-		camera_cmw_initialized = false;
+				"[CAMERA][CAPTURE] DCMIPP-only reset failed before processed CMW reinitialization.\r\n");
 		return false;
 	}
 
+	/* CMW_CAMERA_Init() rebuilds its private camera state from these lifecycle
+	 * markers.  Clear all three so the next init is a real fresh bring-up. */
+	is_camera_init = 0;
+	is_camera_started = 0;
+	is_pipe1_2_shared = 0;
 	camera_cmw_initialized = false;
 	if (!CameraPlatform_InitializeImx335Sensor()) {
 		DebugConsole_WriteString(
@@ -1003,7 +1009,7 @@ bool CameraPlatform_ReinitializeProcessedCamera(void) {
 	}
 
 	DebugConsole_WriteString(
-			"[CAMERA][CAPTURE] Processed CMW/ISP stack restarted after failure.\r\n");
+			"[CAMERA][CAPTURE] Processed CMW stack rebuilt after transport failure.\r\n");
 	return true;
 }
 
