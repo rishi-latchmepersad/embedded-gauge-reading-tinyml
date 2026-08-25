@@ -741,9 +741,9 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	camera_capture_result_buffer = camera_capture_buffers[0];
 	AppCameraBuffers_PrepareForDma();
 
-	/* Match ST's CMW_CAMERA_Start() ordering: arm the CSI/DCMIPP receiver first,
-	 * then start the ISP + sensor stream. This avoids missing the first valid
-	 * frame while the middleware is bringing the stream up. */
+	/* Arm the CSI/DCMIPP receiver first, then release MODE_SELECT/XMSTA through
+	 * the application-controlled sensor start.  This preserves a complete first
+	 * frame for snapshot mode instead of starting the sensor inside CMW. */
 	/* Capture the counter before arming.  The ISR only increments this aligned
 	 * word; the thread later treats any change as a completion/error event. */
 	completion_event_baseline = camera_capture_done_event_count;
@@ -781,7 +781,7 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 		 * advance to the armed frame boundary before we block on completion. */
 		DelayMilliseconds_ThreadX(CAMERA_STREAM_WARMUP_DELAY_MS);
 	}
-	/* CMW_CAMERA_Start()/stream startup can restore the ISP IQ defaults, which
+	/* CMW initialization and sensor startup can restore the ISP IQ defaults, which
 	 * include AEC enabled.  Lock it again at the real capture boundary so the
 	 * brightness-gate nudges below control the same exposure/gain that produces
 	 * this frame. */

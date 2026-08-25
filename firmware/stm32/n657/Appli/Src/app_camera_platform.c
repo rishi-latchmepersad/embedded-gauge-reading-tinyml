@@ -930,7 +930,7 @@ bool CameraPlatform_PrepareDcmippSnapshot(void) {
  * The HAL marks Pipe1 as ERROR when an overrun interrupt arrives.  Its normal
  * Stop() helper then refuses to stop an already-error pipe, leaving the next
  * CMW resize configuration to fail forever.  Clear the outstanding request
- * and status, then restore the HAL state expected by CMW_CAMERA_Start().
+ * and status, then restore the HAL state expected by the next Pipe1 arm.
  */
 void CameraPlatform_RecoverProcessedSnapshot(void) {
 	DCMIPP_HandleTypeDef *capture_dcmipp =
@@ -1136,23 +1136,17 @@ bool CameraPlatform_StartDcmippSnapshot(void) {
 		return false;
 	}
 
-	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized) {
-		const int32_t cmw_status = CMW_CAMERA_Start(CAMERA_CAPTURE_PIPE,
-			camera_capture_result_buffer, CMW_MODE_SNAPSHOT);
-
-		if (cmw_status != CMW_ERROR_NONE) {
-			DebugConsole_Printf(
-					"[CAMERA][CAPTURE] CMW_CAMERA_Start() failed for snapshot mode, status=%ld.\r\n",
-					(long) cmw_status);
-			return false;
-		}
-
-		/* Do not mark the sensor stream as running yet.  The capture path still
-		 * needs to call CameraPlatform_StartImx335Stream() so the IMX335 actually
-		 * leaves standby after the receiver has been armed. */
-		return true;
+	if (camera_capture_use_cmw_pipeline && !camera_cmw_initialized) {
+		DebugConsole_WriteString(
+				"[CAMERA][CAPTURE] Processed CMW stack is unavailable before Pipe1 arm.\r\n");
+		return false;
 	}
 
+	/* CMW_CAMERA_Start() also starts the ISP and IMX335.  The application must
+	 * release XMSTA only after the receiver is armed; otherwise the middleware's
+	 * early MODE_SELECT transition can split the first CSI frame and produce one
+	 * SOF with no EOF/bytes.  Keep CMW's Pipe1 configuration, but arm DCMIPP
+	 * directly so CameraPlatform_StartImx335Stream() owns the sole sensor start. */
 	if (HAL_DCMIPP_CSI_PIPE_Start(capture_dcmipp, CAMERA_CAPTURE_PIPE,
 	DCMIPP_VIRTUAL_CHANNEL0, (uint32_t) camera_capture_result_buffer,
 	CMW_MODE_SNAPSHOT) != HAL_OK) {
@@ -1223,9 +1217,9 @@ bool CameraPlatform_StartImx335Stream(void) {
 /**
  * @brief Reload the IMX335 sensor configuration after a stopped raw snapshot.
  *
- * The raw diagnostic path arms Pipe0 directly and therefore does not enter
- * CMW_CAMERA_Start(), which normally owns the sensor start lifecycle.  After
- * we stop the module between snapshots, MODE_SELECT/XMSTA alone is not enough:
+ * The raw diagnostic path arms Pipe0 directly and stops the complete module
+ * between snapshots.  After that reset boundary, MODE_SELECT/XMSTA alone is
+ * not enough:
  * the reset sensor has lost its resolution, lane format, clock, and frame-rate
  * programming.  Restart the complete public CMW camera lifecycle so its
  * private sensor context and DCMIPP handle are restored together.
