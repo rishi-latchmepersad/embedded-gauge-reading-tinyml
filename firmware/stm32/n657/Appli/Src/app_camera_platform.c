@@ -23,6 +23,11 @@ extern bool camera_cmw_initialized;
 extern bool camera_capture_use_cmw_pipeline;
 extern bool camera_stream_started;
 extern uint8_t *camera_capture_result_buffer;
+/* These counters belong to the ST camera middleware.  Raw Pipe0 bypasses its
+ * normal Start() call, so normalize the deinit bookkeeping before using the
+ * public CMW restart path below. */
+extern int is_camera_started;
+extern int is_pipe1_2_shared;
 
 /* Last exposure value that passed the brightness gate.  Zero means no good
  * capture has been seen yet and SeedImx335ExposureGain uses the fixed fraction
@@ -1124,12 +1129,13 @@ bool CameraPlatform_StartImx335Stream(void) {
  * CMW_CAMERA_Start(), which normally owns the sensor start lifecycle.  After
  * we stop the module between snapshots, MODE_SELECT/XMSTA alone is not enough:
  * the reset sensor has lost its resolution, lane format, clock, and frame-rate
- * programming.  Restore those sensor-side tables while leaving DCMIPP alive.
+ * programming.  Restart the complete public CMW camera lifecycle so its
+ * private sensor context and DCMIPP handle are restored together.
  *
  * @retval true when all required sensor register tables were accepted.
  */
 bool CameraPlatform_ReinitializeImx335ForRawCapture(void) {
-	int32_t driver_status = IMX335_OK;
+	int32_t cmw_status = CMW_ERROR_NONE;
 
 	if (camera_capture_use_cmw_pipeline || !camera_cmw_initialized
 			|| !camera_raw_sensor_reinit_required) {
@@ -1138,53 +1144,28 @@ bool CameraPlatform_ReinitializeImx335ForRawCapture(void) {
 
 	DebugConsole_WriteString(
 			"[CAMERA][CAPTURE] Reinitializing IMX335 mode tables before raw snapshot.\r\n");
-	CameraPlatform_ResetImx335Module();
 
-	/* The hardware reset invalidates the component object's software gate too;
-	 * clear it before asking the official component driver to write its tables. */
-	camera_sensor.ctx_driver.IsInitialized = 0U;
-	driver_status = IMX335_Init(&camera_sensor.ctx_driver,
-			IMX335_R2592_1944, IMX335_RAW_RGGB10);
-	if (driver_status != IMX335_OK) {
+	/* Use the public CMW lifecycle so the restart operates on its private
+	 * camera_bsp object.  The app-level camera_sensor object is not that object;
+	 * calling IMX335_Init() on it would branch through null IO callbacks. */
+	if (is_camera_started <= 0) {
+		is_camera_started = 1;
+	}
+	if (is_pipe1_2_shared <= 0) {
+		is_pipe1_2_shared = 1;
+	}
+	cmw_status = CMW_CAMERA_DeInit();
+	if (cmw_status != CMW_ERROR_NONE) {
 		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] IMX335 resolution/mode restore failed, status=%ld.\r\n",
-				(long) driver_status);
+				"[CAMERA][CAPTURE] CMW camera deinitialization failed, status=%ld.\r\n",
+				(long) cmw_status);
 		return false;
 	}
+	camera_cmw_initialized = false;
 
-	driver_status = IMX335_SetFrequency(&camera_sensor.ctx_driver,
-			IMX335_INCK_24MHZ);
-	if (driver_status != IMX335_OK) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] IMX335 clock restore failed, status=%ld.\r\n",
-				(long) driver_status);
-		return false;
-	}
-
-	driver_status = IMX335_SetFramerate(&camera_sensor.ctx_driver,
-			IMX335_CAPTURE_FRAMERATE_FPS);
-	if (driver_status != IMX335_OK) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] IMX335 frame-rate restore failed, status=%ld.\r\n",
-				(long) driver_status);
-		return false;
-	}
-
-	driver_status = IMX335_MirrorFlipConfig(&camera_sensor.ctx_driver,
-			IMX335_MIRROR_FLIP_NONE);
-	if (driver_status != IMX335_OK) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] IMX335 orientation restore failed, status=%ld.\r\n",
-				(long) driver_status);
-		return false;
-	}
-
-	/* These settings are applied through CMW so the existing exposure cache and
-	 * diagnostic test-pattern policy remain the single source of truth. */
-	if (CMW_CAMERA_SetTestPattern(IMX335_TEST_PATTERN_MODE) != CMW_ERROR_NONE
-			|| !CameraPlatform_SeedImx335ExposureGain()) {
+	if (!CameraPlatform_InitializeImx335Sensor()) {
 		DebugConsole_WriteString(
-				"[CAMERA][CAPTURE] IMX335 post-reset image settings restore failed.\r\n");
+				"[CAMERA][CAPTURE] CMW IMX335 reinitialization failed.\r\n");
 		return false;
 	}
 
