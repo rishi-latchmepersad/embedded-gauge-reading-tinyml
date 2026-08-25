@@ -24,8 +24,9 @@ extern bool camera_capture_use_cmw_pipeline;
 extern bool camera_stream_started;
 extern uint8_t *camera_capture_result_buffer;
 /* These counters belong to the ST camera middleware.  Raw Pipe0 bypasses its
- * normal Start() call, so normalize the deinit bookkeeping before using the
- * public CMW restart path below. */
+ * normal Start() call, so reset the lifecycle bookkeeping before using the
+ * public CMW initialization path below. */
+extern int is_camera_init;
 extern int is_camera_started;
 extern int is_pipe1_2_shared;
 
@@ -1135,8 +1136,6 @@ bool CameraPlatform_StartImx335Stream(void) {
  * @retval true when all required sensor register tables were accepted.
  */
 bool CameraPlatform_ReinitializeImx335ForRawCapture(void) {
-	int32_t cmw_status = CMW_ERROR_NONE;
-
 	if (camera_capture_use_cmw_pipeline || !camera_cmw_initialized
 			|| !camera_raw_sensor_reinit_required) {
 		return true;
@@ -1145,22 +1144,21 @@ bool CameraPlatform_ReinitializeImx335ForRawCapture(void) {
 	DebugConsole_WriteString(
 			"[CAMERA][CAPTURE] Reinitializing IMX335 mode tables before raw snapshot.\r\n");
 
-	/* Use the public CMW lifecycle so the restart operates on its private
-	 * camera_bsp object.  The app-level camera_sensor object is not that object;
-	 * calling IMX335_Init() on it would branch through null IO callbacks. */
-	if (is_camera_started <= 0) {
-		is_camera_started = 1;
-	}
-	if (is_pipe1_2_shared <= 0) {
-		is_pipe1_2_shared = 1;
-	}
-	cmw_status = CMW_CAMERA_DeInit();
-	if (cmw_status != CMW_ERROR_NONE) {
+	/* Do not call CMW_CAMERA_DeInit() here.  Raw Pipe0 never starts the ISP, so
+	 * that public deinit path reaches ISP_Algo_DeInit() with an uninitialized
+	 * ISP object and hardfaults.  DCMIPP is the only middleware peripheral that
+	 * needs a reset before CMW_CAMERA_Init() rebuilds its private camera_bsp. */
+	DCMIPP_HandleTypeDef *cmw_handle = CMW_CAMERA_GetDCMIPPHandle();
+	if ((cmw_handle == NULL) || (HAL_DCMIPP_DeInit(cmw_handle) != HAL_OK)) {
 		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] CMW camera deinitialization failed, status=%ld.\r\n",
-				(long) cmw_status);
+				"[CAMERA][CAPTURE] DCMIPP-only reset failed before CMW reinitialization.\r\n");
 		return false;
 	}
+
+	/* CMW_CAMERA_Init() increments this state after rebuilding camera_bsp. */
+	is_camera_init = 0;
+	is_camera_started = 0;
+	is_pipe1_2_shared = 0;
 	camera_cmw_initialized = false;
 
 	if (!CameraPlatform_InitializeImx335Sensor()) {
