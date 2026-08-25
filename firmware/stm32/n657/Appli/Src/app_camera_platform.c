@@ -29,6 +29,9 @@ extern uint8_t *camera_capture_result_buffer;
  * instead. Written by CameraPlatform_CacheAcceptedExposureGain(). */
 static int32_t camera_cached_exposure_us = 0;
 static int32_t camera_cached_gain_mdb = 0;
+/* A raw snapshot stops the sensor completely.  The next raw snapshot must
+ * reload the sensor mode tables after that hardware stop boundary. */
+static bool camera_raw_sensor_reinit_required = false;
 
 /**
  * @brief Read the official IMX335 chip-ID register.
@@ -1115,6 +1118,84 @@ bool CameraPlatform_StartImx335Stream(void) {
 }
 
 /**
+ * @brief Reload the IMX335 sensor configuration after a stopped raw snapshot.
+ *
+ * The raw diagnostic path arms Pipe0 directly and therefore does not enter
+ * CMW_CAMERA_Start(), which normally owns the sensor start lifecycle.  After
+ * we stop the module between snapshots, MODE_SELECT/XMSTA alone is not enough:
+ * the reset sensor has lost its resolution, lane format, clock, and frame-rate
+ * programming.  Restore those sensor-side tables while leaving DCMIPP alive.
+ *
+ * @retval true when all required sensor register tables were accepted.
+ */
+bool CameraPlatform_ReinitializeImx335ForRawCapture(void) {
+	int32_t driver_status = IMX335_OK;
+
+	if (camera_capture_use_cmw_pipeline || !camera_cmw_initialized
+			|| !camera_raw_sensor_reinit_required) {
+		return true;
+	}
+
+	DebugConsole_WriteString(
+			"[CAMERA][CAPTURE] Reinitializing IMX335 mode tables before raw snapshot.\r\n");
+	CameraPlatform_ResetImx335Module();
+
+	/* The hardware reset invalidates the component object's software gate too;
+	 * clear it before asking the official component driver to write its tables. */
+	camera_sensor.ctx_driver.IsInitialized = 0U;
+	driver_status = IMX335_Init(&camera_sensor.ctx_driver,
+			IMX335_R2592_1944, IMX335_RAW_RGGB10);
+	if (driver_status != IMX335_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] IMX335 resolution/mode restore failed, status=%ld.\r\n",
+				(long) driver_status);
+		return false;
+	}
+
+	driver_status = IMX335_SetFrequency(&camera_sensor.ctx_driver,
+			IMX335_INCK_24MHZ);
+	if (driver_status != IMX335_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] IMX335 clock restore failed, status=%ld.\r\n",
+				(long) driver_status);
+		return false;
+	}
+
+	driver_status = IMX335_SetFramerate(&camera_sensor.ctx_driver,
+			IMX335_CAPTURE_FRAMERATE_FPS);
+	if (driver_status != IMX335_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] IMX335 frame-rate restore failed, status=%ld.\r\n",
+				(long) driver_status);
+		return false;
+	}
+
+	driver_status = IMX335_MirrorFlipConfig(&camera_sensor.ctx_driver,
+			IMX335_MIRROR_FLIP_NONE);
+	if (driver_status != IMX335_OK) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] IMX335 orientation restore failed, status=%ld.\r\n",
+				(long) driver_status);
+		return false;
+	}
+
+	/* These settings are applied through CMW so the existing exposure cache and
+	 * diagnostic test-pattern policy remain the single source of truth. */
+	if (CMW_CAMERA_SetTestPattern(IMX335_TEST_PATTERN_MODE) != CMW_ERROR_NONE
+			|| !CameraPlatform_SeedImx335ExposureGain()) {
+		DebugConsole_WriteString(
+				"[CAMERA][CAPTURE] IMX335 post-reset image settings restore failed.\r\n");
+		return false;
+	}
+
+	camera_stream_started = false;
+	camera_raw_sensor_reinit_required = false;
+	DebugConsole_WriteString(
+			"[CAMERA][CAPTURE] IMX335 raw snapshot configuration restored.\r\n");
+	return true;
+}
+
+/**
  * @brief Put the IMX335 back into standby so a later retry can restart cleanly.
  *
  * The DCMIPP fault path can leave the sensor side logically streaming even
@@ -1151,5 +1232,8 @@ bool CameraPlatform_StopImx335Stream(void) {
 	DelayMilliseconds_ThreadX(20U);
 
 	camera_stream_started = false;
+	if (!camera_capture_use_cmw_pipeline) {
+		camera_raw_sensor_reinit_required = true;
+	}
 	return true;
 }

@@ -700,6 +700,13 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 
 	/* Keep blue available for the save-success flash later in the flow. */
 	BSP_LED_Off(LED_BLUE);
+	if (!CameraPlatform_ReinitializeImx335ForRawCapture()) {
+		DebugConsole_WriteString(
+				"[CAMERA][CAPTURE] Raw IMX335 reinitialization failed before snapshot setup.\r\n");
+		App_ThreadX_UnlockCameraMiddleware();
+		camera_capture_isp_loop_paused = false;
+		return false;
+	}
 	if (!CameraPlatform_PrepareDcmippSnapshot()) {
 		App_ThreadX_UnlockCameraMiddleware();
 		camera_capture_isp_loop_paused = false;

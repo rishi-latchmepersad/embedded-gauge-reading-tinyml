@@ -38,6 +38,7 @@ bool CameraPlatform_LogImx335AutoExposureState(const char *reason);
 void CameraPlatform_ReapplyImx335TestPattern(void);
 bool CameraPlatform_StartImx335Stream(void);
 bool CameraPlatform_StopImx335Stream(void);
+bool CameraPlatform_ReinitializeImx335ForRawCapture(void);
 bool CameraPlatform_PrepareDcmippSnapshot(void);
 bool CameraPlatform_StartDcmippSnapshot(void);
 bool CameraPlatform_ConfigureCsiLineByteProbe(void);
