@@ -91,6 +91,25 @@ static bool AppCameraCapture_HasCompleteRawFrame(void) {
 }
 
 /**
+ * @brief Check whether processed Pipe1 delivered a complete frame before a
+ *        late CSI status report arrived.
+ *
+ * Pipe1's CMW callback supplies the fixed MONO_Y8 frame size instead of using
+ * the raw Pipe0 data counter.  A frame callback plus the complete byte count
+ * is therefore the processed-path completion contract; CSI EOF is not
+ * required because the sensor can report its trailing short-packet status
+ * after DCMIPP has already completed the output buffer.
+ * @retval true when the processed buffer is safe to hand to FileX and AI.
+ */
+static bool AppCameraCapture_HasCompleteProcessedFrame(void) {
+	return camera_capture_use_cmw_pipeline && camera_capture_sof_seen
+			&& (camera_capture_frame_event_count != 0U)
+			&& (camera_capture_reported_byte_count
+					>= CAMERA_CAPTURE_BUFFER_SIZE_BYTES)
+			&& (camera_capture_byte_count >= CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
+}
+
+/**
  * @brief Decide whether a DCMIPP error is worth retrying once.
  *
  * A raw Pipe0 error with no SOF and no newly reported bytes indicates that the
@@ -864,17 +883,24 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 					(unsigned long) camera_capture_error_code);
 			AppCameraDiagnostics_LogDcmippErrorCode(camera_capture_error_code);
 			AppCameraCapture_LogCaptureState("capture-error");
-			if (AppCameraCapture_HasCompleteRawFrame()) {
-				/* Treat the CSI report as late metadata when the raw Pipe0 frame is
-				 * already complete.  Rejecting this case loses a valid diagnostic
-				 * image and falsely turns a successful transport transaction into a
-				 * battery-period capture failure. */
-				DebugConsole_WriteString(
-						"[CAMERA][CAPTURE] Complete raw frame accepted despite late CSI status.\r\n");
+			if (AppCameraCapture_HasCompleteRawFrame()
+					|| AppCameraCapture_HasCompleteProcessedFrame()) {
+				/* Treat the CSI report as late metadata when DCMIPP has already
+				 * completed the full output buffer.  This is valid for both raw
+				 * diagnostics and processed Pipe1; rejecting it loses a complete
+				 * frame before the AI handoff. */
+				DebugConsole_Printf(
+						"[CAMERA][CAPTURE] Complete %s frame accepted despite late CSI status.\r\n",
+						camera_capture_use_cmw_pipeline ? "processed" : "raw");
 				camera_capture_result_buffer =
 						camera_capture_buffers[camera_capture_active_buffer_index];
 				(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp,
 				CAMERA_CAPTURE_PIPE, DCMIPP_VIRTUAL_CHANNEL0);
+				if (camera_capture_use_cmw_pipeline) {
+					/* Clear the late Pipe1/CSI status before the next one-minute
+					 * configuration so it cannot poison CMW's next arm. */
+					CameraPlatform_RecoverProcessedSnapshot();
+				}
 				if (camera_stream_started
 						&& !CameraPlatform_StopImx335Stream()) {
 					DebugConsole_WriteString(
@@ -885,6 +911,10 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 				}
 				camera_capture_snapshot_armed = false;
 				*captured_bytes_ptr = camera_capture_byte_count;
+				if (camera_capture_use_cmw_pipeline) {
+					(void) AppCameraBuffers_InvalidateCaptureRegion(
+							camera_capture_byte_count);
+				}
 				return true;
 			}
 			should_reset_sensor_stream =
