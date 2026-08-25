@@ -105,11 +105,17 @@ static bool AppCameraCapture_ShouldRetryDcmippError(uint32_t error_code) {
 			| HAL_DCMIPP_CSI_ERROR_SPKT
 			| HAL_DCMIPP_CSI_ERROR_DPHY_CTRL | HAL_DCMIPP_CSI_ERROR_SOT_SYNC
 			| HAL_DCMIPP_CSI_ERROR_SOT;
+	const uint32_t processed_transport_errors = HAL_DCMIPP_ERROR_PIPE1_OVR
+			| HAL_DCMIPP_ERROR_PARALLEL_SYNC | HAL_DCMIPP_CSI_ERROR_SYNC
+			| HAL_DCMIPP_CSI_ERROR_SPKT | HAL_DCMIPP_CSI_ERROR_DPHY_CTRL
+			| HAL_DCMIPP_CSI_ERROR_SOT_SYNC | HAL_DCMIPP_CSI_ERROR_SOT;
 
 	if (camera_capture_use_cmw_pipeline) {
-		return (error_code == 0x00008100U)
-				&& (camera_capture_reported_byte_count
-						>= CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
+		/* A Pipe1/CSI transport error with no frame event and no reported bytes
+		 * is recoverable once after the failed HAL state is cleared. */
+		return ((error_code & processed_transport_errors) != 0U)
+				&& (camera_capture_frame_event_count == 0U)
+				&& (camera_capture_reported_byte_count == 0U);
 	}
 
 	return ((error_code & raw_transport_errors) != 0U)
@@ -908,6 +914,9 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 
 	(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp, CAMERA_CAPTURE_PIPE,
 	DCMIPP_VIRTUAL_CHANNEL0);
+	if (camera_capture_use_cmw_pipeline && camera_capture_failed) {
+		CameraPlatform_RecoverProcessedSnapshot();
+	}
 	/* Raw Pipe0 is intentionally a stop-and-capture diagnostic path, so always
 	 * reset the sensor after an error.  The processed path keeps its existing
 	 * conditional recovery behavior. */

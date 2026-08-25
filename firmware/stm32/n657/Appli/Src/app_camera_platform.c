@@ -917,6 +917,52 @@ bool CameraPlatform_PrepareDcmippSnapshot(void) {
 }
 
 /**
+ * @brief Return processed Pipe1 to a reusable state after a DCMIPP error.
+ *
+ * The HAL marks Pipe1 as ERROR when an overrun interrupt arrives.  Its normal
+ * Stop() helper then refuses to stop an already-error pipe, leaving the next
+ * CMW resize configuration to fail forever.  Clear the outstanding request
+ * and status, then restore the HAL state expected by CMW_CAMERA_Start().
+ */
+void CameraPlatform_RecoverProcessedSnapshot(void) {
+	DCMIPP_HandleTypeDef *capture_dcmipp =
+			CameraPlatform_GetCaptureDcmippHandle();
+	const uint32_t dcmipp_flags = DCMIPP_FLAG_PARALLEL_SYNC_ERROR
+			| DCMIPP_FLAG_PIPE1_LINE | DCMIPP_FLAG_PIPE1_FRAME
+			| DCMIPP_FLAG_PIPE1_VSYNC | DCMIPP_FLAG_PIPE1_OVR;
+	const uint32_t csi_flags = DCMIPP_CSI_FLAG_SYNCERR
+			| DCMIPP_CSI_FLAG_WDERR | DCMIPP_CSI_FLAG_SPKTERR
+			| DCMIPP_CSI_FLAG_IDERR | DCMIPP_CSI_FLAG_CECCERR
+			| DCMIPP_CSI_FLAG_ECCERR | DCMIPP_CSI_FLAG_CRCERR
+			| DCMIPP_CSI_FLAG_CCFIFO | DCMIPP_CSI_FLAG_SPKT;
+	const uint32_t csi_dphy_flags = DCMIPP_CSI_FLAG_ECTRLDL1
+			| DCMIPP_CSI_FLAG_ESYNCESCDL1 | DCMIPP_CSI_FLAG_EESCDL1
+			| DCMIPP_CSI_FLAG_ESOTSYNCDL1 | DCMIPP_CSI_FLAG_ESOTDL1
+			| DCMIPP_CSI_FLAG_ECTRLDL0 | DCMIPP_CSI_FLAG_ESYNCESCDL0
+			| DCMIPP_CSI_FLAG_EESCDL0 | DCMIPP_CSI_FLAG_ESOTSYNCDL0
+			| DCMIPP_CSI_FLAG_ESOTDL0;
+
+	if (capture_dcmipp == NULL || capture_dcmipp->Instance == NULL) {
+		return;
+	}
+
+	/* HAL_DCMIPP_PIPE_Stop() cannot recover a pipe already marked ERROR, so
+	 * explicitly remove the snapshot request before restoring its software state. */
+	CLEAR_BIT(capture_dcmipp->Instance->P1FCTCR, DCMIPP_P1FCTCR_CPTREQ);
+	__HAL_DCMIPP_CLEAR_FLAG(capture_dcmipp, dcmipp_flags);
+	__HAL_DCMIPP_CSI_CLEAR_FLAG(CSI, csi_flags);
+	__HAL_DCMIPP_CSI_CLEAR_DPHY_FLAG(CSI, csi_dphy_flags);
+	capture_dcmipp->ErrorCode = HAL_DCMIPP_ERROR_NONE;
+
+	if (capture_dcmipp->PipeState[DCMIPP_PIPE1]
+			== HAL_DCMIPP_PIPE_STATE_ERROR) {
+		capture_dcmipp->PipeState[DCMIPP_PIPE1] = HAL_DCMIPP_PIPE_STATE_READY;
+		DebugConsole_WriteString(
+				"[CAMERA][CAPTURE] Recovered processed Pipe1 from HAL error state.\r\n");
+	}
+}
+
+/**
  * @brief Print a staged diagnostic sequence for B-CAMS-IMX camera bring-up.
  * @return TX_SUCCESS when the sensor probe succeeds, TX_NOT_AVAILABLE otherwise.
  */
