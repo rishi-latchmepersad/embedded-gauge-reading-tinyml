@@ -927,6 +927,11 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 					"[CAMERA][CAPTURE] IMX335 stream stop failed during DCMIPP recovery.\r\n");
 		}
 	}
+	if (camera_capture_use_cmw_pipeline && camera_capture_failed
+			&& !CameraPlatform_ReinitializeProcessedCamera()) {
+		DebugConsole_WriteString(
+				"[CAMERA][CAPTURE] Processed camera restart failed after transport error.\r\n");
+	}
 	camera_capture_snapshot_armed = false;
 	camera_capture_isp_loop_paused = false;
 	return false;

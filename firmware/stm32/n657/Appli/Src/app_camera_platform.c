@@ -963,6 +963,51 @@ void CameraPlatform_RecoverProcessedSnapshot(void) {
 }
 
 /**
+ * @brief Rebuild the processed CMW/ISP stack after a failed snapshot.
+ *
+ * A transport error can leave the private CMW pipe and ISP context mutually
+ * inconsistent even after Pipe1 is returned to READY.  Reinitializing only
+ * after a failed processed transaction keeps the normal path low-power while
+ * ensuring the next one-minute attempt starts with fresh CMW state.
+ * @retval true when the CMW/ISP stack was rebuilt successfully.
+ */
+bool CameraPlatform_ReinitializeProcessedCamera(void) {
+	int32_t cmw_status = CMW_ERROR_NONE;
+
+	if (!camera_capture_use_cmw_pipeline || !camera_cmw_initialized) {
+		return true;
+	}
+
+	/* CMW_CAMERA_DeInit() owns the private ISP object.  Unlike the raw path,
+	 * processed capture has called Camera_Drv.Start(), so ISP teardown is valid. */
+	if (is_camera_started <= 0) {
+		is_camera_started = 1;
+	}
+	if (is_pipe1_2_shared <= 0) {
+		is_pipe1_2_shared = 1;
+	}
+	cmw_status = CMW_CAMERA_DeInit();
+	if (cmw_status != CMW_ERROR_NONE) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] Processed CMW restart deinit failed, status=%ld.\r\n",
+				(long) cmw_status);
+		camera_cmw_initialized = false;
+		return false;
+	}
+
+	camera_cmw_initialized = false;
+	if (!CameraPlatform_InitializeImx335Sensor()) {
+		DebugConsole_WriteString(
+				"[CAMERA][CAPTURE] Processed CMW restart init failed.\r\n");
+		return false;
+	}
+
+	DebugConsole_WriteString(
+			"[CAMERA][CAPTURE] Processed CMW/ISP stack restarted after failure.\r\n");
+	return true;
+}
+
+/**
  * @brief Print a staged diagnostic sequence for B-CAMS-IMX camera bring-up.
  * @return TX_SUCCESS when the sensor probe succeeds, TX_NOT_AVAILABLE otherwise.
  */
