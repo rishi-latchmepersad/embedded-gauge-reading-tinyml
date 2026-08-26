@@ -905,8 +905,9 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 				(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp,
 				CAMERA_CAPTURE_PIPE, DCMIPP_VIRTUAL_CHANNEL0);
 				if (camera_capture_use_cmw_pipeline) {
-					/* Clear the late Pipe1/CSI status before the next one-minute
-					 * configuration so it cannot poison CMW's next arm. */
+					/* Clear the late Pipe1/CSI status before the next configuration.
+					 * The complete frame remains valid, but this transport report can
+					 * leave CMW's private Pipe1 state out of sync with the HAL. */
 					CameraPlatform_RecoverProcessedSnapshot();
 				}
 				if (camera_stream_started
@@ -922,6 +923,19 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 				if (camera_capture_use_cmw_pipeline) {
 					(void) AppCameraBuffers_InvalidateCaptureRegion(
 							camera_capture_byte_count);
+				}
+				if (camera_capture_use_cmw_pipeline) {
+					/* Do not reuse a CMW/ISP instance after a late transport error.
+					 * Brightness control may request another complete frame before
+					 * this one reaches AI; rebuilding here makes that retry start with
+					 * a fresh Pipe1 state instead of the BUSY state seen on the board. */
+					if (!CameraPlatform_ReinitializeProcessedCamera()) {
+						DebugConsole_WriteString(
+								"[CAMERA][CAPTURE] Processed camera rebuild failed after late status; rejecting handoff.\r\n");
+						camera_capture_snapshot_armed = false;
+						camera_capture_isp_loop_paused = false;
+						return false;
+					}
 				}
 				/* The late status has been consumed as metadata.  Clear the
 				 * transaction-level error so the caller does not mistake a valid
