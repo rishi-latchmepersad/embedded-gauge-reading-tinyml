@@ -1087,12 +1087,12 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 					if (brightness_adjustment_count
 							>= max_brightness_adjustments) {
 						DebugConsole_Printf(
-								"[CAMERA][CAPTURE] Brightness gate exhausted its %lu manual nudges; rejecting frame.\r\n",
+								"[CAMERA][CAPTURE] Brightness gate exhausted its %lu manual nudges; accepting the last complete frame.\r\n",
 								(unsigned long) max_brightness_adjustments);
-						/* A complete DMA frame is not necessarily a useful inference
-						 * frame.  Do not poison the AI or spike-filter baseline with a
-						 * frame that failed the exposure gate. */
-						capture_ok = false;
+						/* The DCMIPP completion and byte count prove that the buffer is
+						 * usable. Brightness is advisory: preserving this frame keeps
+						 * one difficult lighting condition from starving AI indefinitely. */
+						capture_ok = true;
 						break;
 					}
 					const uint32_t brightness_step_percent =
@@ -1108,10 +1108,11 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 							APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_DARK,
 							brightness_step_percent)) {
 						DebugConsole_WriteString(
-								"[CAMERA][CAPTURE] IMX335 exposure/gain reached its adjustment limit; rejecting frame.\r\n");
-						/* Exposure headroom exhaustion is a capture-quality failure.
-						 * Skipping this cycle is safer than publishing bad geometry. */
-						capture_ok = false;
+								"[CAMERA][CAPTURE] IMX335 exposure/gain reached its adjustment limit; accepting the last complete frame.\r\n");
+						/* A complete frame is still valuable for the learned model and
+						 * for the next brightness decision. Do not restart the camera
+						 * solely because the sensor reached its quality limit. */
+						capture_ok = true;
 						break;
 					}
 					/* Let the new integration setting settle, then evaluate the next
