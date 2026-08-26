@@ -740,6 +740,11 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 		camera_capture_isp_loop_paused = false;
 		return false;
 	}
+	if (!CameraPlatform_EnsureProcessedCamera()) {
+		App_ThreadX_UnlockCameraMiddleware();
+		camera_capture_isp_loop_paused = false;
+		return false;
+	}
 	if (!CameraPlatform_PrepareDcmippSnapshot()) {
 		App_ThreadX_UnlockCameraMiddleware();
 		camera_capture_isp_loop_paused = false;
@@ -794,7 +799,7 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 
 	camera_capture_snapshot_armed = true;
 
-	if (!camera_stream_started) {
+	if (!camera_capture_use_cmw_pipeline && !camera_stream_started) {
 		if (!CameraPlatform_StartImx335Stream()) {
 			(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp, CAMERA_CAPTURE_PIPE,
 			DCMIPP_VIRTUAL_CHANNEL0);
@@ -805,7 +810,9 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 		}
 	} else {
 		/* On later snapshots, give the already-running stream a brief moment to
-		 * advance to the armed frame boundary before we block on completion. */
+		 * advance to the armed frame boundary before we block on completion.  The
+		 * processed path reaches this branch after CMW_CAMERA_Start() has started
+		 * the sensor and ISP. */
 		DelayMilliseconds_ThreadX(CAMERA_STREAM_WARMUP_DELAY_MS);
 	}
 	/* CMW initialization and sensor startup can restore the ISP IQ defaults, which
@@ -863,13 +870,10 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 				/* Freeze the completed DMA buffer at the source. The board has no
 				 * HyperRAM, and the lower AXISRAM1 alias used by the former snapshot
 				 * copy can stall the CPU. The next capture waits for AI completion. */
-				/* Both capture modes stop the sensor before handing the buffer to
-				 * storage/AI.  The processed path already required this for immutable
-				 * ownership; raw Pipe0 also needs it because the receiver is stopped
-				 * after each diagnostic frame.  Leaving the sensor running here causes
-				 * the next one-minute snapshot to begin mid-frame and report
-				 * CSI_SHORT_PACKET/SOT errors with zero captured bytes. */
-				if (camera_stream_started
+				/* Stop the source before handing the buffer to storage/AI.  Raw mode
+				 * uses the sensor standby helper; processed mode uses full CMW DeInit
+				 * below so ISP and CMW lifecycle state are released together. */
+				if (!camera_capture_use_cmw_pipeline && camera_stream_started
 						&& !CameraPlatform_StopImx335Stream()) {
 					DebugConsole_WriteString(
 							"[CAMERA][CAPTURE] Could not stop IMX335 after frame completion; refusing live-buffer handoff.\r\n");
@@ -882,6 +886,14 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 				if (camera_capture_use_cmw_pipeline) {
 					(void) AppCameraBuffers_InvalidateCaptureRegion(
 							camera_capture_byte_count);
+				}
+				if (camera_capture_use_cmw_pipeline
+						&& !CameraPlatform_StopProcessedCamera()) {
+					DebugConsole_WriteString(
+							"[CAMERA][CAPTURE] Processed camera deinitialization failed after frame completion; refusing handoff.\r\n");
+					camera_capture_snapshot_armed = false;
+					camera_capture_isp_loop_paused = false;
+					return false;
 				}
 				return true;
 			}
@@ -910,7 +922,7 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 					 * leave CMW's private Pipe1 state out of sync with the HAL. */
 					CameraPlatform_RecoverProcessedSnapshot();
 				}
-				if (camera_stream_started
+				if (!camera_capture_use_cmw_pipeline && camera_stream_started
 						&& !CameraPlatform_StopImx335Stream()) {
 					DebugConsole_WriteString(
 							"[CAMERA][CAPTURE] Could not stop IMX335 after complete raw frame; rejecting handoff.\r\n");
@@ -924,18 +936,13 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 					(void) AppCameraBuffers_InvalidateCaptureRegion(
 							camera_capture_byte_count);
 				}
-				if (camera_capture_use_cmw_pipeline) {
-					/* Do not reuse a CMW/ISP instance after a late transport error.
-					 * Brightness control may request another complete frame before
-					 * this one reaches AI; rebuilding here makes that retry start with
-					 * a fresh Pipe1 state instead of the BUSY state seen on the board. */
-					if (!CameraPlatform_ReinitializeProcessedCamera()) {
-						DebugConsole_WriteString(
-								"[CAMERA][CAPTURE] Processed camera rebuild failed after late status; rejecting handoff.\r\n");
-						camera_capture_snapshot_armed = false;
-						camera_capture_isp_loop_paused = false;
-						return false;
-					}
+				if (camera_capture_use_cmw_pipeline
+						&& !CameraPlatform_StopProcessedCamera()) {
+					DebugConsole_WriteString(
+							"[CAMERA][CAPTURE] Processed camera deinitialization failed after late status; rejecting handoff.\r\n");
+					camera_capture_snapshot_armed = false;
+					camera_capture_isp_loop_paused = false;
+					return false;
 				}
 				/* The late status has been consumed as metadata.  Clear the
 				 * transaction-level error so the caller does not mistake a valid
@@ -975,20 +982,20 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	if (camera_capture_use_cmw_pipeline && camera_capture_failed) {
 		CameraPlatform_RecoverProcessedSnapshot();
 	}
-	/* Raw Pipe0 is intentionally a stop-and-capture diagnostic path, so always
-	 * reset the sensor after an error.  The processed path keeps its existing
-	 * conditional recovery behavior. */
-	if (camera_stream_started
-			&& (!camera_capture_use_cmw_pipeline || should_reset_sensor_stream)) {
+	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized
+			&& !CameraPlatform_StopProcessedCamera()) {
+		DebugConsole_WriteString(
+				"[CAMERA][CAPTURE] Processed camera deinitialization failed during recovery.\r\n");
+	}
+	/* Raw Pipe0 is intentionally a stop-and-capture diagnostic path, so reset
+	 * that sensor after a retryable transport error.  The processed path has
+	 * already completed its full CMW teardown above. */
+	if (!camera_capture_use_cmw_pipeline && camera_stream_started
+			&& should_reset_sensor_stream) {
 		if (!CameraPlatform_StopImx335Stream()) {
 			DebugConsole_WriteString(
 					"[CAMERA][CAPTURE] IMX335 stream stop failed during DCMIPP recovery.\r\n");
 		}
-	}
-	if (camera_capture_use_cmw_pipeline && camera_capture_failed
-			&& !CameraPlatform_ReinitializeProcessedCamera()) {
-		DebugConsole_WriteString(
-				"[CAMERA][CAPTURE] Processed camera restart failed after transport error.\r\n");
 	}
 	camera_capture_snapshot_armed = false;
 	camera_capture_isp_loop_paused = false;

@@ -971,45 +971,88 @@ void CameraPlatform_RecoverProcessedSnapshot(void) {
 }
 
 /**
- * @brief Rebuild the processed CMW/ISP stack after a failed snapshot.
- *
- * A transport error can leave the private CMW pipe and ISP context mutually
- * inconsistent even after Pipe1 is returned to READY.  Reinitializing only
- * after a failed processed transaction keeps the normal path low-power while
- * ensuring the next one-minute attempt starts with fresh CMW state.
- * @retval true when the CMW/ISP stack was rebuilt successfully.
+ * @brief Reinitialize the processed CMW/ISP stack between captures.
+ * @retval true when the stack was rebuilt successfully.
  */
 bool CameraPlatform_ReinitializeProcessedCamera(void) {
-	DCMIPP_HandleTypeDef *cmw_handle = NULL;
-
-	if (!camera_capture_use_cmw_pipeline || !camera_cmw_initialized) {
+	if (!camera_capture_use_cmw_pipeline) {
 		return true;
 	}
 
-	/* A transport fault can leave the ISP object's private state inconsistent.
-	 * CMW_CAMERA_DeInit() then returns -4 while tearing that state down, so do
-	 * the same DCMIPP-only reset that is proven safe for the raw path. */
-	cmw_handle = CMW_CAMERA_GetDCMIPPHandle();
-	if ((cmw_handle == NULL) || (HAL_DCMIPP_DeInit(cmw_handle) != HAL_OK)) {
-		DebugConsole_Printf(
-				"[CAMERA][CAPTURE] DCMIPP-only reset failed before processed CMW reinitialization.\r\n");
+	if (camera_cmw_initialized && !CameraPlatform_StopProcessedCamera()) {
 		return false;
 	}
 
-	/* CMW_CAMERA_Init() rebuilds its private camera state from these lifecycle
-	 * markers.  Clear all three so the next init is a real fresh bring-up. */
+	return CameraPlatform_EnsureProcessedCamera();
+}
+
+/**
+ * @brief Ensure the processed CMW/ISP stack is initialized for a capture.
+ *
+ * The low-power processed path deinitializes CMW after each completed frame so
+ * the ISP, DCMIPP, and camera module do not remain active between snapshots.
+ * Recreate the complete middleware state before the next capture instead of
+ * reusing stale private lifecycle counters.
+ * @retval true when CMW is ready or was initialized successfully.
+ */
+bool CameraPlatform_EnsureProcessedCamera(void) {
+	if (!camera_capture_use_cmw_pipeline || camera_cmw_initialized) {
+		return true;
+	}
+
+	/* Normalize counters after a complete CMW teardown or a partial transport
+	 * recovery so the next public Init/Start sequence owns a clean lifecycle. */
 	is_camera_init = 0;
 	is_camera_started = 0;
 	is_pipe1_2_shared = 0;
-	camera_cmw_initialized = false;
+
 	if (!CameraPlatform_InitializeImx335Sensor()) {
 		DebugConsole_WriteString(
-				"[CAMERA][CAPTURE] Processed CMW restart init failed.\r\n");
+				"[CAMERA][CAPTURE] Processed CMW stack initialization failed before snapshot.\r\n");
 		return false;
 	}
 
 	DebugConsole_WriteString(
-			"[CAMERA][CAPTURE] Processed CMW stack rebuilt after transport failure.\r\n");
+			"[CAMERA][CAPTURE] Processed CMW stack initialized before snapshot.\r\n");
+	return true;
+}
+
+/**
+ * @brief Fully stop and deinitialize the processed CMW camera lifecycle.
+ *
+ * CMW has no public sensor-only Stop API.  Its DeInit path is therefore the
+ * supported way to release ISP and DCMIPP state and power down the camera
+ * between low-duty-cycle captures.
+ * @retval true when the stack was already stopped or deinitialized cleanly.
+ */
+bool CameraPlatform_StopProcessedCamera(void) {
+	int32_t cmw_status = CMW_ERROR_NONE;
+
+	if (!camera_capture_use_cmw_pipeline || !camera_cmw_initialized) {
+		camera_stream_started = false;
+		return true;
+	}
+
+	/* A late CSI report can leave Pipe1 marked ERROR; restore the state that
+	 * CMW_CAMERA_DeInit() expects before it attempts to stop the pipe. */
+	CameraPlatform_RecoverProcessedSnapshot();
+	cmw_status = CMW_CAMERA_DeInit();
+	if (cmw_status != CMW_ERROR_NONE) {
+		DebugConsole_Printf(
+				"[CAMERA][CAPTURE] CMW_CAMERA_DeInit() failed, status=%ld.\r\n",
+				(long) cmw_status);
+		return false;
+	}
+
+	/* Make the next Ensure/Start sequence explicit even if CMW changed one of
+	 * its internal counters during the teardown. */
+	is_camera_init = 0;
+	is_camera_started = 0;
+	is_pipe1_2_shared = 0;
+	camera_cmw_initialized = false;
+	camera_stream_started = false;
+	DebugConsole_WriteString(
+			"[CAMERA][CAPTURE] Processed CMW stack deinitialized after snapshot.\r\n");
 	return true;
 }
 
@@ -1142,11 +1185,22 @@ bool CameraPlatform_StartDcmippSnapshot(void) {
 		return false;
 	}
 
-	/* CMW_CAMERA_Start() also starts the ISP and IMX335.  The application must
-	 * release XMSTA only after the receiver is armed; otherwise the middleware's
-	 * early MODE_SELECT transition can split the first CSI frame and produce one
-	 * SOF with no EOF/bytes.  Keep CMW's Pipe1 configuration, but arm DCMIPP
-	 * directly so CameraPlatform_StartImx335Stream() owns the sole sensor start. */
+	if (camera_capture_use_cmw_pipeline) {
+		/* Restore the vendor lifecycle: CMW_CAMERA_Start() arms Pipe1, starts
+		 * ISP, and then starts the IMX335 while its internal counters remain
+		 * consistent with the active middleware instance. */
+		const int32_t cmw_status = CMW_CAMERA_Start(CAMERA_CAPTURE_PIPE,
+				camera_capture_result_buffer, CMW_MODE_SNAPSHOT);
+		if (cmw_status != CMW_ERROR_NONE) {
+			DebugConsole_Printf(
+					"[CAMERA][CAPTURE] CMW_CAMERA_Start() failed for snapshot mode, status=%ld.\r\n",
+					(long) cmw_status);
+			return false;
+		}
+		camera_stream_started = true;
+		return true;
+	}
+
 	if (HAL_DCMIPP_CSI_PIPE_Start(capture_dcmipp, CAMERA_CAPTURE_PIPE,
 	DCMIPP_VIRTUAL_CHANNEL0, (uint32_t) camera_capture_result_buffer,
 	CMW_MODE_SNAPSHOT) != HAL_OK) {

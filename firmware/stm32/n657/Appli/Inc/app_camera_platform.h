@@ -41,6 +41,8 @@ bool CameraPlatform_StopImx335Stream(void);
 bool CameraPlatform_ReinitializeImx335ForRawCapture(void);
 bool CameraPlatform_PrepareDcmippSnapshot(void);
 void CameraPlatform_RecoverProcessedSnapshot(void);
+bool CameraPlatform_EnsureProcessedCamera(void);
+bool CameraPlatform_StopProcessedCamera(void);
 bool CameraPlatform_ReinitializeProcessedCamera(void);
 bool CameraPlatform_StartDcmippSnapshot(void);
 bool CameraPlatform_ConfigureCsiLineByteProbe(void);
