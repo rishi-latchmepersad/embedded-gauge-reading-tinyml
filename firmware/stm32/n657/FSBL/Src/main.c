@@ -60,7 +60,7 @@ XSPI_HandleTypeDef hxspi2;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_LPUART1_UART_Init(void);
-static void MX_I2C2_Init(void);
+static void MX_I2C2_Init(void) __attribute__((unused));
 static void MX_XSPI2_Init(void);
 static void FSBL_BlinkLED(Led_TypeDef led, uint32_t n, uint32_t period_ms);
 static void FSBL_LogAppImageState(void);
@@ -71,6 +71,85 @@ static void FSBL_TryBootApplication(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/**
+  * @brief Provide the small LED subset of the Nucleo BSP required by FSBL.
+  * @param Led LED1/LED2/LED3 selector from stm32n6xx_nucleo.h.
+  * @retval BSP_ERROR_NONE after configuring the selected GPIO.
+  * @sideeffect Enables the selected GPIO clock, configures the pin as an
+  *              active-low output, and leaves the LED switched off.
+  *
+  * The full Nucleo BSP source is shared with the application project, but it
+  * is intentionally outside the FSBL source list.  Keeping this tiny subset
+ * here avoids changing CubeIDE-generated makefiles while still allowing the
+ * FSBL status/error blink paths to link and behave like the board BSP.
+  */
+static const uint16_t FSBL_LED_PIN[LEDn] = {LED1_PIN, LED2_PIN, LED3_PIN};
+static GPIO_TypeDef *const FSBL_LED_PORT[LEDn] =
+  {LED1_GPIO_PORT, LED2_GPIO_PORT, LED3_GPIO_PORT};
+
+int32_t BSP_LED_Init(Led_TypeDef Led)
+{
+  GPIO_InitTypeDef GPIO_Init = {0};
+
+  if (Led == LED1)
+  {
+    LED1_GPIO_CLK_ENABLE();
+  }
+  else if (Led == LED2)
+  {
+    LED2_GPIO_CLK_ENABLE();
+  }
+  else
+  {
+    LED3_GPIO_CLK_ENABLE();
+  }
+
+  GPIO_Init.Pin = FSBL_LED_PIN[Led];
+  GPIO_Init.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_Init.Pull = GPIO_NOPULL;
+  GPIO_Init.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(FSBL_LED_PORT[Led], &GPIO_Init);
+  BSP_LED_Off(Led);
+
+  return BSP_ERROR_NONE;
+}
+
+/**
+  * @brief Turn on one Nucleo LED using the board's active-low polarity.
+  * @param Led LED1/LED2/LED3 selector from stm32n6xx_nucleo.h.
+  * @retval BSP_ERROR_NONE.
+  * @sideeffect Drives the selected LED GPIO low.
+  */
+int32_t BSP_LED_On(Led_TypeDef Led)
+{
+  HAL_GPIO_WritePin(FSBL_LED_PORT[Led], FSBL_LED_PIN[Led], GPIO_PIN_RESET);
+  return BSP_ERROR_NONE;
+}
+
+/**
+  * @brief Turn off one Nucleo LED using the board's active-low polarity.
+  * @param Led LED1/LED2/LED3 selector from stm32n6xx_nucleo.h.
+  * @retval BSP_ERROR_NONE.
+  * @sideeffect Drives the selected LED GPIO high.
+  */
+int32_t BSP_LED_Off(Led_TypeDef Led)
+{
+  HAL_GPIO_WritePin(FSBL_LED_PORT[Led], FSBL_LED_PIN[Led], GPIO_PIN_SET);
+  return BSP_ERROR_NONE;
+}
+
+/**
+  * @brief Toggle one Nucleo LED.
+  * @param Led LED1/LED2/LED3 selector from stm32n6xx_nucleo.h.
+  * @retval BSP_ERROR_NONE.
+  * @sideeffect Changes the selected LED GPIO state.
+  */
+int32_t BSP_LED_Toggle(Led_TypeDef Led)
+{
+  HAL_GPIO_TogglePin(FSBL_LED_PORT[Led], FSBL_LED_PIN[Led]);
+  return BSP_ERROR_NONE;
+}
 
 /* Application image in external flash (after the 0x400-byte STM2 header) */
 #define FSBL_APP_FLASH_BASE   (0x70100400UL)  /* raw binary in xSPI2 flash */
