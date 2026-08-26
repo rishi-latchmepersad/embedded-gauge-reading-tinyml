@@ -1009,7 +1009,6 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	bool capture_ok = false;
 	bool capture_saved = !camera_capture_use_cmw_pipeline;
 	bool ai_handoff_accepted = !camera_capture_use_cmw_pipeline;
-	bool discard_next_exposure_frame = false;
 	/* Keep one compact failure reason so a truncated UART line still identifies
 	 * the transaction stage without dumping the frame or adding a log burst. */
 	const char *failure_stage = "capture";
@@ -1055,22 +1054,6 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 		}
 
 		if (AppCameraCapture_CaptureSingleFrame(&captured_bytes)) {
-			if (discard_next_exposure_frame) {
-				/* The first frame after an exposure/gain update can still contain
-				 * the previous integration state. A transport error does not make
-				 * a later complete buffer unusable, so only the exposure-settle
-				 * condition discards here. */
-				(void) DebugConsole_WriteString(
-						"[CAMERA][CAPTURE] Discarding frame after exposure/gain update; requesting another capture.\r\n");
-				discard_next_exposure_frame = false;
-				/* Start a fresh transport-retry budget for the next quality
-				 * candidate. The prior budget belonged to the frame discarded
-				 * during exposure settling. */
-				dcmipp_retry_count = 0U;
-				capture_ok = false;
-				continue;
-			}
-
 			capture_ok = true;
 			image_ptr = camera_capture_result_buffer;
 			if (camera_capture_use_cmw_pipeline) {
@@ -1131,10 +1114,14 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 						capture_ok = false;
 						break;
 					}
-					/* The first frame after a sensor exposure/gain update can still
-					 * contain the previous integration state.  Discard it before the
-					 * brightness gate evaluates a candidate frame. */
-					discard_next_exposure_frame = true;
+					/* Let the new integration setting settle, then evaluate the next
+					 * complete buffer normally. Discarding that buffer can consume the
+					 * only transport-recovery opportunity before AI gets a frame. */
+					DelayMilliseconds_ThreadX(
+							CAMERA_CAPTURE_BRIGHTNESS_SETTLE_DELAY_MS);
+					/* An exposure nudge starts a new quality sequence, so it also
+					 * receives a fresh single transport-retry budget. */
+					dcmipp_retry_count = 0U;
 					previous_brightness_gate = brightness_gate;
 					brightness_adjustment_count++;
 #if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
