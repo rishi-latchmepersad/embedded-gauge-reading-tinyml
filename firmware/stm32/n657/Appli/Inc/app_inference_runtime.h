@@ -24,6 +24,20 @@ UINT AppInferenceRuntime_Start(void);
 bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
 		ULONG frame_length);
 
+/**
+ * @brief Start a new capture burst and clear its fallback result state.
+ * @return None.
+ * @sideeffects Clears the last-valid value retained for burst-final logging.
+ */
+void AppInferenceRuntime_BeginBurst(void);
+
+/**
+ * @brief Mark whether the next accepted AI request ends the current burst.
+ * @param final_request True when this request should produce the burst log.
+ * @return None.
+ */
+void AppInferenceRuntime_SetNextRequestFinal(bool final_request);
+
 /** @brief State of the single-owner AI worker and its current request. */
 typedef enum {
 	APP_INFERENCE_WORKER_UNINITIALIZED = 0,

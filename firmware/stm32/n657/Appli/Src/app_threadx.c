@@ -500,11 +500,14 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 #if APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
 			AppAI_ResetInferenceBurstHistory();
 #endif
+			AppInferenceRuntime_BeginBurst();
 			DebugConsole_Printf(
 					"[CAMERA][THREAD] Starting %lu-frame capture/AI burst.\r\n",
 					(unsigned long)CAMERA_CAPTURE_BURST_COUNT);
 			for (uint32_t burst_index = 0U;
 					burst_index < CAMERA_CAPTURE_BURST_COUNT; ++burst_index) {
+				AppInferenceRuntime_SetNextRequestFinal(
+						(burst_index + 1U) == CAMERA_CAPTURE_BURST_COUNT);
 				if (AppCameraCapture_CaptureAndStoreSingleFrame()) {
 					DebugConsole_Printf(
 							"[CAMERA][THREAD] Burst frame %lu/%lu saved and handed to AI.\r\n",
@@ -518,7 +521,10 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 				}
 			}
 
-			DelayMilliseconds_Cooperative(next_delay_ms);
+			/* The next capture is a full minute away.  A single ThreadX timeout
+			 * avoids waking this thread every scheduler tick while preserving the
+			 * existing capture cadence and leaving all other workers runnable. */
+			DelayMilliseconds_ThreadX(next_delay_ms);
 		}
 	}
 

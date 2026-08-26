@@ -83,6 +83,15 @@ static volatile const uint8_t *camera_ai_request_frame_ptr = NULL;
 static volatile ULONG camera_ai_request_frame_length = 0U;
 static volatile uint64_t camera_ai_request_capture_time_us = 0ULL;
 static volatile bool camera_ai_request_in_flight = false;
+/* The capture thread marks only the last request in a burst as loggable.  The
+ * marker travels with the queued request so an earlier AI completion cannot
+ * be mistaken for the burst result. */
+static volatile bool camera_ai_next_request_is_burst_final = true;
+static volatile bool camera_ai_request_is_burst_final = true;
+/* Retain a valid result from this burst so a failed final frame can still
+ * publish the best value produced by an earlier frame. */
+static volatile float camera_ai_burst_last_valid_value = 0.0f;
+static volatile bool camera_ai_burst_last_valid_value_valid = false;
 static volatile AppInferenceRuntime_WorkerState_t camera_ai_worker_state =
 	APP_INFERENCE_WORKER_UNINITIALIZED;
 static volatile ULONG camera_ai_request_generation = 0U;
@@ -102,6 +111,30 @@ static void AppInferenceRuntime_SetWorkerState(
 		AppInferenceRuntime_WorkerState_t state) {
 	camera_ai_worker_state = state;
 	camera_ai_worker_progress_tick = tx_time_get();
+}
+
+/**
+ * @brief Emit one published inference value to UART and the SD log queue.
+ * @param final_value Value selected by the live smoothing/filter pipeline.
+ * @return None.
+ * @sideeffects Writes UART diagnostics and queues one SD inference record.
+ */
+static void AppInferenceRuntime_LogPublishedResult(float final_value) {
+	union {
+		float f;
+		ULONG u;
+	} bits = { .f = final_value };
+	char inference_line[64] = { 0 };
+
+	AppInferenceLog_FormatFloatTenths(inference_line,
+			sizeof(inference_line), "[AI] Final AI value logged: ", final_value);
+	(void) DebugConsole_WriteString(inference_line);
+
+	/* The exact value is retained in the SD inference log. UART only needs the
+	 * human-readable published value once, after the burst is complete. */
+	if (inference_log_thread_created) {
+		(void) tx_queue_send(&inference_log_queue, &bits.u, TX_NO_WAIT);
+	}
 }
 /* AppInferenceRuntime_GetFreshBaselineEstimate removed: no hybrid override */
 
@@ -212,6 +245,33 @@ bool AppInferenceRuntime_IsInferenceInFlight(void) {
 }
 
 /**
+ * @brief Start a new capture burst and clear its result fallback state.
+ */
+void AppInferenceRuntime_BeginBurst(void) {
+	TX_INTERRUPT_SAVE_AREA
+
+	TX_DISABLE
+	camera_ai_burst_last_valid_value = 0.0f;
+	camera_ai_burst_last_valid_value_valid = false;
+	/* A burst caller explicitly marks each request below. Defaulting this to an
+	 * intermediate request prevents a partially started burst from logging its
+	 * first frame as the final average. */
+	camera_ai_next_request_is_burst_final = false;
+	TX_RESTORE
+}
+
+/**
+ * @brief Mark whether the next accepted AI request is the burst final frame.
+ */
+void AppInferenceRuntime_SetNextRequestFinal(bool final_request) {
+	TX_INTERRUPT_SAVE_AREA
+
+	TX_DISABLE
+	camera_ai_next_request_is_burst_final = final_request;
+	TX_RESTORE
+}
+
+/**
  * @brief Return the result of the most recently completed AI request.
  * @retval true when the learned ellipse/keypoint pipeline published a value.
  * @retval false when the request failed or no request has completed yet.
@@ -301,6 +361,10 @@ bool AppInferenceRuntime_RequestDryInference(const uint8_t *frame_ptr,
 	 * interrupts are disabled: HAL UART polling can consume the whole timeout
 	 * and prevents the ThreadX/ATON progress machinery from running. */
 	camera_ai_request_in_flight = true;
+	/* Consume the marker atomically with the request ownership tuple. Restore
+	 * the single-frame default so callers outside a burst remain loggable. */
+	camera_ai_request_is_burst_final = camera_ai_next_request_is_burst_final;
+	camera_ai_next_request_is_burst_final = true;
 	camera_ai_request_generation++;
 	camera_ai_request_frame_ptr = frame_ptr;
 	camera_ai_request_frame_length = frame_length;
@@ -342,6 +406,7 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 				TX_WAIT_FOREVER);
 		const uint8_t *frame_ptr = NULL;
 		ULONG frame_length = 0U;
+		bool request_is_burst_final = true;
 
 		if (request_status != TX_SUCCESS) {
 			AppInferenceRuntime_SetWorkerState(APP_INFERENCE_WORKER_FAILED);
@@ -351,6 +416,7 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 
 		frame_ptr = (const uint8_t *) camera_ai_request_frame_ptr;
 		frame_length = camera_ai_request_frame_length;
+		request_is_burst_final = camera_ai_request_is_burst_final;
 		const uint64_t frame_capture_time_us = camera_ai_request_capture_time_us;
 		camera_ai_request_frame_ptr = NULL;
 		camera_ai_request_frame_length = 0U;
@@ -406,33 +472,36 @@ static VOID CameraAIThread_Entry(ULONG thread_input) {
 			AppInferenceRuntime_SetWorkerState(APP_INFERENCE_WORKER_FAILED);
 			DebugConsole_Printf(
 					"[AI] One-shot dry-run inference failed; continuing.\r\n");
+			if (request_is_burst_final
+					&& camera_ai_burst_last_valid_value_valid) {
+				/* A failed final frame should not erase a valid result collected by
+				 * the earlier burst frames. */
+				AppInferenceRuntime_LogPublishedResult(
+						camera_ai_burst_last_valid_value);
+			}
 		} else {
 			AppInferenceRuntime_SetWorkerState(APP_INFERENCE_WORKER_PUBLISHING);
 			float result = 0.0f;
 			if (App_AI_GetLastInferenceResult(&result)) {
-				float final_value = result;
+				camera_ai_burst_last_valid_value = result;
+				camera_ai_burst_last_valid_value_valid = true;
 
-				union {
-					float f;
-					ULONG u;
-				} bits = { .f = final_value };
-				char inference_line[64] = { 0 };
-
-				/* Log the final value that was published by the AI worker. */
-				AppInferenceLog_FormatFloatTenths(inference_line,
-						sizeof(inference_line), "[AI] Final AI value logged: ", final_value);
-				(void) DebugConsole_WriteString(inference_line);
-
-				/* The exact value is retained in the SD inference log. UART only
-				 * needs the human-readable published value once. */
-				(void) bits;
-				if (inference_log_thread_created) {
-					(void) tx_queue_send(&inference_log_queue, &bits.u,
-							TX_NO_WAIT);
+				/* Intermediate frames still update smoothing and metrics, but only
+				 * the burst-final value enters UART/SD inference logging. */
+				if (request_is_burst_final) {
+					AppInferenceRuntime_LogPublishedResult(result);
 				}
 			} else {
-				(void) DebugConsole_WriteString(
-						"[AI] Final AI value not published (held or invalid).\r\n");
+				if (request_is_burst_final
+						&& camera_ai_burst_last_valid_value_valid) {
+					/* Preserve one result when the final exposure fails geometry
+					 * validation after an earlier frame succeeded. */
+					AppInferenceRuntime_LogPublishedResult(
+							camera_ai_burst_last_valid_value);
+				} else if (request_is_burst_final) {
+					(void) DebugConsole_WriteString(
+							"[AI] Final AI value not published (held or invalid).\r\n");
+				}
 			}
 		}
 
