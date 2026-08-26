@@ -307,23 +307,6 @@ float AppAI_FilterInferenceValue(float value)
 		return value;
 	}
 
-	if (app_ai_inference_burst_history_count > 0U)
-	{
-		const size_t last_index =
-			(app_ai_inference_burst_history_next_index + APP_AI_INFERENCE_BURST_HISTORY_SIZE - 1U) % APP_AI_INFERENCE_BURST_HISTORY_SIZE;
-		float delta = value - app_ai_inference_burst_history[last_index];
-
-		if (delta < 0.0f)
-		{
-			delta = -delta;
-		}
-
-		if (delta > APP_AI_INFERENCE_BURST_RESET_DELTA_C)
-		{
-			AppAI_ResetInferenceBurstHistory();
-		}
-	}
-
 	app_ai_inference_burst_history[app_ai_inference_burst_history_next_index] =
 		value;
 	if (app_ai_inference_burst_history_count <
@@ -344,8 +327,8 @@ float AppAI_FilterInferenceValue(float value)
 			(start_index + i) % APP_AI_INFERENCE_BURST_HISTORY_SIZE];
 	}
 
-	/* Keep the local copy sorted so we can choose the median for the full
-	 * 3-sample burst and a simple average during warm-up. */
+	/* Keep the local copy sorted so warm-up uses an average and the full burst
+	 * can choose the closest pair, which rejects one exposure-settling outlier. */
 	for (size_t i = 1U; i < sample_count; ++i)
 	{
 		const float key = ordered[i];
@@ -370,7 +353,15 @@ float AppAI_FilterInferenceValue(float value)
 		return 0.5f * (ordered[0U] + ordered[1U]);
 	}
 
-	return ordered[sample_count / 2U];
+	/* With three frames, the closest pair is the two-of-three consensus. This
+	 * handles a dim first frame followed by two stable readings near the real
+	 * needle position better than a median contaminated by that first frame. */
+	if ((ordered[1U] - ordered[0U]) <= (ordered[2U] - ordered[1U]))
+	{
+		return 0.5f * (ordered[0U] + ordered[1U]);
+	}
+
+	return 0.5f * (ordered[1U] + ordered[2U]);
 }
 #endif /* APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING */
 

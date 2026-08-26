@@ -30,11 +30,10 @@
 #define APP_AI_TIP_FOCUS_MEDIAN_BUFFER_SIZE 3U
 #define APP_AI_TIP_FOCUS_MAX_OUTLIER_DELTA_C 5.0f
 #define APP_AI_TIP_FOCUS_OUTLIER_RESET_STREAK 3U
-/* Simple 3-reading spike filter: an out-of-band reading starts the counter;
- * each later out-of-band reading increments it, while an in-band reading
- * resets it. */
+/* The first frame in a burst can be an exposure-settling frame. Require the
+ * next two agreeing candidates before replacing that first result. */
 #define APP_AI_SPIKE_RANGE_FRACTION       0.10f
-#define APP_AI_SPIKE_REQUIRED_COUNT       3U
+#define APP_AI_SPIKE_REQUIRED_COUNT       2U
 #define APP_AI_TIP_FOCUS_MAX_INVALID_FRAMES  10U
 #define APP_AI_TIP_FOCUS_HEATMAP_SIDE_PIXELS 56U
 #define APP_AI_XSPI2_PROBE_BYTES            16U

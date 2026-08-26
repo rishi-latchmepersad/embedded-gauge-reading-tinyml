@@ -246,7 +246,6 @@
 /* Shared inference smoothing and plausibility limits used by both the live
  * tip-focus path and the legacy fallback path. */
 #define APP_AI_INFERENCE_BURST_HISTORY_SIZE 3U
-#define APP_AI_INFERENCE_BURST_RESET_DELTA_C 12.0f
 #if APP_GAUGE_ACTIVE_PROFILE == APP_GAUGE_PROFILE_COMPASS_HYGROMETER_SILVER
 #define APP_AI_INFERENCE_VALUE_MIN_C (0.0f)
 #define APP_AI_INFERENCE_VALUE_MAX_C (100.0f)
