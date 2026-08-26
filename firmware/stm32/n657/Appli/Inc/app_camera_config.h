@@ -28,9 +28,8 @@ extern "C" {
 #define CAMERA_INIT_STARTUP_DELAY_MS        200U
 
 /* Capture and timing knobs ------------------------------------------------- */
-/* Use the raw Pipe0 path for one controlled transport diagnostic. This keeps
- * the battery and AI ownership changes intact while separating CSI/D-PHY
- * reception from the processed CMW/ISP Pipe1 path. */
+/* Use the processed CMW/ISP path so AE/AWB and demosaicing can converge on a
+ * usable live image. Set to 1 only if we need raw Pipe0 diagnostics. */
 #define CAMERA_CAPTURE_FORCE_RAW_DIAGNOSTIC 0
 #define CAMERA_CAPTURE_TARGET_FRAME_COUNT   4U
 /* Keep inference detached from the DCMIPP-owned buffer. The snapshot is
@@ -66,16 +65,21 @@ extern "C" {
  * to catch scenes where most of the crop is still near-white even if a narrow
  * needle keeps the minimum luma low.
  *
- * The gate samples the central 384x384 gauge region. The thresholds remain
- * calibrated from the saved capture set: usable frames had crop means around
- * 97-156, while the known underexposed frames were around 43-87. A threshold
- * of 100 preserves the low end of the usable range; the previous 150 setting
- * forced valid evening frames through repeated exposure nudges and prevented
- * the AI handoff from completing. */
-/* Mean luma below 100 requests a brightness nudge. This is a quality hint,
- * not a hard prerequisite for inference; the capture path accepts a complete
- * frame if the gate cannot converge within its bounded adjustment budget. */
-#define CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD     100U
+ * Brightness gate now measures the full resized 640x640 frame rather than a
+ * small centre ROI. A specular reflection on the gauge glass at frame centre
+ * was making the old 32x32 ROI read as "bright enough" while the rest of the
+ * dial face was still underexposed, causing systematic under-reading. The
+ * thresholds remain calibrated from captured frames:
+ * good frames (13:xx session, model reading ~31C) had crop mean 97-156;
+ * bad frames (18:xx, model reading 14-20C) had crop mean 43-87.
+ * DARK threshold=150 rejects the dim frames; the current board captures still
+ * contain a small gauge on a bright scene, so the previous 190/50 gate let
+ * several blown-out frames through. BRIGHT threshold=175 plus a 35% bright
+ * pixel ratio now rejects those frames earlier, while a 200/45 solid-
+ * overexposure fallback catches near-white scenes. */
+/* Mean luma below 150 triggers a brightness nudge so the ellipse input is not
+ * lighting-limited regardless of initial scene brightness. */
+#define CAMERA_CAPTURE_BRIGHTNESS_DARK_MEAN_THRESHOLD     150U
 #define CAMERA_CAPTURE_BRIGHTNESS_DARK_MAX_THRESHOLD      240U
 #define CAMERA_CAPTURE_BRIGHTNESS_DARK_BRIGHT_RATIO_MAX_PERCENT 10U
 #define CAMERA_CAPTURE_BRIGHTNESS_BRIGHT_MEAN_THRESHOLD   175U

@@ -25,16 +25,17 @@ extern "C" {
 #define IMAGE_CLEANUP_THREAD_PRIORITY       16U
 
 /* Heartbeat timing --------------------------------------------------------- */
-#define CAMERA_HEARTBEAT_PERIOD_MS          120000U
+#define CAMERA_HEARTBEAT_PERIOD_MS          30000U
 #define CAMERA_HEARTBEAT_PULSE_MS           1000U
 #ifndef CAMERA_HEARTBEAT_ENABLE_UART_PULSES
-#define CAMERA_HEARTBEAT_ENABLE_UART_PULSES 0U
+#define CAMERA_HEARTBEAT_ENABLE_UART_PULSES 1U
 #endif
 #define CAMERA_HEARTBEAT_LED_GPIO_PORT      GPIOG
 #define CAMERA_HEARTBEAT_LED_PIN            GPIO_PIN_0
 
 /* Camera capture cadence --------------------------------------------------- */
-/* Restore the capture/inference cycle to one frame every minute. */
+/* Keep the board on a simple one-frame-per-minute duty cycle now that the
+ * save path is no longer the bottleneck. */
 #define CAMERA_CAPTURE_PERIOD_MS           60000U
 
 /* Storage maintenance timing ---------------------------------------------- */

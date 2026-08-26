@@ -518,8 +518,8 @@ static VOID CameraHeartbeatThread_Entry(ULONG thread_input) {
 
 	while (1) {
 		BSP_LED_Toggle(LED_GREEN);
-		/* The LED remains the liveness indicator. UART pulses are disabled in the
-		 * battery profile, while this two-minute pulse remains easy to observe. */
+		/* The LED remains the liveness indicator. UART pulses are opt-in because
+		 * a five-second heartbeat obscures capture and inference failures. */
 #if CAMERA_HEARTBEAT_ENABLE_UART_PULSES
 		/* Read the external RTC only for this low-rate diagnostic line.  Keeping
 		 * the capture and inference logs free of per-line I2C reads avoids adding

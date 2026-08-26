@@ -63,12 +63,6 @@ extern volatile uint32_t camera_capture_counter_status;
 extern uint8_t *camera_capture_result_buffer;
 extern uint32_t camera_capture_active_buffer_index;
 
-/* Preserve the retry decision across processed-camera rebuilds. The rebuild
- * clears the HAL error state, so the outer transaction loop cannot safely
- * recompute retryability from the live handle after recovery. */
-static bool camera_capture_last_failure_retryable = false;
-static uint32_t camera_capture_last_failure_error_code = 0U;
-
 /**
  * @brief Resume the camera ISP service after AI releases the stable snapshot.
  *
@@ -81,72 +75,16 @@ void AppCameraCapture_ReleaseInferenceFrame(void) {
 }
 
 /**
- * @brief Check whether raw Pipe0 completed before a late CSI status error.
- *
- * The IMX335 can report a short-packet/DPHY status after Pipe0 has already
- * delivered the complete diagnostic buffer.  The frame is valid for this raw
- * transport test when SOF, a frame event, and the full byte count are present.
- * @retval true when the raw buffer can be handed to storage and AI.
- */
-static bool AppCameraCapture_HasCompleteRawFrame(void) {
-	return !camera_capture_use_cmw_pipeline && camera_capture_sof_seen
-			&& (camera_capture_frame_event_count != 0U)
-			&& (camera_capture_reported_byte_count
-					>= CAMERA_CAPTURE_BUFFER_SIZE_BYTES)
-			&& (camera_capture_byte_count >= CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
-}
-
-/**
- * @brief Check whether processed Pipe1 delivered a complete frame before a
- *        late CSI status report arrived.
- *
- * Pipe1's CMW callback supplies the fixed MONO_Y8 frame size instead of using
- * the raw Pipe0 data counter.  A frame callback plus the complete byte count
- * is therefore the processed-path completion contract; CSI EOF is not
- * required because the sensor can report its trailing short-packet status
- * after DCMIPP has already completed the output buffer.
- * @retval true when the processed buffer is safe to hand to FileX and AI.
- */
-static bool AppCameraCapture_HasCompleteProcessedFrame(void) {
-	return camera_capture_use_cmw_pipeline && camera_capture_sof_seen
-			&& (camera_capture_frame_event_count != 0U)
-			&& (camera_capture_reported_byte_count
-					>= CAMERA_CAPTURE_BUFFER_SIZE_BYTES)
-			&& (camera_capture_byte_count >= CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
-}
-
-/**
  * @brief Decide whether a DCMIPP error is worth retrying once.
  *
- * A raw Pipe0 error with no SOF and no newly reported bytes indicates that the
- * receiver missed the restarted sensor boundary.  Retry that transport fault
- * once after the cleanup path has stopped the sensor.  A complete raw frame is
- * accepted separately by AppCameraCapture_HasCompleteRawFrame().
+ * We treat the CSI sync plus DPHY control combo as a transient link issue when
+ * the capture buffer already filled, because the frame itself usually made it
+ * through before the late error surfaced.
  * @retval true when one more capture attempt is reasonable.
  */
 static bool AppCameraCapture_ShouldRetryDcmippError(uint32_t error_code) {
-	const uint32_t raw_transport_errors = HAL_DCMIPP_ERROR_PIPE0_OVR
-			| HAL_DCMIPP_ERROR_PARALLEL_SYNC | HAL_DCMIPP_CSI_ERROR_SYNC
-			| HAL_DCMIPP_CSI_ERROR_SPKT
-			| HAL_DCMIPP_CSI_ERROR_DPHY_CTRL | HAL_DCMIPP_CSI_ERROR_SOT_SYNC
-			| HAL_DCMIPP_CSI_ERROR_SOT;
-	const uint32_t processed_transport_errors = HAL_DCMIPP_ERROR_PIPE1_OVR
-			| HAL_DCMIPP_ERROR_PARALLEL_SYNC | HAL_DCMIPP_CSI_ERROR_SYNC
-			| HAL_DCMIPP_CSI_ERROR_SPKT | HAL_DCMIPP_CSI_ERROR_DPHY_CTRL
-			| HAL_DCMIPP_CSI_ERROR_SOT_SYNC | HAL_DCMIPP_CSI_ERROR_SOT;
-
-	if (camera_capture_use_cmw_pipeline) {
-		/* A Pipe1/CSI transport error with no frame event and no reported bytes
-		 * is recoverable once after the failed HAL state is cleared. */
-		return ((error_code & processed_transport_errors) != 0U)
-				&& (camera_capture_frame_event_count == 0U)
-				&& (camera_capture_reported_byte_count == 0U);
-	}
-
-	return ((error_code & raw_transport_errors) != 0U)
-			&& !camera_capture_sof_seen
-			&& (camera_capture_frame_event_count == 0U)
-			&& (camera_capture_reported_byte_count == 0U);
+	return (error_code == 0x00008100U)
+			&& (camera_capture_reported_byte_count >= CAMERA_CAPTURE_BUFFER_SIZE_BYTES);
 }
 
 /**
@@ -717,8 +655,6 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	if (captured_bytes_ptr == NULL) {
 		return false;
 	}
-	camera_capture_last_failure_retryable = false;
-	camera_capture_last_failure_error_code = 0U;
 
 	camera_capture_isp_loop_paused = true;
 
@@ -733,18 +669,6 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 
 	/* Keep blue available for the save-success flash later in the flow. */
 	BSP_LED_Off(LED_BLUE);
-	if (!CameraPlatform_ReinitializeImx335ForRawCapture()) {
-		DebugConsole_WriteString(
-				"[CAMERA][CAPTURE] Raw IMX335 reinitialization failed before snapshot setup.\r\n");
-		App_ThreadX_UnlockCameraMiddleware();
-		camera_capture_isp_loop_paused = false;
-		return false;
-	}
-	if (!CameraPlatform_EnsureProcessedCamera()) {
-		App_ThreadX_UnlockCameraMiddleware();
-		camera_capture_isp_loop_paused = false;
-		return false;
-	}
 	if (!CameraPlatform_PrepareDcmippSnapshot()) {
 		App_ThreadX_UnlockCameraMiddleware();
 		camera_capture_isp_loop_paused = false;
@@ -773,22 +697,13 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 	camera_capture_result_buffer = camera_capture_buffers[0];
 	AppCameraBuffers_PrepareForDma();
 
-	/* Arm the CSI/DCMIPP receiver first, then release MODE_SELECT/XMSTA through
-	 * the application-controlled sensor start.  This preserves a complete first
-	 * frame for snapshot mode instead of starting the sensor inside CMW. */
+	/* Match ST's CMW_CAMERA_Start() ordering: arm the CSI/DCMIPP receiver first,
+	 * then start the ISP + sensor stream. This avoids missing the first valid
+	 * frame while the middleware is bringing the stream up. */
 	/* Capture the counter before arming.  The ISR only increments this aligned
 	 * word; the thread later treats any change as a completion/error event. */
 	completion_event_baseline = camera_capture_done_event_count;
 	if (!CameraPlatform_StartDcmippSnapshot()) {
-		/* The raw diagnostic path deliberately stops the receiver between
-		 * snapshots.  If a re-arm fails while the sensor is still streaming,
-		 * leave the sensor in standby before retrying so the next SOT begins at a
-		 * fresh frame boundary instead of inheriting a stale CSI state. */
-		if (!camera_capture_use_cmw_pipeline && camera_stream_started
-				&& !CameraPlatform_StopImx335Stream()) {
-			DebugConsole_WriteString(
-					"[CAMERA][CAPTURE] Could not stop raw IMX335 stream before DCMIPP re-arm retry.\r\n");
-		}
 		DelayMilliseconds_ThreadX(CAMERA_CAPTURE_RETRY_DELAY_MS);
 		if (!CameraPlatform_StartDcmippSnapshot()) {
 			App_ThreadX_UnlockCameraMiddleware();
@@ -799,7 +714,7 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 
 	camera_capture_snapshot_armed = true;
 
-	if (!camera_capture_use_cmw_pipeline && !camera_stream_started) {
+	if (!camera_stream_started) {
 		if (!CameraPlatform_StartImx335Stream()) {
 			(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp, CAMERA_CAPTURE_PIPE,
 			DCMIPP_VIRTUAL_CHANNEL0);
@@ -810,12 +725,10 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 		}
 	} else {
 		/* On later snapshots, give the already-running stream a brief moment to
-		 * advance to the armed frame boundary before we block on completion.  The
-		 * processed path reaches this branch after CMW_CAMERA_Start() has started
-		 * the sensor and ISP. */
+		 * advance to the armed frame boundary before we block on completion. */
 		DelayMilliseconds_ThreadX(CAMERA_STREAM_WARMUP_DELAY_MS);
 	}
-	/* CMW initialization and sensor startup can restore the ISP IQ defaults, which
+	/* CMW_CAMERA_Start()/stream startup can restore the ISP IQ defaults, which
 	 * include AEC enabled.  Lock it again at the real capture boundary so the
 	 * brightness-gate nudges below control the same exposure/gain that produces
 	 * this frame. */
@@ -870,10 +783,7 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 				/* Freeze the completed DMA buffer at the source. The board has no
 				 * HyperRAM, and the lower AXISRAM1 alias used by the former snapshot
 				 * copy can stall the CPU. The next capture waits for AI completion. */
-				/* Stop the source before handing the buffer to storage/AI.  Raw mode
-				 * uses the sensor standby helper; processed mode uses full CMW DeInit
-				 * below so ISP and CMW lifecycle state are released together. */
-				if (!camera_capture_use_cmw_pipeline && camera_stream_started
+				if (camera_capture_use_cmw_pipeline && camera_stream_started
 						&& !CameraPlatform_StopImx335Stream()) {
 					DebugConsole_WriteString(
 							"[CAMERA][CAPTURE] Could not stop IMX335 after frame completion; refusing live-buffer handoff.\r\n");
@@ -887,14 +797,6 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 					(void) AppCameraBuffers_InvalidateCaptureRegion(
 							camera_capture_byte_count);
 				}
-				if (camera_capture_use_cmw_pipeline
-						&& !CameraPlatform_StopProcessedCamera()) {
-					DebugConsole_WriteString(
-							"[CAMERA][CAPTURE] Processed camera deinitialization failed after frame completion; refusing handoff.\r\n");
-					camera_capture_snapshot_armed = false;
-					camera_capture_isp_loop_paused = false;
-					return false;
-				}
 				return true;
 			}
 
@@ -903,57 +805,8 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 					(unsigned long) camera_capture_error_code);
 			AppCameraDiagnostics_LogDcmippErrorCode(camera_capture_error_code);
 			AppCameraCapture_LogCaptureState("capture-error");
-			if (AppCameraCapture_HasCompleteRawFrame()
-					|| AppCameraCapture_HasCompleteProcessedFrame()) {
-				/* Treat the CSI report as late metadata when DCMIPP has already
-				 * completed the full output buffer.  This is valid for both raw
-				 * diagnostics and processed Pipe1; rejecting it loses a complete
-				 * frame before the AI handoff. */
-				DebugConsole_Printf(
-						"[CAMERA][CAPTURE] Complete %s frame accepted despite late CSI status.\r\n",
-						camera_capture_use_cmw_pipeline ? "processed" : "raw");
-				camera_capture_result_buffer =
-						camera_capture_buffers[camera_capture_active_buffer_index];
-				(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp,
-				CAMERA_CAPTURE_PIPE, DCMIPP_VIRTUAL_CHANNEL0);
-				if (camera_capture_use_cmw_pipeline) {
-					/* Clear the late Pipe1/CSI status before the next configuration.
-					 * The complete frame remains valid, but this transport report can
-					 * leave CMW's private Pipe1 state out of sync with the HAL. */
-					CameraPlatform_RecoverProcessedSnapshot();
-				}
-				if (!camera_capture_use_cmw_pipeline && camera_stream_started
-						&& !CameraPlatform_StopImx335Stream()) {
-					DebugConsole_WriteString(
-							"[CAMERA][CAPTURE] Could not stop IMX335 after complete raw frame; rejecting handoff.\r\n");
-					camera_capture_snapshot_armed = false;
-					camera_capture_isp_loop_paused = false;
-					return false;
-				}
-				camera_capture_snapshot_armed = false;
-				*captured_bytes_ptr = camera_capture_byte_count;
-				if (camera_capture_use_cmw_pipeline) {
-					(void) AppCameraBuffers_InvalidateCaptureRegion(
-							camera_capture_byte_count);
-				}
-				if (camera_capture_use_cmw_pipeline
-						&& !CameraPlatform_StopProcessedCamera()) {
-					DebugConsole_WriteString(
-							"[CAMERA][CAPTURE] Processed camera deinitialization failed after late status; rejecting handoff.\r\n");
-					camera_capture_snapshot_armed = false;
-					camera_capture_isp_loop_paused = false;
-					return false;
-				}
-				/* The late status has been consumed as metadata.  Clear the
-				 * transaction-level error so the caller does not mistake a valid
-				 * accepted frame for another transport retry. */
-				camera_capture_error_code = 0U;
-				return true;
-			}
 			should_reset_sensor_stream =
 			AppCameraCapture_ShouldRetryDcmippError(camera_capture_error_code);
-			camera_capture_last_failure_retryable = should_reset_sensor_stream;
-			camera_capture_last_failure_error_code = camera_capture_error_code;
 			break;
 		}
 
@@ -979,19 +832,7 @@ bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr) {
 
 	(void) HAL_DCMIPP_CSI_PIPE_Stop(capture_dcmipp, CAMERA_CAPTURE_PIPE,
 	DCMIPP_VIRTUAL_CHANNEL0);
-	if (camera_capture_use_cmw_pipeline && camera_capture_failed) {
-		CameraPlatform_RecoverProcessedSnapshot();
-	}
-	if (camera_capture_use_cmw_pipeline && camera_cmw_initialized
-			&& !CameraPlatform_StopProcessedCamera()) {
-		DebugConsole_WriteString(
-				"[CAMERA][CAPTURE] Processed camera deinitialization failed during recovery.\r\n");
-	}
-	/* Raw Pipe0 is intentionally a stop-and-capture diagnostic path, so reset
-	 * that sensor after a retryable transport error.  The processed path has
-	 * already completed its full CMW teardown above. */
-	if (!camera_capture_use_cmw_pipeline && camera_stream_started
-			&& should_reset_sensor_stream) {
+	if (should_reset_sensor_stream) {
 		if (!CameraPlatform_StopImx335Stream()) {
 			DebugConsole_WriteString(
 					"[CAMERA][CAPTURE] IMX335 stream stop failed during DCMIPP recovery.\r\n");
@@ -1030,6 +871,7 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 	bool capture_ok = false;
 	bool capture_saved = !camera_capture_use_cmw_pipeline;
 	bool ai_handoff_accepted = !camera_capture_use_cmw_pipeline;
+	bool discard_next_successful_frame = false;
 	/* Keep one compact failure reason so a truncated UART line still identifies
 	 * the transaction stage without dumping the frame or adding a log burst. */
 	const char *failure_stage = "capture";
@@ -1066,15 +908,26 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 
 	for (capture_attempt = 0U;; capture_attempt++) {
 		if (capture_attempt > 0U) {
-			if (camera_capture_last_failure_error_code != 0U) {
+			if (camera_capture_error_code != 0U) {
 				DebugConsole_Printf(
 						"[CAMERA][CAPTURE] Retrying capture after DCMIPP error 0x%08lX.\r\n",
-						(unsigned long) camera_capture_last_failure_error_code);
+						(unsigned long) camera_capture_error_code);
 			}
 			DelayMilliseconds_ThreadX(CAMERA_CAPTURE_RETRY_DELAY_MS);
 		}
 
 		if (AppCameraCapture_CaptureSingleFrame(&captured_bytes)) {
+			if (discard_next_successful_frame) {
+				/* A DCMIPP retry can recover a usable buffer, but the preceding
+				 * transport error means this frame is less trustworthy than a clean
+				 * first-pass capture. Skip it and wait for the next clean frame. */
+				(void) DebugConsole_WriteString(
+						"[CAMERA][CAPTURE] Discarding frame after DCMIPP retry; requesting another capture.\r\n");
+				discard_next_successful_frame = false;
+				capture_ok = false;
+				continue;
+			}
+
 			capture_ok = true;
 			image_ptr = camera_capture_result_buffer;
 			if (camera_capture_use_cmw_pipeline) {
@@ -1108,12 +961,12 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 					if (brightness_adjustment_count
 							>= max_brightness_adjustments) {
 						DebugConsole_Printf(
-								"[CAMERA][CAPTURE] Brightness gate exhausted its %lu manual nudges; accepting the last complete frame.\r\n",
+								"[CAMERA][CAPTURE] Brightness gate exhausted its %lu manual nudges; rejecting frame.\r\n",
 								(unsigned long) max_brightness_adjustments);
-						/* The DCMIPP completion and byte count prove that the buffer is
-						 * usable. Brightness is advisory: preserving this frame keeps
-						 * one difficult lighting condition from starving AI indefinitely. */
-						capture_ok = true;
+						/* A complete DMA frame is not necessarily a useful inference
+						 * frame.  Do not poison the AI or spike-filter baseline with a
+						 * frame that failed the exposure gate. */
+						capture_ok = false;
 						break;
 					}
 					const uint32_t brightness_step_percent =
@@ -1129,21 +982,16 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 							APP_CAMERA_CAPTURE_BRIGHTNESS_TOO_DARK,
 							brightness_step_percent)) {
 						DebugConsole_WriteString(
-								"[CAMERA][CAPTURE] IMX335 exposure/gain reached its adjustment limit; accepting the last complete frame.\r\n");
-						/* A complete frame is still valuable for the learned model and
-						 * for the next brightness decision. Do not restart the camera
-						 * solely because the sensor reached its quality limit. */
-						capture_ok = true;
+								"[CAMERA][CAPTURE] IMX335 exposure/gain reached its adjustment limit; rejecting frame.\r\n");
+						/* Exposure headroom exhaustion is a capture-quality failure.
+						 * Skipping this cycle is safer than publishing bad geometry. */
+						capture_ok = false;
 						break;
 					}
-					/* Let the new integration setting settle, then evaluate the next
-					 * complete buffer normally. Discarding that buffer can consume the
-					 * only transport-recovery opportunity before AI gets a frame. */
-					DelayMilliseconds_ThreadX(
-							CAMERA_CAPTURE_BRIGHTNESS_SETTLE_DELAY_MS);
-					/* An exposure nudge starts a new quality sequence, so it also
-					 * receives a fresh single transport-retry budget. */
-					dcmipp_retry_count = 0U;
+					/* The first frame after a sensor exposure/gain update can still
+					 * contain the previous integration state.  Discard it before the
+					 * brightness gate evaluates a candidate frame. */
+					discard_next_successful_frame = true;
 					previous_brightness_gate = brightness_gate;
 					brightness_adjustment_count++;
 #if CAMERA_CAPTURE_ENABLE_VERBOSE_DIAGNOSTICS
@@ -1161,7 +1009,7 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 			break;
 		}
 
-		if (!camera_capture_last_failure_retryable) {
+		if (!AppCameraCapture_ShouldRetryDcmippError(camera_capture_error_code)) {
 			break;
 		}
 
@@ -1173,6 +1021,7 @@ bool AppCameraCapture_CaptureAndStoreSingleFrame(void) {
 		}
 
 		dcmipp_retry_count++;
+		discard_next_successful_frame = true;
 	}
 
 	if (!capture_ok) {

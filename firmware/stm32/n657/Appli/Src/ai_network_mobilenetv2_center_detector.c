@@ -21,7 +21,6 @@
 #include "ll_aton_NN_interface.h"
 #include "ll_aton_rt_user_api.h"
 #include "ll_aton_reloc_network.h"
-#include "ll_aton.h"
 #include "mcu_cache.h"
 #include "main.h"
 #include "debug_console.h"
@@ -39,25 +38,8 @@ static uintptr_t AppAI_GaugeEllipse_GetRelocImageBase(void)
 	return 0x34099400UL;
 }
 
-/**
- * Use the generated epoch link setup without ST's unbounded switch-clear poll.
- *
- * Each generated epoch has a matching LL_Switch_Deinit() that removes every
- * route it created.  The no-reset variant is therefore sufficient here and
- * avoids stranding the AI worker if the N6 switch CLR bit does not self-clear.
- */
-static int AppAI_GaugeEllipse_SwitchInit(const LL_Switch_InitTypeDef *config,
-	int count)
-{
-	return LL_Switch_Init_NoReset(config, count);
-}
-
 LL_ATON_DECLARE_NAMED_NN_INTERFACE(ellipse_iter8_universal_wide_deep_int8);
-/* Redirect only this compile-in model.  The generated source remains intact,
- * while the live wrapper avoids the vendor function's unbounded reset poll. */
-#define LL_Switch_Init AppAI_GaugeEllipse_SwitchInit
 #include "../../st_ai_output/packages/ellipse_iter8_universal_wide_deep_int8_n6_npu/st_ai_ws/build_network/ellipse_iter8_universal_wide_deep_int8_reloc.c"
-#undef LL_Switch_Init
 
 extern struct ai_reloc_rt_ctx _network_rt_ctx_ellipse_iter8_universal_wide_deep_int8;
 NN_Instance_TypeDef NN_Instance_ellipse_iter8_universal_wide_deep_int8 = {
@@ -94,40 +76,6 @@ static void AppAI_GaugeEllipse_PrepareRelocContext(void)
 		(uint32_t)AppAI_GaugeEllipse_GetRelocImageBase();
 	_network_rt_ctx_ellipse_iter8_universal_wide_deep_int8.file_addr = 0x70400000UL;
 	_network_rt_ctx_ellipse_iter8_universal_wide_deep_int8.state = AI_RELOC_RT_STATE_INITIALIZED | AI_RELOC_RT_STATE_XIP_MODE;
-}
-
-/** Clear software and hardware completion state left by an earlier epoch. */
-static void AppAI_GaugeEllipse_ClearPendingAttonEvents(void)
-{
-	/* A completed epoch can signal before the runtime returns DONE.  Drain that
-	 * software token before the next model so it cannot satisfy a later wait. */
-	LL_ATON_OSAL_DrainWfeSemaphore();
-
-#if defined(ATON_STRENG_NUM) && (ATON_STRENG_NUM > 0)
-	/* The streaming-engine IRQ register is write-one-to-clear. */
-	for (uint32_t se_id = 0U; se_id < ATON_STRENG_NUM; ++se_id)
-	{
-		ATON_STRENG_IRQ_SET(se_id, 0xFFFFFFFFU);
-	}
-#endif
-
-	/* Clear the combined controller status after clearing its source flags. */
-	{
-		const uint32_t pending = ATON_INTCTRL_INTREG_GET(0);
-		if (pending != 0U)
-		{
-			ATON_INTCTRL_INTCLR_SET(0, pending);
-		}
-	}
-#if (ATON_INT_NR > 32)
-	{
-		const uint32_t pending_high = ATON_INTCTRL_INTREG_H_GET(0);
-		if (pending_high != 0U)
-		{
-			ATON_INTCTRL_INTCLR_H_SET(0, pending_high);
-		}
-	}
-#endif
 }
 
 /** Initialize the ellipse network and validate its flash image. */
@@ -205,7 +153,7 @@ bool AppAI_GaugeEllipse_Run(void)
 			(const void *)(uintptr_t)reloc_image[0x2f4U / sizeof(uint32_t)],
 			(const void *)(uintptr_t)reloc_image[0x2f8U / sizeof(uint32_t)]);
 	}
-	AppAI_GaugeEllipse_ClearPendingAttonEvents();
+	LL_ATON_OSAL_DrainWfeSemaphore();
 	for (;;) {
 		if ((HAL_GetTick() - start_tick) >= 10000U) {
 			failure_stage = "timeout";
@@ -227,7 +175,6 @@ bool AppAI_GaugeEllipse_Run(void)
 			goto fail;
 		}
 	}
-	DebugConsole_WriteString("[AI][ELLIPSE] NPU inference complete.\r\n");
 	__asm volatile("mov r9, %0" : : "r"(caller_r9) : "r9");
 	return true;
 fail:
