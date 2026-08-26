@@ -17,6 +17,8 @@
 #include "debug_console.h"
 #include "inference_metrics.h"
 #include "main.h"
+#include "ds3231_clock.h"
+#include "sd_debug_log_service.h"
 #include "tx_api.h"
 #include "threadx_utils.h"
 
@@ -34,6 +36,7 @@
 #define INA219_THREAD_PRIORITY      10U      /* Must outrank the pipeline workers */
 #define INA219_SAMPLE_PERIOD_MS     250U     /* Sample every 250 ms for power stats */
 #define INA219_VOLTAGE_LOG_PERIOD_SAMPLES 240U /* 240 x 250 ms = 60 s */
+#define INA219_POWER_AVERAGE_WINDOW_MS 60000U /* Report one elapsed-minute average */
 
 /* Private variables ---------------------------------------------------------*/
 static I2C_HandleTypeDef *g_hi2c = NULL;
@@ -55,6 +58,8 @@ static float INA219_ConvertSignedRaw(uint16_t raw_value, float scale)
 static bool INA219_WriteRegister(uint8_t reg, uint16_t value);
 static bool INA219_ReadRegister(uint8_t reg, uint16_t *value);
 static void INA219_ThreadEntry(ULONG thread_input);
+static void INA219_LogPowerAverage(float power_sum_mw,
+        uint32_t valid_sample_count, ULONG window_elapsed_ticks);
 
 /**
  * @brief Write a 16-bit value to an INA219 register.
@@ -232,6 +237,11 @@ static void INA219_ThreadEntry(ULONG thread_input)
     
     INA219_Measurement_t measurement;
     uint32_t samples_since_voltage_log = 0U;
+    float power_sum_mw = 0.0f;
+    uint32_t valid_power_sample_count = 0U;
+    ULONG power_window_start_tick = tx_time_get();
+    const ULONG power_window_ticks = ThreadxUtils_MillisecondsToTicks(
+            INA219_POWER_AVERAGE_WINDOW_MS);
     DebugConsole_Printf("[INA219] Monitoring thread started\r\n");
     
     while (g_thread_running) {
@@ -243,7 +253,10 @@ static void INA219_ThreadEntry(ULONG thread_input)
         /* Read sensor and feed power (mW) to the metrics subsystem so
          * min/avg/max can be reported per-pipeline after latency ends. */
         if (INA219_ReadMeasurement(&measurement)) {
-            Metrics_PowerSample(measurement.power_w * 1000.0f);
+            const float power_mw = measurement.power_w * 1000.0f;
+            Metrics_PowerSample(power_mw);
+            power_sum_mw += power_mw;
+            valid_power_sample_count++;
 
             /* Report the bus voltage periodically while keeping the high-rate
              * sampler quiet enough for the shared UART console. */
@@ -258,9 +271,81 @@ static void INA219_ThreadEntry(ULONG thread_input)
                 samples_since_voltage_log = 0U;
             }
         }
+
+        /* Use elapsed scheduler time rather than a fixed sample count so a
+         * temporarily busy SD/AI interval still closes a true one-minute
+         * observation window. Only valid INA219 readings enter the average. */
+        {
+            const ULONG now_tick = tx_time_get();
+            if ((ULONG) (now_tick - power_window_start_tick)
+                    >= power_window_ticks) {
+                INA219_LogPowerAverage(power_sum_mw,
+                        valid_power_sample_count,
+                        (ULONG) (now_tick - power_window_start_tick));
+                power_sum_mw = 0.0f;
+                valid_power_sample_count = 0U;
+                power_window_start_tick = now_tick;
+            }
+        }
     }
     
     DebugConsole_Printf("[INA219] Monitoring thread exiting\r\n");
+}
+
+/**
+ * @brief Publish one elapsed-minute average power measurement.
+ * @param power_sum_mw Sum of valid INA219 power samples in milliwatts.
+ * @param valid_sample_count Number of valid samples included in the average.
+ * @param window_elapsed_ticks Actual elapsed ThreadX ticks in the window.
+ * @return None.
+ * @sideeffects Writes one UART record and queues one structured record for the
+ *              existing SD-backed debug metrics log.
+ * @preconditions Called from the INA219 monitoring thread after ThreadX starts.
+ * @concurrency Safe with respect to the log queue; does not access FileX directly.
+ */
+static void INA219_LogPowerAverage(float power_sum_mw,
+        uint32_t valid_sample_count, ULONG window_elapsed_ticks)
+{
+    const float average_power_mw = (valid_sample_count > 0U)
+            ? (power_sum_mw / (float) valid_sample_count) : 0.0f;
+    const long average_power_tenths_mw = lroundf(average_power_mw * 10.0f);
+    const long average_whole_mw = average_power_tenths_mw / 10L;
+    const long average_fraction_mw = labs(average_power_tenths_mw % 10L);
+    const unsigned long elapsed_ms =
+            ((unsigned long) window_elapsed_ticks * 1000UL)
+                    / (unsigned long) TX_TIMER_TICKS_PER_SECOND;
+    char timestamp[32] = { 0 };
+    char metrics_line[160] = { 0 };
+
+    if (valid_sample_count == 0U) {
+        DebugConsole_Printf(
+                "[INA219] one-minute average unavailable; valid_samples=0 elapsed_ms=%lu\r\n",
+                elapsed_ms);
+        (void) DebugConsole_Snprintf(metrics_line, sizeof(metrics_line),
+                "power_average,rtc_unavailable,%lu,0.0,0\r\n", elapsed_ms);
+    } else {
+        DebugConsole_Printf(
+                "[INA219] one-minute average power=%ld.%01ld mW valid_samples=%lu elapsed_ms=%lu\r\n",
+                average_whole_mw, average_fraction_mw,
+                (unsigned long) valid_sample_count, elapsed_ms);
+
+        if (App_Clock_GetCurrentTimestamp(timestamp, sizeof(timestamp))) {
+            (void) DebugConsole_Snprintf(metrics_line, sizeof(metrics_line),
+                    "power_average,%s,%lu,%ld.%01ld,%lu\r\n",
+                    timestamp, elapsed_ms, average_whole_mw,
+                    average_fraction_mw,
+                    (unsigned long) valid_sample_count);
+        } else {
+            (void) DebugConsole_Snprintf(metrics_line, sizeof(metrics_line),
+                    "power_average,rtc_unavailable,%lu,%ld.%01ld,%lu\r\n",
+                    elapsed_ms, average_whole_mw, average_fraction_mw,
+                    (unsigned long) valid_sample_count);
+        }
+    }
+
+    /* The queue owns the copy and the FileX thread performs the SD write, so
+     * this periodic report cannot block the camera/AI pipeline on media I/O. */
+    (void) SdDebugLogService_EnqueueLine(metrics_line);
 }
 
 /**

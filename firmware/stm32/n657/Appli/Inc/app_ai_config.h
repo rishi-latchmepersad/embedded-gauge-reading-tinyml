@@ -65,11 +65,10 @@
 #ifndef APP_AI_ENABLE_INNER_CELSIUS_MASK
 #define APP_AI_ENABLE_INNER_CELSIUS_MASK 1U
 #endif
-/* Publish each accepted angle-to-temperature result immediately.  Smoothing
- * is disabled during board validation so the UART and inference CSV expose
- * the exact result from the current frame. */
+/* Use the existing three-sample median when the camera runs a burst. The
+ * median suppresses one noisy needle/heatmap result without adding model work. */
 #ifndef APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
-#define APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING 0U
+#define APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING 1U
 #endif
 /* The ATON runtime has been faulting immediately after the per-frame reset
  * path, so keep that reset behind a switch while we verify whether the model
@@ -135,12 +134,10 @@
 #endif
 #endif
 
-/* The classical detector runs as a diagnostic comparator after the learned
- * pipeline on the same stopped DMA frame. Its thread + post-AI queue were
- * re-enabled (2026-08-05) once the frame ownership handoff and memory layout
- * became stable; the camera thread waits for BOTH workers before re-arming. */
+/* The classical detector is retained in the source as an optional diagnostic
+ * comparator, but is disabled for the current AI-only deployment. */
 #ifndef APP_BASELINE_ENABLE_THREAD
-#define APP_BASELINE_ENABLE_THREAD 1U
+#define APP_BASELINE_ENABLE_THREAD 0U
 #endif
 
 #ifndef APP_BASELINE_QUEUE_WITH_CAPTURE

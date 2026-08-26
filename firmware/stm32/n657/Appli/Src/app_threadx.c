@@ -34,6 +34,7 @@
 #include "app_camera_platform.h"
 #include "app_baseline_runtime.h"
 #include "app_ai_config.h"
+#include "app_ai_stage_tip_focus.h"
 #include "app_inference_runtime.h"
 #include "app_image_cleanup.h"
 #include "app_storage.h"
@@ -236,8 +237,11 @@ UINT App_ThreadX_Start(void) {
 		}
 	}
 
-	#if APP_BASELINE_ENABLE_THREAD
 	{
+		/* The learned AI path shares the calibration profile with the optional
+		 * classical comparator. Select it even when the baseline worker is
+		 * disabled, otherwise the mapper silently falls back to board_celsius_v1
+		 * and barometer results are rejected as implausible temperatures. */
 		AppBaselineRuntime_SetCalibrationProfileByName(
 			APP_BASELINE_CALIBRATION_PROFILE_NAME);
 
@@ -253,6 +257,10 @@ UINT App_ThreadX_Start(void) {
 				active_profile->profile_name : "unknown");
 		}
 
+	}
+
+	#if APP_BASELINE_ENABLE_THREAD
+	{
 		const UINT baseline_runtime_status = AppBaselineRuntime_Start();
 		if (baseline_runtime_status != TX_SUCCESS) {
 			DebugConsole_Printf(
@@ -486,12 +494,28 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 						"[CAMERA][THREAD] FileX media ready; starting capture.\r\n");
 			}
 
-			if (AppCameraCapture_CaptureAndStoreSingleFrame()) {
-				DebugConsole_Printf(
-					"[CAMERA][THREAD] Capture saved and AI handoff accepted.\r\n");
-			} else {
-				DebugConsole_Printf(
-						"[CAMERA][THREAD] Capture/inference attempt failed.\r\n");
+			/* Run the requested burst serially. Each call waits for the previous
+			 * AI handoff to release the shared stopped-sensor buffer, so this does
+			 * not require a second 400 KiB DMA buffer. */
+#if APP_AI_ENABLE_INFERENCE_BURST_SMOOTHING
+			AppAI_ResetInferenceBurstHistory();
+#endif
+			DebugConsole_Printf(
+					"[CAMERA][THREAD] Starting %lu-frame capture/AI burst.\r\n",
+					(unsigned long)CAMERA_CAPTURE_BURST_COUNT);
+			for (uint32_t burst_index = 0U;
+					burst_index < CAMERA_CAPTURE_BURST_COUNT; ++burst_index) {
+				if (AppCameraCapture_CaptureAndStoreSingleFrame()) {
+					DebugConsole_Printf(
+							"[CAMERA][THREAD] Burst frame %lu/%lu saved and handed to AI.\r\n",
+							(unsigned long)(burst_index + 1U),
+							(unsigned long)CAMERA_CAPTURE_BURST_COUNT);
+				} else {
+					DebugConsole_Printf(
+							"[CAMERA][THREAD] Burst frame %lu/%lu capture/inference failed.\r\n",
+							(unsigned long)(burst_index + 1U),
+							(unsigned long)CAMERA_CAPTURE_BURST_COUNT);
+				}
 			}
 
 			DelayMilliseconds_Cooperative(next_delay_ms);

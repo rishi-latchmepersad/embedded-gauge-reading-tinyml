@@ -37,6 +37,9 @@ extern "C" {
 /* Keep the board on a simple one-frame-per-minute duty cycle now that the
  * save path is no longer the bottleneck. */
 #define CAMERA_CAPTURE_PERIOD_MS           60000U
+/* Capture three sequential frames per scheduled observation. The capture
+ * owner waits for the AI worker to release each frame before the next one. */
+#define CAMERA_CAPTURE_BURST_COUNT              3U
 
 /* Storage maintenance timing ---------------------------------------------- */
 #define IMAGE_CLEANUP_PERIOD_MS            600000U
