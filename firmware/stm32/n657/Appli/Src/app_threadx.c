@@ -659,9 +659,33 @@ static bool CameraThread_EnterStopModeProof(void) {
 				"[STOP] Final FileX flush failed; skipping Stop proof.\r\n");
 		return false;
 	}
+
+	/* Close the INA219 interval only after AI, capture, and the first media
+	 * barrier have completed.  The report therefore covers the whole awake
+	 * portion of this cycle, including final storage housekeeping, without
+	 * counting the following Stop interval. */
+	if (!INA219_CloseAwakeWindow()) {
+		DebugConsole_Printf(
+				"[STOP] Awake power average could not be queued; skipping Stop proof.\r\n");
+		return false;
+	}
+	/* Closing the power window queued one more metrics record.  Drain and flush
+	 * that record before arming the wake timer so the UART/SD report is complete
+	 * when the MCU enters Stop mode. */
+	if (!SdDebugLogService_WaitForQueueDrain(
+			CAMERA_STOP_MODE_PROOF_TIMEOUT_MS)) {
+		DebugConsole_Printf(
+				"[STOP] Awake power log queue did not drain; skipping Stop proof.\r\n");
+		return false;
+	}
+	if (AppFileX_ForceMediaFlush() != FX_SUCCESS) {
+		DebugConsole_Printf(
+			"[STOP] Awake power log flush failed; skipping Stop proof.\r\n");
+		return false;
+	}
 	SdDebugLogService_ForceFlush();
 	DebugConsole_Printf(
-			"[STOP] Capture, metrics, and inference logs flushed; entering low power.\r\n");
+			"[STOP] Capture, metrics, inference, and awake-power logs flushed; entering low power.\r\n");
 
 	/* LPTIM1 is the sole Stop wake source.  Keeping one timer and one EXTI route
 	 * makes wake attribution deterministic and avoids competing asynchronous
@@ -715,6 +739,10 @@ static bool CameraThread_EnterStopModeProof(void) {
 				"[STOP] Returned early from Stop without the LPTIM wake flag.\r\n");
 		return false;
 	}
+	/* Do not let the stopped interval contaminate the next awake-window
+	 * duration.  The INA219 sampler resumes with the other ThreadX workers, so
+	 * establish its new boundary before restarting the camera stack. */
+	INA219_BeginAwakeWindow();
 	DebugConsole_Printf("[STOP] Stage 2 wake complete; clocks restored.\r\n");
 	return true;
 }

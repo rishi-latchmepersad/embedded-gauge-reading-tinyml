@@ -77,6 +77,23 @@ bool INA219_GetLastMeasurement(INA219_Measurement_t *measurement);
 bool INA219_StartMonitoringThread(void);
 
 /**
+ * @brief Begin a new awake power-measurement interval after waking.
+ * @sideeffects Atomically resets the awake accumulator and starts its elapsed
+ *              time at the current ThreadX tick.
+ */
+void INA219_BeginAwakeWindow(void);
+
+/**
+ * @brief Close and publish the power average for the current awake interval.
+ * @retval true if the interval was closed and its record was queued, false if
+ *         the INA219 monitor or logging service was unavailable.
+ * @sideeffects Prints the awake-window average to UART and queues one record
+ *              for the SD-backed metrics log.  The accumulator is reset for
+ *              the next awake interval.
+ */
+bool INA219_CloseAwakeWindow(void);
+
+/**
  * @brief Trigger a power reading and log it with a label.
  * @param label Label for the reading (e.g., "CNN", "BASELINE")
  * @retval true if reading triggered successfully, false otherwise

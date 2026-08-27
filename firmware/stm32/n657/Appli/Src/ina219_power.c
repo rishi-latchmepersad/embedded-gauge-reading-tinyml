@@ -36,7 +36,6 @@
 #define INA219_THREAD_PRIORITY      10U      /* Must outrank the pipeline workers */
 #define INA219_SAMPLE_PERIOD_MS     250U     /* Sample every 250 ms for power stats */
 #define INA219_VOLTAGE_LOG_PERIOD_SAMPLES 240U /* 240 x 250 ms = 60 s */
-#define INA219_POWER_AVERAGE_WINDOW_MS 60000U /* Report one elapsed-minute average */
 
 /* Private variables ---------------------------------------------------------*/
 static I2C_HandleTypeDef *g_hi2c = NULL;
@@ -46,6 +45,12 @@ static TX_THREAD g_ina219_thread;
 static TX_SEMAPHORE g_ina219_semaphore;
 static uint8_t g_ina219_thread_stack[INA219_THREAD_STACK_SIZE];
 static volatile bool g_thread_running = false;
+/* These fields are owned by the sampler, but are closed by the camera thread
+ * immediately before Stop mode.  Interrupt masking makes the short snapshot
+ * atomic without holding a mutex across the UART or SD logging calls. */
+static float g_awake_power_sum_mw = 0.0f;
+static uint32_t g_awake_valid_power_sample_count = 0U;
+static ULONG g_awake_window_start_tick = 0U;
 
 static float INA219_ConvertSignedRaw(uint16_t raw_value, float scale)
 {
@@ -58,7 +63,7 @@ static float INA219_ConvertSignedRaw(uint16_t raw_value, float scale)
 static bool INA219_WriteRegister(uint8_t reg, uint16_t value);
 static bool INA219_ReadRegister(uint8_t reg, uint16_t *value);
 static void INA219_ThreadEntry(ULONG thread_input);
-static void INA219_LogPowerAverage(float power_sum_mw,
+static bool INA219_LogAwakePowerAverage(float power_sum_mw,
         uint32_t valid_sample_count, ULONG window_elapsed_ticks);
 
 /**
@@ -237,11 +242,6 @@ static void INA219_ThreadEntry(ULONG thread_input)
     
     INA219_Measurement_t measurement;
     uint32_t samples_since_voltage_log = 0U;
-    float power_sum_mw = 0.0f;
-    uint32_t valid_power_sample_count = 0U;
-    ULONG power_window_start_tick = tx_time_get();
-    const ULONG power_window_ticks = ThreadxUtils_MillisecondsToTicks(
-            INA219_POWER_AVERAGE_WINDOW_MS);
     DebugConsole_Printf("[INA219] Monitoring thread started\r\n");
     
     while (g_thread_running) {
@@ -255,8 +255,17 @@ static void INA219_ThreadEntry(ULONG thread_input)
         if (INA219_ReadMeasurement(&measurement)) {
             const float power_mw = measurement.power_w * 1000.0f;
             Metrics_PowerSample(power_mw);
-            power_sum_mw += power_mw;
-            valid_power_sample_count++;
+
+            /* The camera thread closes this accumulator at the end of the
+             * awake work.  Keep only the arithmetic update in the critical
+             * section so I2C, UART, and FileX work remain interruptible. */
+            {
+                TX_INTERRUPT_SAVE_AREA
+                TX_DISABLE
+                g_awake_power_sum_mw += power_mw;
+                g_awake_valid_power_sample_count++;
+                TX_RESTORE
+            }
 
             /* Report the bus voltage periodically while keeping the high-rate
              * sampler quiet enough for the shared UART console. */
@@ -271,39 +280,23 @@ static void INA219_ThreadEntry(ULONG thread_input)
                 samples_since_voltage_log = 0U;
             }
         }
-
-        /* Use elapsed scheduler time rather than a fixed sample count so a
-         * temporarily busy SD/AI interval still closes a true one-minute
-         * observation window. Only valid INA219 readings enter the average. */
-        {
-            const ULONG now_tick = tx_time_get();
-            if ((ULONG) (now_tick - power_window_start_tick)
-                    >= power_window_ticks) {
-                INA219_LogPowerAverage(power_sum_mw,
-                        valid_power_sample_count,
-                        (ULONG) (now_tick - power_window_start_tick));
-                power_sum_mw = 0.0f;
-                valid_power_sample_count = 0U;
-                power_window_start_tick = now_tick;
-            }
-        }
     }
     
     DebugConsole_Printf("[INA219] Monitoring thread exiting\r\n");
 }
 
 /**
- * @brief Publish one elapsed-minute average power measurement.
+ * @brief Publish one awake-interval average power measurement.
  * @param power_sum_mw Sum of valid INA219 power samples in milliwatts.
  * @param valid_sample_count Number of valid samples included in the average.
  * @param window_elapsed_ticks Actual elapsed ThreadX ticks in the window.
  * @return None.
  * @sideeffects Writes one UART record and queues one structured record for the
  *              existing SD-backed debug metrics log.
- * @preconditions Called from the INA219 monitoring thread after ThreadX starts.
+ * @preconditions Called from ThreadX context after the accumulator snapshot.
  * @concurrency Safe with respect to the log queue; does not access FileX directly.
  */
-static void INA219_LogPowerAverage(float power_sum_mw,
+static bool INA219_LogAwakePowerAverage(float power_sum_mw,
         uint32_t valid_sample_count, ULONG window_elapsed_ticks)
 {
     const float average_power_mw = (valid_sample_count > 0U)
@@ -319,13 +312,13 @@ static void INA219_LogPowerAverage(float power_sum_mw,
 
     if (valid_sample_count == 0U) {
         DebugConsole_Printf(
-                "[INA219] one-minute average unavailable; valid_samples=0 elapsed_ms=%lu\r\n",
+                "[INA219] awake-window average unavailable; valid_samples=0 elapsed_ms=%lu\r\n",
                 elapsed_ms);
         (void) DebugConsole_Snprintf(metrics_line, sizeof(metrics_line),
                 "power_average,rtc_unavailable,%lu,0.0,0\r\n", elapsed_ms);
     } else {
         DebugConsole_Printf(
-                "[INA219] one-minute average power=%ld.%01ld mW valid_samples=%lu elapsed_ms=%lu\r\n",
+                "[INA219] awake-window average power=%ld.%01ld mW valid_samples=%lu elapsed_ms=%lu\r\n",
                 average_whole_mw, average_fraction_mw,
                 (unsigned long) valid_sample_count, elapsed_ms);
 
@@ -344,8 +337,64 @@ static void INA219_LogPowerAverage(float power_sum_mw,
     }
 
     /* The queue owns the copy and the FileX thread performs the SD write, so
-     * this periodic report cannot block the camera/AI pipeline on media I/O. */
-    (void) SdDebugLogService_EnqueueLine(metrics_line);
+     * this boundary report does not block on media I/O. */
+    return (SdDebugLogService_EnqueueLine(metrics_line) == TX_SUCCESS);
+}
+
+/**
+ * @brief Close and publish the power average for the current awake interval.
+ * @retval true if the average record was queued, false otherwise.
+ * @sideeffects Atomically snapshots and resets the sampler accumulator, then
+ *              writes the result to UART and queues it for the SD metrics log.
+ * @preconditions Called from a ThreadX thread before entering Stop mode.
+ */
+bool INA219_CloseAwakeWindow(void)
+{
+    TX_INTERRUPT_SAVE_AREA
+    const ULONG close_tick = tx_time_get();
+    float power_sum_mw;
+    uint32_t valid_sample_count;
+    ULONG window_start_tick;
+    ULONG window_elapsed_ticks;
+
+    if (!g_initialized) {
+        DebugConsole_Printf(
+                "[INA219] Awake-window average unavailable; monitor not initialized.\r\n");
+        return false;
+    }
+
+    /* Only the snapshot/reset is protected.  Formatting and queueing happen
+     * after interrupts are restored because both can take materially longer. */
+    TX_DISABLE
+    power_sum_mw = g_awake_power_sum_mw;
+    valid_sample_count = g_awake_valid_power_sample_count;
+    window_start_tick = g_awake_window_start_tick;
+    g_awake_power_sum_mw = 0.0f;
+    g_awake_valid_power_sample_count = 0U;
+    g_awake_window_start_tick = close_tick;
+    TX_RESTORE
+
+    window_elapsed_ticks = (ULONG) (close_tick - window_start_tick);
+    return INA219_LogAwakePowerAverage(power_sum_mw,
+            valid_sample_count, window_elapsed_ticks);
+}
+
+/**
+ * @brief Begin a new awake power-measurement interval after waking.
+ * @sideeffects Atomically resets the awake accumulator and starts its elapsed
+ *              time at the current ThreadX tick.
+ * @preconditions Called from a ThreadX thread after Stop-mode clock recovery.
+ */
+void INA219_BeginAwakeWindow(void)
+{
+    TX_INTERRUPT_SAVE_AREA
+    const ULONG start_tick = tx_time_get();
+
+    TX_DISABLE
+    g_awake_power_sum_mw = 0.0f;
+    g_awake_valid_power_sample_count = 0U;
+    g_awake_window_start_tick = start_tick;
+    TX_RESTORE
 }
 
 /**
@@ -370,6 +419,9 @@ bool INA219_StartMonitoringThread(void)
     }
     
     /* Create thread */
+    /* Reset the boundary state before the sampler can run so the first report
+     * covers boot, capture, inference, and final pre-sleep housekeeping. */
+    INA219_BeginAwakeWindow();
     g_thread_running = true;
     status = tx_thread_create(
         &g_ina219_thread,
