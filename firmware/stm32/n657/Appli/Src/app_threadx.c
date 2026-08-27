@@ -53,6 +53,7 @@
 #include "imx335.h"
 #include "imx335_reg.h"
 #include "ina219_power.h"
+#include "sd_debug_log_service.h"
 
 /* USER CODE END Includes */
 
@@ -379,6 +380,346 @@ bool App_ThreadX_LockCameraMiddleware(ULONG timeout_ticks) {
 }
 
 /**
+ * @brief Stop and power down the camera stack before a low-power interval.
+ * @retval true when CMW, DCMIPP, CSI, and the IMX335 were safely stopped.
+ * @sideeffects Pauses the camera ISP worker, deinitializes CMW, and drives the
+ *              camera module power pins to their off state.
+ *
+ * Keeping the transaction under the existing middleware mutex ensures that no
+ * ISP service call can race HAL_DCMIPP_DeInit() or the sensor power transition.
+ */
+static bool CameraThread_StopCameraStack(void) {
+	bool stop_ok = false;
+	int32_t cmw_status = CMW_ERROR_NONE;
+
+	/* The ISP worker must not touch CMW while the camera clocks and pipes are
+	 * being torn down.  This is deliberately thread-context code, never ISR code. */
+	camera_capture_isp_loop_paused = true;
+	if (!App_ThreadX_LockCameraMiddleware(
+			CameraPlatform_MillisecondsToTicks(
+					CAMERA_MIDDLEWARE_LOCK_TIMEOUT_MS))) {
+		DebugConsole_Printf(
+				"[CAMERA][POWER] Could not lock middleware for camera stop.\r\n");
+		camera_capture_isp_loop_paused = false;
+		return false;
+	}
+
+	DebugConsole_Printf(
+			"[CAMERA][POWER] Stopping camera stack before low-power interval.\r\n");
+
+	/* CaptureSingleFrame normally stops the sensor before handing the stopped
+	 * buffer to AI.  Keep this guard for recovery paths and future callers. */
+	if (camera_stream_started && !CameraPlatform_StopImx335Stream()) {
+		DebugConsole_Printf(
+				"[CAMERA][POWER] Sensor stream did not enter standby; aborting stop.\r\n");
+		goto stop_unlock;
+	}
+
+	/* CMW_CAMERA_DeInit() stops active pipes, resets DCMIPP/CSI, deinitializes
+	 * the sensor driver, and invokes ST's camera power-down sequence. */
+	cmw_status = CMW_CAMERA_DeInit();
+	if (cmw_status != CMW_ERROR_NONE) {
+		DebugConsole_Printf(
+				"[CAMERA][POWER] CMW_CAMERA_DeInit() failed, status=%ld.\r\n",
+				(long) cmw_status);
+		goto stop_unlock;
+	}
+
+	camera_cmw_initialized = false;
+	camera_stream_started = false;
+
+	/* Make the module-level power transition explicit even though the CMW
+	 * deinit path also powers it down.  The active-high EN_MODULE and active-
+	 * low NRST_CAM polarity is defined by the MB1854 camera board. */
+	CameraPlatform_CmwShutdownPin(0);
+	CameraPlatform_CmwEnablePin(0);
+	DelayMilliseconds_ThreadX(BCAMS_IMX_POWER_OFF_DELAY_MS);
+	DebugConsole_Printf(
+			"[CAMERA][POWER] Camera module powered off; camera stack stopped.\r\n");
+	stop_ok = true;
+
+	/* The camera remains powered off until the Stop-mode proof has returned. */
+stop_unlock:
+	App_ThreadX_UnlockCameraMiddleware();
+	camera_capture_isp_loop_paused = false;
+	return stop_ok;
+}
+
+/**
+ * @brief Probe and start the camera stack after a power or clock transition.
+ * @retval true when the IMX335 and CMW pipeline are ready for capture.
+ * @sideeffects Pauses the camera ISP worker, enables and resets the camera
+ *              module through the platform probe, and locks sensor exposure.
+ */
+static bool CameraThread_StartCameraStack(void) {
+	bool start_ok = false;
+
+	camera_capture_isp_loop_paused = true;
+	if (!App_ThreadX_LockCameraMiddleware(
+			CameraPlatform_MillisecondsToTicks(
+					CAMERA_MIDDLEWARE_LOCK_TIMEOUT_MS))) {
+		DebugConsole_Printf(
+				"[CAMERA][POWER] Could not lock middleware for camera start.\r\n");
+		camera_capture_isp_loop_paused = false;
+		return false;
+	}
+
+	/* Probe performs the same module enable/reset and CMW initialization used
+	 * during initial boot, which is required after Stop mode clock loss. */
+	if (CameraPlatform_ProbeBCamsImx() != TX_SUCCESS) {
+		DebugConsole_Printf(
+				"[CAMERA][POWER] Camera probe failed after low-power interval.\r\n");
+		goto start_unlock;
+	}
+	if (!CameraPlatform_DisableImx335AutoExposure()) {
+		DebugConsole_Printf(
+				"[CAMERA][POWER] Warning: failed to lock IMX335 exposure after start.\r\n");
+	}
+
+	start_ok = true;
+	DebugConsole_Printf(
+			"[CAMERA][POWER] Camera stack ready after low-power interval.\r\n");
+
+start_unlock:
+	App_ThreadX_UnlockCameraMiddleware();
+	camera_capture_isp_loop_paused = false;
+	return start_ok;
+}
+
+/* Stage 2 uses LPTIM1 as its sole low-power wake source.  The DS3231 remains
+ * the application time source; its RTC-like name does not imply that the MCU
+ * RTC is involved in the Stop proof. */
+static volatile bool camera_stop_wakeup_fired = false;
+static bool camera_stop_lptim_armed = false;
+
+/* LPTIM1 is clocked from the 32.768 kHz LSE crystal and uses the N6 internal
+ * EXTI line 52 route.  A /32 prescaler gives 1,024 Hz, so a one-minute sleep
+ * interval fits in the 16-bit LPTIM autoreload register. */
+#define CAMERA_STOP_LPTIM_EXTI_LINE (EXTI_IMR2_IM52)
+#define CAMERA_STOP_LPTIM_TICK_HZ   (1024UL)
+
+/**
+ * @brief Wait for an LPTIM status flag with a bounded CPU-side timeout.
+ * @param flag LPTIM status flag to test.
+ * @retval true when the flag was observed before timeout.
+ * @sideeffects Reads the LPTIM status register while the peripheral clock is
+ *              enabled; does not sleep or perform any blocking RTOS call.
+ */
+static bool CameraThread_LptimWaitForFlag(uint32_t flag) {
+	uint32_t guard = 0U;
+
+	while ((LPTIM1->ISR & flag) == 0U) {
+		if (++guard >= 1000000U) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/**
+ * @brief Arm LPTIM1 as an independent Stop-mode wake source.
+ * @param duration_ms Requested proof interval in milliseconds.
+ * @retval true when the LSE-backed one-shot-equivalent counter is running.
+ * @sideeffects Enables LPTIM1 and its low-power clock, configures the LSE
+ *              kernel clock, and enables the LPTIM1 IRQ/EXTI wake route.
+ *
+ * LPTIM1 is deliberately used in continuous mode.  The first autoreload
+ * match wakes the core; the Stop return path immediately disables the timer.
+ * This follows the same register sequencing as ST's HAL LPTIM counter start
+ * path without enabling the unused HAL LPTIM module in this CubeIDE project.
+ */
+static bool CameraThread_ArmLptimWakeup(uint32_t duration_ms) {
+	uint32_t seconds = (duration_ms + 999U) / 1000U;
+	uint32_t period_ticks;
+
+	if (seconds == 0U) {
+		seconds = 1U;
+	}
+	period_ticks = seconds * CAMERA_STOP_LPTIM_TICK_HZ;
+	if ((period_ticks == 0U) || (period_ticks > 65536U)) {
+		return false;
+	}
+
+	/* Keep this function self-contained by explicitly enabling and validating the
+	 * low-speed oscillator before selecting it as the LPTIM1 kernel clock. */
+	__HAL_RCC_LSE_CONFIG(RCC_LSE_ON);
+	uint32_t lse_guard = 0U;
+	while ((LL_RCC_LSE_IsReady() == 0U) && (lse_guard < 1000000U)) {
+		++lse_guard;
+	}
+	if (LL_RCC_LSE_IsReady() == 0U) {
+		DebugConsole_Printf(
+				"[STOP][LPTIM] LSE did not start; timer wake unavailable.\r\n");
+		return false;
+	}
+
+	__HAL_RCC_LPTIM1_CLK_ENABLE();
+	__HAL_RCC_LPTIM1_CLK_SLEEP_ENABLE();
+	LL_RCC_SetLPTIMClockSource(LL_RCC_LPTIM1_CLKSOURCE_LSE);
+
+	/* Stop any stale counter and clear asynchronous status before programming
+	 * ARR.  ARR is transferred into the running timer only after ARROK. */
+	CLEAR_BIT(LPTIM1->CR, LPTIM_CR_ENABLE);
+	LPTIM1->DIER = 0U;
+	LPTIM1->ICR = LPTIM_ICR_ARRMCF | LPTIM_ICR_ARROKCF
+			| LPTIM_ICR_DIEROKCF;
+	MODIFY_REG(LPTIM1->CFGR, LPTIM_CFGR_CKSEL | LPTIM_CFGR_PRESC,
+				LPTIM_CFGR_PRESC_0 | LPTIM_CFGR_PRESC_2);
+	LPTIM1->CR = LPTIM_CR_ENABLE;
+	LPTIM1->ICR = LPTIM_ICR_ARROKCF;
+	LPTIM1->ARR = period_ticks - 1U;
+	if (!CameraThread_LptimWaitForFlag(LPTIM_ISR_ARROK)) {
+		CLEAR_BIT(LPTIM1->CR, LPTIM_CR_ENABLE);
+		__HAL_RCC_LPTIM1_CLK_SLEEP_DISABLE();
+		__HAL_RCC_LPTIM1_CLK_DISABLE();
+		DebugConsole_Printf(
+				"[STOP][LPTIM] ARR update did not complete; skipping Stop proof.\r\n");
+		return false;
+	}
+	LPTIM1->ICR = LPTIM_ICR_ARROKCF;
+
+	/* LPTIM wakeup is an internal direct EXTI route on line 52.  Enable both
+	 * interrupt and event masks so either WFI or the hardware wake fabric can
+	 * release Stop on this STM32N6 security partition. */
+	EXTI->IMR2 |= CAMERA_STOP_LPTIM_EXTI_LINE;
+	EXTI->EMR2 |= CAMERA_STOP_LPTIM_EXTI_LINE;
+	LPTIM1->ICR = LPTIM_ICR_ARRMCF | LPTIM_ICR_DIEROKCF;
+	LPTIM1->DIER = LPTIM_DIER_ARRMIE;
+	if (!CameraThread_LptimWaitForFlag(LPTIM_ISR_DIEROK)) {
+		CLEAR_BIT(LPTIM1->CR, LPTIM_CR_ENABLE);
+		EXTI->IMR2 &= ~CAMERA_STOP_LPTIM_EXTI_LINE;
+		EXTI->EMR2 &= ~CAMERA_STOP_LPTIM_EXTI_LINE;
+		__HAL_RCC_LPTIM1_CLK_SLEEP_DISABLE();
+		__HAL_RCC_LPTIM1_CLK_DISABLE();
+		DebugConsole_Printf(
+				"[STOP][LPTIM] interrupt update did not complete; skipping Stop proof.\r\n");
+		return false;
+	}
+
+	camera_stop_wakeup_fired = false;
+	NVIC_ClearPendingIRQ(LPTIM1_IRQn);
+	NVIC_EnableIRQ(LPTIM1_IRQn);
+	SET_BIT(LPTIM1->CR, LPTIM_CR_CNTSTRT);
+	camera_stop_lptim_armed = true;
+	DebugConsole_Printf(
+				"[STOP][LPTIM] armed CFGR=0x%08lX CR=0x%08lX ARR=%lu ISR=0x%08lX EXTI2=0x%08lX\r\n",
+				(unsigned long) LPTIM1->CFGR, (unsigned long) LPTIM1->CR,
+				(unsigned long) LPTIM1->ARR, (unsigned long) LPTIM1->ISR,
+				(unsigned long) EXTI->IMR2);
+	return true;
+}
+
+/**
+ * @brief Stop LPTIM1 and remove its Stop-mode wake route.
+ * @sideeffects Disables the timer, interrupt, EXTI masks, and low-power clock.
+ */
+static void CameraThread_DisarmLptimWakeup(void) {
+	if (!camera_stop_lptim_armed) {
+		return;
+	}
+
+	NVIC_DisableIRQ(LPTIM1_IRQn);
+	NVIC_ClearPendingIRQ(LPTIM1_IRQn);
+	CLEAR_BIT(LPTIM1->CR, LPTIM_CR_ENABLE);
+	LPTIM1->DIER = 0U;
+	LPTIM1->ICR = LPTIM_ICR_ARRMCF | LPTIM_ICR_ARROKCF
+			| LPTIM_ICR_DIEROKCF;
+	EXTI->IMR2 &= ~CAMERA_STOP_LPTIM_EXTI_LINE;
+	EXTI->EMR2 &= ~CAMERA_STOP_LPTIM_EXTI_LINE;
+	__HAL_RCC_LPTIM1_CLK_SLEEP_DISABLE();
+	__HAL_RCC_LPTIM1_CLK_DISABLE();
+	camera_stop_lptim_armed = false;
+}
+
+/**
+ * @brief Enter the guarded Stage 2 STM32N6 Stop-mode proof interval.
+ * @retval true when the MCU returned from the LPTIM1 wakeup path.
+ * @sideeffects Drains asynchronous log queues, flushes the SD card, pauses
+ *              the HAL tick, enters Stop mode, restores clocks, and resumes
+ *              the tick before returning to the capture scheduler.
+ */
+static bool CameraThread_EnterStopModeProof(void) {
+	if (!AppInferenceRuntime_WaitForLogQueueDrain(
+			CAMERA_STOP_MODE_PROOF_TIMEOUT_MS)
+			|| !SdDebugLogService_WaitForQueueDrain(
+					CAMERA_STOP_MODE_PROOF_TIMEOUT_MS)) {
+		DebugConsole_Printf(
+				"[STOP] Log queues did not drain; skipping Stop proof.\r\n");
+		return false;
+	}
+	DebugConsole_Printf(
+			"[STOP] AI result and inference/metrics log queues drained.\r\n");
+
+	/* Capture writes are marked flush-pending, while debug metrics use a
+	 * separate queue.  Complete both barriers before powering down the SD path. */
+	if ((AppFileX_ServiceCaptureMediaFlush() != TX_SUCCESS)
+			|| (AppFileX_ForceMediaFlush() != FX_SUCCESS)) {
+		DebugConsole_Printf(
+				"[STOP] Final FileX flush failed; skipping Stop proof.\r\n");
+		return false;
+	}
+	SdDebugLogService_ForceFlush();
+	DebugConsole_Printf(
+			"[STOP] Capture, metrics, and inference logs flushed; entering low power.\r\n");
+
+	/* LPTIM1 is the sole Stop wake source.  Keeping one timer and one EXTI route
+	 * makes wake attribution deterministic and avoids competing asynchronous
+	 * flags after the clock tree is restored. */
+	if (!CameraThread_ArmLptimWakeup(CAMERA_STOP_MODE_PROOF_DURATION_MS)) {
+		DebugConsole_Printf(
+				"[STOP][LPTIM] Could not arm the one-minute wakeup; skipping Stop mode.\r\n");
+		return false;
+	}
+
+	DebugConsole_Printf(
+			"[STOP] Stage 2 entering Stop mode for %lu ms.\r\n",
+			(unsigned long) CAMERA_STOP_MODE_PROOF_DURATION_MS);
+
+	/* TIM5 supplies the HAL tick, while SysTick supplies the ThreadX scheduler
+	 * tick in this project.  Both periodic sources must be paused so the LPTIM1
+	 * wakeup is not immediately defeated by a pending scheduler tick. */
+	HAL_SuspendTick();
+	TIM5->SR &= ~TIM_SR_UIF;
+	const uint32_t systick_ctrl = SysTick->CTRL;
+	CLEAR_BIT(SysTick->CTRL, SysTick_CTRL_TICKINT_Msk);
+	SysTick->VAL = 0U;
+	SCB->ICSR = SCB_ICSR_PENDSVCLR_Msk | SCB_ICSR_PENDSTCLR_Msk;
+	HAL_PWREx_ControlStopModeVoltageScaling(PWR_REGULATOR_STOP_VOLTAGE_SCALE3);
+	/* LPTIM1 is configured as a direct EXTI interrupt.  WFI is the unambiguous
+	 * entry here: it keeps the CPU asleep until the timer wake interrupt reaches
+	 * the NVIC, avoiding WFE event-state ambiguity. */
+	HAL_PWR_EnterSTOPMode(PWR_MAINREGULATOR_ON, PWR_STOPENTRY_WFI);
+	/* Preserve the LPTIM1 flag as a hardware-evidence fallback in case the
+	 * interrupt handler was not reached before the core resumed. */
+	if ((LPTIM1->ISR & LPTIM_ISR_ARRM) != 0U) {
+		camera_stop_wakeup_fired = true;
+	}
+
+	/* Stop wake selects HSI.  Resume the HAL tick before restoring the PLL trees:
+	 * the HAL clock and voltage-scaling routines use HAL_GetTick() for bounded
+	 * waits, and leaving TIM5 suspended here can turn a recovery timeout into an
+	 * apparent post-wake freeze.  SysTick remains disabled until after the clock
+	 * tree is stable, so ThreadX cannot schedule during this short transition. */
+	CLEAR_BIT(SCB->SCR, SCB_SCR_SLEEPDEEP_Msk);
+	HAL_ResumeTick();
+	App_SystemClock_Config();
+	App_CameraKernelClock_Config();
+	SysTick->VAL = 0U;
+	SysTick->CTRL = systick_ctrl;
+	CameraThread_DisarmLptimWakeup();
+	DebugConsole_Printf("[STOP] Wake returned; clocks restored.\r\n");
+
+	if (!camera_stop_wakeup_fired) {
+		DebugConsole_Printf(
+				"[STOP] Returned early from Stop without the LPTIM wake flag.\r\n");
+		return false;
+	}
+	DebugConsole_Printf("[STOP] Stage 2 wake complete; clocks restored.\r\n");
+	return true;
+}
+
+/**
  * @brief Release the shared camera middleware lock.
  */
 void App_ThreadX_UnlockCameraMiddleware(void) {
@@ -471,7 +812,7 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 
 		BSP_LED_Off(LED_BLUE);
 		DebugConsole_Printf(
-				"[CAMERA][THREAD] Entering capture/inference loop (period=60s)...\r\n");
+				"[CAMERA][THREAD] Entering capture/Stop loop (sleep=60s)...\r\n");
 		while (1) {
 			bool storage_ready = AppFileX_IsMediaReady();
 			uint32_t next_delay_ms = CAMERA_CAPTURE_PERIOD_MS;
@@ -521,10 +862,67 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 				}
 			}
 
-			/* The next capture is a full minute away.  A single ThreadX timeout
-			 * avoids waking this thread every scheduler tick while preserving the
-			 * existing capture cadence and leaving all other workers runnable. */
+			/* RequestDryInference() is asynchronous in the live no-copy path.
+			 * Wait for final publication and ownership release before touching
+			 * CMW/DCMIPP or powering down the camera. */
+			if (!AppCameraCapture_WaitForInferenceOwnershipRelease()) {
+				DebugConsole_Printf(
+						"[CAMERA][POWER] AI ownership did not clear; deferring Stage 1 restart.\r\n");
+				DelayMilliseconds_ThreadX(next_delay_ms);
+				continue;
+			}
+			/* The ownership barrier means the AI worker has completed its read of
+			 * the final burst frame and Metrics_EndInference(). A failed final
+			 * result still emits failure metrics; make that state visible without
+			 * allowing it to bypass the pre-sleep flush barrier. */
+			if (!AppInferenceRuntime_WasLastRequestSuccessful()) {
+				DebugConsole_Printf(
+						"[CAMERA][POWER] AI burst completed without a valid final result; flushing failure metrics before sleep.\r\n");
+			}
+
+			/* Stop the camera before the low-power transition.  The module must stay
+			 * off while Stop mode is active; restarting it before sleep would leave
+			 * DCMIPP/CMW state live across the clock reset and make wake recovery
+			 * dependent on undefined peripheral state. */
+			const bool camera_stop_ok = CameraThread_StopCameraStack();
+			if (!camera_stop_ok) {
+				DebugConsole_Printf(
+						"[CAMERA][POWER] Camera stop failed; skipping low-power transition.\r\n");
+			}
+
+			bool camera_start_ok = false;
+#if CAMERA_STOP_MODE_PROOF_ENABLE
+			/* Stage 2 is attempted only after the camera is fully stopped. If any
+			 * queue, flush, LPTIM, or wake condition is not ready, restart the camera
+			 * and use the retry delay below. */
+			bool stop_interval_completed = false;
+			if (camera_stop_ok) {
+				stop_interval_completed = CameraThread_EnterStopModeProof();
+				camera_start_ok = CameraThread_StartCameraStack();
+			}
+#else
+			/* With the Stop proof disabled, retain the already validated Stage 1
+			 * behavior: power-cycle the camera and probe it again immediately. */
+			if (camera_stop_ok) {
+				camera_start_ok = CameraThread_StartCameraStack();
+			}
+#endif
+			if (!camera_start_ok) {
+				DebugConsole_Printf(
+						"[CAMERA][POWER] Camera restart after low-power transition failed.\r\n");
+			}
+
+#if CAMERA_STOP_MODE_PROOF_ENABLE
+			/* A successful one-minute Stop interval is the cadence now: after wake
+			 * and camera restart, the next burst begins immediately.  Retain the
+			 * old retry delay whenever the low-power cycle or restart fails. */
+			if (!stop_interval_completed || !camera_start_ok) {
+				DelayMilliseconds_ThreadX(next_delay_ms);
+			}
+#else
+			/* Without Stage 2, preserve the validated one-minute ThreadX cadence. */
 			DelayMilliseconds_ThreadX(next_delay_ms);
+#endif
 		}
 	}
 
@@ -793,6 +1191,19 @@ void HAL_DCMIPP_CSI_LineByteEventCallback(DCMIPP_HandleTypeDef *hdcmipp,
 	camera_capture_csi_linebyte_event_count++;
 
 	camera_capture_csi_linebyte_event_logged = true; /* flag for main thread */
+}
+
+/**
+ * @brief Handle the secure LPTIM1 autoreload interrupt used for Stop wakeup.
+ * @sideeffects Clears only the autoreload flag and records the wake source;
+ *              performs no ThreadX, UART, or FileX work from interrupt context.
+ */
+void LPTIM1_IRQHandler(void) {
+	if (((LPTIM1->ISR & LPTIM_ISR_ARRM) != 0U)
+			&& ((LPTIM1->DIER & LPTIM_DIER_ARRMIE) != 0U)) {
+		LPTIM1->ICR = LPTIM_ICR_ARRMCF;
+		camera_stop_wakeup_fired = true;
+	}
 }
 
 /* USER CODE END 1 */

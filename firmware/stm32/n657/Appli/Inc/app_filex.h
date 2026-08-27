@@ -64,6 +64,7 @@ UINT AppFileX_GetNextCapturedImageName(CHAR *file_name_ptr,
 UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		const VOID *data_ptr, ULONG data_length);
 UINT AppFileX_ServiceCaptureMediaFlush(void);
+UINT AppFileX_ForceMediaFlush(void);
 
 /* USER CODE END EFP */
 

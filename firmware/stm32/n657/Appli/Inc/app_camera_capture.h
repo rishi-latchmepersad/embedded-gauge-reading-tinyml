@@ -22,6 +22,8 @@ bool AppCameraCapture_RunImx335Background(void);
 
 /* Capture a frame, save it to storage, and queue dry-run inference if needed. */
 bool AppCameraCapture_CaptureAndStoreSingleFrame(void);
+/* Wait until the asynchronous AI/baseline consumers release the frame. */
+bool AppCameraCapture_WaitForInferenceOwnershipRelease(void);
 
 /* Internal capture helpers now owned by the capture module. */
 bool AppCameraCapture_CaptureSingleFrame(uint32_t *captured_bytes_ptr);

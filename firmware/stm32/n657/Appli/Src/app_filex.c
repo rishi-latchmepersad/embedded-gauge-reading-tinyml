@@ -986,6 +986,30 @@ void AppFileX_ReleaseMediaLock(void) {
 	AppFileX_UnlockMedia();
 }
 
+/**
+ * @brief Flush all pending FileX metadata and data while holding the media lock.
+ * @retval FX_SUCCESS when the mounted media was flushed, otherwise the FileX
+ *         status or a ThreadX mutex status.
+ * @sideeffects Performs synchronous SD-card I/O and temporarily owns the
+ *              shared FileX media mutex.
+ */
+UINT AppFileX_ForceMediaFlush(void) {
+	UINT status;
+
+	if (!g_filex_media_ready) {
+		return FX_MEDIA_NOT_OPEN;
+	}
+
+	status = AppFileX_LockMedia();
+	if (status != TX_SUCCESS) {
+		return status;
+	}
+
+	status = fx_media_flush(&g_sd_fx_media);
+	AppFileX_UnlockMedia();
+	return status;
+}
+
 /*==============================================================================*/
 UINT AppFileX_PrepareCaptureSlots(void) {
 	UINT status = TX_SUCCESS;

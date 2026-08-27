@@ -41,6 +41,14 @@ extern "C" {
  * owner waits for the AI worker to release each frame before the next one. */
 #define CAMERA_CAPTURE_BURST_COUNT              3U
 
+/* Stage 2 low-power cycle: enter real STM32N6 Stop mode for one minute using
+ * the LPTIM1/LSE wake route, only after the camera and consumers are quiescent. */
+#ifndef CAMERA_STOP_MODE_PROOF_ENABLE
+#define CAMERA_STOP_MODE_PROOF_ENABLE           1U
+#endif
+#define CAMERA_STOP_MODE_PROOF_DURATION_MS     60000U
+#define CAMERA_STOP_MODE_PROOF_TIMEOUT_MS       3000U
+
 /* Storage maintenance timing ---------------------------------------------- */
 #define IMAGE_CLEANUP_PERIOD_MS            600000U
 

@@ -23,6 +23,9 @@ extern "C" {
 #define BCAMS_IMX_POWER_SETTLE_DELAY_MS     10U
 #define BCAMS_IMX_RESET_ASSERT_DELAY_MS     5U
 #define BCAMS_IMX_RESET_RELEASE_DELAY_MS    10U
+/* Keep the module unpowered long enough for the Stage 1 restart test to
+ * exercise a real camera power transition rather than only a sensor reset. */
+#define BCAMS_IMX_POWER_OFF_DELAY_MS        50U
 #define IMX335_SENSOR_WIDTH_PIXELS          2592U
 #define IMX335_SENSOR_HEIGHT_LINES          1944U
 #define CAMERA_INIT_STARTUP_DELAY_MS        200U

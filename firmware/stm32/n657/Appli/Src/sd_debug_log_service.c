@@ -7,9 +7,11 @@
 
 #include "sd_debug_log_service.h"
 
+#include <stdbool.h>
 #include <string.h>
 
 #include "app_filex.h"
+#include "threadx_utils.h"
 
 /*==============================================================================
  * Type: SdDebugLogService_LogBuffer
@@ -57,6 +59,10 @@ static SdDebugLogCore_Context g_sd_debug_log_core_context;
 static SdDebugLogCore_FileOps g_sd_debug_log_file_ops;
 
 static uint8_t g_sd_debug_log_file_is_open = 0U;
+static bool g_sd_debug_log_queue_created = false;
+/* Queue depth becomes zero when this worker receives a record, so expose the
+ * active FileX write separately for the Stop-mode drain barrier. */
+static volatile bool g_sd_debug_log_write_in_progress = false;
 
 /*==============================================================================
  * Function: SdDebugLogService_LockMedia
@@ -542,6 +548,7 @@ UINT SdDebugLogService_Initialize(TX_BYTE_POOL *byte_pool_ptr,
 	if (status != TX_SUCCESS) {
 		return status;
 	}
+	g_sd_debug_log_queue_created = true;
 
 	return TX_SUCCESS;
 }
@@ -619,7 +626,9 @@ void SdDebugLogService_ServiceQueue(ULONG max_messages_to_process) {
 
 		/* Convert ULONG back into pointer. */
 		log_buffer_ptr = (SdDebugLogService_LogBuffer*) message_word;
+		g_sd_debug_log_write_in_progress = true;
 		if (log_buffer_ptr == NULL) {
+			g_sd_debug_log_write_in_progress = false;
 			continue;
 		}
 
@@ -630,7 +639,36 @@ void SdDebugLogService_ServiceQueue(ULONG max_messages_to_process) {
 
 		/* Release buffer back to pool. */
 		(void) tx_block_release((VOID*) log_buffer_ptr);
+		g_sd_debug_log_write_in_progress = false;
 	}
+}
+
+/**
+ * @brief Wait until the queued SD debug/metrics records have been consumed.
+ * @param timeout_ms Maximum wait duration in milliseconds.
+ * @retval true when the queue is empty and no record is being written,
+ *         false on timeout.
+ * @sideeffects Yields so the FileX service thread can perform the writes.
+ */
+bool SdDebugLogService_WaitForQueueDrain(uint32_t timeout_ms) {
+	uint32_t elapsed_ms = 0U;
+
+	if (!g_sd_debug_log_queue_created) {
+		return true;
+	}
+
+	while (elapsed_ms <= timeout_ms) {
+		ULONG enqueued = 0U;
+		if ((tx_queue_info_get(&g_sd_debug_log_queue, NULL, &enqueued, NULL,
+					NULL, NULL, NULL) == TX_SUCCESS) && (enqueued == 0U)
+				&& !g_sd_debug_log_write_in_progress) {
+			return true;
+		}
+		DelayMilliseconds_Cooperative(10U);
+		elapsed_ms += 10U;
+	}
+
+	return false;
 }
 
 void SdDebugLogService_ForceFlush(void) {

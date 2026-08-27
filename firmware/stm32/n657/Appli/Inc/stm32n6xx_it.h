@@ -59,6 +59,7 @@ void NPU0_IRQHandler(void);
 void NPU1_IRQHandler(void);
 void NPU2_IRQHandler(void);
 void NPU3_IRQHandler(void);
+void LPTIM1_IRQHandler(void);
 /* USER CODE BEGIN EFP */
 void CSI_IRQHandler(void);
 void DCMIPP_IRQHandler(void);

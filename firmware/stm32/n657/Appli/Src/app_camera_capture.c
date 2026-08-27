@@ -96,7 +96,7 @@ static bool AppCameraCapture_ShouldRetryDcmippError(uint32_t error_code) {
  * reading the snapshot, so forcibly clearing it could create a new DMA/NPU
  * race and corrupt the next inference.
  */
-static bool AppCameraCapture_WaitForInferenceOwnershipRelease(void) {
+bool AppCameraCapture_WaitForInferenceOwnershipRelease(void) {
 	static bool ownership_timeout_latched = false;
 	uint32_t elapsed_ms = 0U;
 	uint32_t next_log_ms = 0U;

@@ -67,6 +67,14 @@ const char *AppInferenceRuntime_WorkerStateName(
  */
 bool AppInferenceRuntime_IsInferenceInFlight(void);
 
+/**
+ * @brief Wait until all final inference values have been consumed by the log
+ *        worker.
+ * @param timeout_ms Maximum wait duration in milliseconds.
+ * @retval true when the inference log queue is empty, false on timeout.
+ */
+bool AppInferenceRuntime_WaitForLogQueueDrain(uint32_t timeout_ms);
+
 /** @brief Return whether the most recently completed AI request succeeded. */
 bool AppInferenceRuntime_WasLastRequestSuccessful(void);
 

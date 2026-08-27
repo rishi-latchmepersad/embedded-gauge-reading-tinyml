@@ -76,6 +76,16 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
 
+/**
+ * @brief Restore the application PLL and bus clock tree after STM32N6 Stop.
+ */
+void App_SystemClock_Config(void);
+
+/**
+ * @brief Restore the DCMIPP and CSI kernel clocks after STM32N6 Stop.
+ */
+void App_CameraKernelClock_Config(void);
+
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

@@ -77,8 +77,8 @@ static void MX_I2C1_Init(void);
 static void MX_I2C2_Init(void);
 static void SystemIsolation_Config(void);
 /* USER CODE BEGIN PFP */
-static void App_SystemClock_Config(void);
-static void App_CameraKernelClock_Config(void);
+void App_SystemClock_Config(void);
+void App_CameraKernelClock_Config(void);
 static void Setup_Mpu(void);
 extern uint32_t __snoncacheable;
 extern uint32_t __enoncacheable;
@@ -136,7 +136,7 @@ static void App_LogResetCause(void) {
  * The camera path needs the same PLL1/PLL4 setup used by the working FSBL
  * reference clock tree.
  */
-static void App_SystemClock_Config(void) {
+void App_SystemClock_Config(void) {
 	RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = { 0 };
 	RCC_OscInitTypeDef RCC_OscInitStruct = { 0 };
 	RCC_ClkInitTypeDef RCC_ClkInitStruct = { 0 };
@@ -233,7 +233,7 @@ static void App_SystemClock_Config(void) {
  * match the working IMX335 capture path. Keeping the final override here in
  * application code makes it much less likely to be lost on regeneration.
  */
-static void App_CameraKernelClock_Config(void) {
+void App_CameraKernelClock_Config(void) {
 	RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = { 0 };
 
 	PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_DCMIPP

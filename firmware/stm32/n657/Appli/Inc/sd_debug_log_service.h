@@ -8,6 +8,7 @@ extern "C" {
 #include "fx_api.h"
 #include "tx_api.h"
 #include "sd_debug_log_core.h"
+#include <stdbool.h>
 #include <stdint.h>
 
 #define SD_DEBUG_LOG_SERVICE_MAX_LINE_LENGTH_BYTES          (256U)
@@ -57,6 +58,9 @@ UINT SdDebugLogService_EnqueueLine(const CHAR *line_ptr);
  *   None.
  *==============================================================================*/
 void SdDebugLogService_ServiceQueue(ULONG max_messages_to_process);
+
+/* Wait until queued metrics/debug records have been handed to FileX. */
+bool SdDebugLogService_WaitForQueueDrain(uint32_t timeout_ms);
 
 /*==============================================================================
  * Function: SdDebugLogService_ForceFlush

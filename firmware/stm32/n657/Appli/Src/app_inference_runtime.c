@@ -67,6 +67,9 @@ static ULONG inference_log_thread_stack[INFERENCE_LOG_THREAD_STACK_SIZE_BYTES
 static bool inference_log_thread_created = false;
 static TX_QUEUE inference_log_queue;
 static ULONG inference_log_queue_storage[INFERENCE_LOG_QUEUE_DEPTH];
+/* Queue depth can reach zero as soon as the logger dequeues a record. Keep a
+ * separate state bit so Stop-mode entry also waits for the SD write itself. */
+static volatile bool inference_log_write_in_progress = false;
 
 static TX_THREAD camera_ai_thread;
 /* Keep the AI worker stack out of the OBB reloc runtime window. The OBB
@@ -242,6 +245,34 @@ bool AppInferenceRuntime_IsInferenceInFlight(void) {
 	in_flight = camera_ai_request_in_flight;
 	TX_RESTORE
 	return in_flight;
+}
+
+/**
+ * @brief Wait until the asynchronous inference log queue is empty.
+ * @param timeout_ms Maximum wait duration in milliseconds.
+ * @retval true when no inference log rows are queued or being written,
+ *         false on timeout.
+ * @sideeffects Yields the camera thread while the FileX-backed logger drains.
+ */
+bool AppInferenceRuntime_WaitForLogQueueDrain(uint32_t timeout_ms) {
+	uint32_t elapsed_ms = 0U;
+
+	if (!inference_log_thread_created) {
+		return true;
+	}
+
+	while (elapsed_ms <= timeout_ms) {
+		ULONG enqueued = 0U;
+		if ((tx_queue_info_get(&inference_log_queue, NULL, &enqueued, NULL,
+					NULL, NULL, NULL) == TX_SUCCESS) && (enqueued == 0U)
+				&& !inference_log_write_in_progress) {
+			return true;
+		}
+		DelayMilliseconds_Cooperative(10U);
+		elapsed_ms += 10U;
+	}
+
+	return false;
 }
 
 /**
@@ -689,6 +720,7 @@ static VOID InferenceLogThread_Entry(ULONG thread_input) {
 			if (q_status != TX_SUCCESS) {
 				break;
 			}
+			inference_log_write_in_progress = true;
 
 			union {
 				ULONG u;
@@ -712,6 +744,7 @@ static VOID InferenceLogThread_Entry(ULONG thread_input) {
 					sizeof(rtc_timestamp))) {
 				DebugConsole_Printf(
 						"[INFER_LOG] RTC unavailable while logging inference row.\r\n");
+				inference_log_write_in_progress = false;
 				break;
 			}
 
@@ -720,6 +753,7 @@ static VOID InferenceLogThread_Entry(ULONG thread_input) {
 			if ((written <= 0) || ((size_t) written >= sizeof(row))) {
 				DebugConsole_Printf(
 						"[INFER_LOG] Failed to format CSV row.\r\n");
+				inference_log_write_in_progress = false;
 				break;
 			}
 
@@ -730,6 +764,7 @@ static VOID InferenceLogThread_Entry(ULONG thread_input) {
 			if (!AppFileX_IsMediaReady()) {
 				DebugConsole_Printf(
 						"[INFER_LOG] FileX media not ready; dropping row.\r\n");
+				inference_log_write_in_progress = false;
 				break;
 			}
 
@@ -748,6 +783,7 @@ static VOID InferenceLogThread_Entry(ULONG thread_input) {
 			}
 
 			DebugConsole_Printf("[INFER_LOG] Logged: %s", row);
+			inference_log_write_in_progress = false;
 			break;
 		}
 
