@@ -80,6 +80,7 @@ static void SystemIsolation_Config(void);
 void App_SystemClock_Config(void);
 void App_CameraKernelClock_Config(void);
 static void Setup_Mpu(void);
+static bool App_Ethernet_PhyPowerDown(void);
 extern uint32_t __snoncacheable;
 extern uint32_t __enoncacheable;
 
@@ -87,6 +88,218 @@ extern uint32_t __enoncacheable;
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/* The Nucleo board's LAN8742A is powered continuously from VDD3V3 and its
+ * reset input is tied to the MCU's global NRST.  Since this application does
+ * not use Ethernet, the PHY's MDIO general power-down bit is the only
+ * firmware-controlled way to stop its analog/link circuitry without resetting
+ * the whole MCU. */
+#define APP_ETH_PHY_BCR 0U
+#define APP_ETH_PHY_ID1 2U
+#define APP_ETH_PHY_ID2 3U
+#define APP_ETH_PHY_POWER_DOWN 0x0800U
+#define APP_ETH_PHY_LAN8742_ID1 0x0007U
+#define APP_ETH_PHY_LAN8742_ID2 0xC130U
+#define APP_ETH_MDIO_TIMEOUT_MS 1000U
+
+/**
+ * @brief Wait until the ETH1 MDIO engine is idle.
+ * @param timeout_ms Maximum wait time in milliseconds.
+ * @retval true when the engine became idle; false on timeout.
+ * @sideeffects Reads ETH1 MAC MDIO status and consumes no RTOS resources.
+ */
+static bool App_Eth1_MdioWaitIdle(uint32_t timeout_ms) {
+	const uint32_t tick_start = HAL_GetTick();
+
+	while ((ETH1->MACMDIOAR & ETH_MACMDIOAR_GB) != 0U) {
+		if ((HAL_GetTick() - tick_start) > timeout_ms) {
+			return false;
+		}
+	}
+	return true;
+}
+
+/**
+ * @brief Select an MDIO clock divider valid for the current HCLK frequency.
+ * @retval None.
+ * @sideeffects Updates only the ETH1 MAC MDIO clock-range field.
+ */
+static void App_Eth1_MdioConfigureClock(void) {
+	const uint32_t hclk_hz = HAL_RCC_GetHCLKFreq();
+	uint32_t mdio_address = ETH1->MACMDIOAR & ~ETH_MACMDIOAR_CR;
+
+	/* why: MDC must remain within the LAN8742A management-interface limit even
+	 * though the rest of the Ethernet MAC is never started. */
+	if (hclk_hz < 35000000U) {
+		mdio_address |= ETH_MACMDIOAR_CR_DIV16;
+	} else if (hclk_hz < 60000000U) {
+		mdio_address |= ETH_MACMDIOAR_CR_DIV26;
+	} else if (hclk_hz < 100000000U) {
+		mdio_address |= ETH_MACMDIOAR_CR_DIV42;
+	} else if (hclk_hz < 150000000U) {
+		mdio_address |= ETH_MACMDIOAR_CR_DIV62;
+	} else if (hclk_hz < 250000000U) {
+		mdio_address |= ETH_MACMDIOAR_CR_DIV102;
+	} else if (hclk_hz < 300000000U) {
+		mdio_address |= ETH_MACMDIOAR_CR_DIV124;
+	} else if (hclk_hz < 500000000U) {
+		mdio_address |= ETH_MACMDIOAR_CR_DIV204;
+	} else {
+		mdio_address |= ETH_MACMDIOAR_CR_DIV324;
+	}
+	ETH1->MACMDIOAR = mdio_address;
+}
+
+/**
+ * @brief Read one Clause-22 register from an Ethernet PHY.
+ * @param phy_address PHY management address, 0 through 31.
+ * @param phy_register PHY register address, 0 through 31.
+ * @param value Destination for the 16-bit register value.
+ * @retval true when the transaction completed; false on timeout or busy state.
+ * @sideeffects Generates one MDIO read transaction on ETH1.
+ */
+static bool App_Eth1_MdioRead(uint32_t phy_address, uint32_t phy_register,
+		uint16_t *value) {
+	uint32_t mdio_address;
+
+	if (value == NULL || !App_Eth1_MdioWaitIdle(APP_ETH_MDIO_TIMEOUT_MS)) {
+		return false;
+	}
+
+	mdio_address = ETH1->MACMDIOAR;
+	MODIFY_REG(mdio_address, ETH_MACMDIOAR_PA,
+			(phy_address << ETH_MACMDIOAR_PA_Pos));
+	MODIFY_REG(mdio_address, ETH_MACMDIOAR_RDA,
+			(phy_register << ETH_MACMDIOAR_RDA_Pos));
+	/* Clause-22 read: GOC[1:0] = 11, matching STM32N6 HAL ETH. */
+	MODIFY_REG(mdio_address, ETH_MACMDIOAR_GOC,
+			ETH_MACMDIOAR_GOC_1 | ETH_MACMDIOAR_GOC_0);
+	SET_BIT(mdio_address, ETH_MACMDIOAR_GB);
+	ETH1->MACMDIOAR = mdio_address;
+
+	if (!App_Eth1_MdioWaitIdle(APP_ETH_MDIO_TIMEOUT_MS)) {
+		return false;
+	}
+	*value = (uint16_t) ETH1->MACMDIODR;
+	return true;
+}
+
+/**
+ * @brief Write one Clause-22 register on an Ethernet PHY.
+ * @param phy_address PHY management address, 0 through 31.
+ * @param phy_register PHY register address, 0 through 31.
+ * @param value 16-bit register value to write.
+ * @retval true when the transaction completed; false on timeout or busy state.
+ * @sideeffects Generates one MDIO write transaction on ETH1.
+ */
+static bool App_Eth1_MdioWrite(uint32_t phy_address, uint32_t phy_register,
+		uint16_t value) {
+	uint32_t mdio_address;
+
+	if (!App_Eth1_MdioWaitIdle(APP_ETH_MDIO_TIMEOUT_MS)) {
+		return false;
+	}
+
+	mdio_address = ETH1->MACMDIOAR;
+	MODIFY_REG(mdio_address, ETH_MACMDIOAR_PA,
+			(phy_address << ETH_MACMDIOAR_PA_Pos));
+	MODIFY_REG(mdio_address, ETH_MACMDIOAR_RDA,
+			(phy_register << ETH_MACMDIOAR_RDA_Pos));
+	/* Clause-22 write: GOC[1:0] = 01, matching STM32N6 HAL ETH. */
+	MODIFY_REG(mdio_address, ETH_MACMDIOAR_GOC, ETH_MACMDIOAR_GOC_0);
+	ETH1->MACMDIODR = value;
+	SET_BIT(mdio_address, ETH_MACMDIOAR_GB);
+	ETH1->MACMDIOAR = mdio_address;
+
+	return App_Eth1_MdioWaitIdle(APP_ETH_MDIO_TIMEOUT_MS);
+}
+
+/**
+ * @brief Put the on-board LAN8742A Ethernet PHY into general power-down.
+ * @retval true when the LAN8742A was found and verified in power-down.
+ * @sideeffects Temporarily enables ETH1 management clocks and RMII management
+ *              pins, writes PHY BCR bit 11, then deinitializes those pins and
+ *              gates the ETH1 clocks. Ethernet remains unavailable thereafter.
+ */
+static bool App_Ethernet_PhyPowerDown(void) {
+	GPIO_InitTypeDef gpio_init = { 0 };
+	uint32_t phy_address = 0U;
+	uint16_t phy_id1 = 0U;
+	uint16_t phy_id2 = 0U;
+	uint16_t basic_control = 0U;
+	bool phy_found = false;
+	bool power_down_ok = false;
+
+	/* The application never initializes ETH1. Bring up only its management
+	 * path, not DMA or packet reception, for this one-time PHY command. */
+	MODIFY_REG(RCC->CCIPR2, RCC_CCIPR2_ETH1CLKSEL,
+			RCC_ETH1CLKSOURCE_HCLK);
+	SET_BIT(RCC->CCIPR2, RCC_ETH1PHYIF_RMII);
+	__HAL_RCC_ETH1_CLK_ENABLE();
+	__HAL_RCC_ETH1MAC_CLK_ENABLE();
+	__HAL_RCC_ETH1TX_CLK_ENABLE();
+	__HAL_RCC_ETH1RX_CLK_ENABLE();
+	App_Eth1_MdioConfigureClock();
+
+	__HAL_RCC_GPIOF_CLK_ENABLE();
+	__HAL_RCC_GPIOG_CLK_ENABLE();
+	gpio_init.Mode = GPIO_MODE_AF_PP;
+	gpio_init.Pull = GPIO_NOPULL;
+	gpio_init.Speed = GPIO_SPEED_FREQ_HIGH;
+	gpio_init.Alternate = GPIO_AF11_ETH1;
+	gpio_init.Pin = GPIO_PIN_4;
+	HAL_GPIO_Init(GPIOF, &gpio_init);
+	gpio_init.Pin = GPIO_PIN_11;
+	HAL_GPIO_Init(GPIOG, &gpio_init);
+
+	/* The board straps PHYAD0 low, but scan the management addresses so a
+	 * board-revision strap difference cannot cause a write to the wrong device. */
+	for (phy_address = 0U; phy_address < 32U; ++phy_address) {
+		if (!App_Eth1_MdioRead(phy_address, APP_ETH_PHY_ID1, &phy_id1)
+				|| !App_Eth1_MdioRead(phy_address, APP_ETH_PHY_ID2, &phy_id2)) {
+			continue;
+		}
+		if (phy_id1 == APP_ETH_PHY_LAN8742_ID1
+				&& (phy_id2 & 0xFFF0U) == APP_ETH_PHY_LAN8742_ID2) {
+			phy_found = true;
+			break;
+		}
+	}
+
+	if (phy_found
+			&& App_Eth1_MdioRead(phy_address, APP_ETH_PHY_BCR,
+					&basic_control)
+			&& App_Eth1_MdioWrite(phy_address, APP_ETH_PHY_BCR,
+					(uint16_t) (basic_control | APP_ETH_PHY_POWER_DOWN))
+			&& App_Eth1_MdioRead(phy_address, APP_ETH_PHY_BCR,
+					&basic_control)) {
+		power_down_ok = (basic_control & APP_ETH_PHY_POWER_DOWN) != 0U;
+	}
+
+	/* The management pins have no application owner. Returning them to their
+	 * reset state avoids leaving high-speed alternate-function inputs active. */
+	HAL_GPIO_DeInit(GPIOF, GPIO_PIN_4);
+	HAL_GPIO_DeInit(GPIOG, GPIO_PIN_11);
+	__HAL_RCC_ETH1RX_CLK_DISABLE();
+	__HAL_RCC_ETH1TX_CLK_DISABLE();
+	__HAL_RCC_ETH1MAC_CLK_DISABLE();
+	__HAL_RCC_ETH1_CLK_DISABLE();
+	__HAL_RCC_ETH1RX_CLK_SLEEP_DISABLE();
+	__HAL_RCC_ETH1TX_CLK_SLEEP_DISABLE();
+	__HAL_RCC_ETH1MAC_CLK_SLEEP_DISABLE();
+	__HAL_RCC_ETH1_CLK_SLEEP_DISABLE();
+
+	if (power_down_ok) {
+		DebugConsole_Printf(
+				"[ETH][PHY] LAN8742A addr=%lu ID=0x%04X%04X powered down.\r\n",
+				(unsigned long) phy_address, (unsigned int) phy_id1,
+				(unsigned int) phy_id2);
+	} else {
+		DebugConsole_Printf(
+				"[ETH][PHY] LAN8742A power-down command failed; leaving board unchanged.\r\n");
+	}
+	return power_down_ok;
+}
 
 int __io_putchar(int ch) {
 	/* The application log transport is DebugConsole.  The linked ISP
@@ -409,6 +622,10 @@ int main(void) {
 
 	DebugConsole_Printf("[BOOT] Entering SystemIsolation_Config().\r\n");
 	SystemIsolation_Config();
+	/* Ethernet is not used by this application. Power down the external
+	 * LAN8742A while its management interface is available, before ThreadX
+	 * starts any application workers. */
+	(void) App_Ethernet_PhyPowerDown();
 	/* USER CODE BEGIN 2 */
 	DebugConsole_Printf(
 			"Welcome to STM32 world!\r\nApplication project is running...\r\n");

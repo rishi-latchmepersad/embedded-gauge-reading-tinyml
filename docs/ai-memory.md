@@ -1,5 +1,22 @@
 # AI Memory
 
+# Ethernet PHY power-down validated: Stop current reduced from about 60 mA to 43 mA (2026-09-10)
+
+- The application does not use Ethernet, but the Nucleo's external LAN8742A PHY
+  was still powered from the board's 3.3 V rail during Stop mode.
+- `firmware/stm32/n657/Appli/Src/main.c` now performs a one-time MDIO probe at
+  boot, finds the LAN8742A at PHY address 0, sets the PHY Basic Control
+  Register power-down bit, verifies the write, then releases the MDIO/MDC pins
+  and disables the ETH1 clocks.
+- Flashed-board proof is present in `kitty.log`:
+  `[ETH][PHY] LAN8742A addr=0 ID=0x0007C131 powered down.`
+- Live Stop current fell from approximately 60 mA to 43 mA: about 17 mA saved,
+  or a 28% reduction. This is a major power milestone and confirms Ethernet
+  was a significant sleep-current contributor.
+- The remaining 43 mA should be investigated at the board-rail level using
+  CN12/VIN and the 3.3 V/1.8 V rail measurements before making further shared
+  MCU power changes.
+
 # Compact 224x224 geometry run completed successfully (2026-07-05)
 
 - The patched `mnv2_compact_heatmap` run finished in:

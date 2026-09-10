@@ -34,6 +34,7 @@
 #include "app_camera_platform.h"
 #include "app_baseline_runtime.h"
 #include "app_ai_config.h"
+#include "app_ai_state.h"
 #include "app_ai_stage_tip_focus.h"
 #include "app_inference_runtime.h"
 #include "app_image_cleanup.h"
@@ -44,6 +45,7 @@
 #include "app_ai.h"
 #include "ds3231_clock.h"
 #include "main.h"
+#include "stm32n6xx_nucleo_xspi.h"
 #include "debug_console.h"
 #include "debug_led.h"
 #include "threadx_utils.h"
@@ -53,6 +55,7 @@
 #include "imx335.h"
 #include "imx335_reg.h"
 #include "ina219_power.h"
+#include "npu_cache.h"
 #include "sd_debug_log_service.h"
 
 /* USER CODE END Includes */
@@ -491,6 +494,14 @@ start_unlock:
  * RTC is involved in the Stop proof. */
 static volatile bool camera_stop_wakeup_fired = false;
 static bool camera_stop_lptim_armed = false;
+/* The NPU hardware is initialized once for the application, but it is idle
+ * during the long Stop interval. Keep the model SRAM powered for now so the
+ * first experiment changes only cache/peripheral clocks and is reversible
+ * without rebuilding the relocatable network state. */
+static bool camera_stop_npu_suspended = false;
+/* xSPI2 contains model weights and is never accessed while the camera/AI
+ * workers are inside the one-minute Stop interval. */
+static bool camera_stop_xspi2_suspended = false;
 
 /* LPTIM1 is clocked from the 32.768 kHz LSE crystal and uses the N6 internal
  * EXTI line 52 route.  A /32 prescaler gives 1,024 Hz, so a one-minute sleep
@@ -541,16 +552,27 @@ static bool CameraThread_ArmLptimWakeup(uint32_t duration_ms) {
 		return false;
 	}
 
-	/* Keep this function self-contained by explicitly enabling and validating the
-	 * low-speed oscillator before selecting it as the LPTIM1 kernel clock. */
+	/* LSE is in the backup domain.  The application uses an external DS3231 for
+	 * wall-clock timestamps, so no earlier initialization path necessarily opened
+	 * this domain for the MCU's own oscillator. */
+	HAL_PWR_EnableBkUpAccess();
+	/* Use the HAL-configured wall-clock timeout rather than a CPU-speed-dependent
+	 * iteration count: LSE startup time varies with temperature and supply state. */
 	__HAL_RCC_LSE_CONFIG(RCC_LSE_ON);
-	uint32_t lse_guard = 0U;
-	while ((LL_RCC_LSE_IsReady() == 0U) && (lse_guard < 1000000U)) {
-		++lse_guard;
+	const uint32_t lse_start_tick = HAL_GetTick();
+	while (LL_RCC_LSE_IsReady() == 0U) {
+		if ((HAL_GetTick() - lse_start_tick) > RCC_LSE_TIMEOUT_VALUE) {
+			break;
+		}
 	}
 	if (LL_RCC_LSE_IsReady() == 0U) {
 		DebugConsole_Printf(
-				"[STOP][LPTIM] LSE did not start; timer wake unavailable.\r\n");
+				"[STOP][LPTIM] LSE did not start after %lu ms; timer wake unavailable.\r\n",
+				(unsigned long) (HAL_GetTick() - lse_start_tick));
+		DebugConsole_Printf(
+				"[STOP][LPTIM] RCC/PWR: DBPCR=0x%08lX CSR=0x%08lX SR=0x%08lX LSECFGR=0x%08lX.\r\n",
+				(unsigned long) PWR->DBPCR, (unsigned long) RCC->CSR,
+				(unsigned long) RCC->SR, (unsigned long) RCC->LSECFGR);
 		return false;
 	}
 
@@ -633,6 +655,126 @@ static void CameraThread_DisarmLptimWakeup(void) {
 }
 
 /**
+ * @brief Suspend idle NPU logic before entering Stop mode.
+ * @retval None.
+ * @sideeffects Invalidates and disables CACHEAXI, then gates the NPU and
+ *              CACHEAXI clocks. The AXI SRAM banks remain powered so the
+ *              existing relocatable network state is preserved for wake.
+ */
+static void CameraThread_SuspendNpuForStop(void) {
+	if (!app_ai_npu_hw_initialized || camera_stop_npu_suspended) {
+		return;
+	}
+
+	/* The camera worker reaches this point only after the final AI result and
+	 * queue barriers. Cleanly discard cache state before removing its clock. */
+	npu_cache_invalidate();
+	npu_cache_disable();
+	__DSB();
+	__ISB();
+
+	/* The NPU and cache do not need a Stop-mode clock or a run-mode clock while
+	 * the CPU is asleep. Keep the low-power clock gates closed after wake too;
+	 * the explicit resume helper reopens the run clocks before inference. */
+	__HAL_RCC_NPU_CLK_SLEEP_DISABLE();
+	__HAL_RCC_CACHEAXI_CLK_SLEEP_DISABLE();
+	__HAL_RCC_NPU_CLK_DISABLE();
+	__HAL_RCC_CACHEAXI_CLK_DISABLE();
+	camera_stop_npu_suspended = true;
+	DebugConsole_Printf("[STOP][NPU] NPU and CACHEAXI suspended; AXI SRAM retained.\r\n");
+}
+
+/**
+ * @brief Restore NPU logic after Stop-mode clock recovery.
+ * @retval None.
+ * @sideeffects Re-enables the NPU and CACHEAXI clocks and the existing NPU
+ *              cache without rebuilding the model network descriptors.
+ */
+static void CameraThread_ResumeNpuAfterStop(void) {
+	if (!camera_stop_npu_suspended) {
+		return;
+	}
+
+	__HAL_RCC_NPU_CLK_ENABLE();
+	__HAL_RCC_CACHEAXI_CLK_ENABLE();
+	npu_cache_enable();
+	__DSB();
+	__ISB();
+	camera_stop_npu_suspended = false;
+	DebugConsole_Printf("[STOP][NPU] NPU and CACHEAXI resumed.\r\n");
+}
+
+/**
+ * @brief Put the xSPI2 NOR model-flash device into deep power-down.
+ * @retval None.
+ * @sideeffects Leaves memory-mapped mode, sends the vendor deep-power-down
+ *              command, and gates the xSPI2 peripheral clock. If the command
+ *              fails, the existing mapped mode is restored before Stop.
+ */
+static void CameraThread_SuspendXspi2ForStop(void) {
+	if (!app_ai_xspi2_initialized || !app_ai_xspi2_mm_enabled
+			|| camera_stop_xspi2_suspended) {
+		return;
+	}
+
+	/* The NOR command interface cannot be used while the controller is in
+	 * memory-mapped mode, so abort the mapped transaction first. */
+	if (BSP_XSPI_NOR_DisableMemoryMappedMode(0U) != BSP_ERROR_NONE) {
+		DebugConsole_Printf(
+				"[STOP][XSPI2] Could not leave memory-mapped mode; retaining flash.\r\n");
+		return;
+	}
+	app_ai_xspi2_mm_enabled = false;
+
+	if (BSP_XSPI_NOR_EnterDeepPowerDown(0U) != BSP_ERROR_NONE) {
+		DebugConsole_Printf(
+				"[STOP][XSPI2] Deep-power-down command failed; retaining flash.\r\n");
+		/* Restore the mapped window so a failed low-power attempt does not alter
+		 * the normal post-capture runtime contract. */
+		if (BSP_XSPI_NOR_EnableMemoryMappedMode(0U) == BSP_ERROR_NONE) {
+			app_ai_xspi2_mm_enabled = true;
+		}
+		return;
+	}
+
+	__HAL_RCC_XSPI2_CLK_SLEEP_DISABLE();
+	__HAL_RCC_XSPI2_CLK_DISABLE();
+	camera_stop_xspi2_suspended = true;
+	DebugConsole_Printf("[STOP][XSPI2] NOR entered deep power-down.\r\n");
+}
+
+/**
+ * @brief Wake the xSPI2 NOR and restore its memory-mapped model window.
+ * @retval None.
+ * @sideeffects Enables xSPI2, exits NOR deep power-down, and restores the
+ *              mapped window needed by the generated AI networks.
+ */
+static void CameraThread_ResumeXspi2AfterStop(void) {
+	if (!camera_stop_xspi2_suspended) {
+		return;
+	}
+
+	__HAL_RCC_XSPI2_CLK_ENABLE();
+	if (BSP_XSPI_NOR_LeaveDeepPowerDown(0U) != BSP_ERROR_NONE) {
+		DebugConsole_Printf(
+				"[STOP][XSPI2] Could not leave deep power-down; AI remap may recover later.\r\n");
+		camera_stop_xspi2_suspended = false;
+		return;
+	}
+
+	if (BSP_XSPI_NOR_EnableMemoryMappedMode(0U) != BSP_ERROR_NONE) {
+		DebugConsole_Printf(
+				"[STOP][XSPI2] Could not restore memory-mapped mode.\r\n");
+		camera_stop_xspi2_suspended = false;
+		return;
+	}
+
+	app_ai_xspi2_mm_enabled = true;
+	camera_stop_xspi2_suspended = false;
+	DebugConsole_Printf("[STOP][XSPI2] NOR resumed and memory-mapped.\r\n");
+}
+
+/**
  * @brief Enter the guarded Stage 2 STM32N6 Stop-mode proof interval.
  * @retval true when the MCU returned from the LPTIM1 wakeup path.
  * @sideeffects Drains asynchronous log queues, flushes the SD card, pauses
@@ -710,6 +852,18 @@ static bool CameraThread_EnterStopModeProof(void) {
 	SysTick->VAL = 0U;
 	SCB->ICSR = SCB_ICSR_PENDSVCLR_Msk | SCB_ICSR_PENDSTCLR_Msk;
 	HAL_PWREx_ControlStopModeVoltageScaling(PWR_REGULATOR_STOP_VOLTAGE_SCALE3);
+	/* No task emits UART output during Stop, and the log barriers above have
+	 * completed.  Gate only the LPUART peripheral clock, preserving its handle
+	 * and GPIO configuration so wake does not require a risky full reinit. */
+	__HAL_RCC_LPUART1_CLK_SLEEP_DISABLE();
+	__HAL_RCC_LPUART1_CLK_DISABLE();
+	/* A heartbeat can leave the green LED on when the Stop boundary is reached;
+	 * force every user LED off so the board-level load is not held by an LED. */
+	BSP_LED_Off(LED_RED);
+	BSP_LED_Off(LED_BLUE);
+	BSP_LED_Off(LED_GREEN);
+	CameraThread_SuspendNpuForStop();
+	CameraThread_SuspendXspi2ForStop();
 	/* LPTIM1 is configured as a direct EXTI interrupt.  WFI is the unambiguous
 	 * entry here: it keeps the CPU asleep until the timer wake interrupt reaches
 	 * the NVIC, avoiding WFE event-state ambiguity. */
@@ -732,6 +886,12 @@ static bool CameraThread_EnterStopModeProof(void) {
 	SysTick->VAL = 0U;
 	SysTick->CTRL = systick_ctrl;
 	CameraThread_DisarmLptimWakeup();
+	/* Restore the peripheral clock before the first post-wake diagnostic line.
+	 * The UART handle stayed initialized while its APB clock was gated. */
+	__HAL_RCC_LPUART1_CLK_ENABLE();
+	__HAL_RCC_LPUART1_CLK_SLEEP_DISABLE();
+	CameraThread_ResumeXspi2AfterStop();
+	CameraThread_ResumeNpuAfterStop();
 	DebugConsole_Printf("[STOP] Wake returned; clocks restored.\r\n");
 
 	if (!camera_stop_wakeup_fired) {
