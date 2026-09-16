@@ -553,6 +553,10 @@ int main(void) {
   return 0;
 #else
 	/* USER CODE BEGIN Init */
+	/* The Nucleo external SMPS uses PB12/PWR_LP to select its VDDCORE output.
+	 * Select the documented nominal 0.81 V rail before configuring the high-speed
+	 * clock tree so an unknown board-default overdrive state cannot add load. */
+	BSP_SMPS_Init(SMPS_VOLTAGE_NOMINAL);
 	App_SystemClock_Config();
 	Setup_Mpu();
 

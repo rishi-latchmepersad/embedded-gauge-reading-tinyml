@@ -502,6 +502,10 @@ static bool camera_stop_npu_suspended = false;
 /* xSPI2 contains model weights and is never accessed while the camera/AI
  * workers are inside the one-minute Stop interval. */
 static bool camera_stop_xspi2_suspended = false;
+/* VDDIO3 supplies the PN-bank pins used by xSPI2.  Keep this separate from
+ * the NOR state so the experiment can only gate the I/O domain after the
+ * external flash has accepted deep power-down. */
+static bool camera_stop_vddio3_suspended = false;
 
 /* LPTIM1 is clocked from the 32.768 kHz LSE crystal and uses the N6 internal
  * EXTI line 52 route.  A /32 prescaler gives 1,024 Hz, so a one-minute sleep
@@ -744,6 +748,50 @@ static void CameraThread_SuspendXspi2ForStop(void) {
 }
 
 /**
+ * @brief Disable the STM32 VDDIO3 supply-valid domain for Stop mode.
+ * @retval None.
+ * @sideeffects Clears the VDDIO3 supply-valid bit after xSPI2 has been
+ *              stopped; this does not switch the Nucleo's external 3.3 V
+ *              regulator and is intentionally limited to the xSPI2 I/O bank.
+ */
+static void CameraThread_SuspendVddio3ForStop(void) {
+	if (!camera_stop_xspi2_suspended || camera_stop_vddio3_suspended) {
+		return;
+	}
+
+	/* why: xSPI2 must already be in NOR deep power-down before its I/O supply
+	 * valid state is removed, otherwise the flash pins could remain active. */
+	HAL_PWREx_DisableVddIO3();
+	__DSB();
+	__ISB();
+	camera_stop_vddio3_suspended = true;
+	DebugConsole_Printf(
+			"[STOP][VDDIO3] xSPI2 I/O supply-valid disabled.\r\n");
+}
+
+/**
+ * @brief Restore the STM32 VDDIO3 domain before resuming xSPI2.
+ * @retval None.
+ * @sideeffects Sets the VDDIO3 supply-valid bit and leaves the external NOR
+ *              in deep power-down until the normal xSPI2 resume routine exits
+ *              that state and restores memory-mapped mode.
+ */
+static void CameraThread_ResumeVddio3AfterStop(void) {
+	if (!camera_stop_vddio3_suspended) {
+		return;
+	}
+
+	/* Restore the I/O domain first; the following xSPI2 wake sequence accesses
+	 * the peripheral and the external flash immediately. */
+	HAL_PWREx_EnableVddIO3();
+	__DSB();
+	__ISB();
+	camera_stop_vddio3_suspended = false;
+	DebugConsole_Printf(
+			"[STOP][VDDIO3] xSPI2 I/O supply-valid restored.\r\n");
+}
+
+/**
  * @brief Wake the xSPI2 NOR and restore its memory-mapped model window.
  * @retval None.
  * @sideeffects Enables xSPI2, exits NOR deep power-down, and restores the
@@ -851,7 +899,9 @@ static bool CameraThread_EnterStopModeProof(void) {
 	CLEAR_BIT(SysTick->CTRL, SysTick_CTRL_TICKINT_Msk);
 	SysTick->VAL = 0U;
 	SCB->ICSR = SCB_ICSR_PENDSVCLR_Msk | SCB_ICSR_PENDSTCLR_Msk;
-	HAL_PWREx_ControlStopModeVoltageScaling(PWR_REGULATOR_STOP_VOLTAGE_SCALE3);
+	/* Use the lowest Stop-mode voltage range because the application has already
+	 * gated the high-performance domains and only needs the low-power wake path. */
+	HAL_PWREx_ControlStopModeVoltageScaling(PWR_REGULATOR_STOP_VOLTAGE_SCALE5);
 	/* No task emits UART output during Stop, and the log barriers above have
 	 * completed.  Gate only the LPUART peripheral clock, preserving its handle
 	 * and GPIO configuration so wake does not require a risky full reinit. */
@@ -864,6 +914,13 @@ static bool CameraThread_EnterStopModeProof(void) {
 	BSP_LED_Off(LED_GREEN);
 	CameraThread_SuspendNpuForStop();
 	CameraThread_SuspendXspi2ForStop();
+	CameraThread_SuspendVddio3ForStop();
+	/* The FSBL enables the analog supply-valid clamp, its monitor, and the
+	 * VREFBUF clock for general-purpose bring-up.  This application has no ADC
+	 * or VREFBUF consumer, so remove those always-on analog loads for Stop. */
+	HAL_PWREx_DisableVddA();
+	HAL_PWREx_DisableVddAVMEN();
+	__HAL_RCC_VREFBUF_CLK_DISABLE();
 	/* LPTIM1 is configured as a direct EXTI interrupt.  WFI is the unambiguous
 	 * entry here: it keeps the CPU asleep until the timer wake interrupt reaches
 	 * the NVIC, avoiding WFE event-state ambiguity. */
@@ -881,6 +938,11 @@ static bool CameraThread_EnterStopModeProof(void) {
 	 * tree is stable, so ThreadX cannot schedule during this short transition. */
 	CLEAR_BIT(SCB->SCR, SCB_SCR_SLEEPDEEP_Msk);
 	HAL_ResumeTick();
+	/* Restore the FSBL analog defaults after wake so this low-power experiment
+	 * is scoped to the Stop interval and future analog users remain supported. */
+	__HAL_RCC_VREFBUF_CLK_ENABLE();
+	HAL_PWREx_EnableVddA();
+	HAL_PWREx_EnableVddAVMEN();
 	App_SystemClock_Config();
 	App_CameraKernelClock_Config();
 	SysTick->VAL = 0U;
@@ -890,6 +952,7 @@ static bool CameraThread_EnterStopModeProof(void) {
 	 * The UART handle stayed initialized while its APB clock was gated. */
 	__HAL_RCC_LPUART1_CLK_ENABLE();
 	__HAL_RCC_LPUART1_CLK_SLEEP_DISABLE();
+	CameraThread_ResumeVddio3AfterStop();
 	CameraThread_ResumeXspi2AfterStop();
 	CameraThread_ResumeNpuAfterStop();
 	DebugConsole_Printf("[STOP] Wake returned; clocks restored.\r\n");
