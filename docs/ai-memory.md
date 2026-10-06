@@ -4139,3 +4139,106 @@ Concrete mapping (the real artifact/package names behind the friendly names):
 - When a commit must contain only specific files, prefer "git commit -- paths"
   with a single-line -m (PowerShell mangles multi-line -m into pathspecs and
   git then reports the tail of the message as an unmatched path).
+
+# Standby wake investigation (2026-10-06; resolved)
+
+- User measures about 14 mA in Standby and 64-65 mA after the 30-second
+  timer, but no UART, LED, or new capture. Current rising is not proof that
+  the application or retained loader executed.
+- Before resetting during this audit, HOTPLUG read PC=0x18003514 (Boot ROM),
+  SYSCFG_INITSVTORCR=0x18000000, INITNSVTORCR=0x08000000, and invalid loader
+  vector words at 0x34000400. This snapshot is not sufficient to attribute
+  the loss to Standby rather than an intervening manual/debugger reset.
+- Correct secure peripheral bases are PWR=0x56024800, RCC=0x56028000,
+  SYSCFG=0x56008000, RTC=0x56004000. Do not mistake a read failure at the
+  wrong 0x52024800 address for security denial.
+- NOR readback of 61,888 bytes at 0x70000000 exactly matched the existing
+  FSBL/Debug/FSBL_trusted.bin, SHA256
+  63E1806DFF768F6AD69F4BBAA385B3503B5DCF95A028A7E8130A67465D2E51F7.
+- The loader map places immutable code/data initializers below 0x3400D280,
+  mutable data at 0x34010000, and stack top at 0x34014000. Application code
+  starts at 0x34020400; neither its code nor main stack is retained.
+- New loader-audit-v1 diagnostics validate stack/Thumb reset vectors and
+  compare the immutable first 60 KiB with raw NOR at 0x70080000 before NOR
+  deep power-down. Do not compare mutable loader .data/.bss after a wake.
+  A mismatch aborts sleep; CR4, TCMCR, and HWRSR are printed before entry.
+  The boot log now preserves raw HWRSR and the illegal-low-power reset bit.
+- ST ES0620 Rev 5 (August 2026), sections 2.2.18 and 2.2.22, documents NRST
+  recovery requiring a power cycle and software-reset Boot ROM clock-mux
+  failures. These are relevant hazards, not proven causes of this wake failure.
+  Do not blindly copy its 0x34001004 reset-workaround cookie: that address
+  lies inside this project's retained loader code.
+- A controlled SRAM-FSBL run with CubeProgrammer dLPM emitted initial FSBL
+  logs but did not reach the retained-loader copy/application handoff.
+  Subsequent SWD accesses failed (DEV_AP_ACCESS_ERROR/DEV_TARGET_CMD_ERR).
+  A physical power cycle was requested; this run is not a valid wake test.
+- Source/reference: https://www.st.com/resource/en/errata_sheet/es0620-stm32n6xxxx-device-errata-stmicroelectronics.pdf
+
+## Concrete pre-Standby failure and install-v2 change
+
+- After the user manually downloaded the diagnostic application, KiTTY logged
+  `[STANDBY][LOADER] INVALID vectors SP=0x8C47080D Reset=0xC7DC4C25; sleep aborted.`
+  This proves the loader vector was invalid BEFORE sleep, not lost only on wake.
+- This run had direct application boot messages without FSBL loader-copy or
+  handoff messages. IDE launch downloads only Debug/n657_Appli.elf; bypassing
+  the cold-boot FSBL is a plausible explanation, not proof of when corruption
+  happened. The original Standby path depended on FSBL_CopyWakeLoader().
+- NOR readback at 0x70080000 matched all 52,896 bytes of n657_WakeLoader.bin.
+  The initially requested read was 52,908 bytes, so its whole-file SHA256
+  differed only because it included 12 additional bytes. Compare equal lengths.
+- install-v2 now reads the validated NOR vectors through the existing BSP's
+  indirect-read API, copies 0x13C00 bytes to reserved SRAM at 0x34000400,
+  writes back/invalidates caches, compares the first 60 KiB in 256-byte reads,
+  then restores memory mapping before normal NOR deep power-down. This runs
+  only after AI/storage/log barriers, with no loader code executing in that
+  window. It removes the dependency on how the application was launched.
+- The install-v2 signed application was programmed at 0x70100000 and verified
+  by CubeProgrammer. At that point, live wake success remained unproven pending
+  `[WAKE]` and a subsequent capture cycle. Existing model slots were not changed.
+
+## Confirmed wake and masked-interrupt handoff fault
+
+- install-v2 produced valid SRAM vectors SP=0x34014000, Reset=0x3400D0BD,
+  then all three loader messages after the timer: clocks restored, xSPI2
+  mapped, application copied and jumping. This is real loader execution,
+  unlike current rising or SBF alone.
+- Application UART then stopped before its boot marker. HOTPLUG core read
+  showed PC=0x3403683E, LR=0x34036861, PRIMASK=1, MSP=0x340FFAB0, and valid
+  application vectors. addr2line resolved PC/LR to HAL_GetTick/HAL_Delay.
+  WakeLoader_JumpToApplication disables IRQs without restoring PRIMASK.
+- Directly clearing PRIMASK through the debugger, without a reset, immediately
+  produced boot UART with SBF=1 and resumed captures/AI. This confirms the
+  blocked HAL tick as the handoff fault, not merely a speculative UART issue.
+- install-v3 restores BASEPRI=0 and unmasks IRQs at application main entry,
+  after startup initializes .data/.bss and before HAL initializes its TIM5
+  tick. The loader has already stopped its SysTick. The unique boot marker is
+  `[BOOT][STANDBY] loader-install-v3-irq-restore`.
+- install-v3 was built, signed, flashed to 0x70100000 with successful
+  CubeProgrammer verification, then started once from SRAM via the CLI.
+  After that start there were no debugger interventions: KiTTY recorded two
+  automatic loader/application boots (lines 5411-5418 and 5544-5551), with
+  capture/AI resuming after both. The first completed its storage flush and
+  returned to Standby; the second also progressed through all three captures.
+
+## Final confirmed wake path (2026-10-06)
+
+- The board's RTC LSE would not start, so the automatic 30-second wake timer
+  uses LSI (logged as `source=LSI`, `ticks=60000`, `WUTR=59999`). The timer
+  wakes the MCU, but that alone did not resume the application.
+- Just before Standby, application code now loads the wake-loader image from
+  NOR into its reserved SRAM window, validates its vectors and copied code,
+  and only then deep-powers-down NOR. On RTC wake, execution branches directly
+  to this retained loader; do not use a normal system reset here because it
+  would erase the SRAM loader before it can restore clocks and reload/jump to
+  the application.
+- The loader's safe handoff masks interrupts. Since it branches into the app
+  rather than causing a hardware reset, the mask survives. The application
+  now clears BASEPRI and enables IRQs at the start of `main()`, after C runtime
+  initialization and before HAL initializes its timer tick. Without this,
+  startup blocks in `HAL_Delay()` and produces no UART output.
+- The install-v3 image emitted `[BOOT][STANDBY] loader-install-v3-irq-restore`,
+  then `SBF=1`, UART startup, and resumed capture/AI after RTC wake. Subsequent
+  KiTTY snapshots show repeated automatic cycles with no debugger intervention.
+- User independently confirms about 14 mA during Standby. Treat this as the
+  board-level measured current; UART logs prove wake/application progress but
+  do not measure current.
