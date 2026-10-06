@@ -52,18 +52,11 @@ void MemManage_Handler(void);
 void BusFault_Handler(void);
 void UsageFault_Handler(void);
 void SecureFault_Handler(void);
+void SVC_Handler(void);
 void DebugMon_Handler(void);
-void EXTI13_IRQHandler(void);
-void TIM5_IRQHandler(void);
-void NPU0_IRQHandler(void);
-void NPU1_IRQHandler(void);
-void NPU2_IRQHandler(void);
-void NPU3_IRQHandler(void);
-void LPTIM1_IRQHandler(void);
-void RTC_S_IRQHandler(void);
+void PendSV_Handler(void);
+void SysTick_Handler(void);
 /* USER CODE BEGIN EFP */
-void CSI_IRQHandler(void);
-void DCMIPP_IRQHandler(void);
 
 /* USER CODE END EFP */
 

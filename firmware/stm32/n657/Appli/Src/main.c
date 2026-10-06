@@ -319,6 +319,11 @@ int __io_putchar(int ch) {
  */
 static void App_LogResetCause(void) {
 	char line[192] = { 0 };
+	/* Preserve the raw reset status before the existing flag-clear sequence.
+	 * Illegal low-power resets were absent from the older boot diagnostics. */
+	const uint32_t raw_reset_status = RCC->HWRSR;
+	const unsigned int low_power_reset =
+			(raw_reset_status & RCC_HWRSR_LPWRRSTF) != 0U ? 1U : 0U;
 	const unsigned int pin =
 			(__HAL_RCC_GET_FLAG(RCC_FLAG_PINRST) != RESET) ? 1U : 0U;
 	const unsigned int por =
@@ -333,11 +338,28 @@ static void App_LogResetCause(void) {
 			(__HAL_RCC_GET_FLAG(RCC_FLAG_WWDGRST) != RESET) ? 1U : 0U;
 	const unsigned int lck =
 			(__HAL_RCC_GET_FLAG(RCC_FLAG_LCKRST) != RESET) ? 1U : 0U;
+	const unsigned int standby =
+			(__HAL_PWR_GET_FLAG(PWR_FLAG_SBF) != RESET) ? 1U : 0U;
+	const unsigned int wakeup3 =
+			(HAL_PWR_GetWakeupFlag(PWR_WAKEUP_FLAG3) != RESET) ? 1U : 0U;
 
 	(void) snprintf(line, sizeof(line),
 			"[BOOT] Reset cause flags: PIN=%u POR=%u BOR=%u SFT=%u IWDG=%u WWDG=%u LCK=%u\r\n",
 			pin, por, bor, sft, iwdg, wwdg, lck);
 	DebugConsole_WriteString(line);
+	(void) snprintf(line, sizeof(line),
+			"[BOOT][STANDBY] loader-install-v3-irq-restore HWRSR=0x%08lX LPWR=%u\r\n",
+			(unsigned long) raw_reset_status, low_power_reset);
+	DebugConsole_WriteString(line);
+	(void) snprintf(line, sizeof(line),
+			"[BOOT] PWR flags: SBF=%u WKUP3=%u\r\n", standby, wakeup3);
+	DebugConsole_WriteString(line);
+	/* Clear retained low-power flags after logging them, so the next cycle is
+	 * attributed to a new event rather than the previous Standby entry. */
+	if ((standby != 0U) || (wakeup3 != 0U)) {
+		(void) HAL_PWR_ClearWakeupFlag(PWR_WAKEUP_FLAG_ALL);
+		__HAL_PWR_CLEAR_FLAG(PWR_FLAG_SBF);
+	}
 	__HAL_RCC_CLEAR_RESET_FLAGS();
 }
 
@@ -531,6 +553,13 @@ static void Setup_Mpu(void) {
 int main(void) {
 
 	/* USER CODE BEGIN 1 */
+	/* The retained loader masks interrupts while replacing VTOR/MSP and copying
+	 * the application. Unlike a hardware reset, its branch preserves PRIMASK.
+	 * Startup has now initialized .data/.bss, and the loader has stopped SysTick,
+	 * so restore the reset-like interrupt state before HAL starts the TIM5 tick.
+	 * Otherwise the first HAL_Delay waits forever and no boot UART appears. */
+	__set_BASEPRI(0U);
+	__enable_irq();
 
 	/* USER CODE END 1 */
 

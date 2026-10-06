@@ -28,6 +28,7 @@ $RepoRoot   = Resolve-Path "$ScriptDir\..\..\.."
 # ---------- paths ----------
 $FsblBin     = "$ScriptDir\FSBL\Debug\n657_FSBL.bin"
 $FsblTrusted = "$ScriptDir\FSBL\Debug\FSBL_trusted.bin"
+$WakeLoaderBin = "$ScriptDir\WakeLoader\Debug\n657_WakeLoader.bin"
 $EllipseRaw  = "$ScriptDir\st_ai_output\packages\ellipse_iter8_universal_wide_deep_int8_n6_npu\st_ai_output\ellipse_iter8_universal_wide_deep_int8_atonbuf.xSPI2.raw"
 $CenterTipRaw = "$ScriptDir\st_ai_output\packages\keypoint_unet_224g_wide_aug_int8_n6_npu\st_ai_output\keypoint_unet_224g_wide_aug_int8_atonbuf.xSPI2.raw"
 $SignatureTool = "$ScriptDir\tools\extract_model_signature.py"
@@ -127,6 +128,7 @@ if (-not (Test-Path $SignTool  -PathType Leaf)) { Die "Signing tool not found: $
 if (-not (Test-Path $ProgCli   -PathType Leaf)) { Die "Programmer CLI not found: $ProgCli" }
 if (-not (Test-Path $ExtLoader -PathType Leaf)) { Die "External loader not found: $ExtLoader" }
 if (-not (Test-Path $FsblBin   -PathType Leaf)) { Die "FSBL binary not found: $FsblBin" }
+if (-not (Test-Path $WakeLoaderBin -PathType Leaf)) { Die "Wake loader binary not found: $WakeLoaderBin" }
 if (-not (Test-Path $AppBin    -PathType Leaf)) { Die "Application binary not found: $AppBin" }
 if (-not (Test-Path $EllipseRaw -PathType Leaf)) { Die "Ellipse model not found: $EllipseRaw" }
 if (-not (Test-Path $CenterTipRaw -PathType Leaf)) { Die "Center/tip model not found: $CenterTipRaw" }
@@ -143,20 +145,24 @@ if (-not (Test-Path $SigReportDir -PathType Container)) {
 # Reserve non-overlapping 4 MiB xSPI2 slots. The generated blobs are much
 # smaller, but checking the complete slot keeps future model replacements
 # from colliding with the signed app or with each other.
-$FsblStart = [uint64]0x70000000; $FsblWindow = [uint64]0x00100000
+$FsblStart = [uint64]0x70000000; $FsblWindow = [uint64]0x00080000
+$WakeStart = [uint64]0x70080000; $WakeWindow = [uint64]0x00080000
 $AppStart = [uint64]0x70100000; $AppWindow = [uint64]0x00300000
 $EllipseStart = [uint64]0x70400000; $ModelWindow = [uint64]0x00400000
 $CenterTipStart = [uint64]0x70800000
 Check-Range "FSBL" $FsblStart ([uint64](Get-Item $FsblBin).Length) $FsblStart $FsblWindow
+Check-Range "Standby wake loader" $WakeStart ([uint64](Get-Item $WakeLoaderBin).Length) $WakeStart $WakeWindow
 Check-Range "application" $AppStart ([uint64](Get-Item $AppBin).Length) $AppStart $AppWindow
 Check-Range "gauge ellipse model" $EllipseStart ([uint64](Get-Item $EllipseRaw).Length) $EllipseStart $ModelWindow
 Check-Range "gauge center/tip model" $CenterTipStart ([uint64](Get-Item $CenterTipRaw).Length) $CenterTipStart $ModelWindow
 Check-No-Overlap "FSBL" $FsblStart ([uint64](Get-Item $FsblBin).Length) "application" $AppStart ([uint64](Get-Item $AppBin).Length)
+Check-No-Overlap "FSBL" $FsblStart ([uint64](Get-Item $FsblBin).Length) "Standby wake loader" $WakeStart ([uint64](Get-Item $WakeLoaderBin).Length)
+Check-No-Overlap "Standby wake loader" $WakeStart ([uint64](Get-Item $WakeLoaderBin).Length) "application" $AppStart ([uint64](Get-Item $AppBin).Length)
 Check-No-Overlap "FSBL" $FsblStart ([uint64](Get-Item $FsblBin).Length) "ellipse model" $EllipseStart ([uint64](Get-Item $EllipseRaw).Length)
 Check-No-Overlap "FSBL" $FsblStart ([uint64](Get-Item $FsblBin).Length) "center/tip model" $CenterTipStart ([uint64](Get-Item $CenterTipRaw).Length)
 Check-No-Overlap "application" $AppStart ([uint64](Get-Item $AppBin).Length) "ellipse model" $EllipseStart ([uint64](Get-Item $EllipseRaw).Length)
 Check-No-Overlap "ellipse model" $EllipseStart ([uint64](Get-Item $EllipseRaw).Length) "center/tip model" $CenterTipStart ([uint64](Get-Item $CenterTipRaw).Length)
-Write-Host "Flash layout check passed: app 0x70100000, ellipse 0x70400000, center/tip 0x70800000"
+Write-Host "Flash layout check passed: wake loader 0x70080000, app 0x70100000, ellipse 0x70400000, center/tip 0x70800000"
 
 # ================== Step 1: Sign FSBL ==================
 Write-Host "`n=== Step 1: Sign FSBL binary ==="
@@ -170,16 +176,20 @@ Write-Host "Trusted FSBL: $FsblTrusted"
 Write-Host "`n=== Step 2: Flash FSBL at 0x70000000 ==="
 Do-Flash -bin $FsblTrusted -addr 0x70000000 -label "FSBL"
 
-# ================== Step 3: Flash ellipse model ==================
-Write-Host "`n=== Step 3: Flash 384x384 grayscale multiscale ellipse model at 0x70400000 ==="
+# ================== Step 3: Flash retained wake loader ==================
+Write-Host "`n=== Step 3: Flash retained Standby wake loader at 0x70080000 ==="
+Do-Flash -bin $WakeLoaderBin -addr 0x70080000 -label "Standby-wake-loader"
+
+# ================== Step 4: Flash ellipse model ==================
+Write-Host "`n=== Step 4: Flash 384x384 grayscale multiscale ellipse model at 0x70400000 ==="
 Copy-Item -LiteralPath $EllipseRaw -Destination $EllipseBin -Force
 Do-Flash -bin $EllipseBin -addr 0x70400000 -label "Ellipse-iter8-384-gray"
 
-Write-Host "`n=== Step 4: Flash 224x224 grayscale compact keypoint U-Net at 0x70800000 (no HyperRAM) ==="
+Write-Host "`n=== Step 5: Flash 224x224 grayscale compact keypoint U-Net at 0x70800000 (no HyperRAM) ==="
 Copy-Item -LiteralPath $CenterTipRaw -Destination $CenterTipBin -Force
 Do-Flash -bin $CenterTipBin -addr 0x70800000 -label "Keypoint-wide-aug-224-gray-no-hyperram"
 
-Write-Host "`n=== Step 5: Extract model signatures ==="
+Write-Host "`n=== Step 6: Extract model signatures ==="
 python "$SignatureTool" "$EllipseRaw" > "$SigReportDir\ellipse_iter8_signature.txt"
 if ($LASTEXITCODE -ne 0) { Die "Ellipse signature extraction failed" }
 python "$SignatureTool" "$CenterTipRaw" > "$SigReportDir\keypoint_wide_aug_signature.txt"
@@ -188,7 +198,7 @@ Write-Host "Ellipse signature: $SigReportDir\ellipse_iter8_signature.txt"
 Write-Host "Center/tip signature: $SigReportDir\keypoint_wide_aug_signature.txt"
 
 # ================== Step 6: Sign app ==================
-Write-Host "`n=== Step 6: Sign application binary ==="
+Write-Host "`n=== Step 7: Sign application binary ==="
 if (Test-Path $AppSignTmp -PathType Leaf) { Remove-Item -LiteralPath $AppSignTmp -Force }
 Do-Sign -bin $AppBin -type ssbl -out $AppSignTmp
 if (Test-Path $AppSign -PathType Leaf) { Remove-Item -LiteralPath $AppSign -Force }
@@ -206,7 +216,7 @@ Check-No-Overlap "signed application" $AppStart ([uint64](Get-Item $AppSign).Len
 Write-Host "Signed binary: $AppSign"
 
 # ================== Step 7: Flash app ==================
-Write-Host "`n=== Step 7: Flash signed application at 0x70100000 ==="
+Write-Host "`n=== Step 8: Flash signed application at 0x70100000 ==="
 Do-Flash -bin $AppSign -addr 0x70100000 -label "App"
 
 Write-Host "`n=== Done! ==="

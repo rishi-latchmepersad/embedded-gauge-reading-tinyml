@@ -46,6 +46,7 @@
 #include "ds3231_clock.h"
 #include "main.h"
 #include "stm32n6xx_nucleo_xspi.h"
+#include "stm32n6xx_ll_exti.h"
 #include "debug_console.h"
 #include "debug_led.h"
 #include "threadx_utils.h"
@@ -491,7 +492,7 @@ start_unlock:
 
 /* Stage 2 uses LPTIM1 as its sole low-power wake source.  The DS3231 remains
  * the application time source; its RTC-like name does not imply that the MCU
- * RTC is involved in the Stop proof. */
+ * RTC is involved in the Stop proof. Standby uses the MCU RTC wake timer. */
 static volatile bool camera_stop_wakeup_fired = false;
 static bool camera_stop_lptim_armed = false;
 /* The NPU hardware is initialized once for the application, but it is idle
@@ -506,6 +507,16 @@ static bool camera_stop_xspi2_suspended = false;
  * the NOR state so the experiment can only gate the I/O domain after the
  * external flash has accepted deep power-down. */
 static bool camera_stop_vddio3_suspended = false;
+
+/* RTC secure wake events are delivered through EXTI line 17 on STM32N6. */
+#define CAMERA_STANDBY_RTC_EXTI_LINE (LL_EXTI_LINE_17)
+#define CAMERA_STANDBY_LSI_TIMEOUT_MS (10U)
+/* The wake loader's immutable image fits below its data/stack at 0x34010000.
+ * Check 60 KiB of code/padding, not the mutable C-runtime data above it. */
+#define CAMERA_STANDBY_LOADER_RAM_BASE (0x34000400UL)
+#define CAMERA_STANDBY_LOADER_FLASH_BASE (0x70080000UL)
+#define CAMERA_STANDBY_LOADER_CHECK_SIZE (0x0000F000UL)
+#define CAMERA_STANDBY_LOADER_COPY_SIZE (0x00013C00UL)
 
 /* LPTIM1 is clocked from the 32.768 kHz LSE crystal and uses the N6 internal
  * EXTI line 52 route.  A /32 prescaler gives 1,024 Hz, so a one-minute sleep
@@ -823,11 +834,340 @@ static void CameraThread_ResumeXspi2AfterStop(void) {
 }
 
 /**
+ * @brief Arm the internal LSI-backed RTC wake-up timer for Standby.
+ * @param duration_ms Requested automatic wake interval in milliseconds.
+ * @retval true when the RTC timer and its LSI clock path are armed.
+ * @sideeffects Enables the backup domain and RTC clocks, changes the RTC
+ *              wake timer registers, and leaves the wake event enabled.
+ *
+ * The RTC HAL module is not part of this generated application build, so this
+ * small register sequence mirrors HAL_RTCEx_SetWakeUpTimer_IT() without adding
+ * generated build files. The ST N657 Standby reference uses LSI; LSI/16 is
+ * approximately 2,000 Hz and the N6 wake counter is 16-bit.
+ */
+static bool CameraThread_ArmRtcStandbyWakeup(uint32_t duration_ms) {
+	RCC_PeriphCLKInitTypeDef periph_clk = { 0 };
+	uint32_t wake_ticks;
+	uint32_t lsi_start_tick;
+	uint32_t wait_count = 0U;
+
+	if (duration_ms == 0U) {
+		duration_ms = 1U;
+	}
+	wake_ticks = (uint32_t) ((((uint64_t) duration_ms * 2000ULL) + 999ULL)
+			/ 1000ULL);
+	if ((wake_ticks == 0U) || (wake_ticks > 65536U)) {
+		return false;
+	}
+
+	HAL_PWR_EnableBkUpAccess();
+	/* Use the internal low-speed clock, matching ST's N657 Standby RTC example.
+	 * This avoids depending on the board's LSE oscillator state while VCORE is
+	 * removed and leaves the external DS3231 independent of the wake source. */
+	__HAL_RCC_LSI_ENABLE();
+	lsi_start_tick = HAL_GetTick();
+	while ((LL_RCC_LSI_IsReady() == 0U)
+			&& ((HAL_GetTick() - lsi_start_tick)
+					<= CAMERA_STANDBY_LSI_TIMEOUT_MS)) {
+		/* why: oscillator startup is asynchronous and cannot be bounded reliably
+		 * by a CPU-cycle count when the clock tree or debugger state changes. */
+	}
+	if (LL_RCC_LSI_IsReady() == 0U) {
+		DebugConsole_Printf(
+				"[STANDBY][RTC] LSI did not start after %lu ms; automatic wake unavailable.\r\n",
+				(unsigned long) (HAL_GetTick() - lsi_start_tick));
+		return false;
+	}
+
+	/* Route LSI to the RTC kernel clock and keep the RTC APB/backup clocks
+	 * available while the MCU is in Standby. */
+	periph_clk.PeriphClockSelection = RCC_PERIPHCLK_RTC;
+	periph_clk.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
+	if (HAL_RCCEx_PeriphCLKConfig(&periph_clk) != HAL_OK) {
+		DebugConsole_Printf(
+				"[STANDBY][RTC] RTC clock selection failed; automatic wake unavailable.\r\n");
+		return false;
+	}
+	__HAL_RCC_RTC_CLK_ENABLE();
+	__HAL_RCC_RTCAPB_CLK_ENABLE();
+	__HAL_RCC_RTC_CLK_SLEEP_ENABLE();
+	__HAL_RCC_RTCAPB_CLK_SLEEP_ENABLE();
+	/* Match the STM32N6 PWR_STANDBY_RTC example's RIF policy. The application
+	 * is a secure image, but the wake-up timer itself must be accessible to the
+	 * low-power wake fabric rather than left behind a default RTC policy. */
+	RTC->PRIVCFGR = RTC_PRIVCFGR_PRIV;
+	RTC->SECCFGR = RTC_SECCFGR_INITSEC | RTC_SECCFGR_CALSEC
+			| RTC_SECCFGR_TSSEC | RTC_SECCFGR_ALRASEC
+			| RTC_SECCFGR_ALRBSEC;
+	/* ST's HAL RTC MSP enables the secure RTC interrupt explicitly. Keep the
+	 * vector live even though the final WFI is used as the Standby boundary. */
+	/* why: RTC_S_IRQn alone is insufficient on N6; the secure RTC event remains
+	 * masked at EXTI until line 17 is explicitly unmasked. */
+	LL_EXTI_ClearRisingFlag_0_31(CAMERA_STANDBY_RTC_EXTI_LINE);
+	LL_EXTI_ClearFallingFlag_0_31(CAMERA_STANDBY_RTC_EXTI_LINE);
+	LL_EXTI_EnableIT_0_31(CAMERA_STANDBY_RTC_EXTI_LINE);
+	NVIC_ClearPendingIRQ(RTC_S_IRQn);
+	NVIC_SetPriority(RTC_S_IRQn, 0U);
+	NVIC_EnableIRQ(RTC_S_IRQn);
+
+	/* RTC wake-timer writes are protected. Disable the write lock before
+	 * stopping the old timer, clearing its flag, and programming the new one. */
+	RTC->WPR = 0xCAU;
+	RTC->WPR = 0x53U;
+	CLEAR_BIT(RTC->CR, RTC_CR_WUTE | RTC_CR_WUTIE);
+	RTC->SCR = RTC_SCR_CWUTF;
+	wait_count = 0U;
+	while (((RTC->ICSR & RTC_ICSR_WUTWF) == 0U)
+			&& (wait_count++ < 1000000U)) {
+		/* why: WUTR and WUCKSEL are only writable after WUTWF goes high. */
+	}
+	if ((RTC->ICSR & RTC_ICSR_WUTWF) == 0U) {
+		RTC->WPR = 0xFFU;
+		DebugConsole_Printf(
+				"[STANDBY][RTC] WUTWF did not become ready; automatic wake unavailable.\r\n");
+		return false;
+	}
+	RTC->WUTR = wake_ticks - 1U;
+	MODIFY_REG(RTC->CR, RTC_CR_WUCKSEL, 0U);
+	SET_BIT(RTC->CR, RTC_CR_WUTIE | RTC_CR_WUTE);
+	RTC->WPR = 0xFFU;
+
+	DebugConsole_Printf(
+				"[STANDBY][RTC] automatic wake armed source=LSI interval_ms=%lu ticks=%lu WUTR=%lu CR=0x%08lX ICSR=0x%08lX SMISR=0x%08lX.\r\n",
+				(unsigned long) duration_ms, (unsigned long) wake_ticks,
+				(unsigned long) RTC->WUTR, (unsigned long) RTC->CR,
+				(unsigned long) RTC->ICSR, (unsigned long) RTC->SMISR);
+	return true;
+}
+
+/**
+ * @brief Restart through the retained Standby loader without issuing a system
+ *        reset that would erase SRAM1.
+ * @retval None; valid loader control flow does not return.
+ * @sideeffect Disables interrupts, points VTOR at the retained vector table,
+ *              replaces MSP/MSPLIM, and branches to the loader reset handler.
+ */
+static void CameraThread_JumpToRetainedWakeLoader(void) {
+	const uint32_t *vectors = (const uint32_t *) 0x34000400UL;
+	void (*reset_handler)(void) = (void (*)(void)) vectors[1];
+
+	/* The RTC wake interrupt has already returned to this thread. Re-enter the
+	 * loader directly so SRAM1 is not destroyed by NVIC_SystemReset(). */
+	if ((vectors[0] < 0x34000400UL) || (vectors[0] > 0x34014000UL)
+			|| ((vectors[1] & 1U) == 0U)) {
+		Error_Handler();
+	}
+
+	__disable_irq();
+	SysTick->CTRL = 0U;
+	SCB->VTOR = 0x34000400UL;
+	__set_MSP(vectors[0]);
+	__set_MSPLIM(0U);
+	__DSB();
+	__ISB();
+	reset_handler();
+
+	while (1) {
+		/* The retained loader reset handler must not return. */
+	}
+}
+
+/**
+ * @brief Install and verify the retained loader before making NOR unavailable.
+ * @retval true when the NOR image and its retained SRAM copy are valid.
+ * @sideeffects Temporarily leaves NOR memory-mapped mode, overwrites only the
+ *              reserved loader window, verifies it, and restores mapped mode.
+ *
+ * An IDE application download bypasses FSBL_CopyWakeLoader(). Preparing the
+ * reserved window at the final idle barrier also protects against earlier
+ * application activity corrupting a copy made by the cold-boot FSBL.
+ */
+static bool CameraThread_PrepareStandbyLoader(void) {
+	const volatile uint32_t *ram =
+			(const volatile uint32_t *) CAMERA_STANDBY_LOADER_RAM_BASE;
+	uint32_t probe[64] = { 0U };
+	const uint32_t flash_offset = CAMERA_STANDBY_LOADER_FLASH_BASE - XSPI2_BASE;
+	int32_t status;
+	bool verified = false;
+
+	DebugConsole_Printf(
+			"[STANDBY][LOADER] install-v2 previous SP=0x%08lX Reset=0x%08lX.\r\n",
+			(unsigned long) ram[0], (unsigned long) ram[1]);
+	if (!app_ai_xspi2_initialized || !app_ai_xspi2_mm_enabled) {
+		DebugConsole_Printf("[STANDBY][LOADER] NOR not mapped; sleep aborted.\r\n");
+		return false;
+	}
+	status = BSP_XSPI_NOR_DisableMemoryMappedMode(0U);
+	if (status != BSP_ERROR_NONE) {
+		DebugConsole_Printf("[STANDBY][LOADER] NOR unmap failed status=%ld.\r\n",
+				(long) status);
+		return false;
+	}
+	app_ai_xspi2_mm_enabled = false;
+
+	/* Use indirect reads so this operation does not depend on an MPU/cache
+	 * alias exposing the low NOR boot slots used only by the FSBL. */
+	status = BSP_XSPI_NOR_Read(0U, (uint8_t *) probe, flash_offset, 8U);
+	if (status == BSP_ERROR_NONE) {
+		uint32_t stack = probe[0];
+		uint32_t reset = probe[1];
+		if ((stack <= CAMERA_STANDBY_LOADER_RAM_BASE) || (stack > 0x34014000UL)
+				|| ((stack & 7U) != 0U) || ((reset & 1U) == 0U)
+				|| ((reset & ~1UL) < CAMERA_STANDBY_LOADER_RAM_BASE)
+				|| ((reset & ~1UL) >= 0x34010000UL)) {
+			DebugConsole_Printf(
+					"[STANDBY][LOADER] INVALID NOR vectors SP=0x%08lX Reset=0x%08lX.\r\n",
+					(unsigned long) stack, (unsigned long) reset);
+			status = BSP_ERROR_COMPONENT_FAILURE;
+		}
+	}
+	if (status == BSP_ERROR_NONE) {
+		SCB_CleanInvalidateDCache();
+		status = BSP_XSPI_NOR_Read(0U,
+				(uint8_t *) CAMERA_STANDBY_LOADER_RAM_BASE, flash_offset,
+				CAMERA_STANDBY_LOADER_COPY_SIZE);
+		/* Commit the entire image to physical retained SRAM, not just D-cache. */
+		SCB_CleanInvalidateDCache();
+		SCB_InvalidateICache();
+		__DSB();
+		__ISB();
+	}
+	if (status == BSP_ERROR_NONE) {
+		verified = true;
+		for (uint32_t offset = 0U; offset < CAMERA_STANDBY_LOADER_CHECK_SIZE;
+				offset += sizeof(probe)) {
+			status = BSP_XSPI_NOR_Read(0U, (uint8_t *) probe,
+					flash_offset + offset, sizeof(probe));
+			if ((status != BSP_ERROR_NONE)
+					|| (memcmp((const void *) (CAMERA_STANDBY_LOADER_RAM_BASE + offset),
+							probe, sizeof(probe)) != 0)) {
+				DebugConsole_Printf(
+						"[STANDBY][LOADER] verify failed offset=0x%08lX status=%ld.\r\n",
+						(unsigned long) offset, (long) status);
+				verified = false;
+				break;
+			}
+		}
+	}
+	/* Keep the existing NOR power-down path's BSP/software state coherent. */
+	if (BSP_XSPI_NOR_EnableMemoryMappedMode(0U) == BSP_ERROR_NONE) {
+		app_ai_xspi2_mm_enabled = true;
+	} else {
+		verified = false;
+		DebugConsole_Printf("[STANDBY][LOADER] NOR remap failed.\r\n");
+	}
+	if (verified) {
+		DebugConsole_Printf(
+				"[STANDBY][LOADER] install-v2 copied %lu bytes; verified %lu bytes SP=0x%08lX Reset=0x%08lX.\r\n",
+				(unsigned long) CAMERA_STANDBY_LOADER_COPY_SIZE,
+				(unsigned long) CAMERA_STANDBY_LOADER_CHECK_SIZE,
+				(unsigned long) ram[0], (unsigned long) ram[1]);
+	} else {
+		DebugConsole_Printf("[STANDBY][LOADER] preparation failed status=%ld; sleep aborted.\r\n",
+				(long) status);
+	}
+	return verified;
+}
+
+/**
+ * @brief Enter STM32N6 Standby for the temporary current-reduction proof.
+ * @retval None. A successful Standby entry does not return until the RTC
+ *         wake-up event causes the reset-like wake sequence.
+ * @sideeffects Arms the internal RTC timer, gates the model NOR, pauses
+ *              periodic ticks, and powers down VCORE through Standby.
+ */
+static void CameraThread_EnterStandbyModeProof(void) {
+	/* Diagnose lost/overwritten retained code before NOR enters deep power-down. */
+	if (!CameraThread_PrepareStandbyLoader()) {
+		Error_Handler();
+	}
+	/* The automatic RTC event replaces the manual PC13 wake source. Deinitialize
+	 * the button so its normal EXTI cannot create a competing wake path. */
+	(void) BSP_PB_DeInit(BUTTON_USER);
+	if (!CameraThread_ArmRtcStandbyWakeup(CAMERA_STANDBY_WAKE_INTERVAL_MS)) {
+		Error_Handler();
+	}
+	/* Clear stale PWR flags after the RTC event is armed so the next wake is
+	 * attributable to this timer rather than an earlier button/power event. */
+	(void) HAL_PWR_ClearWakeupFlag(PWR_WAKEUP_FLAG_ALL);
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_SBF);
+
+	/* Retain the TCM/FLEXMEM banks used by the reset and wake path. AXISRAM1 is
+	 * reserved for the small WakeLoader; retaining TCM matches the N6 Standby
+	 * reference sequence and keeps the CPU wake fabric deterministic. */
+	HAL_PWREx_EnableTCMRetention();
+	HAL_PWREx_EnableTCMFLXRetention();
+	/* Standby wake bypasses the Boot ROM and restarts from this retained vector.
+	 * WakeLoader reinitializes xSPI2, reloads the large application to 0x34020400,
+	 * and then jumps to the application's normal reset handler. */
+	__HAL_RCC_SYSCFG_CLK_ENABLE();
+	/* Standby return uses the secure reset vector, but configuring the
+	 * non-secure reset vector as well removes an ambiguity when the wake reset
+	 * crosses the TrustZone boundary. Use the HAL setters so the address
+	 * alignment check remains consistent with the STM32N6 implementation. */
+	HAL_SYSCFG_SetSVTORAddress(0x34000400UL);
+	HAL_SYSCFG_SetNSVTORAddress(0x34000400UL);
+	__DSB();
+	__ISB();
+
+	/* BSEC is secure-only on STM32N6. When this image is built in the secure
+	 * state, keep its clock available for the Standby return/vector path. */
+#if defined(CPU_IN_SECURE_STATE)
+	__HAL_RCC_BSEC_CLK_ENABLE();
+	__HAL_RCC_BSEC_CLK_SLEEP_ENABLE();
+#endif
+
+	/* The periodic HAL and ThreadX tick sources must not leave an interrupt
+	 * pending at WFI, otherwise the core can immediately bounce out of Standby. */
+	HAL_SuspendTick();
+	CLEAR_BIT(SysTick->CTRL, SysTick_CTRL_TICKINT_Msk);
+	SysTick->VAL = 0U;
+	SCB->ICSR = SCB_ICSR_PENDSVCLR_Msk | SCB_ICSR_PENDSTCLR_Msk;
+	/* Keep preparation atomic while stale peripheral work is being quiesced, but
+	 * unmask interrupts for the final WFI: RTC_S_IRQn is the actual wake source
+	 * used by ST's N6 Standby example. */
+	__disable_irq();
+
+	/* An active LED would remain a board-level load even after VCORE falls. */
+	BSP_LED_Off(LED_RED);
+	BSP_LED_Off(LED_BLUE);
+	BSP_LED_Off(LED_GREEN);
+	/* The model NOR is external to the MCU and must be placed in its own deep
+	 * power-down state before the STM32 enters the lowest power mode. */
+	CameraThread_SuspendXspi2ForStop();
+
+	DebugConsole_Printf(
+			"[STANDBY] entering; RTC will request automatic wake in %lu ms.\r\n",
+			(unsigned long) CAMERA_STANDBY_WAKE_INTERVAL_MS);
+	/* Keep this readback immediately before WFI. If either value is not the
+	 * retained loader vector, the chip is expected to fall back to Boot ROM on
+	 * wake and no loader UART/LED marker can ever appear. */
+	DebugConsole_Printf(
+			"[STANDBY] vectors secure=0x%08lX nonsecure=0x%08lX CPUCR=0x%08lX CR4=0x%08lX TCMCR=0x%08lX HWRSR=0x%08lX\r\n",
+			(unsigned long) SYSCFG->INITSVTORCR,
+			(unsigned long) SYSCFG->INITNSVTORCR,
+			(unsigned long) PWR->CPUCR, (unsigned long) PWR->CR4,
+			(unsigned long) SYSCFG->CM55TCMCR, (unsigned long) RCC->HWRSR);
+	/* HAL sets SLEEPDEEP and performs the DSB/ISB/WFI sequence. On success the
+	 * call does not return during this proof interval. */
+	__enable_irq();
+	HAL_PWR_EnterSTANDBYMode();
+
+	/* On this N6 path the RTC event can wake WFI through the interrupt boundary
+	 * instead of performing the reset-like vector fetch. Do not call
+	 * NVIC_SystemReset(): a normal system reset erases the SRAM1 loader before
+	 * the next vector fetch. Branch directly to the retained loader instead. */
+	CameraThread_JumpToRetainedWakeLoader();
+}
+
+/**
  * @brief Enter the guarded Stage 2 STM32N6 Stop-mode proof interval.
  * @retval true when the MCU returned from the LPTIM1 wakeup path.
  * @sideeffects Drains asynchronous log queues, flushes the SD card, pauses
  *              the HAL tick, enters Stop mode, restores clocks, and resumes
- *              the tick before returning to the capture scheduler.
+ *              the tick before returning to the capture scheduler. When
+ *              CAMERA_STANDBY_MODE_PROOF_ENABLE is set, the same quiesced
+ *              boundary is redirected to Standby and does not return normally.
  */
 static bool CameraThread_EnterStopModeProof(void) {
 	if (!AppInferenceRuntime_WaitForLogQueueDrain(
@@ -876,6 +1216,13 @@ static bool CameraThread_EnterStopModeProof(void) {
 	SdDebugLogService_ForceFlush();
 	DebugConsole_Printf(
 			"[STOP] Capture, metrics, inference, and awake-power logs flushed; entering low power.\r\n");
+
+#if CAMERA_STANDBY_MODE_PROOF_ENABLE
+    /* Use the already-completed storage and logging barriers for the Standby
+     * experiment. The RTC wake timer supplies the automatic wake event. */
+	CameraThread_EnterStandbyModeProof();
+	return false;
+#endif
 
 	/* LPTIM1 is the sole Stop wake source.  Keeping one timer and one EXTI route
 	 * makes wake attribution deterministic and avoids competing asynchronous

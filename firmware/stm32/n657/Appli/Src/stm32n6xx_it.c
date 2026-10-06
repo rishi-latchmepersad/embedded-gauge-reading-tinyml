@@ -26,6 +26,7 @@
 #include "app_camera_buffers.h"
 #include "debug_console.h"
 #include "stm32n6xx_ll_lpuart.h"
+#include "stm32n6xx_ll_exti.h"
 #include <stdio.h>
 #include <string.h>
 #include <stddef.h>
@@ -479,6 +480,29 @@ void TIM5_IRQHandler(void)
   /* USER CODE BEGIN TIM5_IRQn 1 */
 
   /* USER CODE END TIM5_IRQn 1 */
+}
+
+/**
+  * @brief This function handles the secure RTC wake-up timer interrupt.
+  * @retval None.
+  * @sideeffects Clears the RTC wake-up flag so a pending event cannot
+  *              retrigger immediately at the Standby boundary.
+  */
+void RTC_S_IRQHandler(void)
+{
+  /* The N6 has separate secure and non-secure RTC masked-status views.  ST's
+   * secure HAL handler checks SMISR; testing SR here can miss the secure wake
+   * request and leave RTC_S_IRQn continuously pending after Standby wake. */
+  if (((RTC->SMISR & RTC_SMISR_WUTMF) != 0U)
+      || ((RTC->SR & RTC_SR_WUTF) != 0U))
+  {
+    RTC->SCR = RTC_SCR_CWUTF;
+  }
+  /* The RTC wake source is routed through EXTI line 17.  Clear both edge
+   * latches even when the masked-status view is already clear; this prevents
+   * a stale EXTI request from starving the thread that branches to the loader. */
+  LL_EXTI_ClearRisingFlag_0_31(LL_EXTI_LINE_17);
+  LL_EXTI_ClearFallingFlag_0_31(LL_EXTI_LINE_17);
 }
 
 /* USER CODE BEGIN 1 */

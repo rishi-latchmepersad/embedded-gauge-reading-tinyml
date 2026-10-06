@@ -44,11 +44,14 @@ _Min_Stack_Size = 0x8000; /* required amount of stack (32KB -- main() init path 
 /* Memories definition */
 MEMORY
 {
-  ROM    (rx)     : ORIGIN = 0x34000400,   LENGTH = 600K
+  /* Keep the retained SRAM1 window for WakeLoader; the full application starts
+     at 0x34020400 and is reloaded there after Standby. */
+  ROM    (rx)     : ORIGIN = 0x34020400,   LENGTH = 384K
   /* Keep the main MSP entirely below the OBB activation vpool at 0x34100000.
      The previous 423K span placed _estack at 0x34103000, overlapping the top
      12 KiB of the CPU stack with OBB activations and causing late-epoch return
-     address corruption.  ROM grew to 600K for the DS-CNN v4 heatmap .rodata. */
+     address corruption.  The current application fits within the 384 KiB
+     relocated ROM span while leaving the AXISRAM1 data region untouched. */
   RAM    (xrw)    : ORIGIN = 0x34099400,   LENGTH = 410K
   /* Legacy scalar model blob slot retained for linker compatibility. */
   EXTRAM (rw)           : ORIGIN = 0x70200000,   LENGTH = 3200K

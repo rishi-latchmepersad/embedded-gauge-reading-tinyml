@@ -49,6 +49,22 @@ extern "C" {
 #define CAMERA_STOP_MODE_PROOF_DURATION_MS     60000U
 #define CAMERA_STOP_MODE_PROOF_TIMEOUT_MS       3000U
 
+/* Temporary Standby experiment. Standby removes VCORE and loses most RAM;
+ * keep this separate from the validated Stop switch so the test can be
+ * disabled without deleting the Stop-mode proof path. The current LRUN image
+ * is larger than the default retained SRAM, so the wake-loader problem remains
+ * a separate follow-up from validating the automatic wake event. */
+#ifndef CAMERA_STANDBY_MODE_PROOF_ENABLE
+#define CAMERA_STANDBY_MODE_PROOF_ENABLE        1U
+#endif
+
+/* The RTC wake-up timer uses LSE/16 (2,048 Hz) in this first automatic-wake
+ * test. Its 16-bit counter therefore supports just under 32 seconds; use a
+ * short interval so a wake attempt is observable without waiting a minute. */
+#ifndef CAMERA_STANDBY_WAKE_INTERVAL_MS
+#define CAMERA_STANDBY_WAKE_INTERVAL_MS        30000U
+#endif
+
 /* Storage maintenance timing ---------------------------------------------- */
 #define IMAGE_CLEANUP_PERIOD_MS            600000U
 

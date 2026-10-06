@@ -152,9 +152,12 @@ int32_t BSP_LED_Toggle(Led_TypeDef Led)
 }
 
 /* Application image in external flash (after the 0x400-byte STM2 header) */
+#define FSBL_WAKE_FLASH_BASE  (0x70080000UL)  /* raw retained wake-loader image */
+#define FSBL_WAKE_RAM_BASE   (0x34000400UL)  /* retained SRAM1 vector/code */
+#define FSBL_WAKE_COPY_SIZE  (0x00013C00UL)  /* 79 KiB, below the 80 KiB limit */
 #define FSBL_APP_FLASH_BASE   (0x70100400UL)  /* raw binary in xSPI2 flash */
-#define FSBL_APP_RAM_BASE     (0x34000400UL)  /* AXISRAM1 — matches app linker ROM origin */
-#define FSBL_APP_MAX_SIZE     (0x80000UL)     /* 512 KB copy limit (safe upper bound) */
+#define FSBL_APP_RAM_BASE     (0x34020400UL)  /* AXISRAM1 — matches app linker ROM origin */
+#define FSBL_APP_MAX_SIZE     (0x60000UL)     /* 384 KB app image, below app RAM */
 
 /* Init XSPI2 and put the MX25UM51245G into OctoSPI STR memory-mapped mode.
  *
@@ -347,6 +350,35 @@ static void FSBL_LogAppImageState(void)
          (unsigned long)vecs[0], (unsigned long)vecs[1]);
 }
 
+/**
+  * @brief Copy the retained Standby wake loader into SRAM1.
+  * @retval None. Errors are handled by the existing FSBL error loop.
+  * @sideeffect Overwrites only the reserved 80 KiB SRAM1 wake region and
+  *              cleans both CPU caches before the application is started.
+  */
+static void FSBL_CopyWakeLoader(void)
+{
+  const uint32_t *src = (const uint32_t *)FSBL_WAKE_FLASH_BASE;
+  uint32_t *dst = (uint32_t *)FSBL_WAKE_RAM_BASE;
+
+  printf("[FSBL] Copying retained wake loader from 0x%08lX to 0x%08lX...\r\n",
+         (unsigned long)FSBL_WAKE_FLASH_BASE,
+         (unsigned long)FSBL_WAKE_RAM_BASE);
+  for (uint32_t i = 0U; i < (FSBL_WAKE_COPY_SIZE / sizeof(uint32_t)); i++)
+  {
+    dst[i] = src[i];
+  }
+  SCB_CleanInvalidateDCache();
+  SCB_InvalidateICache();
+
+  if ((((const uint32_t *)FSBL_WAKE_RAM_BASE)[0] == 0x00000000UL) ||
+      (((const uint32_t *)FSBL_WAKE_RAM_BASE)[1] == 0x00000000UL))
+  {
+    printf("[FSBL] ERROR: retained wake-loader vector is empty.\r\n");
+    Error_Handler();
+  }
+}
+
 /* Copy app from xSPI2 flash to AXISRAM1, then jump to it. */
 static void FSBL_TryBootApplication(void)
 {
@@ -385,7 +417,8 @@ static void FSBL_TryBootApplication(void)
   }
 
   /* Vectors look sane — signal we are about to copy */
-  FSBL_BlinkLED(LED_GREEN, 3, 150);  /* 3x green: starting LRUN copy */
+  FSBL_BlinkLED(LED_GREEN, 3, 150);  /* 3x green: starting retained copies */
+  FSBL_CopyWakeLoader();
   printf("[FSBL] Copying %lu bytes from flash 0x%08lX to RAM 0x%08lX...\r\n",
          (unsigned long)FSBL_APP_MAX_SIZE,
          (unsigned long)FSBL_APP_FLASH_BASE,
