@@ -60,6 +60,8 @@
  */
 #define APP_FILEX_ENABLE_CAPTURE_FILE_TIMESTAMP 1
 #endif
+/* Leave headroom for 32 x 5 MiB debug archives, active logs and FAT metadata. */
+#define APP_FILEX_LOG_RESERVE_BYTES (256ULL * 1024ULL * 1024ULL)
 #if !APP_FILEX_ENABLE_VERBOSE_CONSOLE_LOGS
 #undef DebugConsole_Printf
 #define DebugConsole_Printf(...) ((void) 0)
@@ -118,6 +120,10 @@ static void AppFileX_WriteCaptureStatusLine(const char *format_string_pointer,
 	if ((written_length > 0)
 			&& ((size_t) written_length < sizeof(message_buffer))) {
 		(void) DebugConsole_WriteString(message_buffer);
+        if ((strstr(message_buffer, "[ERROR]") != NULL)
+                || (strstr(message_buffer, "[SPACE]") != NULL)) {
+            (void) SdDebugLogService_EnqueueLine(message_buffer);
+        }
 	}
 }
 /* USER CODE END Includes */
@@ -181,6 +187,7 @@ typedef struct {
 #define FX_APP_THREAD_PRIO               11U
 /* USER CODE BEGIN PD */
 #define CAPTURED_IMAGES_DIRECTORY_NAME   "captured_images"
+#define CAPTURED_IMAGES_DIRECTORY_PATH   "/" CAPTURED_IMAGES_DIRECTORY_NAME
 #define CAPTURED_IMAGE_MAX_PATH_LENGTH   96U
 #define CAPTURED_IMAGE_FILE_NAME_LENGTH  32U
 #define CAPTURED_IMAGE_MAX_INDEX         9999U
@@ -482,6 +489,7 @@ static void AppFileX_LogErrorMessage(AppFileX_State error_state,
 
 	if ((written > 0) && ((size_t) written < sizeof(error_line))) {
 		(void) DebugConsole_WriteString(error_line);
+        (void) SdDebugLogService_EnqueueLine(error_line);
 	}
 }
 
@@ -514,6 +522,8 @@ static void AppFileX_StateMachine_EnterError(
 
 	context_ptr->last_error_state = error_state;
 	context_ptr->last_error_code = error_code;
+    /* Stop producers before the ERROR path flushes/closes and remounts media. */
+    g_filex_media_ready = false;
 	context_ptr->state = APP_FILEX_STATE_ERROR;
 	context_ptr->state_entry_tick = tx_time_get();
 
@@ -706,6 +716,21 @@ static void AppFileX_StateMachine_Step(
 		}
 
 		context_ptr->filex_media_is_open = 1U;
+		/* Report capacity before file creation can fail. Use the 64-bit FileX
+		 * query, then print KiB so the 16 GB card does not overflow a 32-bit count. */
+		ULONG64 available_bytes = 0U;
+		const UINT space_status = fx_media_extended_space_available(
+				&g_sd_fx_media, &available_bytes);
+		if (space_status == FX_SUCCESS) {
+			AppFileX_WriteCaptureStatusLine(
+					"[FILEX][SPACE] free_kib=%lu%s\r\n",
+					(unsigned long) (available_bytes / 1024U),
+					(available_bytes == 0U) ? " CARD_FULL" : "");
+		} else {
+			AppFileX_WriteCaptureStatusLine(
+					"[FILEX][ERROR] domain=FileX op=query_space status=%lu\r\n",
+					(unsigned long) space_status);
+		}
 		AppFileX_LogStateMessage("[FILEX][STATE] MEDIA OPEN OK\r\n");
 		AppFileX_LogTimingStep("media_open", media_open_tick);
 
@@ -737,7 +762,24 @@ static void AppFileX_StateMachine_Step(
 			break;
 		}
 
-		(void) SdDebugLogService_EnqueueLine("debug log service initialized");
+		/* The reset flags are cleared before ThreadX starts, so persist the
+		 * captured boot cause only after the log queue becomes available. */
+		char firmware_line[96] = { 0 };
+		(void) snprintf(firmware_line, sizeof(firmware_line),
+				"[BOOT] firmware=%s", APP_FIRMWARE_BUILD_ID);
+		(void) SdDebugLogService_EnqueueLine(firmware_line);
+		(void) SdDebugLogService_EnqueueLine(App_GetBootResetLogLine());
+		if (App_GetPreviousFaultLogLine()[0] != '\0') {
+			(void) SdDebugLogService_EnqueueLine(
+					App_GetPreviousFaultLogLine());
+		}
+		(void) SdDebugLogService_EnqueueLine(
+				"[BOOT] FileX debug log service online");
+        ULONG64 log_free_bytes = 0U;
+        if (fx_media_extended_space_available(&g_sd_fx_media, &log_free_bytes) == FX_SUCCESS) {
+            AppFileX_WriteCaptureStatusLine("[FILEX][SPACE] free_kib=%lu reserve_kib=262144\r\n",
+                    (unsigned long)(log_free_bytes / 1024U));
+        }
 		DebugConsole_Printf(
 				"Initialized debug log service in FileX thread.\r\n");
 
@@ -793,8 +835,17 @@ static void AppFileX_StateMachine_Step(
 			}
 		}
 
-		(void) fx_file_close(&g_sd_fx_file);
-		(void) fx_media_flush(&g_sd_fx_media);
+        context_ptr->filex_status = fx_file_close(&g_sd_fx_file);
+        if (context_ptr->filex_status == FX_SUCCESS) {
+            context_ptr->filex_status = fx_media_flush(&g_sd_fx_media);
+        }
+        if (context_ptr->filex_status != FX_SUCCESS) {
+            AppFileX_WriteCaptureStatusLine("[FILEX][ERROR] op=boot_probe_close_flush status=%lu\r\n",
+                    (unsigned long) context_ptr->filex_status);
+            AppFileX_StateMachine_EnterError(context_ptr,
+                    APP_FILEX_STATE_TEST_FILE_CREATE_OPEN_WRITE_CLOSE, context_ptr->filex_status);
+            break;
+        }
 
 		DebugConsole_Printf(
 				"Successfully wrote test.txt to root of SD card.\r\n");
@@ -872,6 +923,8 @@ static void AppFileX_StateMachine_Step(
 		g_filex_media_ready = true;
 		AppStorage_NotifyMediaReady();
 		(void) DebugConsole_WriteString("[FILEX] media ready\r\n");
+		(void) SdDebugLogService_EnqueueLine(
+				"[FILEX] capture directory ready; media mounted");
 
 		context_ptr->last_progress_tick = tx_time_get();
 		context_ptr->state = APP_FILEX_STATE_RUNNING;
@@ -1133,13 +1186,14 @@ static bool AppFileX_StampCapturedImageTimestampLocked(
 	const ULONG dir_set_start_tick = tx_time_get();
 	UINT fx_status = FX_SUCCESS;
 	fx_status = fx_directory_default_set(&g_sd_fx_media,
-			CAPTURED_IMAGES_DIRECTORY_NAME);
+			CAPTURED_IMAGES_DIRECTORY_PATH);
 	if (fx_status != FX_SUCCESS) {
 		AppFileX_WriteTimingLine(
 				"[FILEX][CAPTURE][TIMING] stamp-dir=%lu ms path=%s status=%lu\r\n",
 				(unsigned long)(((tx_time_get() - dir_set_start_tick) *
 					1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
 				file_name_ptr, (unsigned long) fx_status);
+		(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
 		return false;
 	}
 
@@ -1154,10 +1208,14 @@ static bool AppFileX_StampCapturedImageTimestampLocked(
 				date_folder[folder_len] = '\0';
 				fx_status = fx_directory_default_set(&g_sd_fx_media, date_folder);
 				if (fx_status != FX_SUCCESS) {
+                    (void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
 					return false;
 				}
 				file_name_ptr = slash + 1;
-			}
+			} else {
+                (void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
+                return false;
+            }
 		}
 	}
 
@@ -1349,7 +1407,7 @@ UINT AppFileX_ServiceCaptureMediaFlush(void) {
 		AppFileX_FlashCaptureBlue(3000U);
 	} else {
 		AppFileX_WriteCaptureStatusLine(
-				"[FILEX][CAPTURE] media-flush-failed status=%lu; will retry.\r\n",
+				"[FILEX][ERROR] domain=FileX op=capture_flush status=%lu; will retry.\r\n",
 				(unsigned long) flush_status);
 	}
 
@@ -1614,6 +1672,7 @@ UINT AppFileX_GetNextCapturedImageName(CHAR *file_name_ptr,
 UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		const VOID *data_ptr, ULONG data_length) {
 	CHAR path[CAPTURED_IMAGE_MAX_PATH_LENGTH];
+    const CHAR *original_file_name_ptr = file_name_ptr;
 	int path_length = 0;
 	UINT tx_status = TX_SUCCESS;
 	UINT fx_status = FX_SUCCESS;
@@ -1718,7 +1777,7 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 					(unsigned long)(((tx_time_get() - save_start_tick) *
 						1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
 					path, (unsigned long) slot_index);
-			goto capture_save_finish;
+			goto capture_save_unlocked;
 		}
 
 		DebugConsole_Printf(
@@ -1730,9 +1789,9 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 	tx_status = tx_mutex_get(&g_filex_media_mutex,
 			AppFileX_MillisecondsToTicks(APP_FILEX_CAPTURE_LOCK_TIMEOUT_MS));
 	if (tx_status != TX_SUCCESS) {
-		DebugConsole_Printf(
-				"[FILEX][CAPTURE] Capture save waited too long for media lock (status=%lu).\r\n",
-				(unsigned long) tx_status);
+		AppFileX_WriteCaptureStatusLine(
+				"[FILEX][ERROR] domain=ThreadX op=capture_lock path=%s status=%lu\r\n",
+				path, (unsigned long) tx_status);
 		return tx_status;
 	}
 	AppFileX_WriteTimingLine(
@@ -1741,21 +1800,38 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 				1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
 			path);
 
+    ULONG64 available_bytes = 0U;
+    fx_status = fx_media_extended_space_available(&g_sd_fx_media, &available_bytes);
+    if ((fx_status != FX_SUCCESS)
+            || (available_bytes < (APP_FILEX_LOG_RESERVE_BYTES + (ULONG64) data_length + 65536ULL))) {
+        AppFileX_WriteCaptureStatusLine(
+                "[FILEX][SPACE] image-skipped path=%s free_kib=%lu reserve_kib=262144 status=%lu\r\n",
+                path, (unsigned long)(available_bytes / 1024U),
+                (unsigned long) ((fx_status == FX_SUCCESS) ? FX_NO_MORE_SPACE : fx_status));
+        (void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
+        AppFileX_UnlockMedia();
+        return (fx_status == FX_SUCCESS) ? FX_NO_MORE_SPACE : fx_status;
+    }
+
 	const ULONG fallback_dir_start_tick = tx_time_get();
 	fx_status = fx_directory_default_set(&g_sd_fx_media,
-			CAPTURED_IMAGES_DIRECTORY_NAME);
+			CAPTURED_IMAGES_DIRECTORY_PATH);
 	if (fx_status != FX_SUCCESS) {
+		AppFileX_WriteCaptureStatusLine(
+				"[FILEX][ERROR] domain=FileX op=select_capture_dir path=%s status=%lu\r\n",
+				CAPTURED_IMAGES_DIRECTORY_PATH, (unsigned long) fx_status);
 		AppFileX_WriteTimingLine(
 				"[FILEX][CAPTURE][TIMING] fallback-dir=%lu ms path=%s status=%lu\r\n",
 				(unsigned long)(((tx_time_get() - fallback_dir_start_tick) *
 					1000U) / (ULONG)TX_TIMER_TICKS_PER_SECOND),
 				path, (unsigned long) fx_status);
+		(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
 		AppFileX_UnlockMedia();
 		return fx_status;
 	}
 
-	/* Create daily subfolder if the filename contains a date prefix.
-	 * Filename format: "2026-07-11/capture_15-23-23.yuv422" */
+	/* Select the hourly subfolder from the generated capture name. Preserve a
+	 * creation failure before navigation can replace it with FX_INVALID_PATH. */
 	{
 		const char *slash = strchr(file_name_ptr, '/');
 		if (slash != NULL) {
@@ -1768,6 +1844,14 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 				/* Try to create the daily folder (ignore if already exists) */
 				const ULONG create_dir_tick = tx_time_get();
 				UINT dir_status = fx_directory_create(&g_sd_fx_media, date_folder);
+				if ((dir_status != FX_SUCCESS) && (dir_status != FX_ALREADY_CREATED)) {
+					AppFileX_WriteCaptureStatusLine(
+							"[FILEX][ERROR] domain=FileX op=create_hour_dir path=%s status=%lu\r\n",
+							path, (unsigned long) dir_status);
+					(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
+					AppFileX_UnlockMedia();
+					return dir_status;
+				}
 				AppFileX_WriteTimingLine(
 						"[FILEX][CAPTURE][TIMING] create-day-dir=%lu ms dir=%s status=%lu\r\n",
 						(unsigned long)(((tx_time_get() - create_dir_tick) *
@@ -1784,6 +1868,11 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 						date_folder, (unsigned long) dir_status);
 
 				if (dir_status != FX_SUCCESS) {
+					AppFileX_WriteCaptureStatusLine(
+							"[FILEX][ERROR] domain=FileX op=select_hour_dir path=%s status=%lu\r\n",
+							path, (unsigned long) dir_status);
+					/* Every exit must restore root before releasing the shared mutex. */
+					(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
 					AppFileX_UnlockMedia();
 					return dir_status;
 				}
@@ -1829,6 +1918,9 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		}
 
 		if (fx_status != FX_SUCCESS) {
+			AppFileX_WriteCaptureStatusLine(
+					"[FILEX][ERROR] domain=FileX op=open_capture path=%s status=%lu\r\n",
+					path, (unsigned long) fx_status);
 			(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
 			AppFileX_UnlockMedia();
 			return fx_status;
@@ -1844,6 +1936,9 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		const ULONG fallback_seek_start_tick = tx_time_get();
 		file_status = fx_file_seek(&capture_fx_file, 0U);
 		if (file_status != FX_SUCCESS) {
+			AppFileX_WriteCaptureStatusLine(
+					"[FILEX][ERROR] domain=FileX op=seek_capture path=%s status=%lu\r\n",
+					path, (unsigned long) file_status);
 			(void) fx_file_close(&capture_fx_file);
 			(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
 			AppFileX_UnlockMedia();
@@ -1858,6 +1953,12 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		const ULONG fallback_write_start_tick = tx_time_get();
 		file_status = fx_file_write(&capture_fx_file, (VOID*) data_ptr,
 				data_length);
+        g_capture_media_flush_pending = true;
+		if (file_status != FX_SUCCESS) {
+			AppFileX_WriteCaptureStatusLine(
+					"[FILEX][ERROR] domain=FileX op=write_capture path=%s status=%lu\r\n",
+					path, (unsigned long) file_status);
+		}
 		AppFileX_WriteTimingLine(
 				"[FILEX][CAPTURE][TIMING] fallback-write=%lu ms path=%s status=%lu\r\n",
 				(unsigned long)(((tx_time_get() - fallback_write_start_tick) *
@@ -1866,14 +1967,19 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		if (file_status == FX_SUCCESS) {
 			/* Keep timestamped fallback files just as tightly sized as slots. */
 			file_status = fx_file_truncate(&capture_fx_file, data_length);
+            if (file_status != FX_SUCCESS) {
+                AppFileX_WriteCaptureStatusLine("[FILEX][ERROR] domain=FileX op=truncate_capture path=%s status=%lu\r\n",
+                        path, (unsigned long) file_status);
+            }
 		}
 		if (file_status == FX_SUCCESS) {
 #if APP_FILEX_ENABLE_CAPTURE_FILE_TIMESTAMP
-			(void) AppFileX_StampCapturedImageTimestampLocked(file_name_ptr,
-					NULL);
+            if (!AppFileX_StampCapturedImageTimestampLocked(original_file_name_ptr, NULL)) {
+                AppFileX_WriteCaptureStatusLine("[FILEX][ERROR] op=stamp_capture path=%s data-written=1\r\n", path);
+            }
 #else
 			UINT stamp_status = AppFileX_QueueCapturedImageTimestampLocked(
-					file_name_ptr);
+					original_file_name_ptr);
 			if (stamp_status != TX_SUCCESS) {
 				DebugConsole_Printf(
 						"[FILEX][CAPTURE] Failed to queue timestamp for %s, status=%lu.\r\n",
@@ -1889,7 +1995,13 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 
 		if (capture_file_open) {
 			const ULONG fallback_close_start_tick = tx_time_get();
-			(void) fx_file_close(&capture_fx_file);
+            const UINT close_status = fx_file_close(&capture_fx_file);
+            if (close_status != FX_SUCCESS) {
+                AppFileX_WriteCaptureStatusLine("[FILEX][ERROR] domain=FileX op=close_capture path=%s status=%lu\r\n",
+                        path, (unsigned long) close_status);
+                if (file_status == FX_SUCCESS) { file_status = close_status; }
+                flash_save_success = false;
+            }
 			AppFileX_WriteTimingLine(
 					"[FILEX][CAPTURE][TIMING] fallback-close=%lu ms path=%s\r\n",
 					(unsigned long)(((tx_time_get() - fallback_close_start_tick) *
@@ -1900,10 +2012,10 @@ UINT AppFileX_WriteCapturedImage(const CHAR *file_name_ptr,
 		fx_status = file_status;
 	}
 
-capture_save_finish:
 	(void) fx_directory_default_set(&g_sd_fx_media, FX_NULL);
 	AppFileX_UnlockMedia();
 
+capture_save_unlocked:
 	if (flash_save_success) {
 		AppFileX_FlashCaptureBlue(500U);
 	}

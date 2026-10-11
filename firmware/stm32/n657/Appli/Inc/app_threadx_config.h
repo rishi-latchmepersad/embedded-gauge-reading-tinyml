@@ -58,11 +58,11 @@ extern "C" {
 #define CAMERA_STANDBY_MODE_PROOF_ENABLE        1U
 #endif
 
-/* The RTC wake-up timer uses LSE/16 (2,048 Hz) in this first automatic-wake
- * test. Its 16-bit counter therefore supports just under 32 seconds; use a
- * short interval so a wake attempt is observable without waiting a minute. */
+/* Standby uses the RTC's CK_SPRE wake-timer source, nominally 1 Hz from the
+ * RTC prescalers, so the 16-bit counter can cover intervals far longer than
+ * the original 30-second wake-path test. */
 #ifndef CAMERA_STANDBY_WAKE_INTERVAL_MS
-#define CAMERA_STANDBY_WAKE_INTERVAL_MS        30000U
+#define CAMERA_STANDBY_WAKE_INTERVAL_MS        300000U
 #endif
 
 /* Storage maintenance timing ---------------------------------------------- */

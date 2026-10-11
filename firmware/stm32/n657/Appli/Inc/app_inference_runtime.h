@@ -75,6 +75,9 @@ bool AppInferenceRuntime_IsInferenceInFlight(void);
  */
 bool AppInferenceRuntime_WaitForLogQueueDrain(uint32_t timeout_ms);
 
+/** @brief Return this boot's count of unsaved inference records. */
+ULONG AppInferenceRuntime_GetDroppedLogRows(void);
+
 /** @brief Return whether the most recently completed AI request succeeded. */
 bool AppInferenceRuntime_WasLastRequestSuccessful(void);
 

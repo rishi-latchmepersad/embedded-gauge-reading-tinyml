@@ -102,6 +102,12 @@ extern uint32_t __enoncacheable;
 #define APP_ETH_PHY_LAN8742_ID2 0xC130U
 #define APP_ETH_MDIO_TIMEOUT_MS 1000U
 
+/* Reserve RTC backup registers 23–31 for the default-vector ID and one compact
+ * post-mortem snapshot. They survive software resets and Standby wakeups. */
+#define APP_DIAGNOSTIC_FAULT_MAGIC (0x4641554CUL)
+static char app_boot_reset_log_line[192];
+static char app_previous_fault_log_line[192];
+
 /**
  * @brief Wait until the ETH1 MDIO engine is idle.
  * @param timeout_ms Maximum wait time in milliseconds.
@@ -342,11 +348,40 @@ static void App_LogResetCause(void) {
 			(__HAL_PWR_GET_FLAG(PWR_FLAG_SBF) != RESET) ? 1U : 0U;
 	const unsigned int wakeup3 =
 			(HAL_PWR_GetWakeupFlag(PWR_WAKEUP_FLAG3) != RESET) ? 1U : 0U;
+	uint32_t fault_magic;
 
-	(void) snprintf(line, sizeof(line),
-			"[BOOT] Reset cause flags: PIN=%u POR=%u BOR=%u SFT=%u IWDG=%u WWDG=%u LCK=%u\r\n",
-			pin, por, bor, sft, iwdg, wwdg, lck);
-	DebugConsole_WriteString(line);
+	/* Keep a copy for the later FileX startup path, which can persist the same
+	 * reset evidence after the SD card has mounted. */
+	(void) snprintf(app_boot_reset_log_line, sizeof(app_boot_reset_log_line),
+			"[BOOT] reset PIN=%u POR=%u BOR=%u SFT=%u IWDG=%u WWDG=%u LCK=%u HWRSR=0x%08lX LPWR=%u SBF=%u WKUP3=%u",
+			pin, por, bor, sft, iwdg, wwdg, lck,
+			(unsigned long) raw_reset_status, low_power_reset, standby, wakeup3);
+
+	/* Read the retained fault; the SD logger clears its marker after a durable
+	 * copy. The exception handler avoids unsafe FileX or ThreadX calls at fault time. */
+	HAL_PWR_EnableBkUpAccess();
+	fault_magic = TAMP->BKP24R;
+	if (fault_magic == APP_DIAGNOSTIC_FAULT_MAGIC) {
+		(void) snprintf(app_previous_fault_log_line,
+				sizeof(app_previous_fault_log_line),
+				"[POSTMORTEM] exception=%lu PC=0x%08lX LR=0x%08lX CFSR=0x%08lX HFSR=0x%08lX BFAR=0x%08lX MMFAR=0x%08lX EXC_LR=0x%08lX",
+				(unsigned long) TAMP->BKP23R,
+				(unsigned long) TAMP->BKP25R,
+				(unsigned long) TAMP->BKP26R,
+				(unsigned long) TAMP->BKP27R,
+				(unsigned long) TAMP->BKP28R,
+				(unsigned long) TAMP->BKP29R,
+				(unsigned long) TAMP->BKP30R,
+				(unsigned long) TAMP->BKP31R);
+		/* Keep the retained fault until the logger confirms a durable SD copy. */
+	}
+
+	DebugConsole_WriteString(app_boot_reset_log_line);
+	DebugConsole_WriteString("\r\n");
+	if (app_previous_fault_log_line[0] != '\0') {
+		DebugConsole_WriteString(app_previous_fault_log_line);
+		DebugConsole_WriteString("\r\n");
+	}
 	(void) snprintf(line, sizeof(line),
 			"[BOOT][STANDBY] loader-install-v3-irq-restore HWRSR=0x%08lX LPWR=%u\r\n",
 			(unsigned long) raw_reset_status, low_power_reset);
@@ -361,6 +396,63 @@ static void App_LogResetCause(void) {
 		__HAL_PWR_CLEAR_FLAG(PWR_FLAG_SBF);
 	}
 	__HAL_RCC_CLEAR_RESET_FLAGS();
+}
+
+/**
+ * @brief Return the reset cause captured before RCC/PWR flags are cleared.
+ * @retval Stable boot record string for later SD logging.
+ */
+const char *App_GetBootResetLogLine(void) {
+	return app_boot_reset_log_line;
+}
+
+/**
+ * @brief Return the previous Cortex fault snapshot captured from backup registers.
+ * @retval Post-mortem record, or an empty string when no snapshot was retained.
+ */
+const char *App_GetPreviousFaultLogLine(void) {
+	return app_previous_fault_log_line;
+}
+
+/**
+ * @brief Acknowledge the previous fault only after a durable SD copy exists.
+ * @return None. Called by the logger after successful close and media flush.
+ * @sideeffects Clears BKP24 magic; preserves the register contents for inspection.
+ */
+void AppDiagnostics_AcknowledgePersistedFault(void) {
+    HAL_PWR_EnableBkUpAccess();
+    if (TAMP->BKP24R == APP_DIAGNOSTIC_FAULT_MAGIC) {
+        TAMP->BKP24R = 0U;
+        __DSB();
+    }
+}
+
+/**
+ * @brief Preserve a minimal Cortex fault record without using RTOS or SD code.
+ * @param stacked_pc Faulting instruction address.
+ * @param stacked_lr Link register from the exception stack frame.
+ * @param cfsr Configurable fault status register.
+ * @param hfsr HardFault status register.
+ * @param bfar Bus fault address register.
+ * @param mmfar Memory management fault address register.
+ * @param exc_lr Exception-return value identifying the interrupted stack.
+ * @sideeffects Writes reserved RTC backup registers for recovery on next boot.
+ */
+void AppDiagnostics_RecordFault(uint32_t stacked_pc, uint32_t stacked_lr,
+		uint32_t cfsr, uint32_t hfsr, uint32_t bfar, uint32_t mmfar,
+		uint32_t exc_lr, uint32_t exception_number) {
+	HAL_PWR_EnableBkUpAccess();
+	TAMP->BKP23R = exception_number;
+	TAMP->BKP25R = stacked_pc;
+	TAMP->BKP26R = stacked_lr;
+	TAMP->BKP27R = cfsr;
+	TAMP->BKP28R = hfsr;
+	TAMP->BKP29R = bfar;
+	TAMP->BKP30R = mmfar;
+	TAMP->BKP31R = exc_lr;
+	__DMB();
+	/* Set the marker last so an interrupted partial write is never reported. */
+	TAMP->BKP24R = APP_DIAGNOSTIC_FAULT_MAGIC;
 }
 
 /**
@@ -640,8 +732,7 @@ int main(void) {
 	/* This marker proves that the flashed board is running the console-safe
 	 * baseline redesign image rather than an older image that still emitted
 	 * snapshot bytes through a tuning transport. */
-	DebugConsole_Printf(
-			"[BOOT] firmware=2026-08-20-ina219-threadx-voltage-monitor-v1\r\n");
+	DebugConsole_Printf("[BOOT] firmware=%s\r\n", APP_FIRMWARE_BUILD_ID);
 	DebugConsole_Printf("[BOOT] UART console initialized.\r\n");
 	App_LogResetCause();
 	DS3231_LogI2c1LineState();

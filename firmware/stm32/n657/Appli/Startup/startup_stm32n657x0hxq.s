@@ -105,16 +105,20 @@ LoopForever:
 
 /**
  * @brief  This is the code that gets called when the processor receives an
- *         unexpected interrupt.  This simply enters an infinite loop, preserving
- *         the system state for examination by a debugger.
+ *         unexpected interrupt. Pass EXC_RETURN to the C post-mortem handler,
+ *         which records the vector and stacked PC before latching the fault.
  *
  * @param  None
  * @retval : None
 */
   .section .text.Default_Handler,"ax",%progbits
 Default_Handler:
-Infinite_Loop:
-  b Infinite_Loop
+  tst lr, #4
+  ite eq
+  mrseq r1, msp
+  mrsne r1, psp
+  mov r0, lr
+  b IT_DefaultHandler_C
   .size Default_Handler, .-Default_Handler
 
 /******************************************************************************

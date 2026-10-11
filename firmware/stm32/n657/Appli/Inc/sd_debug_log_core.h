@@ -8,6 +8,9 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
+/* Oldest archive is debug_0032.log; debug_0001.log is the newest. */
+#define SD_DEBUG_LOG_CORE_MAX_ARCHIVES 32U
+
 /*==============================================================================
  * Type: SdDebugLogCore_FileOps
  *
@@ -32,6 +35,7 @@ typedef struct {
 
 	int32_t (*rename)(void *user_context_ptr, const char *old_name_ptr,
 			const char *new_name_ptr);
+    int32_t (*remove)(void *user_context_ptr, const char *file_name_ptr);
 	int32_t (*exists)(void *user_context_ptr, const char *file_name_ptr,
 			uint8_t *exists_out_ptr);
 	int32_t (*get_size)(void *user_context_ptr, const char *file_name_ptr,

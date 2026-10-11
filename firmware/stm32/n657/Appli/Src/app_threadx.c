@@ -142,6 +142,37 @@ static VOID CameraHeartbeatThread_Entry(ULONG thread_input);
 static VOID AppThreadX_StackErrorHandler(TX_THREAD *thread_ptr);
 
 /**
+ * @brief Queue a timestamped lifecycle marker for the SD debug log.
+ * @param event_name Short phase name that identifies the last completed work.
+ * @sideeffects Adds one asynchronous FileX log record; also reports queue loss
+ *              to UART so SD logging failures remain visible.
+ */
+static void CameraThread_LogPersistentEvent(const char *event_name) {
+	char line[128] = { 0 };
+	const ULONG uptime_ticks = tx_time_get();
+	/* The queue is created by FileX startup; early camera probe events still go
+	 * to UART until the SD media-ready transition makes persistent logging safe. */
+	if (!AppFileX_IsMediaReady()) {
+		return;
+	}
+	const int32_t length = snprintf(line, sizeof(line),
+			"[LIFE] uptime_ticks=%lu event=%s",
+			(unsigned long) uptime_ticks,
+			(event_name != NULL) ? event_name : "unknown");
+
+	if ((length < 0) || ((size_t) length >= sizeof(line))) {
+		DebugConsole_WriteString(
+				"[SDLOG][ERROR] lifecycle marker formatting failed.\r\n");
+		return;
+	}
+	if (SdDebugLogService_EnqueueLine((const CHAR *) line) != TX_SUCCESS) {
+		DebugConsole_Printf(
+				"[SDLOG][ERROR] lifecycle marker enqueue failed: %s\r\n",
+				(event_name != NULL) ? event_name : "unknown");
+	}
+}
+
+/**
  * @brief ThreadX entry point used to run camera bring-up diagnostics.
  * @param thread_input Unused ThreadX input value.
  */
@@ -511,6 +542,7 @@ static bool camera_stop_vddio3_suspended = false;
 /* RTC secure wake events are delivered through EXTI line 17 on STM32N6. */
 #define CAMERA_STANDBY_RTC_EXTI_LINE (LL_EXTI_LINE_17)
 #define CAMERA_STANDBY_LSI_TIMEOUT_MS (10U)
+#define CAMERA_STANDBY_LSI_NOMINAL_HZ (32000ULL)
 /* The wake loader's immutable image fits below its data/stack at 0x34010000.
  * Check 60 KiB of code/padding, not the mutable C-runtime data above it. */
 #define CAMERA_STANDBY_LOADER_RAM_BASE (0x34000400UL)
@@ -842,22 +874,22 @@ static void CameraThread_ResumeXspi2AfterStop(void) {
  *
  * The RTC HAL module is not part of this generated application build, so this
  * small register sequence mirrors HAL_RTCEx_SetWakeUpTimer_IT() without adding
- * generated build files. The ST N657 Standby reference uses LSI; LSI/16 is
- * approximately 2,000 Hz and the N6 wake counter is 16-bit.
+ * generated build files. The direct LSI/16 source is limited to about 32 s;
+ * use CK_SPRE instead and derive its tick count from RTC_PRER. The external
+ * DS3231 remains the wall-clock source, so the internal RTC calendar is unused.
  */
 static bool CameraThread_ArmRtcStandbyWakeup(uint32_t duration_ms) {
 	RCC_PeriphCLKInitTypeDef periph_clk = { 0 };
 	uint32_t wake_ticks;
 	uint32_t lsi_start_tick;
 	uint32_t wait_count = 0U;
+	uint32_t prediv_a;
+	uint32_t prediv_s;
+	uint64_t prescaler_divisor;
+	uint64_t wake_tick_denominator;
 
 	if (duration_ms == 0U) {
 		duration_ms = 1U;
-	}
-	wake_ticks = (uint32_t) ((((uint64_t) duration_ms * 2000ULL) + 999ULL)
-			/ 1000ULL);
-	if ((wake_ticks == 0U) || (wake_ticks > 65536U)) {
-		return false;
 	}
 
 	HAL_PWR_EnableBkUpAccess();
@@ -892,6 +924,21 @@ static bool CameraThread_ArmRtcStandbyWakeup(uint32_t duration_ms) {
 	__HAL_RCC_RTCAPB_CLK_ENABLE();
 	__HAL_RCC_RTC_CLK_SLEEP_ENABLE();
 	__HAL_RCC_RTCAPB_CLK_SLEEP_ENABLE();
+	/* CK_SPRE is RTCCLK / ((PREDIV_A + 1) * (PREDIV_S + 1)). Read PRER only
+	 * after enabling the RTC bus clock, then use nominal 32 kHz LSI to compensate
+	 * for its configured divider rather than assuming every CK_SPRE tick is 1 s. */
+	prediv_a = ((RTC->PRER & RTC_PRER_PREDIV_A) >> RTC_PRER_PREDIV_A_Pos) + 1U;
+	prediv_s = (RTC->PRER & RTC_PRER_PREDIV_S) + 1U;
+	prescaler_divisor = (uint64_t) prediv_a * (uint64_t) prediv_s;
+	wake_tick_denominator = prescaler_divisor * 1000ULL;
+	wake_ticks = (uint32_t) ((((uint64_t) duration_ms
+			* CAMERA_STANDBY_LSI_NOMINAL_HZ) + wake_tick_denominator - 1ULL)
+			/ wake_tick_denominator);
+	if ((wake_ticks == 0U) || (wake_ticks > 65536U)) {
+		DebugConsole_Printf(
+				"[STANDBY][RTC] interval exceeds CK_SPRE 16-bit range; automatic wake unavailable.\r\n");
+		return false;
+	}
 	/* Match the STM32N6 PWR_STANDBY_RTC example's RIF policy. The application
 	 * is a secure image, but the wake-up timer itself must be accessible to the
 	 * low-power wake fabric rather than left behind a default RTC policy. */
@@ -928,14 +975,17 @@ static bool CameraThread_ArmRtcStandbyWakeup(uint32_t duration_ms) {
 		return false;
 	}
 	RTC->WUTR = wake_ticks - 1U;
-	MODIFY_REG(RTC->CR, RTC_CR_WUCKSEL, 0U);
+	/* CK_SPRE (HAL name RTC_WAKEUPCLOCK_CK_SPRE_16BITS) extends the timer to
+	 * hours while keeping its 16-bit counter and low-frequency clock. */
+	MODIFY_REG(RTC->CR, RTC_CR_WUCKSEL, RTC_CR_WUCKSEL_2);
 	SET_BIT(RTC->CR, RTC_CR_WUTIE | RTC_CR_WUTE);
 	RTC->WPR = 0xFFU;
 
 	DebugConsole_Printf(
-				"[STANDBY][RTC] automatic wake armed source=LSI interval_ms=%lu ticks=%lu WUTR=%lu CR=0x%08lX ICSR=0x%08lX SMISR=0x%08lX.\r\n",
+				"[STANDBY][RTC] automatic wake armed source=LSI/CK_SPRE interval_ms=%lu ticks=%lu WUTR=%lu PRER=0x%08lX CR=0x%08lX ICSR=0x%08lX SMISR=0x%08lX.\r\n",
 				(unsigned long) duration_ms, (unsigned long) wake_ticks,
-				(unsigned long) RTC->WUTR, (unsigned long) RTC->CR,
+				(unsigned long) RTC->WUTR, (unsigned long) RTC->PRER,
+				(unsigned long) RTC->CR,
 				(unsigned long) RTC->ICSR, (unsigned long) RTC->SMISR);
 	return true;
 }
@@ -1180,6 +1230,13 @@ static bool CameraThread_EnterStopModeProof(void) {
 	}
 	DebugConsole_Printf(
 			"[STOP] AI result and inference/metrics log queues drained.\r\n");
+    const ULONG lost_rows = AppInferenceRuntime_GetDroppedLogRows();
+    if (lost_rows > 0U) {
+        char health[96];
+        (void) snprintf(health, sizeof(health), "[STORAGE][LOSS] inference_rows_not_saved=%lu",
+                (unsigned long) lost_rows);
+        (void) SdDebugLogService_EnqueueLine(health);
+    }
 
 	/* Capture writes are marked flush-pending, while debug metrics use a
 	 * separate queue.  Complete both barriers before powering down the SD path. */
@@ -1213,9 +1270,13 @@ static bool CameraThread_EnterStopModeProof(void) {
 			"[STOP] Awake power log flush failed; skipping Stop proof.\r\n");
 		return false;
 	}
-	SdDebugLogService_ForceFlush();
+	if (SdDebugLogService_ForceFlush() != 0) {
+		DebugConsole_Printf(
+				"[STOP] Debug-log flush/close failed; skipping low-power transition.\r\n");
+		return false;
+	}
 	DebugConsole_Printf(
-			"[STOP] Capture, metrics, inference, and awake-power logs flushed; entering low power.\r\n");
+			"[STOP] Storage flush barriers complete; entering low power.\r\n");
 
 #if CAMERA_STANDBY_MODE_PROOF_ENABLE
     /* Use the already-completed storage and logging barriers for the Standby
@@ -1374,6 +1435,7 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 			camera_capture_isp_loop_paused = false;
 			DebugConsole_Printf(
 					"[CAMERA][THREAD] Camera probe completed successfully.\r\n");
+			CameraThread_LogPersistentEvent("camera_probe_ok");
 
 			/* FileX mounts asynchronously. Complete that one-time startup work
 			 * before model initialization so the boot dry-run cannot overlap SD
@@ -1399,9 +1461,12 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 				}
 			}
 
-	if (!App_AI_Model_Init()) {
-				DebugConsole_Printf(
+		if (!App_AI_Model_Init()) {
+			CameraThread_LogPersistentEvent("model_init_failed");
+			DebugConsole_Printf(
 					"[AI] Model runtime init failed; continuing without inference.\r\n");
+		} else {
+			CameraThread_LogPersistentEvent("model_init_ok");
 		}
 
 #if APP_AI_ENABLE_TIP_FOCUS_GEOMETRY_STAGE && APP_AI_ENABLE_TIP_FOCUS_BOOT_DRY_RUN
@@ -1411,6 +1476,7 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 		BSP_LED_Off(LED_BLUE);
 		DebugConsole_Printf(
 				"[CAMERA][THREAD] Entering capture/Stop loop (sleep=60s)...\r\n");
+		CameraThread_LogPersistentEvent("capture_loop_entered");
 		while (1) {
 			bool storage_ready = AppFileX_IsMediaReady();
 			uint32_t next_delay_ms = CAMERA_CAPTURE_PERIOD_MS;
@@ -1429,6 +1495,7 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 					continue;
 				}
 				storage_ready = true;
+				CameraThread_LogPersistentEvent("storage_ready");
 				DebugConsole_Printf(
 						"[CAMERA][THREAD] FileX media ready; starting capture.\r\n");
 			}
@@ -1443,16 +1510,19 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 			DebugConsole_Printf(
 					"[CAMERA][THREAD] Starting %lu-frame capture/AI burst.\r\n",
 					(unsigned long)CAMERA_CAPTURE_BURST_COUNT);
+			CameraThread_LogPersistentEvent("capture_burst_start");
 			for (uint32_t burst_index = 0U;
 					burst_index < CAMERA_CAPTURE_BURST_COUNT; ++burst_index) {
 				AppInferenceRuntime_SetNextRequestFinal(
 						(burst_index + 1U) == CAMERA_CAPTURE_BURST_COUNT);
 				if (AppCameraCapture_CaptureAndStoreSingleFrame()) {
+					CameraThread_LogPersistentEvent("capture_frame_ok");
 					DebugConsole_Printf(
 							"[CAMERA][THREAD] Burst frame %lu/%lu saved and handed to AI.\r\n",
 							(unsigned long)(burst_index + 1U),
 							(unsigned long)CAMERA_CAPTURE_BURST_COUNT);
 				} else {
+					CameraThread_LogPersistentEvent("capture_frame_failed");
 					DebugConsole_Printf(
 							"[CAMERA][THREAD] Burst frame %lu/%lu capture/inference failed.\r\n",
 							(unsigned long)(burst_index + 1U),
@@ -1464,11 +1534,15 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 			 * Wait for final publication and ownership release before touching
 			 * CMW/DCMIPP or powering down the camera. */
 			if (!AppCameraCapture_WaitForInferenceOwnershipRelease()) {
+				CameraThread_LogPersistentEvent("ai_ownership_timeout");
 				DebugConsole_Printf(
 						"[CAMERA][POWER] AI ownership did not clear; deferring Stage 1 restart.\r\n");
 				DelayMilliseconds_ThreadX(next_delay_ms);
 				continue;
 			}
+			CameraThread_LogPersistentEvent(
+					AppInferenceRuntime_WasLastRequestSuccessful()
+							? "capture_burst_complete" : "capture_burst_no_valid_result");
 			/* The ownership barrier means the AI worker has completed its read of
 			 * the final burst frame and Metrics_EndInference(). A failed final
 			 * result still emits failure metrics; make that state visible without
@@ -1483,10 +1557,21 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 			 * DCMIPP/CMW state live across the clock reset and make wake recovery
 			 * dependent on undefined peripheral state. */
 			const bool camera_stop_ok = CameraThread_StopCameraStack();
+			CameraThread_LogPersistentEvent(camera_stop_ok
+					? "camera_stop_ok" : "camera_stop_failed");
 			if (!camera_stop_ok) {
 				DebugConsole_Printf(
 						"[CAMERA][POWER] Camera stop failed; skipping low-power transition.\r\n");
 			}
+
+            /* Storage pruning runs only after the camera and AI release the frame. */
+            if (camera_stop_ok) {
+                const UINT cleanup_status = AppImageCleanup_RunDueBeforeSleep();
+                if (cleanup_status != FX_SUCCESS) {
+                    DebugConsole_Printf("[IMAGE][CLEANUP] maintenance failed status=%lu; retry next cycle.\r\n",
+                            (unsigned long) cleanup_status);
+                }
+            }
 
 			bool camera_start_ok = false;
 #if CAMERA_STOP_MODE_PROOF_ENABLE
@@ -1495,7 +1580,10 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 			 * and use the retry delay below. */
 			bool stop_interval_completed = false;
 			if (camera_stop_ok) {
+				CameraThread_LogPersistentEvent("standby_or_stop_entering");
 				stop_interval_completed = CameraThread_EnterStopModeProof();
+				CameraThread_LogPersistentEvent(stop_interval_completed
+						? "stop_returned_ok" : "stop_returned_failed");
 				camera_start_ok = CameraThread_StartCameraStack();
 			}
 #else
@@ -1543,6 +1631,9 @@ static VOID CameraHeartbeatThread_Entry(ULONG thread_input) {
 	DebugConsole_Printf("[WATCHDOG] heartbeat thread running.\r\n");
 
 	while (1) {
+		/* A periodic heartbeat distinguishes a dead scheduler from a quiet but
+		 * healthy application even when no capture result is being produced. */
+		CameraThread_LogPersistentEvent("heartbeat");
 		BSP_LED_Toggle(LED_GREEN);
 		/* The LED remains the liveness indicator. UART pulses are opt-in because
 		 * a five-second heartbeat obscures capture and inference failures. */

@@ -1,5 +1,26 @@
 # AI Memory
 
+# Board stop diagnostics: persist reset and lifecycle evidence (2026-10-11)
+
+- The mounted SD archive `debug_0001.log` ends with normal AI rows at
+  `2026-10-07_06-52-27`; the active `debug.log` could not be read because the
+  host reported the file/directory as corrupted. Those files do not identify
+  why the board stopped.
+- Firmware now writes its captured reset flags and build marker after FileX
+  starts, plus periodic `[LIFE]` records for heartbeat, capture, inference,
+  camera shutdown, and low-power transitions. Search for the last lifecycle
+  event and the preceding heartbeat when diagnosing a stall.
+- Cortex fault handlers retain PC/LR and key fault registers in TAMP backup
+  registers 23–31 without calling ThreadX or FileX. Unexpected vectors routed
+  through the startup `Default_Handler` and NMI also record the exception number
+  and stacked PC/LR. The next successful boot reports the snapshot over UART
+  and copies it to SD after mount. This is best-effort across backup-domain-
+  retaining resets; a latched fault needs a later boot before the SD log can
+  receive its post-mortem record.
+- SD queue drops, write errors, and final log flush/close errors are reported
+  over UART. The logger now propagates flush failures so the low-power path
+  does not proceed after an unsuccessful debug-log flush.
+
 # Ethernet PHY power-down validated: Stop current reduced from about 60 mA to 43 mA (2026-09-10)
 
 - The application does not use Ethernet, but the Nucleo's external LAN8742A PHY
@@ -4242,3 +4263,82 @@ Concrete mapping (the real artifact/package names behind the friendly names):
 - User independently confirms about 14 mA during Standby. Treat this as the
   board-level measured current; UART logs prove wake/application progress but
   do not measure current.
+
+## SD write failure diagnosis (2026-10-11)
+
+- The mounted FAT32 card reported 15,923,150,848 bytes capacity and zero free
+  bytes. Its 660 hourly capture folders contained 41,105 images totaling
+  15,137,816,832 payload bytes. FAT allocation overhead also consumes space.
+- Read-only CHKDSK reported 14 lost allocation chains totaling 3,424 KiB.
+  A filesystem repair alone cannot address the lack of space. Preserve user
+  files before freeing capture space or repairing the card.
+- Camera status 13 is ambiguous in the old log: the save function returns both
+  FileX FX_INVALID_PATH (0x0D) and ThreadX TX_NO_INSTANCE (mutex timeout, 0x0D).
+  Logger core status -2 on its initial open means the existence query failed,
+  not necessarily that fx_file_write failed. Preserve the adapter operation
+  and original FileX status on UART instead of guessing from wrapper codes.
+- The capture writer ignored hourly-directory creation failure, then returned
+  from failed directory selection without restoring root. A full card can
+  therefore produce an invalid-path error and strand subsequent relative
+  operations. The diagnostic update preserves the creation error, restores
+  root on failed selection, and uses absolute capture/debug-log paths.
+- The original retention worker scheduled pruning 30 minutes after each boot,
+  which short Standby cycles restarted, and skipped hourly folders. Both are
+  fixed in `2026-10-11-sd-retention-fault-logs-v3`.
+
+## SD repair and durable logging update (2026-10-11)
+
+- Whole-card user-file backup: `tmp/sd_card_backup_20261011_111449/files`.
+  Robocopy copied 41,205 files with zero failures/mismatches. SHA-256 checks
+  passed for 36,000 files before the user explicitly waived the remainder.
+  The backup includes files that were already empty/truncated on the card;
+  copying or repairing FAT cannot recreate image bytes that were never saved.
+- Removed the 660 backed-up hourly capture folders older than 24 hours. Kept
+  root debug logs, inference CSVs and weight blobs. CHKDSK `/F /X` recovered
+  14 lost chains (3,424 KiB) into `FOUND.000`; copied recovery files beside
+  the backup. Repair exit 1 means corrections made. A second CHKDSK exited 0
+  and reported no problems. Write-through, durable flush, close and exact
+  readback of `E:/sd_repair_check.txt` succeeded. Free space: 15,881,437,184
+  bytes after that note (about 15.88 GB / 14.79 GiB).
+- Cleanup now runs after camera/AI ownership ends and the camera stops, before
+  the existing pre-sleep flush barriers. Its completed wall-time schedule uses
+  BKP20 magic, BKP21 seconds since 2000 and BKP22 complement; these do not overlap
+  the fault snapshot in BKP23..31. First use runs immediately; subsequent sweeps
+  are due every 30 minutes, including across Standby application restarts.
+- Cleanup traverses hourly folders in bounded sorted batches, reconstructs
+  `YYYY-MM-DD_HH/capture_MM-SS.gray8` timestamps, and resets buckets per folder.
+  It keeps all recent/future captures (last 24 hours), then the newest nonempty
+  capture per 10-minute interval. Unknown files/folders and invalid RTC dates
+  are preserved; old empty captures cannot displace a valid bucket winner.
+- New captures stop allocating space at a 256 MiB reserve; live AI continues.
+  The available-space query reads FileX's cached cluster count, without a FAT
+  scan. Older sampled captures are preserved, so image saving can eventually
+  pause until more space is freed. Debug archives are bounded to 32 x 5 MiB,
+  with `debug_0001.log` newest and `debug_0032.log` oldest, plus active debug.log.
+- Capture writes preserve the complete hourly path when stamping FAT metadata,
+  restore root on failure, check directory creation/write/truncate/close, and
+  no longer release the media mutex twice after a fast slot write. Failed writes
+  still mark media flush pending. Root capture/debug/inference paths are absolute.
+- Inference CSV writes check directory/create/open/header/seek/write/close/flush,
+  add a header to an existing empty CSV, and select the date for each record.
+  Success prints `Saved and flushed`; failures and queue drops produce LOSS
+  counts and original operation/status diagnostics. A semaphore wakes the logger
+  only when records arrive; atomic dequeue/busy flags close the sleep-drain race.
+- Debug core state is serialized with a mutex. Original adapter errors and
+  lost-line counters are exposed; a durable loss summary accompanies recovery.
+  Close precedes the final media flush so directory file-size metadata is
+  committed. Flush is retried even if a previous failed close left no open handle.
+  A new append session adds a newline to isolate an interrupted historical tail.
+- The previous fault marker is cleared only after a direct postmortem SD record
+  has been written, closed and flushed successfully. A full/unavailable card
+  therefore cannot erase the retained fault before a durable copy exists.
+- Final CubeIDE Windows toolchain build completed without warnings/errors.
+  Flash-ready application: `tmp/sd_retention_v3/n657_Appli_sd_retention_v3_flash_ready.bin`
+  at `0x70100000`, ST header 2.3 in the existing no-key mode. Its payload at
+  offset 0x400 was verified identical to the latest generated application .bin.
+  Receipt/build/signing logs are beside it. No board flashing or live runtime
+  validation was performed; the user will flash the application.
+- SigningTool prompts when its output already exists. Use a fresh output name
+  for unattended signing; an unanswered overwrite prompt can generate a large
+  repetitive log. Power impact of this firmware has not been measured: cleanup
+  runs on the retained 30-minute schedule and no per-interrupt log flood is added.

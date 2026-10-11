@@ -46,6 +46,10 @@ extern "C" {
 
 /* USER CODE END Includes */
 
+/* why: Keep one visible build identifier for the UART and SD boot records so
+ * the board log can be compared with the firmware image that was built. */
+#define APP_FIRMWARE_BUILD_ID "2026-10-11-sd-retention-fault-logs-v3"
+
 /* Exported types ------------------------------------------------------------*/
 /* Function pointer declaration in non-secure*/
 #if defined ( __ICCARM__ )
@@ -75,6 +79,17 @@ typedef funcptr funcptr_NS;
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
+
+/** Return the reset flags captured before the boot code clears them. */
+const char *App_GetBootResetLogLine(void);
+/** Return the previous reset's retained Cortex fault record, when present. */
+const char *App_GetPreviousFaultLogLine(void);
+/** @brief Clear the retained fault marker only after its SD record is flushed. */
+void AppDiagnostics_AcknowledgePersistedFault(void);
+/** Save a minimal fault snapshot into the RTC backup domain for the next boot. */
+void AppDiagnostics_RecordFault(uint32_t stacked_pc, uint32_t stacked_lr,
+		uint32_t cfsr, uint32_t hfsr, uint32_t bfar, uint32_t mmfar,
+		uint32_t exc_lr, uint32_t exception_number);
 
 /**
  * @brief Restore the application PLL and bus clock tree after STM32N6 Stop.

@@ -1,6 +1,6 @@
-<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" pages="2">
+<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" pages="4">
   <diagram id="6fHF2__YJ60N_B--ARtN" name="AI_Process">
-    <mxGraphModel dx="858" dy="602" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1200" math="0" shadow="0">
+    <mxGraphModel dx="2020" dy="1201" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1200" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -10,16 +10,16 @@
         <mxCell id="cnn_tech_2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#d5e8d4;strokeColor=#82b366;image=process_diagrams_assets/cnn_02_brightness.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" value="&lt;b&gt;Apply a confidence gate&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Check that the gauge area is bright and clear enough to read (by measuring average lumens)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- If the image is too dark, too bright, or unstable, discard it&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Only a usable image moves into the reading pipeline&amp;nbsp;&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Store the accepted image on the SD card for later diagnosis and testing&lt;/span&gt;" vertex="1">
           <mxGeometry height="190" width="280" x="350" y="90" as="geometry" />
         </mxCell>
-        <mxCell id="cnn_tech_3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#a0522d;strokeColor=#6D1F00;image=process_diagrams_assets/cnn_03_ellipse_localizer_v2.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;fontColor=#ffffff;" value="&lt;b&gt;Find the gauge face&lt;/b&gt;&lt;br&gt;- Locate the circular gauge face in the image&lt;br&gt;- Estimate its center, shape, and our confidence in it&lt;br&gt;- If the location is uncertain, we use the known training view/position as a fallback" vertex="1">
+        <mxCell id="cnn_tech_3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#a0522d;strokeColor=#6D1F00;image=process_diagrams_assets/cnn_03_ellipse_localizer_v2.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;fontColor=#ffffff;" value="&lt;b&gt;Find the gauge face&lt;/b&gt;&lt;br&gt;- Locate the circular gauge face in the image using the first ML model (the ellipse model)&lt;br&gt;- Estimate its center, shape, and our confidence in it&lt;br&gt;- If the location is uncertain, we use the known training view/position as a fallback" vertex="1">
           <mxGeometry height="190" width="300" x="670" y="90" as="geometry" />
         </mxCell>
         <mxCell id="cnn_tech_4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#0050ef;strokeColor=#001DBC;image=process_diagrams_assets/cnn_04_crop_selection.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;fontColor=#ffffff;" value="&lt;b&gt;Prepare a standard view of the gauge&lt;/b&gt;&lt;br&gt;- Crop and resize the gauge face into view using the ellipse model, and discard the rest of the image composition&lt;br&gt;- Use the located face when the model is confident in its detection&lt;br&gt;- Otherwise, we use the fixed view used during training" vertex="1">
           <mxGeometry height="190" width="290" x="1010" y="90" as="geometry" />
         </mxCell>
-        <mxCell id="cnn_tech_5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#d5e8d4;strokeColor=#82b366;image=process_diagrams_assets/cnn_05_geometry_keypoints.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" value="&lt;b&gt;Find the center and the needle tip&lt;/b&gt;&lt;br&gt;- Use the geometry model to identify the needle center&lt;br&gt;- Identify the end of the needle, and try to not accidently identify the counterweight&lt;br&gt;- The model also gives us confidence so we can reject uncertain readings" vertex="1">
+        <mxCell id="cnn_tech_5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#d5e8d4;strokeColor=#82b366;image=process_diagrams_assets/cnn_05_geometry_keypoints.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" value="&lt;b&gt;Find the center and the needle tip&lt;/b&gt;&lt;br&gt;- Use the second ML model (the geometry model) to identify the needle center and tip&lt;br&gt;- Try to not accidently identify the counterweight&lt;br&gt;- The model also gives us heatmap strengths so we can reject uncertain readings" vertex="1">
           <mxGeometry height="190" width="300" x="1340" y="90" as="geometry" />
         </mxCell>
-        <mxCell id="cnn_tech_6" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#e1d5e7;strokeColor=#9673a6;image=process_diagrams_assets/cnn_06_angle_to_temperature.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" value="&lt;b&gt;Turn the angle into a measurement&lt;/b&gt;&lt;br&gt;- We measure the needle angle using north as 0 degrees&lt;br&gt;- The active gauge profile maps that angle to the right quantity and unit&lt;br&gt;- We wait for three consistent readings before accepting a large change&lt;br&gt;- We record the profile, angle, value, unit, and confidence so we can explain the result" vertex="1">
+        <mxCell id="cnn_tech_6" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;fillColor=#e1d5e7;strokeColor=#9673a6;image=process_diagrams_assets/cnn_06_angle_to_temperature.svg;imageAlign=right;imageVerticalAlign=middle;imageWidth=48;imageHeight=48;spacingRight=58;spacingLeft=10;" value="&lt;b&gt;Turn the angle into a measurement&lt;/b&gt;&lt;br&gt;- Measure the needle angle using north as 0 degrees&lt;br&gt;- The active gauge profile maps that angle to the right quantity and unit&lt;br&gt;- We wait for three consistent readings before accepting a large change&lt;br&gt;- We record the profile, angle, value, unit, and confidence so we can explain the result" vertex="1">
           <mxGeometry height="190" width="280" x="1680" y="90" as="geometry" />
         </mxCell>
         <mxCell id="cnn_e1" edge="1" parent="1" source="cnn_tech_1" style="endArrow=block;html=1;strokeColor=#000000;" target="cnn_tech_2">
@@ -93,6 +93,364 @@
         </mxCell>
         <mxCell id="-Ap4UIuAOaWBW1bgZLHy-1" parent="1" style="text;whiteSpace=wrap;html=1;" value="&lt;img src=&quot;data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTIwIDEyMCI+CiAgPGRlZnM+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+CiAgICAgIDxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNmNGZiZjQiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjZmZmZmZmIi8+CiAgICA8L2xpbmVhckdyYWRpZW50PgogIDwvZGVmcz4KICA8cmVjdCB4PSI0IiB5PSI0IiB3aWR0aD0iMTEyIiBoZWlnaHQ9IjExMiIgcng9IjE2IiBmaWxsPSJ1cmwoI2JnKSIgc3Ryb2tlPSIjODJiMzY2IiBzdHJva2Utd2lkdGg9IjIiLz4KICA8ZWxsaXBzZSBjeD0iNjAiIGN5PSI1MiIgcng9IjM1IiByeT0iMjciIGZpbGw9IiNlZmY3ZmYiIHN0cm9rZT0iIzZjOGViZiIgc3Ryb2tlLXdpZHRoPSIyIi8+CiAgPGVsbGlwc2UgY3g9IjYwIiBjeT0iNTIiIHJ4PSIyNyIgcnk9IjIwIiBmaWxsPSJub25lIiBzdHJva2U9IiMyZjVkODciIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWRhc2hhcnJheT0iNCAzIi8+CiAgPHBhdGggZD0iTTYwIDE3djcwTTI1IDUyaDcwIiBzdHJva2U9IiNkNmI2NTYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWRhc2hhcnJheT0iNSA0Ii8+CiAgPGNpcmNsZSBjeD0iNjAiIGN5PSI1MiIgcj0iNSIgZmlsbD0iIzJmNWQ4NyIvPgogIDxwYXRoIGQ9Ik02MCA1Mkw4NCAzNSIgc3Ryb2tlPSIjODJiMzY2IiBzdHJva2Utd2lkdGg9IjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxjaXJjbGUgY3g9Ijg0IiBjeT0iMzUiIHI9IjUiIGZpbGw9IiNmZjdmNTAiIHN0cm9rZT0iIzhkNmEwMCIgc3Ryb2tlLXdpZHRoPSIyIi8+CiAgPHRleHQgeD0iNjAiIHk9IjEwNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9IlZlcmRhbmEsQXJpYWwsc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMCIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iIzJmNWQ4NyI+RUxMSVBTRTwvdGV4dD4KPC9zdmc+Cg==&quot; alt=&quot;Ellipse localizer&quot;&gt;" vertex="1">
           <mxGeometry height="40" width="30" x="760" y="310" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="ellipseModelV1" name="Ellipse_Model">
+    <mxGraphModel dx="1768" dy="1051" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1820" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="ell_title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=26;fontColor=#243447;" value="Ellipse Localizer Model Architecture" vertex="1">
+          <mxGeometry height="44" width="1500" x="40" y="28" as="geometry" />
+        </mxCell>
+        <mxCell id="ell_subtitle" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=15;fontColor=#52606d;" value="The first model in the deployed two-stage vision pipeline: full-frame gauge-face localization. We use this to try to locate the gauge in the image captured." vertex="1">
+          <mxGeometry height="34" width="1680" x="40" y="78" as="geometry" />
+        </mxCell>
+        <mxCell id="ell_input" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=10;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;fontColor=#243447;" value="&lt;b&gt;Captured Board frame&lt;/b&gt;&lt;br&gt;640 × 640&lt;br&gt;MONO_Y8&lt;br&gt;One grayscale channel&lt;br&gt;&lt;br&gt;(We capture the full camera frame, but only keep greyscale information for reduced memory requirements as most gauge needles don&#39;t need colour)" vertex="1">
+          <mxGeometry height="300" width="190" x="40" y="165" as="geometry" />
+        </mxCell>
+        <mxCell id="ell_pre" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=10;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;fontColor=#243447;" value="&lt;b&gt;Firmware preprocessing&lt;/b&gt;&lt;br&gt;Bilinear resize of image&lt;br&gt;640 × 640 → 384 × 384&lt;br&gt;&lt;br&gt;Quantize to signed int8&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;(For reduced memory requirements during processing)&lt;/div&gt;" vertex="1">
+          <mxGeometry height="300" width="200" x="250" y="165" as="geometry" />
+        </mxCell>
+        <mxCell id="ell_encoder" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=10;fillColor=#e1f0ff;strokeColor=#6c8ebf;fontSize=14;fontColor=#243447;" value="&lt;b&gt;Shared CNN encoder&lt;/b&gt;&lt;div&gt;&lt;b&gt;&lt;br&gt;&lt;/b&gt;Six downsample + refine stages&lt;br&gt;Each encoder stage uses Conv2D 3 × 3 + batch normalization + ReLU&lt;br&gt;&lt;br&gt;Channels:&lt;br&gt;24 → 32 → 48 → 64 → 96 → 128&lt;br&gt;&lt;br&gt;Feature sizes:&lt;br&gt;192 → 96 → 48 → 24 → 12 → 6&lt;br&gt;&lt;br&gt;(We allow the network to learn more abstract/generalized patterns while shrinking finer details. We maintain skip features for later decoding.)&lt;/div&gt;" vertex="1">
+          <mxGeometry height="300" width="245" x="470" y="165" as="geometry" />
+        </mxCell>
+        <mxCell id="ell_decoder" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=10;fillColor=#e6dff0;strokeColor=#9673a6;fontSize=14;fontColor=#243447;" value="&lt;b&gt;Multiscale decoder&lt;/b&gt;&lt;br&gt;&lt;br&gt;Nearest-neighbor upsample, then concatenate matching encoder skip features&lt;br&gt;&lt;br&gt;Prediction scales:&lt;br&gt;24 × 24 → 48 × 48 → 96 × 96&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;(Turn the features back into spatial predictions of ellipses through upsampling of the patterns learnt and the retained skip features.)&lt;/div&gt;" vertex="1">
+          <mxGeometry height="300" width="240" x="735" y="165" as="geometry" />
+        </mxCell>
+        <mxCell id="ell_heads" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=10;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;fontColor=#243447;" value="&lt;p&gt;&lt;strong&gt;Three predictions at each scale&lt;/strong&gt;&lt;/p&gt;&lt;p&gt;&lt;b&gt;&lt;br&gt;&lt;/b&gt;At 24×24, 48×48, and 96×96, we predict a center heatmap, an ellipse-rim heatmap, and ellipse geometry &lt;code dir=&quot;ltr&quot;&gt;(cx, cy, rx, ry)&lt;/code&gt;.  &lt;/p&gt;&lt;p&gt;(A scale score chooses which scale’s estimate to use. The 96×96 output has the finest grid; the model is trained to favor it for smaller-looking gauges and coarser outputs for larger ones.)&lt;/p&gt;" vertex="1">
+          <mxGeometry height="300" width="250" x="995" y="165" as="geometry" />
+        </mxCell>
+        <mxCell id="ell_decode" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=10;fillColor=#fce5cd;strokeColor=#d79b00;fontSize=14;fontColor=#243447;" value="&lt;b&gt;Choose and check the ellipse&lt;/b&gt;&lt;div&gt;&lt;p&gt;Compare the scores for 24×24, 48×48, and 96×96. Use the ellipse estimate from the highest-scoring scale.  &lt;/p&gt;&lt;p&gt;Find the center from its heatmap, giving stronger cells much more weight.&lt;/p&gt;&lt;p&gt;Use that scale’s geometry estimate for the ellipse radii.  &lt;/p&gt;&lt;p&gt;Reject the result if either radius is under 4 pixels in the original image.&lt;/p&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="300" width="250" x="1265" y="165" as="geometry" />
+        </mxCell>
+        <mxCell id="ell_crop" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=10;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;fontColor=#243447;" value="&lt;b&gt;Ellipse output → next stage&lt;/b&gt;&lt;br&gt;Convert normalized ellipse to 640-frame pixels&lt;br&gt;&lt;br&gt;Square crop side = 1.35 × max(2rx, 2ry); clip to image bounds&lt;br&gt;&lt;br&gt;Resize crop to 224 × 224 for the center/tip heatmap model" vertex="1">
+          <mxGeometry height="300" width="220" x="1535" y="165" as="geometry" />
+        </mxCell>
+        <mxCell id="ell_e1" edge="1" parent="1" source="ell_input" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;" target="ell_pre">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ell_e2" edge="1" parent="1" source="ell_pre" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;" target="ell_encoder">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ell_e3" edge="1" parent="1" source="ell_encoder" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;" target="ell_decoder">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ell_e4" edge="1" parent="1" source="ell_decoder" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;" target="ell_heads">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ell_e5" edge="1" parent="1" source="ell_heads" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;" target="ell_decode">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ell_e6" edge="1" parent="1" source="ell_decode" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;" target="ell_crop">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=20;fontColor=#243447;" value="Network structure" vertex="1">
+          <mxGeometry height="34" width="180" x="30" y="530" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_input" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;fontColor=#243447;" value="&lt;b&gt;Ellipse input&lt;/b&gt;&lt;br&gt;384×384×1" vertex="1">
+          <mxGeometry height="90" width="130" x="35" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_e1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;fillColor=#e1f0ff;strokeColor=#6c8ebf;fontSize=14;fontColor=#243447;" value="&lt;b&gt;E1&lt;/b&gt;&lt;br&gt;192×192×24" vertex="1">
+          <mxGeometry height="90" width="140" x="195" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_e2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;fillColor=#e1f0ff;strokeColor=#6c8ebf;fontSize=14;fontColor=#243447;" value="&lt;b&gt;E2&lt;/b&gt;&lt;br&gt;96×96×32" vertex="1">
+          <mxGeometry height="90" width="140" x="355" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_e3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;fillColor=#e1f0ff;strokeColor=#6c8ebf;fontSize=14;fontColor=#243447;" value="&lt;b&gt;E3&lt;/b&gt;&lt;br&gt;48×48×48" vertex="1">
+          <mxGeometry height="90" width="140" x="515" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_e4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;fillColor=#e1f0ff;strokeColor=#6c8ebf;fontSize=14;fontColor=#243447;" value="&lt;b&gt;E4&lt;/b&gt;&lt;br&gt;24×24×64" vertex="1">
+          <mxGeometry height="90" width="140" x="675" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_e5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;fillColor=#e1f0ff;strokeColor=#6c8ebf;fontSize=14;fontColor=#243447;" value="&lt;b&gt;E5&lt;/b&gt;&lt;br&gt;12×12×96" vertex="1">
+          <mxGeometry height="90" width="140" x="835" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_e6" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;fillColor=#e1f0ff;strokeColor=#6c8ebf;fontSize=14;fontColor=#243447;" value="&lt;b&gt;E6 bottleneck&lt;/b&gt;&lt;br&gt;6×6×128" vertex="1">
+          <mxGeometry height="90" width="150" x="995" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_scale" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;fontColor=#243447;" value="&lt;b&gt;Scale-score branch&lt;/b&gt;&lt;br&gt;Global average pool&lt;br&gt;Dense(3) → softmax" vertex="1">
+          <mxGeometry height="100" width="220" x="1180" y="605" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_u12" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#e6dff0;strokeColor=#9673a6;fontSize=13;fontColor=#243447;" value="&lt;b&gt;U12&lt;/b&gt;&lt;br&gt;12×12×48&lt;br&gt;Upsample + join E5" vertex="1">
+          <mxGeometry height="100" width="150" x="1000" y="825" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_d24" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#e6dff0;strokeColor=#9673a6;fontSize=13;fontColor=#243447;" value="&lt;b&gt;D24&lt;/b&gt;&lt;br&gt;24×24×48&lt;br&gt;Upsample + join E4" vertex="1">
+          <mxGeometry height="100" width="150" x="800" y="825" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_d48" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#e6dff0;strokeColor=#9673a6;fontSize=13;fontColor=#243447;" value="&lt;b&gt;D48&lt;/b&gt;&lt;br&gt;48×48×32&lt;br&gt;Upsample + join E3" vertex="1">
+          <mxGeometry height="100" width="150" x="600" y="825" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_d96" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#e6dff0;strokeColor=#9673a6;fontSize=13;fontColor=#243447;" value="&lt;b&gt;D96&lt;/b&gt;&lt;br&gt;96×96×24&lt;br&gt;Upsample + join E2" vertex="1">
+          <mxGeometry height="100" width="150" x="400" y="825" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_h24" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;fontColor=#243447;" value="&lt;b&gt;24×24 outputs&lt;/b&gt;&lt;br&gt;Center map · rim map&lt;br&gt;Geometry (4 values)" vertex="1">
+          <mxGeometry height="95" width="150" x="800" y="1000" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_h48" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;fontColor=#243447;" value="&lt;b&gt;48×48 outputs&lt;/b&gt;&lt;br&gt;Center map · rim map&lt;br&gt;Geometry (4 values)" vertex="1">
+          <mxGeometry height="95" width="150" x="600" y="1000" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_h96" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;fontColor=#243447;" value="&lt;b&gt;96×96 outputs&lt;/b&gt;&lt;br&gt;Center map · rim map&lt;br&gt;Geometry (4 values)" vertex="1">
+          <mxGeometry height="95" width="150" x="400" y="1000" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_select" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;fillColor=#fce5cd;strokeColor=#d79b00;fontSize=14;fontColor=#243447;" value="&lt;b&gt;Scale selector&lt;/b&gt;&lt;br&gt;Choose matching output with highest score" vertex="1">
+          <mxGeometry height="105" width="220" x="1180" y="1080" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_ellipse" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;fontColor=#243447;" value="&lt;b&gt;Selected ellipse&lt;/b&gt;&lt;br&gt;Center from heatmap&lt;br&gt;Radii from geometry" vertex="1">
+          <mxGeometry height="105" width="260" x="1470" y="1080" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_e_in" edge="1" parent="1" source="arch_input" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="arch_e1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_e12" edge="1" parent="1" source="arch_e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="arch_e2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_e23" edge="1" parent="1" source="arch_e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="arch_e3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_e34" edge="1" parent="1" source="arch_e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="arch_e4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_e45" edge="1" parent="1" source="arch_e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="arch_e5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_e56" edge="1" parent="1" source="arch_e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="arch_e6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_e6scale" edge="1" parent="1" source="arch_e6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#d6b656;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="arch_scale">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_e6u12" edge="1" parent="1" source="arch_e6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="arch_u12">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1075" y="700" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arch_skip_e5" edge="1" parent="1" source="arch_e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#6c8ebf;dashed=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="arch_u12">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="905" y="762.5" />
+              <mxPoint x="1050" y="762.5" />
+              <mxPoint x="1050" y="770" />
+              <mxPoint x="1075" y="770" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arch_u12d24" edge="1" parent="1" source="arch_u12" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" target="arch_d24">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_skip_e4" edge="1" parent="1" source="arch_e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#6c8ebf;dashed=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="arch_d24">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_d24d48" edge="1" parent="1" source="arch_d24" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" target="arch_d48">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_skip_e3" edge="1" parent="1" source="arch_e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#6c8ebf;dashed=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="arch_d48">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_d48d96" edge="1" parent="1" source="arch_d48" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" target="arch_d96">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_skip_e2" edge="1" parent="1" source="arch_e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#6c8ebf;dashed=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="arch_d96">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_d96h96" edge="1" parent="1" source="arch_d96" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="arch_h96">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_d48h48" edge="1" parent="1" source="arch_d48" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="arch_h48">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_d24h24" edge="1" parent="1" source="arch_d24" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="arch_h24">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_h24select" edge="1" parent="1" source="arch_h24" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#d79b00;exitX=1;exitY=0.5;entryX=0;entryY=0.25;" target="arch_select">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_h48select" edge="1" parent="1" source="arch_h48" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#d79b00;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="arch_select">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="770" y="1047.5" />
+              <mxPoint x="770" y="1132.5" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arch_h96select" edge="1" parent="1" source="arch_h96" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#d79b00;exitX=1;exitY=0.5;entryX=0;entryY=0.75;" target="arch_select">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="570" y="1047.5" />
+              <mxPoint x="570" y="1158.75" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arch_scoreselect" edge="1" parent="1" source="arch_scale" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#d6b656;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="arch_select">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch_selectellipse" edge="1" parent="1" source="arch_select" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="arch_ellipse">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="keypointModelV1" name="Keypoint_Model">
+    <mxGraphModel dx="1885" dy="1121" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1820" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="kp_title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=26;fontColor=#243447;" value="Center/Tip Keypoint Model Architecture" vertex="1">
+          <mxGeometry height="44" width="1500" x="40" y="28" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_subtitle" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=15;fontColor=#52606d;" value="The second model in the deployed pipeline: use the ellipse crop to locate the gauge center and needle tip, then convert their geometry into a reading." vertex="1">
+          <mxGeometry height="34" width="1680" x="40" y="78" as="geometry" />
+        </mxCell>
+        <mxCell id="lBHPenk02jIwHuTNXTHN-1" edge="1" parent="1" source="kp_input" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="250" y="329.66666666666674" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="kp_input" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=10;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;fontColor=#243447;" value="&lt;b&gt;Stage 1 ellipse crop&lt;/b&gt;&lt;br&gt;224 × 224&lt;br&gt;MONO_Y8&lt;br&gt;One grayscale channel&lt;br&gt;&lt;br&gt;(The face-localized square crop is resized to a fixed model input and quantized to signed int8 in firmware)" vertex="1">
+          <mxGeometry height="300" width="180" x="40" y="180" as="geometry" />
+        </mxCell>
+        <mxCell id="lBHPenk02jIwHuTNXTHN-2" edge="1" parent="1" source="kp_encoder" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="kp_decoder">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_encoder" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=10;fillColor=#e1f0ff;strokeColor=#6c8ebf;fontSize=14;fontColor=#243447;" value="&lt;b&gt;Shared U-Net encoder&lt;/b&gt;&lt;br&gt;Five downsample + refine stages&lt;br&gt;Each stage uses 3 × 3 Conv + BN + ReLU blocks&lt;br&gt;&lt;br&gt;&lt;br&gt;Channels: 48 → 72 → 96 → 144 → 192&lt;br&gt;Features: 112 → 56 → 28 → 14 → 7&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;(Apply the convolution filter to learn abstract features, losing finer details in each convolution but keeping skip features)&lt;/div&gt;" vertex="1">
+          <mxGeometry height="300" width="245" x="255" y="180" as="geometry" />
+        </mxCell>
+        <mxCell id="lBHPenk02jIwHuTNXTHN-3" edge="1" parent="1" source="kp_decoder" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="kp_heatmaps">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_decoder" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=10;fillColor=#e6dff0;strokeColor=#9673a6;fontSize=14;fontColor=#243447;" value="&lt;b&gt;U-Net decoder&lt;/b&gt;&lt;br&gt;Three bilinear ×2 upsample stages&lt;br&gt;&lt;br&gt;Concatenate encoder skip features at 14, 28, and 56 scales&lt;br&gt;&lt;br&gt;(Use the skip features and the upsampled features to find spatial details in the gauge. Refine the final 56 × 56 features before prediction)" vertex="1">
+          <mxGeometry height="300" width="240" x="530" y="180" as="geometry" />
+        </mxCell>
+        <mxCell id="lBHPenk02jIwHuTNXTHN-4" edge="1" parent="1" source="kp_heatmaps" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="kp_decode">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_heatmaps" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=10;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;fontColor=#243447;" value="&lt;b&gt;One heatmap output tensor&lt;/b&gt;&lt;br&gt;56 × 56 × 2&lt;br&gt;&lt;br&gt;Channel 0: center&lt;br&gt;Channel 1: needle tip&lt;br&gt;&lt;br&gt;One 1 × 1 sigmoid convolution; no separate scalar confidence output&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;(Convert the features into a heatmap, showing how center-like and tip-like each heatmap cell seems to be)&amp;nbsp;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="300" width="220" x="800" y="180" as="geometry" />
+        </mxCell>
+        <mxCell id="lBHPenk02jIwHuTNXTHN-5" edge="1" parent="1" source="kp_decode" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="kp_reading">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_decode" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=10;fillColor=#fce5cd;strokeColor=#d79b00;fontSize=14;fontColor=#243447;" value="&lt;b&gt;Decode center and tip&lt;/b&gt;&lt;br&gt;For each map, use a weighted centroid:&lt;br&gt;w = max(p − 0.03, 0)²&lt;br&gt;&lt;br&gt;(Convert heatmap cells to crop coordinates using the 56 × 56 grid)" vertex="1">
+          <mxGeometry height="300" width="285" x="1060" y="179" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_reading" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=10;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;fontColor=#243447;" value="&lt;b&gt;Validate and read the gauge&lt;/b&gt;&lt;br&gt;Reject if either heatmap peak is below 0.03 or center–tip separation is under 48 source pixels&lt;br&gt;&lt;br&gt;(Map coordinates from the 224x224 model input back to the 640 × 640 frame; compute a north-zero needle angle; apply the gauge calibration)" vertex="1">
+          <mxGeometry height="300" width="260" x="1400" y="179" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_arch_title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=20;fontColor=#243447;" value="Network structure" vertex="1">
+          <mxGeometry height="34" width="1100" x="40" y="510" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_arch_note" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=13;fontColor=#52606d;" value="Deployed width multiplier α = 1.5. Dashed blue arrows show the three skip concatenations; the 112 × 112 encoder feature is not used as a decoder skip in this exported model." vertex="1">
+          <mxGeometry height="30" width="1680" x="40" y="545" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_arch_input" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;fontColor=#243447;" value="&lt;b&gt;Crop input&lt;/b&gt;&lt;br&gt;224 × 224 × 1" vertex="1">
+          <mxGeometry height="90" width="130" x="35" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_e1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#e1f0ff;strokeColor=#6c8ebf;fontSize=13;fontColor=#243447;" value="&lt;b&gt;E1&lt;/b&gt;&lt;br&gt;112 × 112 × 48" vertex="1">
+          <mxGeometry height="90" width="140" x="195" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_e2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#e1f0ff;strokeColor=#6c8ebf;fontSize=13;fontColor=#243447;" value="&lt;b&gt;E2&lt;/b&gt;&lt;br&gt;56 × 56 × 72" vertex="1">
+          <mxGeometry height="90" width="140" x="355" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_e3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#e1f0ff;strokeColor=#6c8ebf;fontSize=13;fontColor=#243447;" value="&lt;b&gt;E3&lt;/b&gt;&lt;br&gt;28 × 28 × 96" vertex="1">
+          <mxGeometry height="90" width="140" x="515" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_e4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#e1f0ff;strokeColor=#6c8ebf;fontSize=13;fontColor=#243447;" value="&lt;b&gt;E4&lt;/b&gt;&lt;br&gt;14 × 14 × 144" vertex="1">
+          <mxGeometry height="90" width="140" x="675" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_bottleneck" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;fontColor=#243447;" value="&lt;div&gt;&lt;b style=&quot;background-color: transparent; color: light-dark(rgb(36, 52, 71), rgb(182, 196, 212));&quot;&gt;Bottleneck&lt;/b&gt;&lt;/div&gt;7 × 7 × 192" vertex="1">
+          <mxGeometry height="90" width="140" x="835" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_arch_legend" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=middle;spacing=10;fillColor=#f5f5f5;strokeColor=#999999;fontSize=13;fontColor=#243447;" value="Solid arrows: feature flow&lt;br&gt;Dashed blue arrows: skip features concatenated into decoder&lt;br&gt;The network returns two heatmaps, not a confidence or direction scalar." vertex="1">
+          <mxGeometry height="100" width="440" x="1220" y="720" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_u14" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#e6dff0;strokeColor=#9673a6;fontSize=13;fontColor=#243447;" value="&lt;b&gt;D14&lt;/b&gt;&lt;br&gt;14 × 14 × 144&lt;br&gt;Bilinear upsample + join E4" vertex="1">
+          <mxGeometry height="100" width="165" x="950" y="825" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_d28" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#e6dff0;strokeColor=#9673a6;fontSize=13;fontColor=#243447;" value="&lt;b&gt;D28&lt;/b&gt;&lt;br&gt;28 × 28 × 96&lt;br&gt;Bilinear upsample + join E3" vertex="1">
+          <mxGeometry height="100" width="165" x="750" y="825" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_d56" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#e6dff0;strokeColor=#9673a6;fontSize=13;fontColor=#243447;" value="&lt;b&gt;D56&lt;/b&gt;&lt;br&gt;56 × 56 × 72&lt;br&gt;Bilinear upsample + join E2" vertex="1">
+          <mxGeometry height="100" width="165" x="550" y="825" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_refine" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#e6dff0;strokeColor=#9673a6;fontSize=13;fontColor=#243447;" value="&lt;b&gt;Head refine&lt;/b&gt;&lt;br&gt;56 × 56 × 48&lt;br&gt;Conv + BN + ReLU" vertex="1">
+          <mxGeometry height="100" width="165" x="350" y="825" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_hm_output" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=7;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;fontColor=#243447;" value="&lt;b&gt;1 × 1 sigmoid conv&lt;/b&gt;&lt;br&gt;56 × 56 × 2&lt;br&gt;[center, tip]" vertex="1">
+          <mxGeometry height="95" width="165" x="350" y="1000" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_decode_node" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;fillColor=#fce5cd;strokeColor=#d79b00;fontSize=13;fontColor=#243447;" value="&lt;b&gt;Heatmap decoder&lt;/b&gt;&lt;br&gt;w = max(p − 0.03, 0)²&lt;br&gt;Compute one weighted centroid per channel" vertex="1">
+          <mxGeometry height="105" width="230" x="590" y="995" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_gate_node" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;fillColor=#fce5cd;strokeColor=#d79b00;fontSize=13;fontColor=#243447;" value="&lt;b&gt;Keypoint validity gate&lt;/b&gt;&lt;br&gt;Both peaks ≥ 0.03&lt;br&gt;Center–tip separation ≥ 48 source pixels" vertex="1">
+          <mxGeometry height="105" width="250" x="855" y="995" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_angle_node" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;fontColor=#243447;" value="&lt;b&gt;Gauge reading&lt;/b&gt;&lt;br&gt;Map crop coordinates to frame&lt;br&gt;North-zero angle → gauge calibration" vertex="1">
+          <mxGeometry height="105" width="275" x="1140" y="995" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_e_input" edge="1" parent="1" source="kp_arch_input" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="kp_e1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_e12" edge="1" parent="1" source="kp_e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="kp_e2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_e23" edge="1" parent="1" source="kp_e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="kp_e3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_e34" edge="1" parent="1" source="kp_e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="kp_e4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_e4b" edge="1" parent="1" source="kp_e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="kp_bottleneck">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_bu14" edge="1" parent="1" source="kp_bottleneck" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=1;exitY=0.5;entryX=0.5;entryY=0;" target="kp_u14">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_skip_e4" edge="1" parent="1" source="kp_e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#6c8ebf;dashed=1;exitX=0.5;exitY=1;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" target="kp_u14">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="745" y="720.07" />
+              <mxPoint x="990.07" y="720.07" />
+              <mxPoint x="990.07" y="825" />
+            </Array>
+            <mxPoint x="990" y="820" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="kp_u14d28" edge="1" parent="1" source="kp_u14" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" target="kp_d28">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_skip_e3" edge="1" parent="1" source="kp_e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#6c8ebf;dashed=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="kp_d28">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="660.07" y="700.07" />
+              <mxPoint x="660.07" y="762.47" />
+              <mxPoint x="832.47" y="762.47" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="kp_d28d56" edge="1" parent="1" source="kp_d28" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" target="kp_d56">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_skip_e2" edge="1" parent="1" source="kp_e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#6c8ebf;dashed=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="kp_d56">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_d56refine" edge="1" parent="1" source="kp_d56" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" target="kp_refine">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_refinehm" edge="1" parent="1" source="kp_refine" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="kp_hm_output">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_hmdecode" edge="1" parent="1" source="kp_hm_output" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#d79b00;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="kp_decode_node">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_decodegate" edge="1" parent="1" source="kp_decode_node" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#d79b00;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="kp_gate_node">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="kp_gatereading" edge="1" parent="1" source="kp_gate_node" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#52606d;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="kp_angle_node">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>

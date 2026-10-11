@@ -69,9 +69,9 @@ bool SdDebugLogService_WaitForQueueDrain(uint32_t timeout_ms);
  *   Force flush and close of the active file.
  *
  * Returns:
- *   None.
+ *   0 when FileX flush and close both succeed, otherwise a nonzero core status.
  *==============================================================================*/
-void SdDebugLogService_ForceFlush(void);
+int32_t SdDebugLogService_ForceFlush(void);
 
 #ifdef __cplusplus
 }

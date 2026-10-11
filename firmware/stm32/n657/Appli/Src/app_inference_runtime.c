@@ -31,6 +31,7 @@
 #include "ds3231_clock.h"
 #include "inference_metrics.h"
 #include "threadx_utils.h"
+#include "sd_debug_log_service.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -66,10 +67,13 @@ static ULONG inference_log_thread_stack[INFERENCE_LOG_THREAD_STACK_SIZE_BYTES
 		/ sizeof(ULONG)];
 static bool inference_log_thread_created = false;
 static TX_QUEUE inference_log_queue;
+/* Wake the logger only for queued records; avoid a periodic polling wakeup. */
+static TX_SEMAPHORE inference_log_ready_semaphore;
 static ULONG inference_log_queue_storage[INFERENCE_LOG_QUEUE_DEPTH];
 /* Queue depth can reach zero as soon as the logger dequeues a record. Keep a
  * separate state bit so Stop-mode entry also waits for the SD write itself. */
 static volatile bool inference_log_write_in_progress = false;
+static volatile ULONG inference_log_dropped_rows = 0U;
 
 static TX_THREAD camera_ai_thread;
 /* Keep the AI worker stack out of the OBB reloc runtime window. The OBB
@@ -130,13 +134,23 @@ static void AppInferenceRuntime_LogPublishedResult(float final_value) {
 	char inference_line[64] = { 0 };
 
 	AppInferenceLog_FormatFloatTenths(inference_line,
-			sizeof(inference_line), "[AI] Final AI value logged: ", final_value);
+			sizeof(inference_line), "[AI] Final AI value published: ", final_value);
 	(void) DebugConsole_WriteString(inference_line);
 
 	/* The exact value is retained in the SD inference log. UART only needs the
 	 * human-readable published value once, after the burst is complete. */
 	if (inference_log_thread_created) {
-		(void) tx_queue_send(&inference_log_queue, &bits.u, TX_NO_WAIT);
+        const UINT status = tx_queue_send(&inference_log_queue, &bits.u, TX_NO_WAIT);
+        if (status == TX_SUCCESS) {
+            (void) tx_semaphore_put(&inference_log_ready_semaphore);
+        } else {
+            TX_INTERRUPT_SAVE_AREA
+            TX_DISABLE
+            inference_log_dropped_rows++;
+            TX_RESTORE
+            DebugConsole_Printf("[INFER_LOG][LOSS] domain=ThreadX op=enqueue status=%lu dropped=%lu\r\n",
+                    (unsigned long) status, (unsigned long) inference_log_dropped_rows);
+        }
 	}
 }
 /* AppInferenceRuntime_GetFreshBaselineEstimate removed: no hybrid override */
@@ -174,6 +188,8 @@ UINT AppInferenceRuntime_Init(void) {
 		camera_ai_sync_created = false;
 		return status;
 	}
+	status = tx_semaphore_create(&inference_log_ready_semaphore, "inference_log_ready", 0U);
+	if (status != TX_SUCCESS) { return status; }
 
 	TX_INTERRUPT_SAVE_AREA
 	TX_DISABLE
@@ -589,207 +605,129 @@ const char *AppInferenceRuntime_WorkerStateName(
 }
 
 /**
- * @brief Inference value logger thread.
+ * @brief Return the number of inference records that could not be saved this boot.
+ * @return Queue, RTC, format and final write failures; never a success estimate.
+ */
+ULONG AppInferenceRuntime_GetDroppedLogRows(void) {
+    return inference_log_dropped_rows;
+}
+
+/**
+ * @brief Append one CSV row, checking every FileX operation and preserving its cause.
+ * @param media Mounted card; name absolute CSV path; row complete text record.
+ * @return FileX status or ThreadX lock status, with an explicit domain in errors.
+ * @sideeffects Creates header for new/empty files; closes and flushes before success.
+ */
+static UINT AppInferenceRuntime_AppendCsv(FX_MEDIA *media, CHAR *name, CHAR *row) {
+    FX_FILE file = {0};
+    const char *operation = "create_directory";
+    UINT status = AppFileX_AcquireMediaLock();
+    bool opened = false;
+    if (status != TX_SUCCESS) {
+        DebugConsole_Printf("[INFER_LOG][ERROR] domain=ThreadX op=lock status=%lu\r\n", (unsigned long) status);
+        return status;
+    }
+    status = fx_directory_create(media, "/inference");
+    if (status == FX_ALREADY_CREATED) { status = FX_SUCCESS; }
+    if (status == FX_SUCCESS) {
+        operation = "open";
+        status = fx_file_open(media, &file, name, FX_OPEN_FOR_WRITE);
+        if (status == FX_NOT_FOUND) {
+            operation = "create";
+            status = fx_file_create(media, name);
+            if ((status == FX_SUCCESS) || (status == FX_ALREADY_CREATED)) {
+                operation = "open_created";
+                status = fx_file_open(media, &file, name, FX_OPEN_FOR_WRITE);
+            }
+        }
+        opened = (status == FX_SUCCESS);
+    }
+    if (opened && (file.fx_file_current_file_size == 0U)) {
+        static const CHAR header[] = "datetime,value_degC\n";
+        operation = "write_header";
+        status = fx_file_write(&file, (VOID *) header, sizeof(header) - 1U);
+    }
+    if (status == FX_SUCCESS) {
+        operation = "seek_end";
+        status = fx_file_relative_seek(&file, 0U, FX_SEEK_END);
+    }
+    if (status == FX_SUCCESS) {
+        operation = "write_row";
+        status = fx_file_write(&file, row, (ULONG) strlen(row));
+    }
+    /* Close even after a partial write, but retain the first failing operation.
+     * Flush after close: closing changes directory metadata that also needs committing. */
+    if (opened) {
+        const UINT close_status = fx_file_close(&file);
+        if (status == FX_SUCCESS) { operation = "close"; status = close_status; }
+    }
+    const UINT flush_status = fx_media_flush(media);
+    if (status == FX_SUCCESS) { operation = "flush"; status = flush_status; }
+    if (status != FX_SUCCESS) {
+        char error[160];
+        (void) snprintf(error, sizeof(error), "[INFER_LOG][ERROR] domain=FileX op=%s path=%s status=%lu (0x%02lX)",
+                operation, name, (unsigned long) status, (unsigned long) status);
+        (void) DebugConsole_WriteString(error);
+        (void) DebugConsole_WriteString("\r\n");
+        (void) SdDebugLogService_EnqueueLine(error);
+    }
+    AppFileX_ReleaseMediaLock();
+    return status;
+}
+
+/**
+ * @brief Consume inference records and acknowledge only committed CSV writes.
+ * @param thread_input Unused ThreadX input.
+ * @sideeffects Reports dropped records; a failed/partial write is never retried
+ * automatically because repeating it could create a duplicate or malformed row.
  */
 static VOID InferenceLogThread_Entry(ULONG thread_input) {
-	(void) thread_input;
-
-	InferLogState_t state = INFER_LOG_STATE_INIT_DIR;
-	char today_date[12] = { 0 };
-	char log_file_name[INFERENCE_LOG_FILE_NAME_LENGTH] = { 0 };
-	FX_MEDIA *media = NULL;
-
-	(void) DebugConsole_WriteString("[INFER_LOG] thread alive\r\n");
-
-	while (1) {
-		switch (state) {
-
-		case INFER_LOG_STATE_INIT_DIR: {
-			if (!AppFileX_IsMediaReady()) {
-				DelayMilliseconds_ThreadX(500U);
-				break;
-			}
-
-			media = AppFileX_GetMediaHandle();
-
-			UINT fx_status = AppFileX_AcquireMediaLock();
-			if (fx_status != TX_SUCCESS) {
-				DelayMilliseconds_ThreadX(500U);
-				break;
-			}
-
-			fx_status = fx_directory_create(media,
-					INFERENCE_LOG_DIRECTORY_NAME);
-			AppFileX_ReleaseMediaLock();
-
-			if ((fx_status == FX_SUCCESS)
-					|| (fx_status == FX_ALREADY_CREATED)) {
-				DebugConsole_Printf(
-						"[INFER_LOG] /inference directory ready.\r\n");
-				state = INFER_LOG_STATE_CHECK_DATE;
-			} else {
-				DebugConsole_Printf(
-						"[INFER_LOG] Failed to create /inference dir, status=%lu. Retrying.\r\n",
-						(unsigned long) fx_status);
-				DelayMilliseconds_ThreadX(2000U);
-			}
-			break;
-		}
-
-		case INFER_LOG_STATE_CHECK_DATE: {
-			char rtc_timestamp[32] = { 0 };
-			const bool rtc_ok = App_Clock_GetCaptureTimestamp(rtc_timestamp,
-					sizeof(rtc_timestamp));
-
-			if (!rtc_ok) {
-				DebugConsole_Printf(
-						"[INFER_LOG] RTC not available; entering NO_RTC state.\r\n");
-				state = INFER_LOG_STATE_NO_RTC;
-				break;
-			}
-
-			char new_date[12] = { 0 };
-			(void) memcpy(new_date, rtc_timestamp, 10U);
-			new_date[10] = '\0';
-
-			if (strcmp(new_date, today_date) != 0) {
-				(void) memcpy(today_date, new_date, sizeof(today_date));
-				int written = DebugConsole_Snprintf(log_file_name, sizeof(log_file_name),
-						"%s/%s.csv", INFERENCE_LOG_DIRECTORY_NAME, today_date);
-				if ((written <= 0)
-						|| ((size_t) written >= sizeof(log_file_name))) {
-					DebugConsole_Printf(
-							"[INFER_LOG] Log filename overflow; retrying.\r\n");
-					DelayMilliseconds_ThreadX(5000U);
-					break;
-				}
-
-				UINT lock_status = AppFileX_AcquireMediaLock();
-				if (lock_status == TX_SUCCESS) {
-					FX_FILE log_file = { 0 };
-					UINT open_status = fx_file_open(media, &log_file,
-							log_file_name, FX_OPEN_FOR_WRITE);
-					if (open_status == FX_NOT_FOUND) {
-						(void) fx_file_create(media, log_file_name);
-						open_status = fx_file_open(media, &log_file,
-								log_file_name, FX_OPEN_FOR_WRITE);
-						if (open_status == FX_SUCCESS) {
-							const char *header = "datetime,value_degC\n";
-							(void) fx_file_write(&log_file, (VOID*) header,
-									(ULONG) strlen(header));
-						}
-					}
-					if (open_status == FX_SUCCESS) {
-						(void) fx_file_close(&log_file);
-					}
-					(void) fx_media_flush(media);
-					AppFileX_ReleaseMediaLock();
-				}
-
-				DebugConsole_Printf(
-						"[INFER_LOG] Logging to %s.\r\n", log_file_name);
-			}
-
-			state = INFER_LOG_STATE_LOGGING;
-			break;
-		}
-
-		case INFER_LOG_STATE_NO_RTC: {
-			DebugConsole_Printf(
-					"[INFER_LOG] ERROR: DS3231 RTC not detected. Cannot timestamp log entries.\r\n");
-			DebugLed_BlinkRedBlocking(INFERENCE_LOG_NO_RTC_BLINK_ON_MS,
-					INFERENCE_LOG_NO_RTC_BLINK_OFF_MS, 5U);
-
-			DelayMilliseconds_ThreadX(INFERENCE_LOG_NO_RTC_RETRY_DELAY_MS);
-
-			char rtc_timestamp[32] = { 0 };
-			if (App_Clock_GetCaptureTimestamp(rtc_timestamp,
-					sizeof(rtc_timestamp))) {
-				DebugConsole_Printf(
-						"[INFER_LOG] RTC recovered; resuming logging.\r\n");
-				state = INFER_LOG_STATE_CHECK_DATE;
-			}
-			break;
-		}
-
-		case INFER_LOG_STATE_LOGGING: {
-			ULONG value_bits = 0U;
-			const ULONG wait_ticks = CameraPlatform_MillisecondsToTicks(65000U);
-			const UINT q_status = tx_queue_receive(&inference_log_queue,
-					&value_bits, wait_ticks);
-			if (q_status != TX_SUCCESS) {
-				break;
-			}
-			inference_log_write_in_progress = true;
-
-			union {
-				ULONG u;
-				float f;
-			} bits = { .u = value_bits };
-			float inference_value = bits.f;
-			char inference_line[64] = { 0 };
-			char row[INFERENCE_LOG_ROW_MAX_LENGTH] = { 0 };
-			char rtc_timestamp[32] = { 0 };
-
-			AppInferenceLog_FormatFloatTenths(inference_line,
-					sizeof(inference_line), "[INFER_LOG] Inference value: ",
-					inference_value);
-			(void) DebugConsole_WriteString(inference_line);
-			AppInferenceLog_FormatFloatMicros(inference_line,
-					sizeof(inference_line), "[INFER_LOG] Inference exact: ",
-					inference_value);
-			(void) DebugConsole_WriteString(inference_line);
-
-			if (!App_Clock_GetCaptureTimestamp(rtc_timestamp,
-					sizeof(rtc_timestamp))) {
-				DebugConsole_Printf(
-						"[INFER_LOG] RTC unavailable while logging inference row.\r\n");
-				inference_log_write_in_progress = false;
-				break;
-			}
-
-			int written = DebugConsole_Snprintf(row, sizeof(row), "%s,",
-					rtc_timestamp);
-			if ((written <= 0) || ((size_t) written >= sizeof(row))) {
-				DebugConsole_Printf(
-						"[INFER_LOG] Failed to format CSV row.\r\n");
-				inference_log_write_in_progress = false;
-				break;
-			}
-
-			AppInferenceLog_FormatFloatTenths(row + written,
-					sizeof(row) - (size_t) written, "", inference_value);
-			written = (int) strlen(row);
-
-			if (!AppFileX_IsMediaReady()) {
-				DebugConsole_Printf(
-						"[INFER_LOG] FileX media not ready; dropping row.\r\n");
-				inference_log_write_in_progress = false;
-				break;
-			}
-
-			UINT lock_status = AppFileX_AcquireMediaLock();
-			if (lock_status == TX_SUCCESS) {
-				FX_FILE log_file = { 0 };
-				UINT open_status = fx_file_open(media, &log_file, log_file_name,
-						FX_OPEN_FOR_WRITE);
-				if (open_status == FX_SUCCESS) {
-					(void) fx_file_relative_seek(&log_file, 0U, FX_SEEK_END);
-					(void) fx_file_write(&log_file, row, (ULONG) written);
-					(void) fx_file_close(&log_file);
-					(void) fx_media_flush(media);
-				}
-				AppFileX_ReleaseMediaLock();
-			}
-
-			DebugConsole_Printf("[INFER_LOG] Logged: %s", row);
-			inference_log_write_in_progress = false;
-			break;
-		}
-
-		default:
-			state = INFER_LOG_STATE_INIT_DIR;
-			break;
-		}
-	}
+    (void) thread_input;
+    while (1) {
+        ULONG value_bits = 0U;
+        UINT receive_status;
+        (void) tx_semaphore_get(&inference_log_ready_semaphore, TX_WAIT_FOREVER);
+        /* Atomic dequeue + busy flag closes the race with the pre-sleep barrier.
+         * TX_NO_WAIT ensures interrupts are never disabled across a wait or SD IO. */
+        TX_INTERRUPT_SAVE_AREA
+        TX_DISABLE
+        receive_status = tx_queue_receive(&inference_log_queue, &value_bits, TX_NO_WAIT);
+        inference_log_write_in_progress = (receive_status == TX_SUCCESS);
+        TX_RESTORE
+        if (receive_status != TX_SUCCESS) {
+            continue;
+        }
+        union { ULONG u; float f; } bits = {.u = value_bits};
+        CHAR timestamp[32] = {0};
+        CHAR name[INFERENCE_LOG_FILE_NAME_LENGTH] = {0};
+        CHAR row[INFERENCE_LOG_ROW_MAX_LENGTH] = {0};
+        UINT status = FX_MEDIA_NOT_OPEN;
+        if (AppFileX_IsMediaReady()
+                && App_Clock_GetCaptureTimestamp(timestamp, sizeof(timestamp))) {
+            /* Resolve the date for each dequeued row; midnight cannot keep the
+             * previous day's filename, and empty files left by ENOSPC get a header. */
+            (void) snprintf(name, sizeof(name), "/inference/%.10s.csv", timestamp);
+            const int written = snprintf(row, sizeof(row), "%s,", timestamp);
+            if ((written > 0) && ((size_t) written < sizeof(row))) {
+                AppInferenceLog_FormatFloatTenths(row + written,
+                        sizeof(row) - (size_t) written, "", bits.f);
+                status = AppInferenceRuntime_AppendCsv(AppFileX_GetMediaHandle(), name, row);
+            } else { status = FX_INVALID_NAME; }
+        }
+        if (status == FX_SUCCESS) {
+            DebugConsole_Printf("[INFER_LOG] Saved and flushed: %s", row);
+        } else {
+            TX_DISABLE
+            inference_log_dropped_rows++;
+            TX_RESTORE
+            char loss[128];
+            (void) snprintf(loss, sizeof(loss), "[INFER_LOG][LOSS] row-not-saved dropped=%lu status=%lu media=%u rtc=%u",
+                    (unsigned long) inference_log_dropped_rows, (unsigned long) status,
+                    AppFileX_IsMediaReady() ? 1U : 0U, timestamp[0] ? 1U : 0U);
+            (void) DebugConsole_WriteString(loss);
+            (void) DebugConsole_WriteString("\r\n");
+            (void) SdDebugLogService_EnqueueLine(loss);
+        }
+        inference_log_write_in_progress = false;
+    }
 }

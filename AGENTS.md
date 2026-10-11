@@ -57,6 +57,7 @@
   * Never modify build-system files: `makefile`, `makefile.targets`, `subdir.mk` (any subdir), or any file under `Debug/` — these are generated/managed by CubeIDE.
   * Never convert Windows paths (`C:/Users/...`) to WSL paths (`/mnt/c/...`) in firmware files. The firmware is never built under WSL.
   * Fix only `.c` and `.h` source files in `Appli/Src/` and `Appli/Inc/` for C bugs.
+  * Update `APP_FIRMWARE_BUILD_ID` in `firmware/stm32/n657/Appli/Inc/main.h` for every firmware update. Keep the identifier unique to that image; both the UART boot banner and the SD boot record must use this shared constant.
 - Use `poetry` for env management and scripts.
 - Prefer `pytest` for tests.
 - Use WSL for ML work, with the GPU preferred.

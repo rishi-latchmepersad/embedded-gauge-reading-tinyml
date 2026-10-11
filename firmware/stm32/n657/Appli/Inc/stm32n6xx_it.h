@@ -53,6 +53,8 @@ void BusFault_Handler(void);
 void UsageFault_Handler(void);
 void SecureFault_Handler(void);
 void DebugMon_Handler(void);
+void IT_DefaultHandler_C(uint32_t exc_return, uint32_t *stacked_regs)
+		__attribute__((noreturn));
 void EXTI13_IRQHandler(void);
 void TIM5_IRQHandler(void);
 void NPU0_IRQHandler(void);

@@ -95,68 +95,45 @@ static int32_t SdDebugLogCore_FormatArchiveName(const char *prefix_ptr,
 	value = (uint16_t) (value / 10U);
 	digits[0] = (char) ('0' + (value % 10U));
 
-	/* Build the final file name into output buffer. */
-	output_ptr[0] = '\0';
-
-	/* Append prefix, then digits, then extension. */
-	(void) strncat(output_ptr, prefix_ptr, output_capacity - 1U);
-	(void) strncat(output_ptr, digits, output_capacity - 1U);
-	(void) strncat(output_ptr, ".log", output_capacity - 1U);
+    const size_t prefix_length = strlen(prefix_ptr);
+    if ((prefix_length + 9U) > output_capacity) { return -1; }
+    memcpy(output_ptr, prefix_ptr, prefix_length);
+    memcpy(output_ptr + prefix_length, digits, 4U);
+    memcpy(output_ptr + prefix_length + 4U, ".log", 5U);
 
 	return 0;
 }
 
-/*==============================================================================
- * Function: SdDebugLogCore_FindNextAvailableArchiveName
- *
- * Purpose:
- *   Find the next archive name that does not already exist.
- *
- * Returns:
- *   0 on success, nonzero on error.
- *
- * Notes:
- *   Called only during rollover. A linear scan is acceptable.
- *==============================================================================*/
+/**
+ * @brief Shift bounded archives newest-first and return the new archive path.
+ * @param context_ptr Log naming configuration; file_ops_ptr storage adapter.
+ * @param output_ptr/output_capacity Destination for archive 0001.
+ * @return Zero on success; preserve active log unchanged on any rotation error.
+ * @sideeffects Removes only archive 0032, then shifts 0031..0001 one position.
+ */
 static int32_t SdDebugLogCore_FindNextAvailableArchiveName(
-		SdDebugLogCore_Context *context_ptr,
-		const SdDebugLogCore_FileOps *file_ops_ptr, char *output_ptr,
-		uint32_t output_capacity) {
-	uint16_t attempt_index = 0U;
-
-	/* Validate inputs. */
-	if ((context_ptr == NULL) || (file_ops_ptr == NULL)
-			|| (output_ptr == NULL)) {
-		return -1;
-	}
-
-	/* Try indices starting from next_archive_index until we find a free file name. */
-	for (attempt_index = context_ptr->next_archive_index;
-			attempt_index < 10000U; attempt_index++) {
-		uint8_t file_exists = 0U;
-
-		/* Format candidate archive name. */
-		if (SdDebugLogCore_FormatArchiveName(context_ptr->archive_file_prefix,
-				attempt_index, output_ptr, output_capacity) != 0) {
-			return -2;
-		}
-
-		/* Ask filesystem if this candidate already exists. */
-		if (file_ops_ptr->exists(file_ops_ptr->user_context_ptr, output_ptr,
-				&file_exists) != 0) {
-			return -3;
-		}
-
-		/* If file does not exist, we found our archive name. */
-		if (file_exists == 0U) {
-			/* Next time, start searching after this one. */
-			context_ptr->next_archive_index = (uint16_t) (attempt_index + 1U);
-			return 0;
-		}
-	}
-
-	/* We ran out of indices. */
-	return -4;
+        SdDebugLogCore_Context *context_ptr,
+        const SdDebugLogCore_FileOps *file_ops_ptr, char *output_ptr,
+        uint32_t output_capacity) {
+    char source[32], target[32];
+    if ((context_ptr == NULL) || (file_ops_ptr == NULL) || (output_ptr == NULL)
+            || (file_ops_ptr->remove == NULL)) { return -1; }
+    if (SdDebugLogCore_FormatArchiveName(context_ptr->archive_file_prefix,
+            SD_DEBUG_LOG_CORE_MAX_ARCHIVES, target, sizeof(target)) != 0) { return -2; }
+    if (file_ops_ptr->remove(file_ops_ptr->user_context_ptr, target) != 0) { return -3; }
+    for (uint16_t index = SD_DEBUG_LOG_CORE_MAX_ARCHIVES - 1U; index > 0U; index--) {
+        uint8_t exists = 0U;
+        if ((SdDebugLogCore_FormatArchiveName(context_ptr->archive_file_prefix,
+                    index, source, sizeof(source)) != 0)
+                || (file_ops_ptr->exists(file_ops_ptr->user_context_ptr, source, &exists) != 0)) { return -4; }
+        if (exists != 0U) {
+            if ((SdDebugLogCore_FormatArchiveName(context_ptr->archive_file_prefix,
+                        index + 1U, target, sizeof(target)) != 0)
+                    || (file_ops_ptr->rename(file_ops_ptr->user_context_ptr, source, target) != 0)) { return -5; }
+        }
+    }
+    return SdDebugLogCore_FormatArchiveName(context_ptr->archive_file_prefix,
+            1U, output_ptr, output_capacity);
 }
 
 /*==============================================================================
@@ -185,14 +162,17 @@ static int32_t SdDebugLogCore_RollOverActiveFile(
 
 	/* Close current active file if it is open. */
 	if (context_ptr->active_file_is_open != 0U) {
-		/* Flush first to ensure content is committed. */
-		(void) file_ops_ptr->flush(file_ops_ptr->user_context_ptr);
+		int32_t flush_status;
+		int32_t close_status;
 
-		/* Close handle. */
-		(void) file_ops_ptr->close(file_ops_ptr->user_context_ptr);
+        close_status = file_ops_ptr->close(file_ops_ptr->user_context_ptr);
+        flush_status = file_ops_ptr->flush(file_ops_ptr->user_context_ptr);
 
 		/* Update state to reflect closed file. */
 		context_ptr->active_file_is_open = 0U;
+		if ((flush_status != 0) || (close_status != 0)) {
+			return -6;
+		}
 	}
 
 	/* Find an archive name that does not collide with existing archives. */
@@ -300,9 +280,20 @@ int32_t SdDebugLogCore_OpenIfNeeded(SdDebugLogCore_Context *context_ptr,
 			context_ptr->active_file_name, &existing_size_bytes) == 0) {
 		context_ptr->current_file_size_bytes = existing_size_bytes;
 	} else {
-		/* If size query fails, fall back to 0. */
-		context_ptr->current_file_size_bytes = 0U;
+		/* An unknown size must not silently disable bounded rollover. */
+        (void) SdDebugLogCore_ForceFlushAndClose(context_ptr, file_ops_ptr);
+        return -6;
 	}
+
+    /* A power loss may leave a partial final row. Separate the new session so
+     * its boot/fault record cannot be joined to that damaged historical line. */
+    if (existing_size_bytes > 0U) {
+        if (file_ops_ptr->write(file_ops_ptr->user_context_ptr, "\r\n", 2U) != 0) {
+            (void) SdDebugLogCore_ForceFlushAndClose(context_ptr, file_ops_ptr);
+            return -5;
+        }
+        context_ptr->current_file_size_bytes += 2U;
+    }
 
 	return 0;
 }
@@ -330,7 +321,7 @@ int32_t SdDebugLogCore_WriteRecord(SdDebugLogCore_Context *context_ptr,
 	}
 
 	/* If this record would push us over threshold, roll over first. */
-	if ((context_ptr->current_file_size_bytes + record_length_bytes)
+	if (((uint64_t) context_ptr->current_file_size_bytes + record_length_bytes)
 			> context_ptr->rollover_threshold_bytes) {
 		status = SdDebugLogCore_RollOverActiveFile(context_ptr, file_ops_ptr);
 		if (status != 0) {
@@ -341,6 +332,7 @@ int32_t SdDebugLogCore_WriteRecord(SdDebugLogCore_Context *context_ptr,
 	/* Write record bytes to file. */
 	if (file_ops_ptr->write(file_ops_ptr->user_context_ptr, record_ptr,
 			record_length_bytes) != 0) {
+        (void) SdDebugLogCore_ForceFlushAndClose(context_ptr, file_ops_ptr);
 		return -5;
 	}
 
@@ -352,25 +344,26 @@ int32_t SdDebugLogCore_WriteRecord(SdDebugLogCore_Context *context_ptr,
 
 int32_t SdDebugLogCore_ForceFlushAndClose(SdDebugLogCore_Context *context_ptr,
 		const SdDebugLogCore_FileOps *file_ops_ptr) {
+	int32_t flush_status;
+	int32_t close_status;
+
 	/* Validate pointers. */
 	if ((context_ptr == NULL) || (file_ops_ptr == NULL)) {
 		return -1;
 	}
 
-	/* If not open, nothing to do. */
+	/* A previous close may have failed while committing metadata. Flush cached
+     * media state even without an open file so a retry cannot falsely succeed. */
 	if (context_ptr->active_file_is_open == 0U) {
-		return 0;
+		return (file_ops_ptr->flush(file_ops_ptr->user_context_ptr) == 0) ? 0 : -2;
 	}
 
-	/* Flush pending data. */
-	(void) file_ops_ptr->flush(file_ops_ptr->user_context_ptr);
-
-	/* Close handle. */
-	(void) file_ops_ptr->close(file_ops_ptr->user_context_ptr);
+    close_status = file_ops_ptr->close(file_ops_ptr->user_context_ptr);
+    flush_status = file_ops_ptr->flush(file_ops_ptr->user_context_ptr);
 
 	/* Update state. */
 	context_ptr->active_file_is_open = 0U;
 
-	return 0;
+	return ((flush_status == 0) && (close_status == 0)) ? 0 : -2;
 }
 

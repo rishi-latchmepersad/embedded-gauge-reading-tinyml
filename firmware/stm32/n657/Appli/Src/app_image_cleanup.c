@@ -18,7 +18,8 @@
 
 #include "app_memory_budget.h"
 #include "app_filex.h"
-#include "app_storage.h"
+#include "main.h"
+#include "sd_debug_log_service.h"
 #include "ds3231_clock.h"
 #include "debug_console.h"
 #include "threadx_utils.h"
@@ -30,11 +31,8 @@
 #define APP_IMAGE_CLEANUP_MAX_BUCKETS            1024U
 #define APP_IMAGE_CLEANUP_CAPTURE_NAME_LENGTH      64U
 #define APP_IMAGE_CLEANUP_THREAD_PRIORITY          16U
-#define APP_IMAGE_CLEANUP_FLUSH_INTERVAL_MS      120000U
 #define APP_IMAGE_CLEANUP_PERIOD_MS           1800000U
 #define APP_IMAGE_CLEANUP_SERVICE_POLL_MS         1000U
-#define APP_IMAGE_CLEANUP_MEDIA_READY_TIMEOUT_MS  60000U
-#define APP_IMAGE_CLEANUP_RETRY_DELAY_MS          1000U
 #define APP_IMAGE_CLEANUP_RECENT_WINDOW_SECONDS    86400U
 #define APP_IMAGE_CLEANUP_FILE_NAME_BUFFER_LENGTH FX_MAX_LONG_NAME_LEN
 /* USER CODE END Includes */
@@ -75,8 +73,11 @@ static TX_THREAD app_image_cleanup_thread;
 static ULONG app_image_cleanup_thread_stack[IMAGE_CLEANUP_THREAD_STACK_SIZE_BYTES
 		/ sizeof(ULONG)];
 static bool app_image_cleanup_thread_created = false;
-static ULONG app_image_cleanup_boot_tick = 0U;
-static bool app_image_cleanup_boot_tick_set = false;
+/* A fixed batch bounds RAM while still visiting arbitrarily many hour folders. */
+#define APP_IMAGE_CLEANUP_DIRECTORY_BATCH 64U
+#define APP_IMAGE_CLEANUP_SCHEDULE_MAGIC 0x434C4E33U
+static CHAR app_image_cleanup_directory_batch[APP_IMAGE_CLEANUP_DIRECTORY_BATCH][14];
+static CHAR app_image_cleanup_hour_prefix[14];
 static AppImageCleanup_BucketRecord app_image_cleanup_bucket_records
 		[APP_IMAGE_CLEANUP_MAX_BUCKETS];
 /* USER CODE END PV */
@@ -85,7 +86,10 @@ static AppImageCleanup_BucketRecord app_image_cleanup_bucket_records
 /* USER CODE BEGIN PFP */
 UINT AppImageCleanup_SetBootTick(ULONG boot_tick);
 static VOID AppImageCleanupThread_Entry(ULONG thread_input);
+static UINT AppImageCleanup_RunDirectory(const CHAR *directory_path);
 static UINT AppImageCleanup_RunSweep(void);
+static bool AppImageCleanup_ParseHour(const CHAR *name,
+        AppImageCleanup_Timestamp *timestamp_ptr);
 static bool AppImageCleanup_IsDigit(char ch);
 static bool AppImageCleanup_ParseTwoDigits(const CHAR *text_ptr,
 		UINT *value_out);
@@ -148,77 +152,168 @@ UINT AppImageCleanup_Start(void) {
 }
 
 /**
- * @brief Record the boot tick used to schedule the first cleanup sweep.
+ * @brief Retain boot-call compatibility; cleanup scheduling uses retained RTC time.
  * @param boot_tick System tick captured near boot.
  * @retval TX_SUCCESS always.
  */
 UINT AppImageCleanup_SetBootTick(ULONG boot_tick) {
-	app_image_cleanup_boot_tick = boot_tick;
-	app_image_cleanup_boot_tick_set = true;
-	return TX_SUCCESS;
+    /* The schedule now uses retained wall time; keep this API for boot callers. */
+    (void) boot_tick;
+    return TX_SUCCESS;
 }
 
 /**
- * @brief Background worker that prunes duplicate captures from /captured_images.
- * @param thread_input Unused ThreadX input value.
+ * @brief Service deferred capture flushes; pruning runs at the stopped-camera boundary.
+ * @param thread_input Unused ThreadX input. Never deletes files on the camera path.
  */
 static VOID AppImageCleanupThread_Entry(ULONG thread_input) {
-	(void) thread_input;
-
-	DebugConsole_Printf(
-			"[IMAGE][CLEANUP] Thread started; flushing every %lu ms and pruning every %lu ms.\r\n",
-			(unsigned long) APP_IMAGE_CLEANUP_FLUSH_INTERVAL_MS,
-			(unsigned long) APP_IMAGE_CLEANUP_PERIOD_MS);
-
-	ULONG next_cleanup_tick = app_image_cleanup_boot_tick_set
-			? (app_image_cleanup_boot_tick
-					+ ThreadxUtils_MillisecondsToTicks(
-							APP_IMAGE_CLEANUP_PERIOD_MS))
-			: (tx_time_get()
-					+ ThreadxUtils_MillisecondsToTicks(
-							APP_IMAGE_CLEANUP_PERIOD_MS));
-
-	while (1) {
-		UINT sweep_status = TX_SUCCESS;
-		const ULONG now_tick = tx_time_get();
-
-		(void) AppFileX_ServiceCaptureMediaFlush();
-
-		if (now_tick < next_cleanup_tick) {
-			DelayMilliseconds_Cooperative(APP_IMAGE_CLEANUP_SERVICE_POLL_MS);
-			continue;
-		}
-
-		if (!AppStorage_WaitForMediaReady(APP_IMAGE_CLEANUP_MEDIA_READY_TIMEOUT_MS)) {
-			DebugConsole_Printf(
-					"[IMAGE][CLEANUP] Media not ready yet; retrying later.\r\n");
-			DelayMilliseconds_Cooperative(APP_IMAGE_CLEANUP_RETRY_DELAY_MS);
-			continue;
-		}
-
-		sweep_status = AppImageCleanup_RunSweep();
-		if (sweep_status != FX_SUCCESS) {
-			DebugConsole_Printf(
-					"[IMAGE][CLEANUP] Sweep failed with status=%lu; retrying later.\r\n",
-					(unsigned long) sweep_status);
-			DelayMilliseconds_Cooperative(APP_IMAGE_CLEANUP_RETRY_DELAY_MS);
-			continue;
-		}
-
-		do {
-			next_cleanup_tick += ThreadxUtils_MillisecondsToTicks(
-					APP_IMAGE_CLEANUP_PERIOD_MS);
-		} while (next_cleanup_tick <= now_tick);
-
-		DelayMilliseconds_Cooperative(APP_IMAGE_CLEANUP_SERVICE_POLL_MS);
-	}
+    (void) thread_input;
+    while (1) {
+        (void) AppFileX_ServiceCaptureMediaFlush();
+        DelayMilliseconds_Cooperative(APP_IMAGE_CLEANUP_SERVICE_POLL_MS);
+    }
 }
 
 /**
- * @brief Perform one cleanup sweep over the captured image directory.
- * @retval FX_SUCCESS when the sweep completed or found nothing to prune.
+ * @brief Run due maintenance after camera/AI ownership has ended, before sleep.
+ * @return FileX/ThreadX status; an invalid RTC preserves every capture.
+ * @sideeffects Prunes duplicates and retains a completed RTC deadline in BKP20..22.
+ */
+UINT AppImageCleanup_RunDueBeforeSleep(void) {
+    AppImageCleanup_Timestamp now = {0};
+    uint64_t seconds = 0U;
+    if (!AppFileX_IsMediaReady() || !AppImageCleanup_ReadCurrentTimestamp(&now)
+            || !AppImageCleanup_IsPlausibleTimestamp(now.year, now.month,
+                    now.day, now.hour, now.minute, now.second)
+            || !AppImageCleanup_ToSecondsSinceEpoch(&now, &seconds)) {
+        (void) SdDebugLogService_EnqueueLine("[IMAGE][CLEANUP] skipped: media/RTC unavailable");
+        return FX_SUCCESS;
+    }
+    /* These three registers are separate from the fault snapshot in BKP23..31.
+     * Complement + magic reject a partial write or uninitialized backup domain. */
+    HAL_PWR_EnableBkUpAccess();
+    const uint32_t previous = TAMP->BKP21R;
+    if ((TAMP->BKP20R == APP_IMAGE_CLEANUP_SCHEDULE_MAGIC)
+            && (TAMP->BKP22R == ~previous) && (seconds >= previous)
+            && ((seconds - previous) < (APP_IMAGE_CLEANUP_PERIOD_MS / 1000U))) {
+        return FX_SUCCESS;
+    }
+    (void) SdDebugLogService_EnqueueLine("[IMAGE][CLEANUP] sweep-start camera-stopped=1");
+    const UINT status = AppImageCleanup_RunSweep();
+    char line[112];
+    (void) snprintf(line, sizeof(line), "[IMAGE][CLEANUP] sweep-end status=%lu",
+            (unsigned long) status);
+    (void) DebugConsole_WriteString(line);
+    (void) DebugConsole_WriteString("\r\n");
+    (void) SdDebugLogService_EnqueueLine(line);
+    if (status == FX_SUCCESS) {
+        /* Advance only after all deletes and the media flush succeeded. A reset
+         * during cleanup retries the idempotent sweep on the next safe boundary. */
+        TAMP->BKP20R = 0U;
+        TAMP->BKP21R = (uint32_t) seconds;
+        TAMP->BKP22R = ~(uint32_t) seconds;
+        __DSB();
+        TAMP->BKP20R = APP_IMAGE_CLEANUP_SCHEDULE_MAGIC;
+    }
+    return status;
+}
+
+/**
+ * @brief Parse exactly YYYY-MM-DD_HH; reject unknown folders and impossible dates.
+ * @return true with minute/second zero when this is a supported hour directory.
+ */
+static bool AppImageCleanup_ParseHour(const CHAR *name,
+        AppImageCleanup_Timestamp *timestamp_ptr) {
+    CHAR text[20];
+    if ((name == NULL) || (strlen(name) != 13U)) {
+        return false;
+    }
+    (void) snprintf(text, sizeof(text), "%.13s-00-00", name);
+    return AppImageCleanup_ParseTimestampText(text, timestamp_ptr)
+            && AppImageCleanup_IsPlausibleTimestamp(timestamp_ptr->year,
+                    timestamp_ptr->month, timestamp_ptr->day,
+                    timestamp_ptr->hour, 0U, 0U);
+}
+
+/**
+ * @brief Traverse root captures and hourly folders in bounded sorted batches.
+ * @return First traversal/pruning failure. Unknown and recent folders are preserved.
+ * @sideeffects Locks media for enumeration only; subdirectories use fresh cursors.
  */
 static UINT AppImageCleanup_RunSweep(void) {
+    FX_MEDIA *media = AppFileX_GetMediaHandle();
+    AppImageCleanup_Timestamp now = {0};
+    CHAR cursor[14] = {0};
+    uint64_t now_seconds = 0U;
+    if (!AppImageCleanup_ReadCurrentTimestamp(&now)
+            || !AppImageCleanup_ToSecondsSinceEpoch(&now, &now_seconds)) {
+        return FX_SUCCESS;
+    }
+    app_image_cleanup_hour_prefix[0] = '\0';
+    UINT status = AppImageCleanup_RunDirectory("/captured_images");
+    if ((status != FX_SUCCESS) && (status != FX_NOT_FOUND)
+            && (status != FX_INVALID_PATH)) {
+        return status;
+    }
+    for (;;) {
+        CHAR name[FX_MAX_LONG_NAME_LEN];
+        UINT attributes, year, month, day, hour, minute, second;
+        ULONG size;
+        UINT count = 0U;
+        status = AppFileX_AcquireMediaLock();
+        if (status != TX_SUCCESS) { return status; }
+        status = fx_directory_default_set(media, "/captured_images");
+        if (status == FX_SUCCESS) {
+            status = fx_directory_first_full_entry_find(media, name, &attributes,
+                    &size, &year, &month, &day, &hour, &minute, &second);
+            while (status == FX_SUCCESS) {
+                AppImageCleanup_Timestamp folder_time = {0};
+                uint64_t folder_seconds = 0U;
+                if ((attributes & FX_DIRECTORY) && (strcmp(name, cursor) > 0)
+                        && AppImageCleanup_ParseHour(name, &folder_time)
+                        && AppImageCleanup_ToSecondsSinceEpoch(&folder_time, &folder_seconds)
+                        && (folder_seconds < now_seconds)
+                        && ((now_seconds - folder_seconds) > APP_IMAGE_CLEANUP_RECENT_WINDOW_SECONDS)) {
+                    /* Keep the lexically first 64 eligible folders after cursor.
+                     * The next batch rescans the parent, avoiding FileX's shared
+                     * enumeration cursor being overwritten by a child scan. */
+                    UINT pos = 0U;
+                    while ((pos < count) && (strcmp(app_image_cleanup_directory_batch[pos], name) < 0)) { pos++; }
+                    if (pos < APP_IMAGE_CLEANUP_DIRECTORY_BATCH) {
+                        UINT last = (count < APP_IMAGE_CLEANUP_DIRECTORY_BATCH) ? count++ : (count - 1U);
+                        while (last > pos) {
+                            memcpy(app_image_cleanup_directory_batch[last], app_image_cleanup_directory_batch[last - 1U], 14U);
+                            last--;
+                        }
+                        memcpy(app_image_cleanup_directory_batch[pos], name, 14U);
+                    }
+                }
+                status = fx_directory_next_full_entry_find(media, name, &attributes,
+                        &size, &year, &month, &day, &hour, &minute, &second);
+            }
+        }
+        (void) fx_directory_default_set(media, FX_NULL);
+        AppFileX_ReleaseMediaLock();
+        if ((status == FX_NOT_FOUND) || (status == FX_INVALID_PATH)) { return FX_SUCCESS; }
+        if (status != FX_NO_MORE_ENTRIES) { return status; }
+        if (count == 0U) { return FX_SUCCESS; }
+        for (UINT i = 0U; i < count; i++) {
+            CHAR path[40];
+            memcpy(app_image_cleanup_hour_prefix, app_image_cleanup_directory_batch[i], 14U);
+            (void) snprintf(path, sizeof(path), "/captured_images/%s", app_image_cleanup_hour_prefix);
+            status = AppImageCleanup_RunDirectory(path);
+            if (status != FX_SUCCESS) { return status; }
+        }
+        memcpy(cursor, app_image_cleanup_directory_batch[count - 1U], 14U);
+    }
+}
+
+/**
+ * @brief Prune one directory; reset its bucket table and restore root on exit.
+ * @param directory_path Absolute legacy-root or hourly capture directory.
+ * @retval FX_SUCCESS when the sweep completed or found nothing to prune.
+ */
+static UINT AppImageCleanup_RunDirectory(const CHAR *directory_path) {
 	FX_MEDIA *media_ptr = AppFileX_GetMediaHandle();
 	AppImageCleanup_Timestamp current_timestamp = { 0 };
 	CHAR file_name[APP_IMAGE_CLEANUP_FILE_NAME_BUFFER_LENGTH] = { 0 };
@@ -237,7 +332,7 @@ static UINT AppImageCleanup_RunSweep(void) {
 	ULONG deleted_files = 0U;
 	ULONG kept_files = 0U;
 	ULONG skipped_files = 0U;
-	bool directory_selected = false;
+	bool delete_failed = false;
 	bool sweep_overflow = false;
 
 	if (media_ptr == NULL) {
@@ -273,16 +368,15 @@ static UINT AppImageCleanup_RunSweep(void) {
 	AppImageCleanup_ResetBuckets();
 
 	iter_status = fx_directory_default_set(media_ptr,
-			(CHAR *) AppFileX_GetCapturedImagesDirectoryName());
+			(CHAR *) directory_path);
 	if (iter_status != FX_SUCCESS) {
 		DebugConsole_Printf(
-				"[IMAGE][CLEANUP] Failed to select /%s, status=%lu.\r\n",
-				AppFileX_GetCapturedImagesDirectoryName(),
+				"[IMAGE][CLEANUP] Failed to select %s, status=%lu.\r\n",
+				directory_path,
 				(unsigned long) iter_status);
 		goto cleanup;
 	}
 
-	directory_selected = true;
 
 	/*
 	 * Pass 1: discover the newest file in each 10-minute bucket.
@@ -298,6 +392,7 @@ static UINT AppImageCleanup_RunSweep(void) {
 		scanned_files++;
 
 		if (((attributes & FX_DIRECTORY) == 0U)
+                && (file_size > 0U)
 				&& AppImageCleanup_ResolveTimestamp(file_name, year, month, day,
 						hour, minute, second, &timestamp)) {
 			if (AppImageCleanup_IsWithinLast24Hours(&timestamp,
@@ -374,12 +469,13 @@ static UINT AppImageCleanup_RunSweep(void) {
 			const AppImageCleanup_BucketRecord *record =
 					AppImageCleanup_FindBucket(bucket_key);
 
-			if ((record != NULL)
-					&& (strcmp(file_name, record->file_name) != 0)) {
+			if ((file_size == 0U) || ((record != NULL)
+					&& (strcmp(file_name, record->file_name) != 0))) {
 				flush_status = fx_file_delete(media_ptr, file_name);
 				if (flush_status == FX_SUCCESS) {
 					deleted_files++;
 				} else if (flush_status != FX_NOT_FOUND) {
+                    delete_failed = true;
 					DebugConsole_Printf(
 							"[IMAGE][CLEANUP] Failed to delete %s, status=%lu.\r\n",
 							file_name, (unsigned long) flush_status);
@@ -412,19 +508,26 @@ static UINT AppImageCleanup_RunSweep(void) {
 		}
 	}
 
+    if (deleted_files > 0U) {
+        char summary[128];
+        (void) snprintf(summary, sizeof(summary),
+                "[IMAGE][CLEANUP] path=%s scanned=%lu deleted=%lu kept=%lu recent=%lu",
+                directory_path, (unsigned long) scanned_files,
+                (unsigned long) deleted_files, (unsigned long) kept_files,
+                (unsigned long) recent_files);
+        (void) SdDebugLogService_EnqueueLine(summary);
+    }
 	DebugConsole_Printf(
-			"[IMAGE][CLEANUP] Sweep complete: scanned=%lu kept=%lu recent=%lu deleted=%lu skipped=%lu%s\r\n",
+			"[IMAGE][CLEANUP] Directory complete: scanned=%lu kept=%lu recent=%lu deleted=%lu skipped=%lu%s\r\n",
 			(unsigned long) scanned_files, (unsigned long) kept_files,
 			(unsigned long) recent_files, (unsigned long) deleted_files,
 			(unsigned long) skipped_files,
 			sweep_overflow ? " (bucket table full)" : "");
 
-	iter_status = FX_SUCCESS;
+	iter_status = delete_failed ? FX_IO_ERROR : FX_SUCCESS;
 
 cleanup:
-	if (directory_selected) {
-		(void) fx_directory_default_set(media_ptr, FX_NULL);
-	}
+	(void) fx_directory_default_set(media_ptr, FX_NULL);
 
 	AppFileX_ReleaseMediaLock();
 	return iter_status;
@@ -492,9 +595,14 @@ static bool AppImageCleanup_ParseFourDigits(const CHAR *text_ptr,
  */
 static bool AppImageCleanup_IsPlausibleTimestamp(UINT year, UINT month,
 		UINT day, UINT hour, UINT minute, UINT second) {
-	return (year >= 2020U) && (year <= 2099U) && (month >= 1U)
-			&& (month <= 12U) && (day >= 1U) && (day <= 31U) && (hour <= 23U)
-			&& (minute <= 59U) && (second <= 59U);
+    static const UINT days[] = {31U,28U,31U,30U,31U,30U,31U,31U,30U,31U,30U,31U};
+    if ((year < 2020U) || (year > 2099U) || (month < 1U) || (month > 12U)
+            || (day < 1U) || (hour > 23U) || (minute > 59U) || (second > 59U)) {
+        return false;
+    }
+    const UINT maximum_day = days[month - 1U]
+            + (((month == 2U) && AppImageCleanup_IsLeapYear(year)) ? 1U : 0U);
+    return day <= maximum_day;
 }
 
 /**
@@ -515,7 +623,8 @@ static bool AppImageCleanup_ParseTimestampFromName(const CHAR *file_name_ptr,
 		return false;
 	}
 
-	if (strncmp(file_name_ptr, prefix, sizeof(prefix) - 1U) != 0) {
+	if ((strlen(file_name_ptr) < 27U)
+            || (strncmp(file_name_ptr, prefix, sizeof(prefix) - 1U) != 0)) {
 		return false;
 	}
 
@@ -596,7 +705,7 @@ static bool AppImageCleanup_ParseTimestampText(const CHAR *text_ptr,
 	UINT minute = 0U;
 	UINT second = 0U;
 
-	if ((text_ptr == NULL) || (timestamp_ptr == NULL)) {
+	if ((text_ptr == NULL) || (timestamp_ptr == NULL) || (strlen(text_ptr) != 19U)) {
 		return false;
 	}
 
@@ -675,6 +784,22 @@ static bool AppImageCleanup_ResolveTimestamp(
 		return false;
 	}
 
+    const CHAR *extension = strrchr(file_name_ptr, '.');
+    if ((strncmp(file_name_ptr, "capture_", 8U) != 0) || (extension == NULL)
+            || ((strcmp(extension, ".gray8") != 0) && (strcmp(extension, ".raw16") != 0)
+                && (strcmp(extension, ".yuv422") != 0))) {
+        return false;  /* Never prune unrelated files based on their FAT timestamp. */
+    }
+    if ((app_image_cleanup_hour_prefix[0] != '\0')
+            && ((size_t)(extension - file_name_ptr) == 13U)
+            && (file_name_ptr[10] == '-')) {
+        CHAR text[20];
+        (void) snprintf(text, sizeof(text), "%s-%.5s", app_image_cleanup_hour_prefix, file_name_ptr + 8U);
+        return AppImageCleanup_ParseTimestampText(text, timestamp_ptr)
+                && AppImageCleanup_IsPlausibleTimestamp(timestamp_ptr->year,
+                        timestamp_ptr->month, timestamp_ptr->day, timestamp_ptr->hour,
+                        timestamp_ptr->minute, timestamp_ptr->second);
+    }
 	if (AppImageCleanup_ParseTimestampFromName(file_name_ptr,
 			timestamp_ptr)) {
 		return true;

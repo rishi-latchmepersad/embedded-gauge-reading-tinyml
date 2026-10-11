@@ -109,7 +109,8 @@ static void IT_EnterFaultLedState(void)
   BSP_LED_Off(LED_GREEN);
 }
 
-static void IT_LogFaultSnapshot(const char *fault_name, uint32_t stacked_pc, uint32_t stacked_lr)
+static void IT_LogFaultSnapshot(const char *fault_name, uint32_t stacked_pc,
+		uint32_t stacked_lr, uint32_t exc_lr)
 {
   static volatile uint32_t fault_cfsr = 0U;
   static volatile uint32_t fault_hfsr = 0U;
@@ -138,6 +139,11 @@ static void IT_LogFaultSnapshot(const char *fault_name, uint32_t stacked_pc, uin
   fault_sfsr = SCB->SFSR;
   fault_sfar = SCB->SFAR;
 #endif
+
+  /* Retain the key fault registers so the next boot can copy them to SD after
+   * FileX is ready; the exception path must not call the filesystem or RTOS. */
+  AppDiagnostics_RecordFault(stacked_pc, stacked_lr, fault_cfsr, fault_hfsr,
+		  fault_bfar, fault_mmar, exc_lr, __get_IPSR());
 
   IT_RawUartWrite("[FAULT] ");
   IT_RawUartWrite(fault_name);
@@ -191,7 +197,7 @@ void HardFault_Handler_C(uint32_t *stacked_regs, uint32_t exc_lr)
   (void)exc_lr;
 
   IT_EnterFaultLedState();
-  IT_LogFaultSnapshot("HardFault", stacked_pc, stacked_lr);
+  IT_LogFaultSnapshot("HardFault", stacked_pc, stacked_lr, exc_lr);
   IT_RawUartWrite("[FAULT] HardFault regs SP=");
   IT_RawUartWriteHex32((uint32_t)stacked_regs);
   IT_RawUartWrite(" R0=");
@@ -246,7 +252,7 @@ static void IT_LogContextFault(const char *fault_name, uint32_t *stacked_regs, u
   (void)exc_lr;
 
   IT_EnterFaultLedState();
-  IT_LogFaultSnapshot(fault_name, stacked_pc, stacked_lr);
+  IT_LogFaultSnapshot(fault_name, stacked_pc, stacked_lr, exc_lr);
   IT_RawUartWrite("[FAULT] ");
   IT_RawUartWrite(fault_name);
   IT_RawUartWrite(" regs SP=");
@@ -275,6 +281,46 @@ static void IT_LogContextFault(const char *fault_name, uint32_t *stacked_regs, u
   IT_RawUartWrite("[FAULT] ");
   IT_RawUartWrite(fault_name);
   IT_RawUartWrite(" latched; staying in fault loop.\r\n");
+  while (1)
+  {
+    __NOP();
+  }
+}
+
+/**
+ * @brief Record and latch any vector that falls through to Default_Handler.
+ * @param exc_return Exception-return token supplied by the startup trampoline.
+ * @retval Does not return; reports the active vector and stacked PC over UART,
+ *         then leaves a retained snapshot for the next boot.
+ */
+void IT_DefaultHandler_C(uint32_t exc_return, uint32_t *stacked_regs)
+{
+  uint32_t stacked_pc;
+  uint32_t stacked_lr;
+  const uint32_t exception_number = __get_IPSR();
+
+  /* An extended floating-point frame puts 18 FP words before the core
+   * R0-R3/R12/LR/PC/xPSR frame. The assembly trampoline captured the stack
+   * pointer before this C function used any of the handler stack. */
+  if ((exc_return & 0x10U) == 0U)
+  {
+    stacked_regs += 18U;
+  }
+  stacked_pc = stacked_regs[6];
+  stacked_lr = stacked_regs[5];
+
+  IT_EnterFaultLedState();
+  IT_LogFaultSnapshot("DefaultHandler", stacked_pc, stacked_lr, exc_return);
+  IT_RawUartWrite("[FAULT] Default_Handler exception=");
+  IT_RawUartWriteHex32(exception_number);
+  IT_RawUartWrite(" PC=");
+  IT_RawUartWriteHex32(stacked_pc);
+  IT_RawUartWrite(" LR=");
+  IT_RawUartWriteHex32(stacked_lr);
+  IT_RawUartWrite(" EXC_RETURN=");
+  IT_RawUartWriteHex32(exc_return);
+  IT_RawUartWrite(" latched; staying in fault loop.\r\n");
+
   while (1)
   {
     __NOP();
@@ -337,16 +383,17 @@ static volatile uint32_t tim5_irq_guard_drop_count = 0U;
 /**
   * @brief This function handles Non maskable interrupt.
   */
+void NMI_Handler(void) __attribute__((naked));
 void NMI_Handler(void)
 {
-  /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
-
-  /* USER CODE END NonMaskableInt_IRQn 0 */
-  /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
-   while (1)
-  {
-  }
-  /* USER CODE END NonMaskableInt_IRQn 1 */
+  /* Preserve EXC_RETURN and route NMI through the retained fault logger. */
+  __asm volatile(
+      "tst lr, #4                        \n"
+      "ite eq                            \n"
+      "mrseq r1, msp                     \n"
+      "mrsne r1, psp                     \n"
+      "mov r0, lr                        \n"
+      "b IT_DefaultHandler_C             \n");
 }
 
 /**
