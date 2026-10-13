@@ -34,12 +34,21 @@ extern "C" {
 #define CAMERA_HEARTBEAT_LED_PIN            GPIO_PIN_0
 
 /* Camera capture cadence --------------------------------------------------- */
-/* Keep the board on a simple one-frame-per-minute duty cycle now that the
- * save path is no longer the bottleneck. */
+/* Normal operation uses three frames per wake, then five minutes in Standby.
+ * The disabled diagnostic override takes one frame every 30 seconds while
+ * awake; set it to 1 only for a temporary capture investigation. */
+#ifndef CAMERA_CAPTURE_DIAGNOSTIC_30S_ENABLE
+#define CAMERA_CAPTURE_DIAGNOSTIC_30S_ENABLE    0U
+#endif
+#if CAMERA_CAPTURE_DIAGNOSTIC_30S_ENABLE
+#define CAMERA_CAPTURE_PERIOD_MS           30000U
+#define CAMERA_CAPTURE_BURST_COUNT              1U
+#else
 #define CAMERA_CAPTURE_PERIOD_MS           60000U
-/* Capture three sequential frames per scheduled observation. The capture
- * owner waits for the AI worker to release each frame before the next one. */
+/* Serial frames release AI ownership before the next capture. Later frames
+ * reuse the preceding ellipse crop and support two-of-three value consensus. */
 #define CAMERA_CAPTURE_BURST_COUNT              3U
+#endif
 
 /* Stage 2 low-power cycle: enter real STM32N6 Stop mode for one minute using
  * the LPTIM1/LSE wake route, only after the camera and consumers are quiescent. */

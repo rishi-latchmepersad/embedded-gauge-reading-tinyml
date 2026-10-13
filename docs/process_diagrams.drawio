@@ -1,6 +1,225 @@
-<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" pages="4">
+<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" pages="5">
+  <diagram id="trainingHistory20261013" name="Training Diagram">
+    <mxGraphModel dx="3433" dy="2407" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="3000" pageHeight="2500" background="#ffffff" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="training_band_data" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#f5f7fa;strokeColor=#e0e6ed;" value="" vertex="1">
+          <mxGeometry height="435" width="2910" x="45" y="140" as="geometry" />
+        </mxCell>
+        <mxCell id="training_band_search" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#f5f7fa;strokeColor=#e0e6ed;" value="" vertex="1">
+          <mxGeometry height="515" width="2910" x="45" y="630" as="geometry" />
+        </mxCell>
+        <mxCell id="training_band_chosen" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#f5f7fa;strokeColor=#e0e6ed;" value="" vertex="1">
+          <mxGeometry height="500" width="2910" x="45" y="1240" as="geometry" />
+        </mxCell>
+        <mxCell id="training_band_deploy" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#f5f7fa;strokeColor=#e0e6ed;" value="" vertex="1">
+          <mxGeometry height="385" width="2910" x="45" y="1830" as="geometry" />
+        </mxCell>
+        <mxCell id="training_title" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=none;strokeColor=none;rounded=0;fontSize=38;fontColor=#173354;spacingLeft=0;spacingTop=0;" value="&lt;b&gt;Training Diagram&lt;/b&gt;" vertex="1">
+          <mxGeometry height="55" width="1900" x="75" y="35" as="geometry" />
+        </mxCell>
+        <mxCell id="training_subtitle" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=none;strokeColor=none;rounded=0;fontSize=21;fontColor=#60748c;spacingLeft=0;spacingTop=0;" value="From CVAT annotations to the current ellipse + center/tip models · research history reviewed 13 October 2026" vertex="1">
+          <mxGeometry height="35" width="2780" x="75" y="98" as="geometry" />
+        </mxCell>
+        <mxCell id="training_data_title" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=none;strokeColor=none;rounded=0;fontSize=22;fontColor=#24344a;spacingLeft=0;spacingTop=0;" value="&lt;b&gt;01 / Acquire images, annotate and prepare geometric supervision&lt;/b&gt;" vertex="1">
+          <mxGeometry height="40" width="2770" x="75" y="155" as="geometry" />
+        </mxCell>
+        <mxCell id="training_search_title" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=none;strokeColor=none;rounded=0;fontSize=22;fontColor=#24344a;spacingLeft=0;spacingTop=0;" value="&lt;b&gt;02 / Explore model families and repeat comparative training&lt;/b&gt;" vertex="1">
+          <mxGeometry height="40" width="2760" x="75" y="645" as="geometry" />
+        </mxCell>
+        <mxCell id="training_chosen_title" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=none;strokeColor=none;rounded=0;fontSize=22;fontColor=#24344a;spacingLeft=0;spacingTop=0;" value="&lt;b&gt;03 / Current custom architectures and stage-specific training recipes&lt;/b&gt;" vertex="1">
+          <mxGeometry height="40" width="2760" x="75" y="1255" as="geometry" />
+        </mxCell>
+        <mxCell id="training_deploy_title" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=none;strokeColor=none;rounded=0;fontSize=22;fontColor=#24344a;spacingLeft=0;spacingTop=0;" value="&lt;b&gt;04 / Check the complete pipeline, export, package and learn from board captures&lt;/b&gt;" vertex="1">
+          <mxGeometry height="40" width="2760" x="75" y="1845" as="geometry" />
+        </mxCell>
+        <mxCell id="training_images" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#eaf2ff;strokeColor=#9cb9df;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Image collections&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;General gauges: 9,157 records&lt;/b&gt;&lt;br&gt;7,326 train · 916 val · 915 test&lt;br&gt;&lt;br&gt;Tiny-gauge family: 33 records&lt;br&gt;&lt;br&gt;&lt;b&gt;Temperature references: 620 records&lt;/b&gt;&lt;br&gt;352 phone/PXL + 268 board captures&lt;br&gt;&lt;br&gt;Raw export counts; derived views and repeat captures can share a scene." vertex="1">
+          <mxGeometry height="330" width="410" x="75" y="205" as="geometry" />
+        </mxCell>
+        <mxCell id="training_manual" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#eaf2ff;strokeColor=#9cb9df;fontSize=18;spacingTop=10;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Reference labels + review&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;450 manual face labels&lt;/b&gt; (frames 0–449).&lt;br&gt;YOLO seed split: &lt;b&gt;360 train / 90 val&lt;/b&gt;.&lt;br&gt;Imported landmarks + manual corrections.&lt;br&gt;&lt;b&gt;true_value / gauge_id&lt;/b&gt;; later &lt;b&gt;temp_c&lt;/b&gt;." vertex="1">
+          <mxGeometry height="155" width="440" x="555" y="205" as="geometry" />
+        </mxCell>
+        <mxCell id="training_automatic" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#eaf2ff;strokeColor=#9cb9df;fontSize=18;spacingTop=10;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Automatic + imported labels&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;Face annotator:&lt;/b&gt; fine-tuned YOLO11m&lt;br&gt;+ edge/circle ellipse refinement.&lt;br&gt;General center/tip/start/end labels are&lt;br&gt;imported; original provenance is incomplete." vertex="1">
+          <mxGeometry height="155" width="440" x="555" y="385" as="geometry" />
+        </mxCell>
+        <mxCell id="training_cvat" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#ffffff;strokeColor=#b8c6d8;" value="&lt;b style=&quot;font-size:23px&quot;&gt;CVAT Images 1.1 exports&lt;/b&gt;&lt;br&gt;&lt;br&gt;General labels: &lt;b&gt;GaugeFace, Center,&lt;br&gt;Tip, Start, End&lt;/b&gt;.&lt;br&gt;&lt;br&gt;Temperature labels: &lt;b&gt;temp_dial,&lt;br&gt;temp_center, temp_tip + temp_c&lt;/b&gt;.&lt;br&gt;&lt;br&gt;Store XML, source image identity&lt;br&gt;and per-gauge calibration." vertex="1">
+          <mxGeometry height="300" width="440" x="1065" y="220" as="geometry" />
+        </mxCell>
+        <mxCell id="training_curate" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#ffffff;strokeColor=#b8c6d8;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Curate and define splits&lt;/b&gt;&lt;br&gt;&lt;br&gt;Review glare, dark captures and labels.&lt;br&gt;Require usable images + required shapes.&lt;br&gt;&lt;br&gt;&lt;b&gt;Exclude board_captures_2 from training:&lt;/b&gt;&lt;br&gt;it duplicates the 22-image test_3.&lt;br&gt;&lt;br&gt;Retain stage-specific split definitions;&lt;br&gt;the final ellipse run pools old train + val." vertex="1">
+          <mxGeometry height="300" width="430" x="1575" y="220" as="geometry" />
+        </mxCell>
+        <mxCell id="training_ellipse_targets" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#edf8f3;strokeColor=#91bea8;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Face / ellipse targets&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;384 × 384 grayscale&lt;/b&gt;&lt;br&gt;Aspect-preserving resize / padding.&lt;br&gt;&lt;br&gt;Supervise center and rim maps,&lt;br&gt;center/radii geometry and scale.&lt;br&gt;&lt;br&gt;Repeat tiny gauges and board-domain&lt;br&gt;examples to balance the training pool." vertex="1">
+          <mxGeometry height="300" width="390" x="2075" y="220" as="geometry" />
+        </mxCell>
+        <mxCell id="training_keypoint_targets" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#edf8f3;strokeColor=#91bea8;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Center / tip targets&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;1.35× ellipse crop → 224 × 224 gray&lt;/b&gt;&lt;br&gt;&lt;br&gt;Map source points into crop space;&lt;br&gt;render two 56 × 56 Gaussian heatmaps.&lt;br&gt;&lt;br&gt;Flip / rotate / scale images and points,&lt;br&gt;then regenerate aligned heatmaps." vertex="1">
+          <mxGeometry height="300" width="390" x="2535" y="220" as="geometry" />
+        </mxCell>
+        <mxCell id="training_scalar" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#f0edfb;strokeColor=#b5a6d4;fontSize=18;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Scalar + rectified readers&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;Earlier MobileNetV2 transfer learning&lt;/b&gt;&lt;br&gt;Direct reading regressors, rectifiers,&lt;br&gt;OBB + scalar chains, hard-case fine-tunes.&lt;br&gt;&lt;br&gt;Lesson: crop/domain/calibration errors&lt;br&gt;can dominate a plausible scalar reading." vertex="1">
+          <mxGeometry height="230" width="500" x="75" y="710" as="geometry" />
+        </mxCell>
+        <mxCell id="training_localizers" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#f0edfb;strokeColor=#b5a6d4;fontSize=18;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Learn the gauge region&lt;/b&gt;&lt;br&gt;&lt;br&gt;YOLO / YOLO11 OBB, compact OBB,&lt;br&gt;joint MobileNetV2 OBB + center,&lt;br&gt;QARepVGG Mini/Pro, teacher–student KD.&lt;br&gt;&lt;br&gt;Lesson: accurate crops must also fit&lt;br&gt;activation memory and NPU operators." vertex="1">
+          <mxGeometry height="230" width="500" x="660" y="710" as="geometry" />
+        </mxCell>
+        <mxCell id="training_geometric" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#f0edfb;strokeColor=#b5a6d4;fontSize=18;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Coordinate + angle heads&lt;/b&gt;&lt;br&gt;&lt;br&gt;Direct coordinates, CoordConv,&lt;br&gt;unit-vector heads, polar CNNs,&lt;br&gt;SimCC / spatial SimCC and KD variants.&lt;br&gt;&lt;br&gt;Lesson: pooled heads can lose spatial&lt;br&gt;detail or collapse toward a fixed pose." vertex="1">
+          <mxGeometry height="230" width="500" x="1245" y="710" as="geometry" />
+        </mxCell>
+        <mxCell id="training_heatmaps" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#f0edfb;strokeColor=#b5a6d4;fontSize=18;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Spatial heatmaps + U-Nets&lt;/b&gt;&lt;br&gt;&lt;br&gt;DS-CNN, heatmap + DARK, HRNet/ECA,&lt;br&gt;MobileNetV2 U-Net and compact variants,&lt;br&gt;then custom QAT-friendly U-Nets.&lt;br&gt;&lt;br&gt;Lesson: skip connections, crop parity&lt;br&gt;and spatial resolution help needle tips." vertex="1">
+          <mxGeometry height="230" width="500" x="1830" y="710" as="geometry" />
+        </mxCell>
+        <mxCell id="training_classical" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#edf1f5;strokeColor=#aebccc;fontSize=18;spacingTop=10;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Classical CV comparator&lt;/b&gt;&lt;br&gt;&lt;br&gt;Hough / rim fitting + radial / polar votes.&lt;br&gt;&lt;b&gt;No neural training required.&lt;/b&gt;&lt;br&gt;Compare accepted readings and failure rates&lt;br&gt;with learned-model results on the same images." vertex="1">
+          <mxGeometry height="160" width="500" x="75" y="990" as="geometry" />
+        </mxCell>
+        <mxCell id="training_why_unet" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#f0edfb;strokeColor=#b5a6d4;fontSize=19;spacingTop=10;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Why the current route emerged&lt;/b&gt;&lt;br&gt;&lt;br&gt;Predict &lt;b&gt;explicit geometry&lt;/b&gt; so errors are inspectable. Preserve fine spatial features through &lt;b&gt;encoder–decoder skip connections&lt;/b&gt;.&lt;br&gt;Match training crops to deployment preprocessing, augment coordinates correctly, and use &lt;b&gt;standard QAT-compatible layers&lt;/b&gt;.&lt;br&gt;The current pair is trained from custom builders; early ImageNet/MobileNetV2 experiments are historical predecessors." vertex="1">
+          <mxGeometry height="160" width="1670" x="660" y="990" as="geometry" />
+        </mxCell>
+        <mxCell id="training_compare" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#fff4df;strokeColor=#d6b46d;fontSize=19;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Train → evaluate → revise&lt;/b&gt;&lt;br&gt;&lt;br&gt;Sweep architecture, input size, width,&lt;br&gt;loss weights and augmentation.&lt;br&gt;&lt;br&gt;&lt;b&gt;Measure per domain:&lt;/b&gt;&lt;br&gt;center / tip / radius error in pixels;&lt;br&gt;angle and physical-reading error;&lt;br&gt;rejections and worst-case failures.&lt;br&gt;&lt;br&gt;&lt;b&gt;Deployment gates:&lt;/b&gt;&lt;br&gt;FP32 ↔ int8 parity, supported operators,&lt;br&gt;activation budget, predicted-crop replay.&lt;br&gt;&lt;br&gt;A clean-split win is insufficient;&lt;br&gt;some early U-Net wins failed board replay." vertex="1">
+          <mxGeometry height="400" width="510" x="2415" y="710" as="geometry" />
+        </mxCell>
+        <mxCell id="training_ellipse_training" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#e5f5ec;strokeColor=#78b597;fontSize=20;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Selected face localizer / gauge_ellipse_v1.0&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;Artifact:&lt;/b&gt; ellipse_iter8_universal_wide_deep&lt;br&gt;&lt;br&gt;&lt;b&gt;Custom architecture:&lt;/b&gt; six-stage Conv / BN / ReLU encoder; channels 24, 32, 48, 64, 96, 128.&lt;br&gt;Shared decoder produces 24 / 48 / 96 center–rim maps, geometry and learned scale confidences.&lt;br&gt;&lt;br&gt;&lt;b&gt;8,853 eligible base records:&lt;/b&gt; 8,233 generic faces + 22 tiny gauges + 598 temperature-domain records.&lt;br&gt;Tiny ×200 + temperature ×4 → 15,025 samples; add one augmented view each → &lt;b&gt;30,050&lt;/b&gt;.&lt;br&gt;&lt;br&gt;&lt;b&gt;Launch recipe:&lt;/b&gt; 25 FP32 epochs → 10 QAT epochs → int8 TFLite.&lt;br&gt;&lt;b&gt;Learned task:&lt;/b&gt; locate the gauge ellipse; no scalar reading prediction." vertex="1">
+          <mxGeometry height="380" width="1370" x="75" y="1320" as="geometry" />
+        </mxCell>
+        <mxCell id="training_keypoint_training" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#e5f5ec;strokeColor=#78b597;fontSize=20;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Selected center/tip model / gauge_keypoint_v1.0&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;Artifact:&lt;/b&gt; keypoint_unet_224g_wide_aug&lt;br&gt;&lt;br&gt;&lt;b&gt;Custom architecture:&lt;/b&gt; 224 × 224 × 1 encoder–decoder U-Net, skip concatenations, width α = 1.5.&lt;br&gt;2,238,386 parameters; sigmoid output &lt;b&gt;56 × 56 × 2&lt;/b&gt; heatmaps for center and needle tip.&lt;br&gt;&lt;br&gt;&lt;b&gt;Prepared splits:&lt;/b&gt; 7,922 train / 925 val / 946 test crops; augmentation doubles training to &lt;b&gt;15,844&lt;/b&gt;.&lt;br&gt;Focal heatmap loss: center weight 1.0, tip weight 1.5; image and point transforms stay aligned.&lt;br&gt;&lt;br&gt;&lt;b&gt;Launch recipe:&lt;/b&gt; 60 FP32 epochs → 20 QAT epochs, batch 16 → int8 TFLite.&lt;br&gt;&lt;b&gt;Reading:&lt;/b&gt; center→tip angle + gauge profile conversion is deterministic." vertex="1">
+          <mxGeometry height="380" width="1370" x="1555" y="1320" as="geometry" />
+        </mxCell>
+        <mxCell id="training_replay" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#eaf1fa;strokeColor=#9fb4d0;fontSize=20;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Full-pipeline evaluation&lt;/b&gt;&lt;br&gt;&lt;br&gt;Ellipse → predicted crop → center/tip&lt;br&gt;→ calibrated reading.&lt;br&gt;&lt;br&gt;Keep independent test domains visible;&lt;br&gt;review failures, not just average error." vertex="1">
+          <mxGeometry height="260" width="660" x="75" y="1910" as="geometry" />
+        </mxCell>
+        <mxCell id="training_int8" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#eaf1fa;strokeColor=#9fb4d0;fontSize=20;" value="&lt;b style=&quot;font-size:23px&quot;&gt;QAT + int8 contract checks&lt;/b&gt;&lt;br&gt;&lt;br&gt;Compare Keras/QAT/TFLite predictions.&lt;br&gt;Verify tensor shapes, scale/zero point,&lt;br&gt;resize, crop and keypoint decoding.&lt;br&gt;&lt;br&gt;Check conversion and quantization parity." vertex="1">
+          <mxGeometry height="260" width="660" x="805" y="1910" as="geometry" />
+        </mxCell>
+        <mxCell id="training_package" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#eaf1fa;strokeColor=#9fb4d0;fontSize=20;" value="&lt;b style=&quot;font-size:23px&quot;&gt;STM32N6 deployment package&lt;/b&gt;&lt;br&gt;&lt;br&gt;ST Edge AI / Cube.AI compilation.&lt;br&gt;Check NPU operators and SRAM pools.&lt;br&gt;Package reloc/runtime + xSPI weight blobs;&lt;br&gt;record flash slots and signatures.&lt;br&gt;&lt;br&gt;Keep generated metadata with the model." vertex="1">
+          <mxGeometry height="260" width="660" x="1535" y="1910" as="geometry" />
+        </mxCell>
+        <mxCell id="training_board" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=#eaf1fa;strokeColor=#9fb4d0;fontSize=20;" value="&lt;b style=&quot;font-size:23px&quot;&gt;Board captures → next iteration&lt;/b&gt;&lt;br&gt;&lt;br&gt;Flash the matching weights + application.&lt;br&gt;Replay saved images and compare tensors,&lt;br&gt;geometry, profile readings and rejection logs.&lt;br&gt;&lt;br&gt;Review hard cases; correct labels and&lt;br&gt;feed them into another training cycle." vertex="1">
+          <mxGeometry height="260" width="660" x="2265" y="1910" as="geometry" />
+        </mxCell>
+        <mxCell id="training_provenance_note" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=none;strokeColor=none;rounded=0;fontSize=19;fontColor=#855c16;spacingLeft=0;spacingTop=0;" value="&lt;b&gt;Annotation provenance:&lt;/b&gt; the filtered CVAT export identifies a &lt;b&gt;450-image manual-face seed&lt;/b&gt; (360 train / 90 val). Landmark labels are mostly imported. A VLM workflow remains unconfirmed; verified face auto-annotation uses fine-tuned YOLO11m + ellipse refinement. Zero true_value attributes are not proof of reviewed readings." vertex="1">
+          <mxGeometry height="76" width="2830" x="75" y="2260" as="geometry" />
+        </mxCell>
+        <mxCell id="training_evidence_note" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=none;strokeColor=none;rounded=0;fontSize=18;fontColor=#536981;spacingLeft=0;spacingTop=0;" value="&lt;b&gt;Evidence:&lt;/b&gt; CVAT XML inventories; all docs/ai-memory notes; final data-preparation and training scripts; launch recipes; artifact reports; current firmware bindings. &lt;b&gt;Counts are records/samples, not independent scenes.&lt;/b&gt; Current bindings confirm the custom ellipse + U-Net pair." vertex="1">
+          <mxGeometry height="70" width="2830" x="75" y="2350" as="geometry" />
+        </mxCell>
+        <mxCell id="training_sources_link" parent="1" style="rounded=1;arcSize=5;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=18;spacingRight=18;spacingTop=16;spacingBottom=12;fontFamily=Segoe UI;fontSize=19;fontColor=#26364a;strokeWidth=1.5;fillColor=none;strokeColor=none;rounded=0;fontSize=18;fontColor=#365e91;spacingLeft=0;spacingTop=0;" value="&lt;a href=&quot;training_diagram_sources.md&quot;&gt;&lt;b&gt;Detailed sources, counts, architecture history and evaluation caveats: training_diagram_sources.md&lt;/b&gt;&lt;/a&gt;" vertex="1">
+          <mxGeometry height="38" width="2830" x="75" y="2425" as="geometry" />
+        </mxCell>
+        <mxCell id="training_edge_images_manual" edge="1" parent="1" source="training_images" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=1;exitY=0.25;entryX=0;entryY=0.5;" target="training_manual" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="520" y="270" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="training_edge_images_auto" edge="1" parent="1" source="training_images" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=1;exitY=0.76;entryX=0;entryY=0.5;" target="training_automatic" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="520" y="460" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="training_edge_manual_cvat" edge="1" parent="1" source="training_manual" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=1;exitY=0.5;entryX=0;entryY=0.2;" target="training_cvat" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="training_edge_auto_cvat" edge="1" parent="1" source="training_automatic" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=1;exitY=0.5;entryX=0;entryY=0.8;" target="training_cvat" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="training_edge_cvat_curate" edge="1" parent="1" source="training_cvat" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="training_curate" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="training_edge_curate_face" edge="1" parent="1" source="training_curate" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=1;exitY=0.25;entryX=0;entryY=0.25;" target="training_ellipse_targets" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="training_edge_curate_points" edge="1" parent="1" source="training_curate" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=1;exitY=0.8;entryX=0;entryY=0.75;" target="training_keypoint_targets" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="2040" y="560" />
+              <mxPoint x="2500" y="560" />
+              <mxPoint x="2500" y="450" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="training_edge_scalar_localizers" edge="1" parent="1" source="training_scalar" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=1;exitY=0.5;entryX=0;entryY=0.3;" target="training_localizers" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="training_edge_localizers_geometric" edge="1" parent="1" source="training_localizers" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=1;exitY=0.5;entryX=0;entryY=0.3;" target="training_geometric" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="training_edge_geometric_heatmaps" edge="1" parent="1" source="training_geometric" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=1;exitY=0.5;entryX=0;entryY=0.3;" target="training_heatmaps" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="training_edge_heatmaps_compare" edge="1" parent="1" source="training_heatmaps" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=1;exitY=0.5;entryX=0;entryY=0.3;" target="training_compare" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="training_edge_classical_compare" edge="1" parent="1" source="training_classical" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=1;exitX=1;exitY=0.7;entryX=0;entryY=0.83;" target="training_compare" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="610" y="1210" />
+              <mxPoint x="2360" y="1210" />
+              <mxPoint x="2360" y="1050" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="training_edge_prepared_selection" edge="1" parent="1" source="training_keypoint_targets" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=1;exitX=0.5;exitY=1;entryX=0.7;entryY=0;" target="training_compare" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="training_edge_select_face" edge="1" parent="1" source="training_compare" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=0.5;exitY=1;entryX=0.93;entryY=0;" target="training_ellipse_training" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="2660" y="1190" />
+              <mxPoint x="1350" y="1190" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="training_edge_select_keypoints" edge="1" parent="1" source="training_compare" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=0.6;exitY=1;entryX=0.5;entryY=0;" target="training_keypoint_training" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="2720" y="1215" />
+              <mxPoint x="2240" y="1215" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="training_edge_face_replay" edge="1" parent="1" source="training_ellipse_training" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=0.5;exitY=1;entryX=0;entryY=0.5;" target="training_replay" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="760" y="1790" />
+              <mxPoint x="35" y="1790" />
+              <mxPoint x="35" y="2040" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="training_edge_keypoint_replay" edge="1" parent="1" source="training_keypoint_training" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=0.5;exitY=1;entryX=0;entryY=0.3;" target="training_replay" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="2240" y="1765" />
+              <mxPoint x="55" y="1765" />
+              <mxPoint x="55" y="1988" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="training_edge_replay_int8" edge="1" parent="1" source="training_replay" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="training_int8" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="training_edge_int8_package" edge="1" parent="1" source="training_int8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="training_package" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="training_edge_package_board" edge="1" parent="1" source="training_package" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=0;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="training_board" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="training_edge_feedback" edge="1" parent="1" source="training_board" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeColor=#71859c;strokeWidth=2;fontFamily=Segoe UI;fontSize=17;fontColor=#42556d;labelBackgroundColor=#ffffff;dashed=1;exitX=1;exitY=0.5;entryX=1;entryY=0.5;strokeColor=#6f9d85;" target="training_manual" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="2975" y="2020" />
+              <mxPoint x="2975" y="570" />
+              <mxPoint x="1030" y="570" />
+              <mxPoint x="1030" y="270" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
   <diagram id="6fHF2__YJ60N_B--ARtN" name="AI_Process">
-    <mxGraphModel dx="2020" dy="1201" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1200" math="0" shadow="0">
+    <mxGraphModel dx="1471" dy="1031" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1200" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />

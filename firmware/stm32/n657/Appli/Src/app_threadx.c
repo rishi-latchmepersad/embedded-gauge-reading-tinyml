@@ -1275,6 +1275,13 @@ static bool CameraThread_EnterStopModeProof(void) {
 				"[STOP] Debug-log flush/close failed; skipping low-power transition.\r\n");
 		return false;
 	}
+    /* Keep the same durable storage/power-window boundary during the temporary
+     * capture investigation. A 30-second sleep plus cold boot is not a 30-second
+     * capture period, so leave the MCU awake and let the scheduler wait below. */
+    if (CAMERA_CAPTURE_DIAGNOSTIC_30S_ENABLE != 0U) {
+        DebugConsole_Printf("[CAPTURE][DIAG] Storage committed; MCU stays awake for 30s schedule.\r\n");
+        return true;
+    }
 	DebugConsole_Printf(
 			"[STOP] Storage flush barriers complete; entering low power.\r\n");
 
@@ -1475,7 +1482,12 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 
 		BSP_LED_Off(LED_BLUE);
 		DebugConsole_Printf(
-				"[CAMERA][THREAD] Entering capture/Stop loop (sleep=60s)...\r\n");
+                "[CAMERA][SCHEDULE] diagnostic_30s=%u frames=%lu period_ms=%lu standby_ms=%lu\r\n",
+                (unsigned int) CAMERA_CAPTURE_DIAGNOSTIC_30S_ENABLE,
+                (unsigned long) CAMERA_CAPTURE_BURST_COUNT,
+                (unsigned long) CAMERA_CAPTURE_PERIOD_MS,
+                (unsigned long) ((CAMERA_CAPTURE_DIAGNOSTIC_30S_ENABLE != 0U)
+                        ? 0U : CAMERA_STANDBY_WAKE_INTERVAL_MS));
 		CameraThread_LogPersistentEvent("capture_loop_entered");
 		while (1) {
 			bool storage_ready = AppFileX_IsMediaReady();
@@ -1500,6 +1512,11 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 						"[CAMERA][THREAD] FileX media ready; starting capture.\r\n");
 			}
 
+            const ULONG capture_cycle_start_tick = tx_time_get();
+            if (CAMERA_CAPTURE_DIAGNOSTIC_30S_ENABLE != 0U) {
+                DebugConsole_Printf("[CAPTURE][DIAG] cycle-start tick=%lu\r\n",
+                        (unsigned long) capture_cycle_start_tick);
+            }
 			/* Run the requested burst serially. Each call waits for the previous
 			 * AI handoff to release the shared stopped-sensor buffer, so this does
 			 * not require a second 400 KiB DMA buffer. */
@@ -1580,10 +1597,13 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 			 * and use the retry delay below. */
 			bool stop_interval_completed = false;
 			if (camera_stop_ok) {
-				CameraThread_LogPersistentEvent("standby_or_stop_entering");
+				CameraThread_LogPersistentEvent((CAMERA_CAPTURE_DIAGNOSTIC_30S_ENABLE != 0U)
+                        ? "diagnostic_flush_begin" : "standby_or_stop_entering");
 				stop_interval_completed = CameraThread_EnterStopModeProof();
 				CameraThread_LogPersistentEvent(stop_interval_completed
-						? "stop_returned_ok" : "stop_returned_failed");
+                        ? ((CAMERA_CAPTURE_DIAGNOSTIC_30S_ENABLE != 0U)
+                                ? "diagnostic_flush_complete" : "stop_returned_ok")
+                        : "stop_returned_failed");
 				camera_start_ok = CameraThread_StartCameraStack();
 			}
 #else
@@ -1598,10 +1618,25 @@ static VOID CameraInitThread_Entry(ULONG thread_input) {
 						"[CAMERA][POWER] Camera restart after low-power transition failed.\r\n");
 			}
 
-#if CAMERA_STOP_MODE_PROOF_ENABLE
-			/* A successful one-minute Stop interval is the cadence now: after wake
-			 * and camera restart, the next burst begins immediately.  Retain the
-			 * old retry delay whenever the low-power cycle or restart fails. */
+#if CAMERA_CAPTURE_DIAGNOSTIC_30S_ENABLE
+            /* Subtract capture, inference, maintenance and camera restart time.
+             * Unsigned tick subtraction also handles scheduler counter wrap.
+             * An overrun starts the next cycle without overlapping AI ownership. */
+            const ULONG period_ticks = ThreadxUtils_MillisecondsToTicks(CAMERA_CAPTURE_PERIOD_MS);
+            const ULONG elapsed_ticks = tx_time_get() - capture_cycle_start_tick;
+            if (!camera_start_ok) {
+                DelayMilliseconds_ThreadX(next_delay_ms);
+            } else if (elapsed_ticks < period_ticks) {
+                (void) tx_thread_sleep(period_ticks - elapsed_ticks);
+            } else {
+                DebugConsole_Printf("[CAPTURE][DIAG] deadline-overrun elapsed_ms=%lu period_ms=%lu\r\n",
+                        (unsigned long)((elapsed_ticks * 1000U) / TX_TIMER_TICKS_PER_SECOND),
+                        (unsigned long) CAMERA_CAPTURE_PERIOD_MS);
+            }
+#elif CAMERA_STOP_MODE_PROOF_ENABLE
+			/* A successful low-power interval supplies the cadence. Standby wakes
+			 * through boot after five minutes; the optional Stop path returns here.
+			 * Retain the retry delay if the low-power cycle or restart fails. */
 			if (!stop_interval_completed || !camera_start_ok) {
 				DelayMilliseconds_ThreadX(next_delay_ms);
 			}

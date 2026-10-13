@@ -4342,3 +4342,117 @@ Concrete mapping (the real artifact/package names behind the friendly names):
   for unattended signing; an unanswered overwrite prompt can generate a large
   repetitive log. Power impact of this firmware has not been measured: cleanup
   runs on the retained 30-minute schedule and no per-interrupt log flood is added.
+
+## Temporary 30-second capture investigation (2026-10-13)
+
+- `CAMERA_CAPTURE_DIAGNOSTIC_30S_ENABLE=1` in `app_threadx_config.h` selects
+  one frame per 30-second capture-start schedule. Set it to 0 and update the
+  shared firmware banner to restore the original three-frame duty cycle.
+- The diagnostic mode completes the existing storage drain/close/flush and
+  INA219 reporting boundary, then keeps the MCU awake. Capture, inference,
+  maintenance and camera restart time are subtracted from the remaining wait.
+  Overruns are reported rather than overlapping ownership or accumulating
+  catch-up bursts. Exposure adjustments and failures can shift actual image
+  timestamps; the schedule is not a guarantee that every attempt saves a photo.
+- Camera power cycling, image retention, model decoding and quality thresholds
+  are retained. A single-frame burst has no three-frame median; the existing
+  spike filter still applies. This temporary awake mode increases power use.
+- Banner: `2026-10-13-capture-30s-diagnostic-v1`. Build uses the Windows
+  CubeIDE toolchain; no board flashing is performed by the agent.
+- KiTTY inspection: the current October 13 section contained 18 queued attempts,
+  11 accepted gauge results and 7 inference failures. Four center/tip separations
+  were below 48 pixels (8, 7, 46, 39); three angles were outside the calibrated
+  range (about -174.206, -179.358, -163.872 degrees versus -157.5..157.5).
+  No `[AI][PIPELINE] failed stage=...` runtime failures appeared in that section.
+  Brightness adjustment retries reached 6-7 on some captures. These observations
+  support investigating exposure/crop/keypoint quality; they do not establish
+  which visual condition caused each bad prediction without viewing saved images.
+- KiTTY showed one `sd-retention-fault-logs-v3` boot followed by five legacy
+  `2026-08-20-ina219-threadx-voltage-monitor-v1` banners after Standby. Together
+  with the wake-loader application-copy messages, this is consistent with a
+  RAM-only application update and an older application still in NOR. Flash the
+  prepared boot-header application at `0x70100000` so the next wake uses it.
+  The local analysis summary is `tmp/kitty_inference_20261013_summary.json`.
+
+## Silver thermometer selection (2026-10-13)
+
+- At the user's request, `APP_GAUGE_ACTIVE_PROFILE` now selects
+  `APP_GAUGE_PROFILE_COMPASS_THERMOMETER_SILVER` (29). The matching registry
+  profile is `compass_thermometer_silver`, mapping -135..135 degrees to
+  -35..55 Celsius. The shared selector also changes the AI angle limits and
+  profile-scaled spike thresholds through the existing conditional configuration.
+- The temporary single-photo 30-second diagnostic mode remains enabled.
+  Updated shared UART/SD banner: `2026-10-13-silver-thermometer-30s-diag-v2`.
+  The flash-ready application is prepared for `0x70100000`; flashing remains
+  the user's action. Earlier 30-second artifacts select the barometer profile.
+
+## Training Diagram research (2026-10-13)
+
+- Added the editable `Training Diagram` page to `docs/process_diagrams.drawio`,
+  preserving the original four pages. Evidence, source paths and evaluation
+  caveats are recorded in `docs/training_diagram_sources.md`.
+- Direct CVAT XML counts establish 9,157 general-gauge image records, 33 small
+  gauge records and 620 temperature reference records. The final ellipse recipe
+  uses 8,853 eligible base records, domain repeats and augmentation to produce
+  30,050 samples. Keypoint preparation contains 7,922 training examples, doubled
+  to 15,844 by augmentation. Repeated records are not independent scenes.
+- Follow-up PC search found `D:/Projects/cvat/first_450_training_filtered.zip`:
+  exactly 450 image records, job 6 frames 0-449, with manual GaugeFace ellipses.
+  All seed filenames match the detector's 360 train / 90 validation split.
+  The original unfiltered ZIP contains 7,326 records despite its filename.
+  Seed landmarks are mostly imported, with nine manual box edits across the
+  center/tip/start/end labels. Image identities and splits are recorded in
+  `docs/training_manual_seed_450.csv`.
+- A VLM annotation stage remains unconfirmed. The inspected CVAT autoannotator
+  is fine-tuned YOLO11m plus ellipse fitting and returns GaugeFace only; imported
+  landmark source flags do not identify their original annotator. The seed has
+  `true_value` and `gauge_id`, but 392/450 readings are zero and the remaining
+  6,876 original export records repeat zero/ID 28. Those values are not proof of
+  reviewed ground truth. Temperature labels include the `temp_c` reading.
+- Unique-gauge audit: active labelled archives have no `gauge_id` attributes.
+  Historical seed IDs 2-28 are inconsistent: ID 28 covers 51 source-name groups,
+  while some filenames have multiple IDs. Do not report 27 as the physical-gauge
+  total. Removing `.rf.` hashes gives 1,216 source-name groups in the general
+  9,157 records and 81 in the 450 seed; neither is a verified distinct-gauge
+  count. Evidence is in `tmp/gauge_identity_inventory.json`.
+- User-requested visual guess: reviewed all 1,216 general source-name
+  representatives on 19 contact sheets, plus 33 small-gauge images and 35
+  temperature-domain samples. Rough estimate: approximately 750 visually
+  distinct gauge-face designs/variants, plausible range 600-900. This is
+  subjective, not a measured physical-gauge total or confidence interval.
+  Obvious duplicate views count once; different scales/layouts/branding count
+  as variants. The WSL ML `tmp/gauge_visual_review/` holds indexed sheets and
+  face crops. Method and limitations are in `docs/training_diagram_sources.md`.
+- Current firmware bindings identify the custom multiscale ellipse model and
+  `keypoint_unet_224g_wide_aug`, trained from scratch then QAT-exported. Older
+  MobileNetV2 experiments and OBB/tip-focus descriptions are historical; wrapper
+  filenames alone do not identify the active model architecture.
+
+## Restore five-minute Standby with three-shot burst (2026-10-13)
+
+- At the user's request, disabled `CAMERA_CAPTURE_DIAGNOSTIC_30S_ENABLE` in
+  `app_threadx_config.h`. Normal operation captures three frames serially,
+  commits capture/inference/debug records, then enters Standby with the existing
+  nominal 300,000 ms RTC wake interval. Boot, capture and storage add to the
+  interval between readings; the 60,000 ms constant is the awake retry delay.
+- Retained the silver thermometer profile (29), -35..55 C and -135..135 degrees.
+  New shared UART/SD banner: `2026-10-13-silver-thermometer-5min-burst-v3`.
+- Recommendation is to retain the burst while accuracy remains unsettled.
+  The live keypoint path stages its crop before ellipse NPU activity to avoid
+  DMA/activation overlap. On the first frame it uses the fixed training crop;
+  later frames can use the preceding frame's decoded ellipse geometry. The
+  live three-frame filter averages the closest pair (two-of-three consensus),
+  despite older comments calling it a median. Publication also preserves an
+  earlier valid burst result if the final frame fails. These mechanisms cannot
+  correct consistent model/crop bias. One-shot operation would reduce capture,
+  inference and SD work, but would lose the later-frame crop and consensus.
+- Built successfully using the installed Windows CubeIDE make/GNU toolchain,
+  with no compiler warnings/errors. Flash-ready image:
+  `tmp/silver_thermometer_5min_burst_v3/n657_Appli_silver_thermometer_5min_burst_flash_ready.bin`
+  for `0x70100000`, 388,640 bytes, header 2.3 in the existing no-key mode.
+  Its payload at offset 0x400 matches the 387,616-byte generated binary;
+  the new banner is present. Build receipt, hashes and logs are beside it.
+  Not flashed; no live timing, accuracy or board-power measurement performed.
+- Packaging reminder: SigningTool expects the raw `.bin`, not the ELF, and
+  reads its reset vector for the entry point. The ST magic bytes spell `STM2`;
+  a little-endian uint32 interpretation differs from the printed magic value.

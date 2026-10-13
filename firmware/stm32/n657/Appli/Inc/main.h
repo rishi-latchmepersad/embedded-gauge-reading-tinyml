@@ -48,7 +48,7 @@ extern "C" {
 
 /* why: Keep one visible build identifier for the UART and SD boot records so
  * the board log can be compared with the firmware image that was built. */
-#define APP_FIRMWARE_BUILD_ID "2026-10-11-sd-retention-fault-logs-v3"
+#define APP_FIRMWARE_BUILD_ID "2026-10-13-silver-thermometer-5min-burst-v3"
 
 /* Exported types ------------------------------------------------------------*/
 /* Function pointer declaration in non-secure*/
