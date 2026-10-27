@@ -1240,6 +1240,24 @@ static void CameraThread_EnterStandbyModeProof(void) {
 }
 
 /**
+ * @brief Print a stop-transition trace and retain its latest phase across reset.
+ * @param phase Low-power journal phase describing the operation boundary.
+ * @param stage Short UART label matching the retained phase.
+ * @param status Operation result, or zero when recording a begin marker.
+ * @retval None.
+ * @sideeffects Writes RTC backup registers and emits a synchronous UART record.
+ */
+static void CameraThread_RecordStopTrace(AppLowPowerPhase phase,
+		const char *stage, uint32_t status) {
+	const uint32_t tick = (uint32_t) tx_time_get();
+	/* Save before printing so a UART stall still leaves a reset-surviving marker. */
+	AppDiagnostics_RecordLowPowerPhase(phase, status, tick);
+	DebugConsole_Printf(
+			"[STOP][TRACE] stage=%s status=%lu tick=%lu\r\n",
+			stage, (unsigned long) status, (unsigned long) tick);
+}
+
+/**
  * @brief Enter the guarded Stage 2 STM32N6 Stop-mode proof interval.
  * @retval true when the MCU returned from the LPTIM1 wakeup path.
  * @sideeffects Drains asynchronous log queues, flushes the SD card, pauses
@@ -1249,10 +1267,24 @@ static void CameraThread_EnterStandbyModeProof(void) {
  *              boundary is redirected to Standby and does not return normally.
  */
 static bool CameraThread_EnterStopModeProof(void) {
-	if (!AppInferenceRuntime_WaitForLogQueueDrain(
-			CAMERA_STOP_MODE_PROOF_TIMEOUT_MS)
-			|| !SdDebugLogService_WaitForQueueDrain(
-					CAMERA_STOP_MODE_PROOF_TIMEOUT_MS)) {
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_INFERENCE_DRAIN_BEGIN,
+			"inference_drain_begin", 0U);
+	const bool inference_drained = AppInferenceRuntime_WaitForLogQueueDrain(
+			CAMERA_STOP_MODE_PROOF_TIMEOUT_MS);
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_INFERENCE_DRAIN_DONE,
+			"inference_drain_done", inference_drained ? 0U : 1U);
+	if (!inference_drained) {
+		DebugConsole_Printf(
+				"[STOP] Log queues did not drain; skipping Stop proof.\r\n");
+		return false;
+	}
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_DEBUG_DRAIN_BEGIN,
+			"debug_drain_begin", 0U);
+	const bool debug_drained = SdDebugLogService_WaitForQueueDrain(
+			CAMERA_STOP_MODE_PROOF_TIMEOUT_MS);
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_DEBUG_DRAIN_DONE,
+			"debug_drain_done", debug_drained ? 0U : 1U);
+	if (!debug_drained) {
 		DebugConsole_Printf(
 				"[STOP] Log queues did not drain; skipping Stop proof.\r\n");
 		return false;
@@ -1267,10 +1299,24 @@ static bool CameraThread_EnterStopModeProof(void) {
         (void) SdDebugLogService_EnqueueLine(health);
     }
 
-	/* Capture writes are marked flush-pending, while debug metrics use a
-	 * separate queue.  Complete both barriers before powering down the SD path. */
-	if ((AppFileX_ServiceCaptureMediaFlush() != TX_SUCCESS)
-			|| (AppFileX_ForceMediaFlush() != FX_SUCCESS)) {
+	/* Capture writes and debug records use separate paths; mark each synchronous
+	 * FileX operation so a reset reveals which flush boundary was last reached. */
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_CAPTURE_FLUSH_BEGIN,
+			"capture_flush_begin", 0U);
+	const UINT capture_flush_status = AppFileX_ServiceCaptureMediaFlush();
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_CAPTURE_FLUSH_DONE,
+			"capture_flush_done", (uint32_t) capture_flush_status);
+	if (capture_flush_status != TX_SUCCESS) {
+		DebugConsole_Printf(
+				"[STOP] Scheduled capture flush failed; skipping Stop proof.\r\n");
+		return false;
+	}
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_FILEX_FLUSH_BEGIN,
+			"filex_flush_begin", 0U);
+	const UINT filex_flush_status = AppFileX_ForceMediaFlush();
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_FILEX_FLUSH_DONE,
+			"filex_flush_done", (uint32_t) filex_flush_status);
+	if (filex_flush_status != FX_SUCCESS) {
 		DebugConsole_Printf(
 				"[STOP] Final FileX flush failed; skipping Stop proof.\r\n");
 		return false;
@@ -1280,7 +1326,12 @@ static bool CameraThread_EnterStopModeProof(void) {
 	 * barrier have completed.  The report therefore covers the whole awake
 	 * portion of this cycle, including final storage housekeeping, without
 	 * counting the following Stop interval. */
-	if (!INA219_CloseAwakeWindow()) {
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_POWER_WINDOW_CLOSE_BEGIN,
+			"power_window_close_begin", 0U);
+	const bool power_window_closed = INA219_CloseAwakeWindow();
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_POWER_WINDOW_CLOSE_DONE,
+			"power_window_close_done", power_window_closed ? 0U : 1U);
+	if (!power_window_closed) {
 		DebugConsole_Printf(
 				"[STOP] Awake power average could not be queued; skipping Stop proof.\r\n");
 		return false;
@@ -1288,22 +1339,39 @@ static bool CameraThread_EnterStopModeProof(void) {
 	/* Closing the power window queued one more metrics record.  Drain and flush
 	 * that record before arming the wake timer so the UART/SD report is complete
 	 * when the MCU enters Stop mode. */
-	if (!SdDebugLogService_WaitForQueueDrain(
-			CAMERA_STOP_MODE_PROOF_TIMEOUT_MS)) {
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_AWAKE_LOG_DRAIN_BEGIN,
+			"awake_log_drain_begin", 0U);
+	const bool awake_log_drained = SdDebugLogService_WaitForQueueDrain(
+			CAMERA_STOP_MODE_PROOF_TIMEOUT_MS);
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_AWAKE_LOG_DRAIN_DONE,
+			"awake_log_drain_done", awake_log_drained ? 0U : 1U);
+	if (!awake_log_drained) {
 		DebugConsole_Printf(
 				"[STOP] Awake power log queue did not drain; skipping Stop proof.\r\n");
 		return false;
 	}
-	if (AppFileX_ForceMediaFlush() != FX_SUCCESS) {
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_AWAKE_FILEX_FLUSH_BEGIN,
+			"awake_filex_flush_begin", 0U);
+	const UINT awake_filex_flush_status = AppFileX_ForceMediaFlush();
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_AWAKE_FILEX_FLUSH_DONE,
+			"awake_filex_flush_done", (uint32_t) awake_filex_flush_status);
+	if (awake_filex_flush_status != FX_SUCCESS) {
 		DebugConsole_Printf(
 			"[STOP] Awake power log flush failed; skipping Stop proof.\r\n");
 		return false;
 	}
-	if (SdDebugLogService_ForceFlush() != 0) {
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_DEBUGLOG_FLUSH_BEGIN,
+			"debuglog_flush_begin", 0U);
+	const int32_t debuglog_flush_status = SdDebugLogService_ForceFlush();
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_DEBUGLOG_FLUSH_DONE,
+			"debuglog_flush_done", (uint32_t) debuglog_flush_status);
+	if (debuglog_flush_status != 0) {
 		DebugConsole_Printf(
 				"[STOP] Debug-log flush/close failed; skipping low-power transition.\r\n");
 		return false;
 	}
+	CameraThread_RecordStopTrace(LP_PHASE_STOP_BARRIERS_COMPLETE,
+			"barriers_complete", 0U);
     /* Keep the same durable storage/power-window boundary during the temporary
      * capture investigation. A 30-second sleep plus cold boot is not a 30-second
      * capture period, so leave the MCU awake and let the scheduler wait below. */

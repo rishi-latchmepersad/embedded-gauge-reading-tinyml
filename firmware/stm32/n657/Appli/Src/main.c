@@ -366,7 +366,7 @@ static void App_LogResetCause(void) {
 	HAL_PWR_EnableBkUpAccess();
 	low_power_magic = TAMP->BKP16R;
 	if ((low_power_magic == APP_DIAGNOSTIC_LOW_POWER_MAGIC)
-			&& (TAMP->BKP17R <= (uint32_t) LP_PHASE_ERROR_WAKE_LOADER_VECTOR)) {
+			&& (TAMP->BKP17R <= (uint32_t) LP_PHASE_STOP_BARRIERS_COMPLETE)) {
 		const uint32_t phase = TAMP->BKP17R;
 		const char *phase_name = "unknown";
 		switch ((AppLowPowerPhase) phase) {
@@ -384,6 +384,23 @@ static void App_LogResetCause(void) {
 		case LP_PHASE_ERROR_RTC_TICK_RANGE: phase_name = "error_rtc_tick_range"; break;
 		case LP_PHASE_ERROR_RTC_WUTWF: phase_name = "error_rtc_wutwf"; break;
 		case LP_PHASE_ERROR_WAKE_LOADER_VECTOR: phase_name = "error_wake_loader_vector"; break;
+		case LP_PHASE_STOP_INFERENCE_DRAIN_BEGIN: phase_name = "stop_inference_drain_begin"; break;
+		case LP_PHASE_STOP_INFERENCE_DRAIN_DONE: phase_name = "stop_inference_drain_done"; break;
+		case LP_PHASE_STOP_DEBUG_DRAIN_BEGIN: phase_name = "stop_debug_drain_begin"; break;
+		case LP_PHASE_STOP_DEBUG_DRAIN_DONE: phase_name = "stop_debug_drain_done"; break;
+		case LP_PHASE_STOP_CAPTURE_FLUSH_BEGIN: phase_name = "stop_capture_flush_begin"; break;
+		case LP_PHASE_STOP_CAPTURE_FLUSH_DONE: phase_name = "stop_capture_flush_done"; break;
+		case LP_PHASE_STOP_FILEX_FLUSH_BEGIN: phase_name = "stop_filex_flush_begin"; break;
+		case LP_PHASE_STOP_FILEX_FLUSH_DONE: phase_name = "stop_filex_flush_done"; break;
+		case LP_PHASE_STOP_POWER_WINDOW_CLOSE_BEGIN: phase_name = "stop_power_window_close_begin"; break;
+		case LP_PHASE_STOP_POWER_WINDOW_CLOSE_DONE: phase_name = "stop_power_window_close_done"; break;
+		case LP_PHASE_STOP_AWAKE_LOG_DRAIN_BEGIN: phase_name = "stop_awake_log_drain_begin"; break;
+		case LP_PHASE_STOP_AWAKE_LOG_DRAIN_DONE: phase_name = "stop_awake_log_drain_done"; break;
+		case LP_PHASE_STOP_AWAKE_FILEX_FLUSH_BEGIN: phase_name = "stop_awake_filex_flush_begin"; break;
+		case LP_PHASE_STOP_AWAKE_FILEX_FLUSH_DONE: phase_name = "stop_awake_filex_flush_done"; break;
+		case LP_PHASE_STOP_DEBUGLOG_FLUSH_BEGIN: phase_name = "stop_debuglog_flush_begin"; break;
+		case LP_PHASE_STOP_DEBUGLOG_FLUSH_DONE: phase_name = "stop_debuglog_flush_done"; break;
+		case LP_PHASE_STOP_BARRIERS_COMPLETE: phase_name = "stop_barriers_complete"; break;
 		default: break;
 		}
 		(void) snprintf(app_previous_low_power_log_line,

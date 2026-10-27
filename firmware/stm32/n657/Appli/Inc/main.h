@@ -48,7 +48,7 @@ extern "C" {
 
 /* why: Keep one visible build identifier for the UART and SD boot records so
  * the board log can be compared with the firmware image that was built. */
-#define APP_FIRMWARE_BUILD_ID "2026-10-27-standby-phase-journal-v1"
+#define APP_FIRMWARE_BUILD_ID "2026-10-27-stop-barrier-trace-v1"
 
 /* Exported types ------------------------------------------------------------*/
 /* Function pointer declaration in non-secure*/
@@ -99,7 +99,24 @@ typedef enum {
 	LP_PHASE_ERROR_RTC_CLOCK_SELECT,
 	LP_PHASE_ERROR_RTC_TICK_RANGE,
 	LP_PHASE_ERROR_RTC_WUTWF,
-	LP_PHASE_ERROR_WAKE_LOADER_VECTOR
+	LP_PHASE_ERROR_WAKE_LOADER_VECTOR,
+	LP_PHASE_STOP_INFERENCE_DRAIN_BEGIN,
+	LP_PHASE_STOP_INFERENCE_DRAIN_DONE,
+	LP_PHASE_STOP_DEBUG_DRAIN_BEGIN,
+	LP_PHASE_STOP_DEBUG_DRAIN_DONE,
+	LP_PHASE_STOP_CAPTURE_FLUSH_BEGIN,
+	LP_PHASE_STOP_CAPTURE_FLUSH_DONE,
+	LP_PHASE_STOP_FILEX_FLUSH_BEGIN,
+	LP_PHASE_STOP_FILEX_FLUSH_DONE,
+	LP_PHASE_STOP_POWER_WINDOW_CLOSE_BEGIN,
+	LP_PHASE_STOP_POWER_WINDOW_CLOSE_DONE,
+	LP_PHASE_STOP_AWAKE_LOG_DRAIN_BEGIN,
+	LP_PHASE_STOP_AWAKE_LOG_DRAIN_DONE,
+	LP_PHASE_STOP_AWAKE_FILEX_FLUSH_BEGIN,
+	LP_PHASE_STOP_AWAKE_FILEX_FLUSH_DONE,
+	LP_PHASE_STOP_DEBUGLOG_FLUSH_BEGIN,
+	LP_PHASE_STOP_DEBUGLOG_FLUSH_DONE,
+	LP_PHASE_STOP_BARRIERS_COMPLETE
 } AppLowPowerPhase;
 /** Retain one low-power phase and two diagnostic values without using the SD card. */
 void AppDiagnostics_RecordLowPowerPhase(AppLowPowerPhase phase,
