@@ -543,6 +543,9 @@ void RTC_S_IRQHandler(void)
   if (((RTC->SMISR & RTC_SMISR_WUTMF) != 0U)
       || ((RTC->SR & RTC_SR_WUTF) != 0U))
   {
+    /* Retain the wake evidence before clearing RTC status for the loader path. */
+    AppDiagnostics_RecordLowPowerPhase(LP_PHASE_RTC_IRQ_SEEN,
+        RTC->SMISR, RTC->SR);
     RTC->SCR = RTC_SCR_CWUTF;
   }
   /* The RTC wake source is routed through EXTI line 17.  Clear both edge

@@ -105,8 +105,11 @@ extern uint32_t __enoncacheable;
 /* Reserve RTC backup registers 23–31 for the default-vector ID and one compact
  * post-mortem snapshot. They survive software resets and Standby wakeups. */
 #define APP_DIAGNOSTIC_FAULT_MAGIC (0x4641554CUL)
+/* BKP16..19 are kept separate from cleanup state (BKP20..22) and faults (23..31). */
+#define APP_DIAGNOSTIC_LOW_POWER_MAGIC (0x4C504431UL)
 static char app_boot_reset_log_line[192];
 static char app_previous_fault_log_line[192];
+static char app_previous_low_power_log_line[192];
 
 /**
  * @brief Wait until the ETH1 MDIO engine is idle.
@@ -349,6 +352,7 @@ static void App_LogResetCause(void) {
 	const unsigned int wakeup3 =
 			(HAL_PWR_GetWakeupFlag(PWR_WAKEUP_FLAG3) != RESET) ? 1U : 0U;
 	uint32_t fault_magic;
+	uint32_t low_power_magic;
 
 	/* Keep a copy for the later FileX startup path, which can persist the same
 	 * reset evidence after the SD card has mounted. */
@@ -360,6 +364,35 @@ static void App_LogResetCause(void) {
 	/* Read the retained fault; the SD logger clears its marker after a durable
 	 * copy. The exception handler avoids unsafe FileX or ThreadX calls at fault time. */
 	HAL_PWR_EnableBkUpAccess();
+	low_power_magic = TAMP->BKP16R;
+	if ((low_power_magic == APP_DIAGNOSTIC_LOW_POWER_MAGIC)
+			&& (TAMP->BKP17R <= (uint32_t) LP_PHASE_ERROR_WAKE_LOADER_VECTOR)) {
+		const uint32_t phase = TAMP->BKP17R;
+		const char *phase_name = "unknown";
+		switch ((AppLowPowerPhase) phase) {
+		case LP_PHASE_IDLE: phase_name = "idle"; break;
+		case LP_PHASE_LOADER_PREPARE: phase_name = "loader_prepare"; break;
+		case LP_PHASE_LOADER_READY: phase_name = "loader_ready"; break;
+		case LP_PHASE_RTC_ARMED: phase_name = "rtc_armed"; break;
+		case LP_PHASE_BEFORE_WFI: phase_name = "before_wfi"; break;
+		case LP_PHASE_RTC_IRQ_SEEN: phase_name = "rtc_irq_seen"; break;
+		case LP_PHASE_STANDBY_RETURNED: phase_name = "standby_returned"; break;
+		case LP_PHASE_WAKE_LOADER_BRANCH: phase_name = "wake_loader_branch"; break;
+		case LP_PHASE_ERROR_LOADER_PREPARE: phase_name = "error_loader_prepare"; break;
+		case LP_PHASE_ERROR_RTC_LSI_START: phase_name = "error_rtc_lsi_start"; break;
+		case LP_PHASE_ERROR_RTC_CLOCK_SELECT: phase_name = "error_rtc_clock_select"; break;
+		case LP_PHASE_ERROR_RTC_TICK_RANGE: phase_name = "error_rtc_tick_range"; break;
+		case LP_PHASE_ERROR_RTC_WUTWF: phase_name = "error_rtc_wutwf"; break;
+		case LP_PHASE_ERROR_WAKE_LOADER_VECTOR: phase_name = "error_wake_loader_vector"; break;
+		default: break;
+		}
+		(void) snprintf(app_previous_low_power_log_line,
+				sizeof(app_previous_low_power_log_line),
+				"[LP][POSTMORTEM] phase=%s/%lu detail0=0x%08lX detail1=0x%08lX SBF=%u WKUP3=%u",
+				phase_name, (unsigned long) phase,
+				(unsigned long) TAMP->BKP18R,
+				(unsigned long) TAMP->BKP19R, standby, wakeup3);
+	}
 	fault_magic = TAMP->BKP24R;
 	if (fault_magic == APP_DIAGNOSTIC_FAULT_MAGIC) {
 		(void) snprintf(app_previous_fault_log_line,
@@ -380,6 +413,10 @@ static void App_LogResetCause(void) {
 	DebugConsole_WriteString("\r\n");
 	if (app_previous_fault_log_line[0] != '\0') {
 		DebugConsole_WriteString(app_previous_fault_log_line);
+		DebugConsole_WriteString("\r\n");
+	}
+	if (app_previous_low_power_log_line[0] != '\0') {
+		DebugConsole_WriteString(app_previous_low_power_log_line);
 		DebugConsole_WriteString("\r\n");
 	}
 	(void) snprintf(line, sizeof(line),
@@ -412,6 +449,49 @@ const char *App_GetBootResetLogLine(void) {
  */
 const char *App_GetPreviousFaultLogLine(void) {
 	return app_previous_fault_log_line;
+}
+
+/**
+ * @brief Save a low-power progress marker that survives Standby and reset.
+ * @param phase Current low-power phase or an error phase.
+ * @param detail0 Phase-specific diagnostic value such as the RTC wake counter.
+ * @param detail1 Second phase-specific value such as RTC control/status bits.
+ * @sideeffects Writes RTC backup registers 16..19 without using RTOS or FileX.
+ */
+void AppDiagnostics_RecordLowPowerPhase(AppLowPowerPhase phase,
+		uint32_t detail0, uint32_t detail1) {
+	HAL_PWR_EnableBkUpAccess();
+	/* Invalidate the record first so power loss cannot make partial fields look valid. */
+	TAMP->BKP16R = 0U;
+	__DSB();
+	TAMP->BKP17R = (uint32_t) phase;
+	TAMP->BKP18R = detail0;
+	TAMP->BKP19R = detail1;
+	__DMB();
+	/* Commit the marker last; boot code accepts only records with this signature. */
+	TAMP->BKP16R = APP_DIAGNOSTIC_LOW_POWER_MAGIC;
+	__DSB();
+}
+
+/**
+ * @brief Return the previous low-power journal record captured during boot.
+ * @retval Formatted record, or an empty string when no valid record exists.
+ */
+const char *App_GetPreviousLowPowerLogLine(void) {
+	return app_previous_low_power_log_line;
+}
+
+/**
+ * @brief Acknowledge the low-power journal after its SD record is durable.
+ * @sideeffects Clears the backup-register validity marker and preserves details.
+ */
+void AppDiagnostics_AcknowledgePersistedLowPower(void) {
+	HAL_PWR_EnableBkUpAccess();
+	if (TAMP->BKP16R == APP_DIAGNOSTIC_LOW_POWER_MAGIC) {
+		TAMP->BKP16R = 0U;
+		__DSB();
+		app_previous_low_power_log_line[0] = '\0';
+	}
 }
 
 /**

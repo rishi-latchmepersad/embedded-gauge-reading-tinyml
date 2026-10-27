@@ -48,7 +48,7 @@ extern "C" {
 
 /* why: Keep one visible build identifier for the UART and SD boot records so
  * the board log can be compared with the firmware image that was built. */
-#define APP_FIRMWARE_BUILD_ID "2026-10-13-silver-thermometer-5min-burst-v3"
+#define APP_FIRMWARE_BUILD_ID "2026-10-27-standby-phase-journal-v1"
 
 /* Exported types ------------------------------------------------------------*/
 /* Function pointer declaration in non-secure*/
@@ -84,6 +84,30 @@ void Error_Handler(void);
 const char *App_GetBootResetLogLine(void);
 /** Return the previous reset's retained Cortex fault record, when present. */
 const char *App_GetPreviousFaultLogLine(void);
+/** Describe the progress markers retained across a low-power transition. */
+typedef enum {
+	LP_PHASE_IDLE = 0U,
+	LP_PHASE_LOADER_PREPARE,
+	LP_PHASE_LOADER_READY,
+	LP_PHASE_RTC_ARMED,
+	LP_PHASE_BEFORE_WFI,
+	LP_PHASE_RTC_IRQ_SEEN,
+	LP_PHASE_STANDBY_RETURNED,
+	LP_PHASE_WAKE_LOADER_BRANCH,
+	LP_PHASE_ERROR_LOADER_PREPARE,
+	LP_PHASE_ERROR_RTC_LSI_START,
+	LP_PHASE_ERROR_RTC_CLOCK_SELECT,
+	LP_PHASE_ERROR_RTC_TICK_RANGE,
+	LP_PHASE_ERROR_RTC_WUTWF,
+	LP_PHASE_ERROR_WAKE_LOADER_VECTOR
+} AppLowPowerPhase;
+/** Retain one low-power phase and two diagnostic values without using the SD card. */
+void AppDiagnostics_RecordLowPowerPhase(AppLowPowerPhase phase,
+		uint32_t detail0, uint32_t detail1);
+/** Return a formatted low-power journal record captured before reset flags clear. */
+const char *App_GetPreviousLowPowerLogLine(void);
+/** Clear the low-power journal only after its record has been durably flushed. */
+void AppDiagnostics_AcknowledgePersistedLowPower(void);
 /** @brief Clear the retained fault marker only after its SD record is flushed. */
 void AppDiagnostics_AcknowledgePersistedFault(void);
 /** Save a minimal fault snapshot into the RTC backup domain for the next boot. */

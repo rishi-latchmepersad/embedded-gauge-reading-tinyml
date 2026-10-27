@@ -71,6 +71,7 @@ static uint32_t g_sd_debug_log_reported_write_failures = 0U;
 static UINT g_sd_debug_log_last_filex_status = FX_SUCCESS;
 static char g_sd_debug_log_last_filex_operation[24] = "none";
 static bool g_sd_debug_log_fault_persisted = false;
+static bool g_sd_debug_log_low_power_persisted = false;
 
 static uint8_t g_sd_debug_log_file_is_open = 0U;
 static bool g_sd_debug_log_queue_created = false;
@@ -800,6 +801,9 @@ int32_t SdDebugLogService_ForceFlush(void) {
     int32_t health_status = 0;
     const char *fault = App_GetPreviousFaultLogLine();
     const bool persist_fault = !g_sd_debug_log_fault_persisted && (fault[0] != '\0');
+    const char *low_power = App_GetPreviousLowPowerLogLine();
+    const bool persist_low_power = !g_sd_debug_log_low_power_persisted
+            && (low_power[0] != '\0');
     if (persist_fault) {
         char record[256];
         const int length = snprintf(record, sizeof(record), "%s\r\n", fault);
@@ -807,6 +811,20 @@ int32_t SdDebugLogService_ForceFlush(void) {
             health_status = SdDebugLogCore_WriteRecord(&g_sd_debug_log_core_context,
                     &g_sd_debug_log_file_ops, record, (uint32_t) length);
         } else { health_status = -1; }
+    }
+    if (persist_low_power) {
+        char record[256];
+        const int length = snprintf(record, sizeof(record), "%s\r\n", low_power);
+        if ((length > 0) && ((size_t) length < sizeof(record))) {
+            const int32_t low_power_status = SdDebugLogCore_WriteRecord(
+                    &g_sd_debug_log_core_context, &g_sd_debug_log_file_ops,
+                    record, (uint32_t) length);
+            if ((health_status == 0) && (low_power_status != 0)) {
+                health_status = low_power_status;
+            }
+        } else if (health_status == 0) {
+            health_status = -1;
+        }
     }
     if ((enqueue_losses != g_sd_debug_log_reported_enqueue_failures)
             || (write_losses != g_sd_debug_log_reported_write_failures)) {
@@ -833,6 +851,10 @@ int32_t SdDebugLogService_ForceFlush(void) {
         if (persist_fault) {
             AppDiagnostics_AcknowledgePersistedFault();
             g_sd_debug_log_fault_persisted = true;
+        }
+        if (persist_low_power) {
+            AppDiagnostics_AcknowledgePersistedLowPower();
+            g_sd_debug_log_low_power_persisted = true;
         }
     }
     (void) tx_mutex_put(&g_sd_debug_log_core_mutex);

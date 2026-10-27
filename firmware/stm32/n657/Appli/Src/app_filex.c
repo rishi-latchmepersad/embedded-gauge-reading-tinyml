@@ -232,6 +232,7 @@ static ULONG g_captured_image_fallback_next_index = 0U;
 static bool g_captured_image_fallback_index_seeded = false;
 static ULONG g_capture_slot_next_index = 0U;
 static ULONG g_capture_media_last_flush_tick = 0U;
+static bool g_low_power_postmortem_flush_attempted = false;
 
 typedef struct {
 	bool valid;
@@ -761,6 +762,7 @@ static void AppFileX_StateMachine_Step(
 					context_ptr->threadx_status);
 			break;
 		}
+		g_low_power_postmortem_flush_attempted = false;
 
 		/* The reset flags are cleared before ThreadX starts, so persist the
 		 * captured boot cause only after the log queue becomes available. */
@@ -937,6 +939,16 @@ static void AppFileX_StateMachine_Step(
 
 		if (context_ptr->log_service_is_initialized != 0U) {
 			SdDebugLogService_ServiceQueue(32U);
+			/* Persist the previous low-power state after queued boot records drain. */
+			if (!g_low_power_postmortem_flush_attempted
+					&& (App_GetPreviousLowPowerLogLine()[0] != '\0')
+					&& SdDebugLogService_WaitForQueueDrain(0U)) {
+				g_low_power_postmortem_flush_attempted = true;
+				if (SdDebugLogService_ForceFlush() != 0) {
+					DebugConsole_Printf(
+							"[BOOT][DIAG] low-power postmortem flush failed; retained record will retry before sleep.\r\n");
+				}
+			}
 		}
 		break;
 	}

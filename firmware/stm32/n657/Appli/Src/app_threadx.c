@@ -905,6 +905,8 @@ static bool CameraThread_ArmRtcStandbyWakeup(uint32_t duration_ms) {
 		 * by a CPU-cycle count when the clock tree or debugger state changes. */
 	}
 	if (LL_RCC_LSI_IsReady() == 0U) {
+		AppDiagnostics_RecordLowPowerPhase(LP_PHASE_ERROR_RTC_LSI_START,
+				HAL_GetTick() - lsi_start_tick, RCC->CSR);
 		DebugConsole_Printf(
 				"[STANDBY][RTC] LSI did not start after %lu ms; automatic wake unavailable.\r\n",
 				(unsigned long) (HAL_GetTick() - lsi_start_tick));
@@ -916,6 +918,8 @@ static bool CameraThread_ArmRtcStandbyWakeup(uint32_t duration_ms) {
 	periph_clk.PeriphClockSelection = RCC_PERIPHCLK_RTC;
 	periph_clk.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
 	if (HAL_RCCEx_PeriphCLKConfig(&periph_clk) != HAL_OK) {
+		AppDiagnostics_RecordLowPowerPhase(LP_PHASE_ERROR_RTC_CLOCK_SELECT,
+				RCC->CSR, RTC->PRER);
 		DebugConsole_Printf(
 				"[STANDBY][RTC] RTC clock selection failed; automatic wake unavailable.\r\n");
 		return false;
@@ -935,6 +939,8 @@ static bool CameraThread_ArmRtcStandbyWakeup(uint32_t duration_ms) {
 			* CAMERA_STANDBY_LSI_NOMINAL_HZ) + wake_tick_denominator - 1ULL)
 			/ wake_tick_denominator);
 	if ((wake_ticks == 0U) || (wake_ticks > 65536U)) {
+		AppDiagnostics_RecordLowPowerPhase(LP_PHASE_ERROR_RTC_TICK_RANGE,
+				wake_ticks, duration_ms);
 		DebugConsole_Printf(
 				"[STANDBY][RTC] interval exceeds CK_SPRE 16-bit range; automatic wake unavailable.\r\n");
 		return false;
@@ -970,6 +976,8 @@ static bool CameraThread_ArmRtcStandbyWakeup(uint32_t duration_ms) {
 	}
 	if ((RTC->ICSR & RTC_ICSR_WUTWF) == 0U) {
 		RTC->WPR = 0xFFU;
+		AppDiagnostics_RecordLowPowerPhase(LP_PHASE_ERROR_RTC_WUTWF,
+				RTC->ICSR, wait_count);
 		DebugConsole_Printf(
 				"[STANDBY][RTC] WUTWF did not become ready; automatic wake unavailable.\r\n");
 		return false;
@@ -1000,14 +1008,22 @@ static bool CameraThread_ArmRtcStandbyWakeup(uint32_t duration_ms) {
 static void CameraThread_JumpToRetainedWakeLoader(void) {
 	const uint32_t *vectors = (const uint32_t *) 0x34000400UL;
 	void (*reset_handler)(void) = (void (*)(void)) vectors[1];
+	/* Preserve evidence that the standby call returned before replacing VTOR/MSP. */
+	AppDiagnostics_RecordLowPowerPhase(LP_PHASE_STANDBY_RETURNED,
+			PWR->WKUPSR, RTC->SMISR);
 
 	/* The RTC wake interrupt has already returned to this thread. Re-enter the
 	 * loader directly so SRAM1 is not destroyed by NVIC_SystemReset(). */
 	if ((vectors[0] < 0x34000400UL) || (vectors[0] > 0x34014000UL)
 			|| ((vectors[1] & 1U) == 0U)) {
+		AppDiagnostics_RecordLowPowerPhase(
+				LP_PHASE_ERROR_WAKE_LOADER_VECTOR, vectors[0], vectors[1]);
 		Error_Handler();
 	}
 
+	/* Distinguish a validated loader branch from a wake that stalled earlier. */
+	AppDiagnostics_RecordLowPowerPhase(LP_PHASE_WAKE_LOADER_BRANCH,
+			vectors[0], vectors[1]);
 	__disable_irq();
 	SysTick->CTRL = 0U;
 	SCB->VTOR = 0x34000400UL;
@@ -1127,16 +1143,27 @@ static bool CameraThread_PrepareStandbyLoader(void) {
  *              periodic ticks, and powers down VCORE through Standby.
  */
 static void CameraThread_EnterStandbyModeProof(void) {
+	AppDiagnostics_RecordLowPowerPhase(LP_PHASE_LOADER_PREPARE,
+			app_ai_xspi2_initialized ? 1U : 0U,
+			app_ai_xspi2_mm_enabled ? 1U : 0U);
 	/* Diagnose lost/overwritten retained code before NOR enters deep power-down. */
 	if (!CameraThread_PrepareStandbyLoader()) {
+		AppDiagnostics_RecordLowPowerPhase(
+				LP_PHASE_ERROR_LOADER_PREPARE, PWR->CPUCR, RCC->HWRSR);
 		Error_Handler();
 	}
+	const volatile uint32_t *loader_vectors =
+			(const volatile uint32_t *) CAMERA_STANDBY_LOADER_RAM_BASE;
+	AppDiagnostics_RecordLowPowerPhase(LP_PHASE_LOADER_READY,
+			loader_vectors[0], loader_vectors[1]);
 	/* The automatic RTC event replaces the manual PC13 wake source. Deinitialize
 	 * the button so its normal EXTI cannot create a competing wake path. */
 	(void) BSP_PB_DeInit(BUTTON_USER);
 	if (!CameraThread_ArmRtcStandbyWakeup(CAMERA_STANDBY_WAKE_INTERVAL_MS)) {
 		Error_Handler();
 	}
+	AppDiagnostics_RecordLowPowerPhase(LP_PHASE_RTC_ARMED,
+			RTC->WUTR, RTC->CR);
 	/* Clear stale PWR flags after the RTC event is armed so the next wake is
 	 * attributable to this timer rather than an earlier button/power event. */
 	(void) HAL_PWR_ClearWakeupFlag(PWR_WAKEUP_FLAG_ALL);
@@ -1200,6 +1227,8 @@ static void CameraThread_EnterStandbyModeProof(void) {
 			(unsigned long) SYSCFG->CM55TCMCR, (unsigned long) RCC->HWRSR);
 	/* HAL sets SLEEPDEEP and performs the DSB/ISB/WFI sequence. On success the
 	 * call does not return during this proof interval. */
+	AppDiagnostics_RecordLowPowerPhase(LP_PHASE_BEFORE_WFI,
+			RTC->WUTR, RTC->CR);
 	__enable_irq();
 	HAL_PWR_EnterSTANDBYMode();
 
