@@ -1186,6 +1186,22 @@ static void CameraThread_EnterStandbyModeProof(void) {
 	HAL_SYSCFG_SetNSVTORAddress(0x34000400UL);
 	__DSB();
 	__ISB();
+	/* Complete all board-driver work and diagnostics while ThreadX, HAL ticks,
+	 * and UART locking can still make progress. The xSPI helper itself logs and
+	 * uses blocking BSP calls, so it must not run inside a global IRQ mask. */
+	BSP_LED_Off(LED_RED);
+	BSP_LED_Off(LED_BLUE);
+	BSP_LED_Off(LED_GREEN);
+	CameraThread_SuspendXspi2ForStop();
+	DebugConsole_Printf(
+			"[STANDBY] entering; RTC will request automatic wake in %lu ms.\r\n",
+			(unsigned long) CAMERA_STANDBY_WAKE_INTERVAL_MS);
+	DebugConsole_Printf(
+			"[STANDBY] vectors secure=0x%08lX nonsecure=0x%08lX CPUCR=0x%08lX CR4=0x%08lX TCMCR=0x%08lX HWRSR=0x%08lX\r\n",
+			(unsigned long) SYSCFG->INITSVTORCR,
+			(unsigned long) SYSCFG->INITNSVTORCR,
+			(unsigned long) PWR->CPUCR, (unsigned long) PWR->CR4,
+			(unsigned long) SYSCFG->CM55TCMCR, (unsigned long) RCC->HWRSR);
 
 	/* BSEC is secure-only on STM32N6. When this image is built in the secure
 	 * state, keep its clock available for the Standby return/vector path. */
@@ -1194,42 +1210,24 @@ static void CameraThread_EnterStandbyModeProof(void) {
 	__HAL_RCC_BSEC_CLK_SLEEP_ENABLE();
 #endif
 
-	/* The periodic HAL and ThreadX tick sources must not leave an interrupt
-	 * pending at WFI, otherwise the core can immediately bounce out of Standby. */
+	/* Finish every operation that can wait on HAL/ThreadX before stopping their
+	 * tick sources. The final boundary below contains only register writes. */
 	HAL_SuspendTick();
 	CLEAR_BIT(SysTick->CTRL, SysTick_CTRL_TICKINT_Msk);
 	SysTick->VAL = 0U;
 	SCB->ICSR = SCB_ICSR_PENDSVCLR_Msk | SCB_ICSR_PENDSTCLR_Msk;
-	/* Keep preparation atomic while stale peripheral work is being quiesced, but
-	 * unmask interrupts for the final WFI: RTC_S_IRQn is the actual wake source
-	 * used by ST's N6 Standby example. */
-	__disable_irq();
-
-	/* An active LED would remain a board-level load even after VCORE falls. */
-	BSP_LED_Off(LED_RED);
-	BSP_LED_Off(LED_BLUE);
-	BSP_LED_Off(LED_GREEN);
-	/* The model NOR is external to the MCU and must be placed in its own deep
-	 * power-down state before the STM32 enters the lowest power mode. */
-	CameraThread_SuspendXspi2ForStop();
-
-	DebugConsole_Printf(
-			"[STANDBY] entering; RTC will request automatic wake in %lu ms.\r\n",
-			(unsigned long) CAMERA_STANDBY_WAKE_INTERVAL_MS);
-	/* Keep this readback immediately before WFI. If either value is not the
-	 * retained loader vector, the chip is expected to fall back to Boot ROM on
-	 * wake and no loader UART/LED marker can ever appear. */
-	DebugConsole_Printf(
-			"[STANDBY] vectors secure=0x%08lX nonsecure=0x%08lX CPUCR=0x%08lX CR4=0x%08lX TCMCR=0x%08lX HWRSR=0x%08lX\r\n",
-			(unsigned long) SYSCFG->INITSVTORCR,
-			(unsigned long) SYSCFG->INITNSVTORCR,
-			(unsigned long) PWR->CPUCR, (unsigned long) PWR->CR4,
-			(unsigned long) SYSCFG->CM55TCMCR, (unsigned long) RCC->HWRSR);
-	/* HAL sets SLEEPDEEP and performs the DSB/ISB/WFI sequence. On success the
-	 * call does not return during this proof interval. */
+	/* Retain the last fully prepared state before masking interrupts, so a reset
+	 * can distinguish a stall in board preparation from a stall at WFI. */
 	AppDiagnostics_RecordLowPowerPhase(LP_PHASE_BEFORE_WFI,
 			RTC->WUTR, RTC->CR);
+	/* Keep the IRQ-masked interval free of HAL, BSP, FileX, ThreadX, and UART calls.
+	 * RTC_S_IRQn remains enabled for the final WFI boundary, as required by ST. */
+	__disable_irq();
+	__DSB();
+	__ISB();
 	__enable_irq();
+	/* HAL sets SLEEPDEEP and performs the DSB/ISB/WFI sequence. On success the
+	 * call does not return during this proof interval. */
 	HAL_PWR_EnterSTANDBYMode();
 
 	/* On this N6 path the RTC event can wake WFI through the interrupt boundary

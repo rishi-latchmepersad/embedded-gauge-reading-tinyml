@@ -4456,3 +4456,25 @@ Concrete mapping (the real artifact/package names behind the friendly names):
 - Packaging reminder: SigningTool expects the raw `.bin`, not the ELF, and
   reads its reset vector for the entry point. The ST magic bytes spell `STM2`;
   a little-endian uint32 interpretation differs from the printed magic value.
+
+## Standby stall trace (2026-10-28)
+
+- Mistake: we treated the last visible KiTTY line (`awake_log_drain_begin` /
+  `[FILEX] Scheduled media flush...`) as the exact point where the firmware
+  stopped. UART silence only marked the end of the captured output; it did not
+  prove the task was still in log draining.
+- The next boot retained `rtc_armed/3` with `SBF=0` and a pin reset. That shows
+  the firmware advanced into the low-power preparation path after the visible
+  lines, but the evidence does not confirm successful Standby entry. Check the
+  retained phase and reset flags before assigning a fault to the last UART line.
+- Source review found a credible hang mechanism in
+  `CameraThread_EnterStandbyModeProof()`: global interrupts were disabled before
+  `CameraThread_SuspendXspi2ForStop()`, which performs blocking BSP calls and
+  synchronous UART logging. These operations can depend on interrupts or
+  console progress, while their output can also disappear when the low-power
+  transition has already gated a peripheral.
+- Fix: finish LED and xSPI shutdown plus diagnostics before suspending ticks or
+  masking interrupts. Keep the final IRQ-masked interval before WFI limited to
+  register writes and barriers. Treat this as a plausible cause, not proven
+  silicon-level root cause; correlate future failures with retained phase and
+  reset flags, not UART truncation alone.
